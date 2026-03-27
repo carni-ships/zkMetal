@@ -306,6 +306,31 @@ switch (command) {
   case "bb-version":
     cmdBbVersion();
     break;
+  case "gpu-info": {
+    const engine = getEngine();
+    const gpuInfo = engine.metalGpuInfo();
+    if (gpuInfo) {
+      console.log(`Metal GPU: ${gpuInfo.gpu}`);
+      console.log(`Unified memory: ${gpuInfo.unified_memory}`);
+      console.log(`MSM acceleration: available`);
+      // Quick correctness check: 2*G should give known BN254 2G
+      const result = engine.metalMsm(
+        [["0x1", "0x2"]],
+        ["0x2"],
+      );
+      if (result && result.x === "0x030644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd3") {
+        console.log(`MSM correctness: verified (2*G matches known value)`);
+      } else {
+        console.log(`MSM correctness: FAILED`);
+      }
+    } else {
+      console.log("Metal GPU: not available (zkmsm binary not found)");
+      console.log("Install: cd metal && swift build -c release && mkdir -p ~/.zkmsm/shaders && cp .build/release/zkmsm ~/.zkmsm/ && cp Sources/zkmsm/shaders/bn254.metal ~/.zkmsm/shaders/");
+    }
+    const bbAvailable = engine.nativeBbAvailable();
+    console.log(`Native bb: ${bbAvailable ? "available" : "not found"}`);
+    break;
+  }
   default:
     console.log(`zkMetal — Generic Noir Prover
 

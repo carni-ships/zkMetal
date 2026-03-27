@@ -12,6 +12,7 @@ import type { ProverConfig, ProofOutput, RecursiveProofInputs } from "./types.js
 
 const PROOF_OVERHEAD_FIELDS = 51;
 const DEFAULT_BB_PATH = join(process.env.HOME ?? "~", ".bb", "bb");
+const DEFAULT_METAL_MSM_PATH = join(process.env.HOME ?? "~", ".zkmsm", "zkmsm");
 
 /** Convert raw proof bytes to array of hex field strings. */
 export function proofToFields(proofBytes: Uint8Array): string[] {
@@ -43,6 +44,7 @@ export class ProverEngine {
       threads: config.threads ?? 8,
       bbPath: config.bbPath ?? DEFAULT_BB_PATH,
       vkCacheDir: config.vkCacheDir ?? resolve(config.circuitPath, "../../target/bb_vk"),
+      metalMsmPath: config.metalMsmPath ?? DEFAULT_METAL_MSM_PATH,
     };
     this.circuit = this.loadCircuit();
   }
@@ -97,6 +99,49 @@ export class ProverEngine {
       return true;
     } catch {
       return false;
+    }
+  }
+
+  /** Check if Metal GPU MSM binary is available (Apple Silicon only). */
+  metalMsmAvailable(): boolean {
+    try {
+      execSync(`${this.config.metalMsmPath} --info`, { stdio: "pipe" });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Get Metal GPU information. Returns null if not available. */
+  metalGpuInfo(): { gpu: string; unified_memory: boolean } | null {
+    try {
+      const output = execSync(`${this.config.metalMsmPath} --info`, { stdio: "pipe" }).toString();
+      return JSON.parse(output);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Compute a multi-scalar multiplication on the Metal GPU.
+   * Points are [x, y] hex pairs (affine BN254), scalars are 256-bit hex strings.
+   * Returns the result point as {x, y} hex strings, or null if Metal is unavailable.
+   */
+  metalMsm(
+    points: [string, string][],
+    scalars: string[],
+  ): { x: string; y: string; infinity: boolean; time_ms: number } | null {
+    if (!this.metalMsmAvailable()) return null;
+    const input = JSON.stringify({ points, scalars });
+    try {
+      const output = execSync(`${this.config.metalMsmPath} --msm`, {
+        input,
+        stdio: ["pipe", "pipe", "pipe"],
+        timeout: 60_000,
+      }).toString();
+      return JSON.parse(output);
+    } catch {
+      return null;
     }
   }
 

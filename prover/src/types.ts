@@ -12,6 +12,8 @@ export interface ProverConfig {
   bbPath?: string;
   /** Directory for caching verification keys. */
   vkCacheDir?: string;
+  /** Path to zkmsm Metal GPU MSM binary (optional, for Apple Silicon acceleration). */
+  metalMsmPath?: string;
 }
 
 /** A block or unit of work to be proven. Generic over the block type. */

@@ -41,7 +41,7 @@ constant uint P[8] = {
 // Montgomery parameter: R^2 mod p (for converting to Montgomery form)
 constant uint R2[8] = {
     0x538afa89, 0xf32cfc5b, 0xd44501fb, 0xb5e71911,
-    0x0a6e141a, 0x47ab1eff, 0xcab8351f, 0x06d89f71
+    0x0a417ff6, 0x47ab1eff, 0xcab8351f, 0x06d89f71
 };
 
 // Montgomery inverse: -p^(-1) mod 2^32
@@ -131,11 +131,11 @@ Fp fp_zero() {
 
 // Return Fp(1) in Montgomery form
 Fp fp_one() {
-    // R mod p = 2^256 mod p
+    // R mod p = 2^256 mod p (little-endian 32-bit limbs)
     Fp r;
-    r.v[0] = 0xd35d438d; r.v[1] = 0x0a78eb28; r.v[2] = 0x7fd748d7;
-    r.v[3] = 0xc8a21c71; r.v[4] = 0x8898fb76; r.v[5] = 0x0fc77c57;
-    r.v[6] = 0x2e7e4076; r.v[7] = 0x12e2908d;
+    r.v[0] = 0xc58f0d9d; r.v[1] = 0xd35d438d; r.v[2] = 0xf5c70b3d;
+    r.v[3] = 0x0a78eb28; r.v[4] = 0x7879462c; r.v[5] = 0x666ea36f;
+    r.v[6] = 0x9a07df2f; r.v[7] = 0x0e0a77c1;
     return r;
 }
 
@@ -145,39 +145,41 @@ Fp fp_one() {
 Fp fp_mul(Fp a, Fp b) {
     // CIOS (Coarsely Integrated Operand Scanning) Montgomery multiplication
     // Working in 32-bit limbs for Metal GPU compatibility
-    uint t[17]; // 9 limbs for product + overflow
-    for (int i = 0; i < 17; i++) t[i] = 0;
+    uint t[10]; // n+2 limbs to handle carries safely
+    for (int i = 0; i < 10; i++) t[i] = 0;
 
     for (int i = 0; i < 8; i++) {
-        // Multiply-accumulate: t += a[i] * b
+        // Step 1: t += a[i] * b
         ulong carry = 0;
         for (int j = 0; j < 8; j++) {
             carry += ulong(t[j]) + ulong(a.v[i]) * ulong(b.v[j]);
             t[j] = uint(carry & 0xFFFFFFFF);
             carry >>= 32;
         }
-        t[8] += uint(carry);
+        ulong ext = ulong(t[8]) + carry;
+        t[8] = uint(ext & 0xFFFFFFFF);
+        t[9] = uint(ext >> 32);
 
-        // Montgomery reduction
+        // Step 2: Montgomery reduction — t += m * P, then shift right by 32
         uint m = t[0] * INV;
-        carry = 0;
-        for (int j = 0; j < 8; j++) {
+        carry = ulong(t[0]) + ulong(m) * ulong(P[0]);
+        carry >>= 32; // t[0] becomes 0 by construction (that's the point of INV)
+        for (int j = 1; j < 8; j++) {
             carry += ulong(t[j]) + ulong(m) * ulong(P[j]);
-            t[j] = uint(carry & 0xFFFFFFFF);
+            t[j - 1] = uint(carry & 0xFFFFFFFF);
             carry >>= 32;
         }
-        t[8] += uint(carry);
-
-        // Shift right by 32 bits
-        for (int j = 0; j < 8; j++) t[j] = t[j + 1];
-        t[8] = 0;
+        ext = ulong(t[8]) + carry;
+        t[7] = uint(ext & 0xFFFFFFFF);
+        t[8] = t[9] + uint(ext >> 32);
+        t[9] = 0;
     }
 
     Fp r;
     for (int i = 0; i < 8; i++) r.v[i] = t[i];
 
-    // Final reduction
-    if (fp_gte(r, fp_modulus())) {
+    // Final reduction: if r >= p, subtract p
+    if (t[8] != 0 || fp_gte(r, fp_modulus())) {
         uint borrow;
         r = fp_sub_raw(r, fp_modulus(), borrow);
     }
@@ -323,8 +325,9 @@ struct MsmParams {
 kernel void msm_accumulate(
     device const PointAffine* points   [[buffer(0)]],
     device const uint* scalars         [[buffer(1)]],  // 8 x uint32 per scalar (256-bit LE)
-    device PointProjective* buckets    [[buffer(2)]],   // (1 << window_bits) buckets per window
-    constant MsmParams& params         [[buffer(3)]],
+    device PointProjective* buckets    [[buffer(2)]],   // per-thread point output
+    device uint* bucket_ids            [[buffer(3)]],   // per-thread bucket index
+    constant MsmParams& params         [[buffer(4)]],
     uint tid                           [[thread_position_in_grid]]
 ) {
     if (tid >= params.n_points) return;
@@ -349,39 +352,29 @@ kernel void msm_accumulate(
         bucket_idx &= ((1u << window_bits) - 1u);
     }
 
+    bucket_ids[tid] = bucket_idx;
+
     if (bucket_idx == 0) return; // scalar window is zero, skip
 
-    // Atomic-free accumulation: each thread writes to its own slot.
-    // Host-side reduction combines overlapping bucket entries.
-    // For a production implementation, use atomic bucket accumulation or
-    // a scatter-gather approach. This simplified version uses per-thread output.
-    PointProjective pt = point_from_affine(points[tid]);
-
-    // Write: buckets[tid] = (bucket_idx, point)
-    // Encode bucket_idx in the output for host-side reduction
-    buckets[tid] = pt;
-    // Store bucket index in a sideband (overload z.v[7] which is unused for identity)
-    buckets[tid].z.v[7] = bucket_idx;
+    buckets[tid] = point_from_affine(points[tid]);
 }
 
 // Reduce phase: sum all points in the same bucket
 kernel void msm_reduce_buckets(
     device const PointProjective* thread_buckets [[buffer(0)]],
-    device PointProjective* reduced_buckets      [[buffer(1)]],
-    constant MsmParams& params                   [[buffer(2)]],
+    device const uint* bucket_ids               [[buffer(1)]],
+    device PointProjective* reduced_buckets      [[buffer(2)]],
+    constant MsmParams& params                   [[buffer(3)]],
     uint bucket_id                               [[thread_position_in_grid]]
 ) {
     uint n_buckets = 1u << params.window_bits;
-    if (bucket_id >= n_buckets) return;
+    if (bucket_id >= n_buckets || bucket_id == 0) return;
 
     PointProjective acc = point_identity();
 
     for (uint i = 0; i < params.n_points; i++) {
-        PointProjective pt = thread_buckets[i];
-        uint pt_bucket = pt.z.v[7];
-        if (pt_bucket == bucket_id && !fp_is_zero(pt.z)) {
-            // Restore z.v[7] before adding
-            pt.z.v[7] = 0;
+        if (bucket_ids[i] == bucket_id) {
+            PointProjective pt = thread_buckets[i];
             if (point_is_identity(acc)) {
                 acc = pt;
             } else {

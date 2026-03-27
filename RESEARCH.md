@@ -143,6 +143,21 @@ The Noir circuit's mutation array is a compile-time constant. Increasing from 25
 
 **Gate count profiling (2026-03):** Detailed component isolation revealed that the Poseidon2 Merkle tree computation accounts for 99.7% of all gates. Schnorr signature verification (4 validators) contributes only ~41K gates (0.45%). Function signature overhead (array inputs) is ~5K gates. Noir compiles all conditional block contents into constraints regardless of runtime values, so loop unrolling and conditional guards do not reduce gate count. The only paths to meaningful reduction are: (1) reducing MAX_MUTATIONS, (2) switching to incremental Merkle proofs (verify paths instead of full tree recomputation), or (3) GPU-accelerated proving to make the large circuit tractable.
 
+### Short-term: Incremental Merkle Proof Circuit (Implemented)
+
+An alternative circuit (`circuits/incremental/`) replaces full tree recomputation with sparse Merkle tree inclusion/update proofs. Each mutation provides a sibling path and the circuit verifies the old root, then computes the new root by replacing the leaf.
+
+| Circuit Variant | MAX_MUTATIONS | ACIR Opcodes | Gate Count | vs Full-Tree |
+|----------------|--------------|-------------|------------|--------------|
+| Full-tree | 1024 | 2,137,893 | 9,129,173 | baseline |
+| Incremental (D=20) | 64 | 21,312 | 428,709 | **21.3x smaller** |
+
+Key tradeoffs:
+- **Gate count:** O(M * D) vs O(M * M). With M=64 and D=20, this is 21x fewer gates.
+- **State model:** Persistent sparse Merkle tree across blocks (supports 2^20 ≈ 1M keys) vs per-block ephemeral tree.
+- **Witness complexity:** Requires Merkle sibling paths for each mutation (provided by the data source).
+- **Throughput:** Fewer mutations per proof (64 vs 1024), but proofs are ~21x faster to generate. Net effect depends on mutation batching.
+
 ### Medium-term: Parallel Proving
 
 Multiple prover instances can prove non-overlapping blocks simultaneously. The IVC chain requires serial dependency for recursive proofs, but independent lineages can run in parallel.
@@ -153,16 +168,16 @@ Batch multiple blocks into a single aggregate proof. Instead of proving each blo
 
 ### Medium-term: Metal GPU Acceleration
 
-A Metal compute shader for BN254 multi-scalar multiplication (MSM) has been implemented in `metal/`. Initial benchmarks on M3 Pro:
+A Metal compute shader for BN254 multi-scalar multiplication (MSM) has been implemented in `metal/`. The implementation is fully verified against known BN254 curve points (2G, 3G, 15G all match reference values). Benchmarks on M3 Pro:
 
 | Points | GPU Time | Notes |
 |--------|----------|-------|
-| 1,024 | 169ms | Shader compilation overhead dominates |
-| 4,096 | 358ms | Sublinear scaling begins |
-| 16,384 | 2,542ms | Memory bandwidth limited |
-| 65,536 | 6,843ms | ~10K points/sec sustained |
+| 1,024 | 205ms | Shader compilation overhead dominates |
+| 4,096 | 496ms | Sublinear scaling begins |
+| 16,384 | 3,075ms | Memory bandwidth limited |
+| 65,536 | 8,166ms | ~8K points/sec sustained |
 
-The MSM kernel uses Pippenger's bucket method with configurable window size. Current implementation uses per-thread bucket accumulation with host-side reduction. Next steps: atomic bucket accumulation, SIMD-group reductions, and integration with Barretenberg's proving pipeline to replace CPU MSM.
+The MSM kernel uses Pippenger's bucket method with configurable window size. Current implementation uses per-thread bucket accumulation with host-side reduction. The `ProverEngine` includes `metalMsm()` for calling the GPU MSM from TypeScript via subprocess (JSON on stdin/stdout). Next steps: atomic bucket accumulation, SIMD-group reductions, and integration with Barretenberg's proving pipeline to replace CPU MSM (requires bb to expose MSM hooks, or forking Barretenberg).
 
 ### Long-term: Cloudflare Free Tier Prover
 
