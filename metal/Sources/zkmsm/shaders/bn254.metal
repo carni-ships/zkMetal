@@ -186,7 +186,7 @@ Fp fp_mul(Fp a, Fp b) {
     return r;
 }
 
-// Modular squaring (uses mul for now, could be optimized)
+// Modular squaring (delegates to mul — separate function would increase register pressure)
 Fp fp_sqr(Fp a) {
     return fp_mul(a, a);
 }
@@ -332,13 +332,12 @@ PointProjective point_add(PointProjective p, PointProjective q) {
 struct MsmParams {
     uint n_points;       // number of points
     uint window_bits;    // bits per window (e.g., 16)
-    uint window_index;   // which window this dispatch handles
+    uint n_buckets;      // effective number of buckets per window (may be half for signed digits)
 };
 
 // Phase 1: Reduce pre-sorted points per bucket. No atomics needed.
-// Supports batched execution across multiple windows:
-//   tid = window_idx * n_buckets + bucket_idx
-// sorted_points, bucket_offsets, bucket_counts are laid out per-window.
+// Batched across all windows: tid = window_idx * n_buckets + bucket_idx
+// sorted_points layout: [window0: n_points][window1: n_points]...
 kernel void msm_reduce_sorted_buckets(
     device const PointAffine* sorted_points    [[buffer(0)]],
     device PointProjective* buckets            [[buffer(1)]],
@@ -348,11 +347,11 @@ kernel void msm_reduce_sorted_buckets(
     constant uint& n_windows                   [[buffer(5)]],
     uint tid                                   [[thread_position_in_grid]]
 ) {
-    uint n_buckets = 1u << params.window_bits;
-    uint total = n_buckets * n_windows;
+    uint nb = 1u << params.window_bits;
+    uint total = nb * n_windows;
     if (tid >= total) return;
-
-    uint bucket_idx = tid % n_buckets;
+    uint window_idx = tid >> params.window_bits;
+    uint bucket_idx = tid & (nb - 1u);
     if (bucket_idx == 0) {
         buckets[tid] = point_identity();
         return;
@@ -364,10 +363,11 @@ kernel void msm_reduce_sorted_buckets(
         return;
     }
 
+    uint base = window_idx * params.n_points;
     uint offset = bucket_offsets[tid];
-    PointProjective acc = point_from_affine(sorted_points[offset]);
+    PointProjective acc = point_from_affine(sorted_points[base + offset]);
     for (uint i = 1; i < count; i++) {
-        acc = point_add_mixed(acc, sorted_points[offset + i]);
+        acc = point_add_mixed(acc, sorted_points[base + offset + i]);
     }
     buckets[tid] = acc;
 }
@@ -397,7 +397,6 @@ kernel void msm_bucket_sum_parallel(
 ) {
     uint total = n_segments * n_windows;
     if (tid >= total) return;
-
     uint window_idx = tid / n_segments;
     uint seg_idx = tid % n_segments;
 
@@ -405,11 +404,12 @@ kernel void msm_bucket_sum_parallel(
     uint seg_size = (n_buckets + n_segments - 1) / n_segments;
     uint bucket_base = window_idx * n_buckets;
 
-    uint hi = n_buckets - seg_idx * seg_size;
-    uint lo_raw = (seg_idx + 1) * seg_size;
-    uint lo = (lo_raw >= n_buckets) ? 1 : (n_buckets - lo_raw);
-    if (lo < 1) lo = 1;
-    if (hi <= lo) {
+    // Use signed arithmetic to avoid unsigned underflow
+    int hi_s = int(n_buckets) - int(seg_idx * seg_size);
+    int lo_raw_s = int((seg_idx + 1) * seg_size);
+    int lo_s = (lo_raw_s >= int(n_buckets)) ? 1 : (int(n_buckets) - lo_raw_s);
+    if (lo_s < 1) lo_s = 1;
+    if (hi_s <= lo_s) {
         partial_sums[tid] = point_identity();
         carries[tid] = point_identity();
         return;
@@ -418,6 +418,8 @@ kernel void msm_bucket_sum_parallel(
     PointProjective running = point_identity();
     PointProjective sum = point_identity();
 
+    uint hi = uint(hi_s);
+    uint lo = uint(lo_s);
     for (uint i = hi - 1; i >= lo; i--) {
         PointProjective bucket = buckets[bucket_base + i];
         if (!point_is_identity(bucket)) {

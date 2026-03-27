@@ -221,7 +221,7 @@ struct PointProjective {
 struct MsmParams {
     var n_points: UInt32
     var window_bits: UInt32
-    var window_index: UInt32
+    var n_buckets: UInt32
 }
 
 func pointIdentity() -> PointProjective {
@@ -346,18 +346,19 @@ class MetalMSM {
     // Pre-allocated buffers (lazily sized, reused across calls)
     private var maxAllocatedPoints = 0
     private var maxAllocatedBuckets = 0
-    // Double-buffered sort/reduce buffers (A/B) for CPU/GPU overlap
-    private var sortedPointsBuffers: [MTLBuffer?] = [nil, nil]
-    private var bucketOffsetsBuffers: [MTLBuffer?] = [nil, nil]
-    private var bucketCountsBuffers: [MTLBuffer?] = [nil, nil]
+    // Sorted points + per-window offsets/counts for batched GPU reduce
+    private var sortedPointsBuffer: MTLBuffer?  // n * nWindows sorted points
+    private var allOffsetsBuffer: MTLBuffer?
+    private var allCountsBuffer: MTLBuffer?
     // Shared output buffers
     private var bucketsBuffer: MTLBuffer?
     private var partialSumsBuffer: MTLBuffer?
     private var carriesBuffer: MTLBuffer?
-    // CPU-side reusable arrays
-    private var cpuBucketCounts: [Int] = []
-    private var cpuBucketIndices: [Int] = []
-    private var cpuWritePositions: [Int] = []
+    // CPU-side reusable arrays (per-window for parallel sort)
+    private var cpuPerWindowCounts: [[Int]] = []
+    private var cpuPerWindowPositions: [[Int]] = []
+    // Window bits override for benchmarking (nil = auto select)
+    var windowBitsOverride: UInt32?
 
     static let cacheDir = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".zkmsm").appendingPathComponent("cache")
@@ -451,15 +452,13 @@ class MetalMSM {
             let nb = max(nBuckets, maxAllocatedBuckets)
             let nw = max(nWindows, maxAllocatedWindows)
             let ns = min(512, nb)
-            // Double-buffered sort/reduce buffers
-            for i in 0..<2 {
-                sortedPointsBuffers[i] = device.makeBuffer(
-                    length: MemoryLayout<PointAffine>.stride * np, options: .storageModeShared)
-                bucketOffsetsBuffers[i] = device.makeBuffer(
-                    length: MemoryLayout<UInt32>.stride * nb, options: .storageModeShared)
-                bucketCountsBuffers[i] = device.makeBuffer(
-                    length: MemoryLayout<UInt32>.stride * nb, options: .storageModeShared)
-            }
+            // Sorted points for all windows (batched reduce)
+            sortedPointsBuffer = device.makeBuffer(
+                length: MemoryLayout<PointAffine>.stride * np * nw, options: .storageModeShared)
+            allOffsetsBuffer = device.makeBuffer(
+                length: MemoryLayout<UInt32>.stride * nb * nw, options: .storageModeShared)
+            allCountsBuffer = device.makeBuffer(
+                length: MemoryLayout<UInt32>.stride * nb * nw, options: .storageModeShared)
             // Buckets: sized for ALL windows (batched bucket_sum reads from all windows)
             bucketsBuffer = device.makeBuffer(
                 length: MemoryLayout<PointProjective>.stride * nb * nw, options: .storageModeShared)
@@ -471,10 +470,9 @@ class MetalMSM {
             maxAllocatedPoints = np
             maxAllocatedBuckets = nb
             maxAllocatedWindows = nw
-            // Resize CPU arrays
-            if cpuBucketCounts.count < nb { cpuBucketCounts = [Int](repeating: 0, count: nb) }
-            if cpuWritePositions.count < nb { cpuWritePositions = [Int](repeating: 0, count: nb) }
-            if cpuBucketIndices.count < np { cpuBucketIndices = [Int](repeating: 0, count: np) }
+            // Resize per-window CPU arrays for parallel sort
+            cpuPerWindowCounts = (0..<nw).map { _ in [Int](repeating: 0, count: nb) }
+            cpuPerWindowPositions = (0..<nw).map { _ in [Int](repeating: 0, count: nb) }
         }
     }
 
@@ -487,7 +485,7 @@ class MetalMSM {
         // Window selection: balance reduce cost (n * nWindows adds) vs bucket_sum cost (2^w * nWindows iterations).
         // Wider windows = fewer windows = less total reduce work, but bucket_sum iterates more buckets.
         // At high n, reduce dominates → prefer wider windows. At low n, bucket_sum dominates → prefer narrower.
-        let windowBits: UInt32
+        var windowBits: UInt32
         if n <= 256 {
             windowBits = 8
         } else if n <= 4096 {
@@ -497,6 +495,10 @@ class MetalMSM {
         } else {
             windowBits = 16  // 65K buckets: good GPU parallelism for reduce
         }
+        // Allow override for benchmarking
+        if let wbOverride = windowBitsOverride {
+            windowBits = wbOverride
+        }
         let nWindows = (256 + Int(windowBits) - 1) / Int(windowBits)
         let nBuckets = 1 << windowBits
         // Segments per window for bucket_sum. Total GPU threads = nSegments * nWindows.
@@ -505,9 +507,9 @@ class MetalMSM {
         let nSegments = min(256, nBuckets / 2)
 
         ensureBuffers(n: n, nBuckets: nBuckets, nSegments: nSegments, nWindows: nWindows)
-        guard let sortBufA = sortedPointsBuffers[0], let sortBufB = sortedPointsBuffers[1],
-              let offBufA = bucketOffsetsBuffers[0], let offBufB = bucketOffsetsBuffers[1],
-              let cntBufA = bucketCountsBuffers[0], let cntBufB = bucketCountsBuffers[1],
+        guard let sortedPointsBuffer = sortedPointsBuffer,
+              let allOffsetsBuffer = allOffsetsBuffer,
+              let allCountsBuffer = allCountsBuffer,
               let bucketsBuffer = bucketsBuffer,
               let partialSumsBuffer = partialSumsBuffer,
               let carriesBuffer = carriesBuffer else {
@@ -520,102 +522,84 @@ class MetalMSM {
         var bucketSumTime: Double = 0
         var combineTime: Double = 0
 
-        // Double-buffered sort/reduce buffers
-        let sortBufs = [sortBufA, sortBufB]
-        let offBufs = [offBufA, offBufB]
-        let cntBufs = [cntBufA, cntBufB]
+        // --- Phase 1: CPU parallel sort, then batched GPU reduce ---
+        let ts = CFAbsoluteTimeGetCurrent()
 
-        // --- Phase 1: Pipelined CPU sort + GPU reduce with double-buffering ---
-        var pendingCBs: [MTLCommandBuffer?] = [nil, nil]
+        let allOffsets = allOffsetsBuffer.contents().bindMemory(to: UInt32.self, capacity: nBuckets * nWindows)
+        let allCounts = allCountsBuffer.contents().bindMemory(to: UInt32.self, capacity: nBuckets * nWindows)
+        let sortedPtsPtr = sortedPointsBuffer.contents().bindMemory(to: PointAffine.self, capacity: n * nWindows)
 
-        for w in 0..<nWindows {
-            let bufIdx = w % 2
-            let sortBuf = sortBufs[bufIdx]
-            let offBuf = offBufs[bufIdx]
-            let cntBuf = cntBufs[bufIdx]
+        // Parallel counting sort across all windows — writes sorted points directly
+        DispatchQueue.concurrentPerform(iterations: nWindows) { w in
+            let wOff = w * nBuckets
+            let ptsBase = w * n
+            let counts = UnsafeMutableBufferPointer(
+                start: &cpuPerWindowCounts[w][0], count: nBuckets)
+            let positions = UnsafeMutableBufferPointer(
+                start: &cpuPerWindowPositions[w][0], count: nBuckets)
 
-            // Wait for previous GPU using this buffer set (w-2)
-            if let prev = pendingCBs[bufIdx] {
-                prev.waitUntilCompleted()
-                if let error = prev.error { throw MSMError.gpuError(error.localizedDescription) }
-            }
-
-            var params = MsmParams(
-                n_points: UInt32(n),
-                window_bits: windowBits,
-                window_index: UInt32(w)
-            )
-            var nWins: UInt32 = 1
-
-            // CPU: Counting sort points by bucket index
-            let ts = CFAbsoluteTimeGetCurrent()
-
-            for i in 0..<nBuckets { cpuBucketCounts[i] = 0 }
+            for i in 0..<nBuckets { counts[i] = 0 }
             for i in 0..<n {
                 let idx = extractBucketIndex(scalars[i], windowBits: windowBits, windowIndex: w)
-                cpuBucketIndices[i] = idx
-                cpuBucketCounts[idx] += 1
+                counts[idx] += 1
             }
 
-            let offsets = offBuf.contents().bindMemory(to: UInt32.self, capacity: nBuckets)
-            let counts = cntBuf.contents().bindMemory(to: UInt32.self, capacity: nBuckets)
             var runningOffset = 0
             for i in 0..<nBuckets {
-                offsets[i] = UInt32(runningOffset)
-                counts[i] = UInt32(cpuBucketCounts[i])
-                cpuWritePositions[i] = runningOffset
-                runningOffset += cpuBucketCounts[i]
+                allOffsets[wOff + i] = UInt32(runningOffset)
+                allCounts[wOff + i] = UInt32(counts[i])
+                positions[i] = runningOffset
+                runningOffset += counts[i]
             }
 
-            let sortedPtr = sortBuf.contents().bindMemory(to: PointAffine.self, capacity: n)
+            // Write sorted points (64 bytes each — sequential GPU reads)
             for i in 0..<n {
-                let idx = cpuBucketIndices[i]
+                let idx = extractBucketIndex(scalars[i], windowBits: windowBits, windowIndex: w)
                 if idx == 0 { continue }
-                sortedPtr[cpuWritePositions[idx]] = points[i]
-                cpuWritePositions[idx] += 1
+                sortedPtsPtr[ptsBase + positions[idx]] = points[i]
+                positions[idx] += 1
             }
-
-            sortTime += CFAbsoluteTimeGetCurrent() - ts
-
-            // GPU: Reduce sorted buckets → write into bucketsBuffer at window offset
-            guard let cb1 = commandQueue.makeCommandBuffer() else {
-                throw MSMError.noCommandBuffer
-            }
-
-            let windowBucketOffset = w * nBuckets * bucketStride
-            let blit = cb1.makeBlitCommandEncoder()!
-            blit.fill(buffer: bucketsBuffer, range: windowBucketOffset..<(windowBucketOffset + nBuckets * bucketStride), value: 0)
-            blit.endEncoding()
-
-            let enc1 = cb1.makeComputeCommandEncoder()!
-            enc1.setComputePipelineState(reduceSortedFunction)
-            enc1.setBuffer(sortBuf, offset: 0, index: 0)
-            enc1.setBuffer(bucketsBuffer, offset: windowBucketOffset, index: 1)
-            enc1.setBuffer(offBuf, offset: 0, index: 2)
-            enc1.setBuffer(cntBuf, offset: 0, index: 3)
-            enc1.setBytes(&params, length: MemoryLayout<MsmParams>.stride, index: 4)
-            enc1.setBytes(&nWins, length: MemoryLayout<UInt32>.stride, index: 5)
-            enc1.dispatchThreads(
-                MTLSize(width: nBuckets, height: 1, depth: 1),
-                threadsPerThreadgroup: MTLSize(width: min(256, nBuckets), height: 1, depth: 1))
-            enc1.endEncoding()
-
-            let t0r = CFAbsoluteTimeGetCurrent()
-            cb1.commit()
-            // Don't wait — overlap with next window's sort
-            pendingCBs[bufIdx] = cb1
-            reduceTime += CFAbsoluteTimeGetCurrent() - t0r
         }
 
-        // Wait for final pending GPU commands
-        let waitStart = CFAbsoluteTimeGetCurrent()
-        for cb in pendingCBs {
-            cb?.waitUntilCompleted()
-            if let error = cb?.error { throw MSMError.gpuError(error.localizedDescription) }
-        }
-        reduceTime += CFAbsoluteTimeGetCurrent() - waitStart
+        sortTime = CFAbsoluteTimeGetCurrent() - ts
 
-        // --- Phase 2: Single batched bucket_sum across ALL windows ---
+        // Batched GPU reduce for ALL windows in single dispatch
+        let totalBuckets = nBuckets * nWindows
+        var params = MsmParams(
+            n_points: UInt32(n),
+            window_bits: windowBits,
+            n_buckets: UInt32(nBuckets)
+        )
+        var nWinsBatch = UInt32(nWindows)
+
+        let t0r = CFAbsoluteTimeGetCurrent()
+        guard let cb1 = commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
+        }
+
+        let blit = cb1.makeBlitCommandEncoder()!
+        blit.fill(buffer: bucketsBuffer, range: 0..<(bucketStride * totalBuckets), value: 0)
+        blit.endEncoding()
+
+        let enc1 = cb1.makeComputeCommandEncoder()!
+        enc1.setComputePipelineState(reduceSortedFunction)
+        enc1.setBuffer(sortedPointsBuffer, offset: 0, index: 0)
+        enc1.setBuffer(bucketsBuffer, offset: 0, index: 1)
+        enc1.setBuffer(allOffsetsBuffer, offset: 0, index: 2)
+        enc1.setBuffer(allCountsBuffer, offset: 0, index: 3)
+        enc1.setBytes(&params, length: MemoryLayout<MsmParams>.stride, index: 4)
+        enc1.setBytes(&nWinsBatch, length: MemoryLayout<UInt32>.stride, index: 5)
+        enc1.dispatchThreads(
+            MTLSize(width: totalBuckets, height: 1, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: min(256, totalBuckets), height: 1, depth: 1))
+        enc1.endEncoding()
+
+        cb1.commit()
+        cb1.waitUntilCompleted()
+        reduceTime = CFAbsoluteTimeGetCurrent() - t0r
+        if let error = cb1.error { throw MSMError.gpuError(error.localizedDescription) }
+
+        // --- Phase 2: Batched bucket_sum across ALL windows ---
         guard let cb2 = commandQueue.makeCommandBuffer() else {
             throw MSMError.noCommandBuffer
         }
@@ -626,20 +610,14 @@ class MetalMSM {
         blit2.fill(buffer: carriesBuffer, range: 0..<(bucketStride * totalSegments), value: 0)
         blit2.endEncoding()
 
-        var batchParams = MsmParams(
-            n_points: UInt32(n),
-            window_bits: windowBits,
-            window_index: 0  // not used in batched mode
-        )
         var nSegs = UInt32(nSegments)
-        var nWinsBatch = UInt32(nWindows)
 
         let enc2 = cb2.makeComputeCommandEncoder()!
         enc2.setComputePipelineState(bucketSumParallelFunction)
         enc2.setBuffer(bucketsBuffer, offset: 0, index: 0)
         enc2.setBuffer(partialSumsBuffer, offset: 0, index: 1)
         enc2.setBuffer(carriesBuffer, offset: 0, index: 2)
-        enc2.setBytes(&batchParams, length: MemoryLayout<MsmParams>.stride, index: 3)
+        enc2.setBytes(&params, length: MemoryLayout<MsmParams>.stride, index: 3)
         enc2.setBytes(&nSegs, length: MemoryLayout<UInt32>.stride, index: 4)
         enc2.setBytes(&nWinsBatch, length: MemoryLayout<UInt32>.stride, index: 5)
         enc2.dispatchThreads(
@@ -976,6 +954,10 @@ func runBenchmark(nPoints: Int) throws {
         scalars.append(limbs)
     }
 
+    // Warmup run to trigger Metal JIT compilation and GPU clock ramp
+    fputs("Warmup...\n", stderr)
+    let _ = try engine.msm(points: points, scalars: scalars)
+
     let start = CFAbsoluteTimeGetCurrent()
     let result = try engine.msm(points: points, scalars: scalars)
     let elapsed = CFAbsoluteTimeGetCurrent() - start
@@ -1002,6 +984,28 @@ func main() throws {
 
     if args.count >= 3 && args[1] == "--bench" {
         let n = Int(args[2]) ?? 1024
+        if args.contains("--sweep") {
+            // Sweep window sizes to find optimal
+            let engine = try MetalMSM()
+            let gx = fpFromInt(1); let gy = fpFromInt(2)
+            let g = PointAffine(x: gx, y: gy)
+            var scalars: [[UInt32]] = []
+            var rng: UInt64 = 0xDEAD_BEEF_CAFE_BABE
+            for _ in 0..<n {
+                var limbs: [UInt32] = Array(repeating: 0, count: 8)
+                for j in 0..<8 { rng = rng &* 6364136223846793005 &+ 1442695040888963407; limbs[j] = UInt32(truncatingIfNeeded: rng >> 32) }
+                scalars.append(limbs)
+            }
+            let points = [PointAffine](repeating: g, count: n)
+            for wb: UInt32 in [18, 17, 16, 15, 14, 13, 12] {
+                engine.windowBitsOverride = wb
+                let start = CFAbsoluteTimeGetCurrent()
+                let _ = try engine.msm(points: points, scalars: scalars)
+                let elapsed = CFAbsoluteTimeGetCurrent() - start
+                fputs("  w=\(wb): \(String(format: "%.1f", elapsed * 1000))ms\n", stderr)
+            }
+            return
+        }
         try runBenchmark(nPoints: n)
         return
     }
