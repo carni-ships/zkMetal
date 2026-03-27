@@ -1,15 +1,94 @@
 # zkMetal
 
-Zero-knowledge state transition proofs for [Persistia](https://github.com/carni-ships/Persistia) using Noir circuits and Barretenberg's UltraHonk proving system.
+Generic Noir prover SDK — load any compiled circuit, generate UltraHonk proofs, verify, and run continuous proving pipelines.
 
-## What it proves
+Built on [Barretenberg](https://github.com/AztecProtocol/barretenberg) with support for WASM, native CLI, and persistent msgpack worker pools.
 
-Each proof attests that:
-1. **BFT quorum** — A quorum of validators signed the block (Schnorr on Grumpkin curve)
-2. **State integrity** — Mutations produce the declared Poseidon2 Merkle root
-3. **Chain continuity** — (Recursive) The previous proof in the IVC chain is valid
+## Features
 
-A single proof verifies the entire chain of state transitions back to genesis.
+- **Any Noir circuit** — point at a compiled JSON, start proving
+- **Multiple proving modes** — WASM, native bb CLI, pipelined, parallel msgpack workers
+- **Recursive IVC** — chain proofs for incremental verifiable computation
+- **Pluggable architecture** — implement `DataSource`, `WitnessBuilder`, `ProofSink` for your app
+- **Solidity verifiers** — generate on-chain verification contracts
+
+## Quick Start
+
+```bash
+cd prover
+npm install
+
+# Prove a single block (using Persistia adapter)
+npx tsx src/cli.ts prove --node https://your-node.com?shard=node-1 --block 100
+
+# Watch mode (continuous proving)
+npx tsx src/cli.ts watch --node https://your-node.com?shard=node-1 --mode sequential --recursive
+
+# Parallel proving with persistent bb workers
+npx tsx src/cli.ts watch --node https://your-node.com?shard=node-1 --mode parallel --workers 6
+
+# Verify a proof
+npx tsx src/cli.ts verify --proof proofs/block_100.json
+
+# Benchmark
+npx tsx src/cli.ts bench --node https://your-node.com?shard=node-1 --block 100
+```
+
+## SDK Usage
+
+```typescript
+import { ProverEngine, watchSequential } from "zkmetal";
+import type { DataSource, WitnessBuilder, ProofSink } from "zkmetal/types";
+
+// 1. Point at your compiled circuit
+const engine = new ProverEngine({
+  circuitPath: "./target/my_circuit.json",
+  threads: 8,
+});
+
+// 2. Implement the three interfaces for your application
+const dataSource: DataSource<MyBlock> = {
+  fetchBlock: async (n) => { /* fetch block n from your chain/API */ },
+  fetchLatestBlockNumber: async () => { /* return latest block number */ },
+};
+
+const witnessBuilder: WitnessBuilder<MyBlock> = {
+  buildWitness: async (block, blockNumber, recursiveOpts?) => {
+    // Transform your block data into the witness map your circuit expects
+    return { field1: "value1", field2: "value2", ... };
+  },
+};
+
+const proofSink: ProofSink = {
+  submitProof: async (proof) => { /* POST proof to your verifier */ },
+};
+
+// 3. Start proving
+await watchSequential(engine, dataSource, witnessBuilder, proofSink, {
+  intervalSec: 10,
+  recursive: true,
+});
+```
+
+### Using the Persistia Adapter
+
+```typescript
+import { ProverEngine, watchSequential } from "zkmetal";
+import { createPersistiaAdapter } from "zkmetal/adapters/persistia";
+
+const engine = new ProverEngine({
+  circuitPath: "./target/persistia_state_proof.json",
+});
+
+const { dataSource, witnessBuilder, proofSink } = createPersistiaAdapter(
+  "https://your-persistia-node.com?shard=node-1"
+);
+
+await watchSequential(engine, dataSource, witnessBuilder, proofSink, {
+  recursive: true,
+  useNative: true,
+});
+```
 
 ## Performance
 
@@ -18,114 +97,95 @@ A single proof verifies the entire chain of state transitions back to genesis.
 | Proof time | ~6s per block (Apple Silicon, native ARM64) |
 | Circuit size | ~42K gates (non-recursive) / ~769K gates (recursive IVC) |
 | Proof size | 16 KB |
-| Max mutations/proof | 256 |
-| Max validators/proof | 4 |
-| Sustained throughput | ~10 proofs/min |
+| Sustained throughput | ~10 proofs/min (sequential) |
 
-See [RESEARCH.md](RESEARCH.md) for detailed performance analysis, bottleneck findings, and scaling paths.
-
-## Project Structure
-
-```
-src/main.nr              # Noir circuit (Schnorr + Poseidon2 Merkle + recursive IVC)
-Nargo.toml               # Noir project config
-Prover.toml              # Test witness inputs
-
-prover/
-  src/prover.ts           # CLI: prove, verify, watch, bench
-  src/witness.ts          # Witness generation (Schnorr signing, Poseidon2 hashing)
-  src/gen-verifier.ts     # Solidity verifier contract generator
-  src/bench.mjs           # Benchmark harness
-  gen_test_witness.mjs    # Generate Prover.toml from test data
-  test/                   # Integration tests and benchmarks
-
-target/
-  persistia_state_proof.json   # Compiled circuit
-  PersistiaVerifier.sol        # Generated Solidity verifier (~300K gas)
-  PersistiaVerifier_evm.sol    # EVM-optimized variant
-
-test/
-  PersistiaVerifier.t.sol      # Foundry tests for on-chain verification
-  EvmVerifier.t.sol            # EVM verifier tests
-```
-
-## Quick Start
-
-### Prerequisites
-
-- [Noir](https://noir-lang.org/) (nargo)
-- [Barretenberg](https://github.com/AztecProtocol/barretenberg) (bb) — native binary for your platform
-- Node.js 20+
-
-### Compile the circuit
-
-```bash
-nargo compile
-```
-
-### Run circuit tests
-
-```bash
-nargo test
-```
-
-### Generate a proof
-
-```bash
-cd prover
-npm install
-npx tsx src/prover.ts prove --node https://your-persistia-node.com?shard=node-1 --block 100
-```
-
-### Watch mode (continuous proving)
-
-```bash
-npx tsx src/prover.ts watch --node https://your-persistia-node.com?shard=node-1 --interval 10
-```
-
-The watcher polls for new committed blocks and proves them sequentially, building a recursive IVC chain.
-
-### Verify a proof
-
-```bash
-npx tsx src/prover.ts verify --proof proofs/block_100.json
-```
-
-### Generate Solidity verifier
-
-```bash
-npx tsx src/gen-verifier.ts
-```
-
-### Run Foundry tests
-
-```bash
-cd test
-forge install
-forge test
-```
+See [RESEARCH.md](RESEARCH.md) for detailed performance analysis and scaling paths.
 
 ## Architecture
 
-### Hash Function: Poseidon2
+### Proving Engine (`ProverEngine`)
 
-The state tree uses Poseidon2 — a field-native hash function that is ~100x cheaper in ZK circuits than SHA-256.
+Core class that wraps Noir + Barretenberg. Handles circuit loading, witness execution, proof generation, and verification. Supports both WASM and native bb CLI backends.
 
-- Leaf: `Poseidon2([1, key, value])`
-- Branch: `Poseidon2([2, left, right])`
-- Empty: `Poseidon2([0])`
+### Watch Modes
 
-### Signatures: Schnorr on Grumpkin
+| Mode | Description | Best For |
+|------|-------------|----------|
+| `sequential` | One block at a time, supports IVC chaining | Production with recursive proofs |
+| `pipelined` | Overlaps witness solving with native proving | Single-prover catch-up |
+| `parallel` | Multiple persistent bb workers via msgpack | High-throughput catch-up |
 
-Validators sign blocks with Schnorr signatures on the Grumpkin curve (BN254's embedded curve), natively supported in Noir at ~3K gates per verification.
+### Adapter Pattern
 
-### Proving System: UltraHonk
+```
+┌─────────────┐     ┌──────────────┐     ┌───────────────┐
+│ DataSource   │────>│ ProverEngine │────>│ ProofSink     │
+│ (fetch data) │     │ (prove)      │     │ (submit)      │
+└─────────────┘     └──────────────┘     └───────────────┘
+       ↑                    ↑                     ↑
+       │            ┌──────────────┐              │
+       │            │WitnessBuilder│              │
+       │            │(data→witness)│              │
+       │            └──────────────┘              │
+       │                                          │
+   Your chain API                          Your verifier
+```
 
-Proofs use Barretenberg's UltraHonk in non-ZK mode. State transitions are public — the proof attests to correct computation, not data privacy.
+Implement `DataSource`, `WitnessBuilder`, and `ProofSink` from `zkmetal/types` to connect any data source to the proving pipeline.
 
-### Recursive IVC
+### Project Structure
 
-Each proof optionally verifies the previous proof, building an Incremental Verifiable Computation chain. A light client needs only the latest proof to verify the entire history from genesis.
+```
+src/main.nr                    # Noir circuit (reference: Persistia state proof)
+Nargo.toml                     # Noir project config
+
+prover/
+  src/
+    index.ts                   # SDK exports
+    types.ts                   # Core interfaces (DataSource, WitnessBuilder, ProofSink)
+    engine.ts                  # ProverEngine (circuit loading, proving, verification)
+    watcher.ts                 # Watch loops (sequential, pipelined, parallel)
+    persistent-bb.ts           # PersistentBb msgpack worker
+    witness.ts                 # Persistia-specific witness generation
+    cli.ts                     # CLI entrypoint
+    adapters/
+      persistia/index.ts       # Persistia adapter (reference implementation)
+  test/                        # Integration tests and benchmarks
+
+target/
+  persistia_state_proof.json   # Compiled circuit
+  PersistiaVerifier.sol        # Generated Solidity verifier
+
+test/
+  PersistiaVerifier.t.sol      # Foundry tests for on-chain verification
+```
+
+## Writing a Custom Adapter
+
+To prove a different Noir circuit with your own data source:
+
+1. **Compile your circuit**: `nargo compile` in your circuit directory
+2. **Implement `DataSource<B>`**: fetch your blocks/units of work
+3. **Implement `WitnessBuilder<B>`**: transform blocks into the witness map your circuit expects
+4. **Implement `ProofSink`** (optional): submit proofs to your verifier
+5. **Wire it up**:
+
+```typescript
+const engine = new ProverEngine({ circuitPath: "./target/your_circuit.json" });
+await watchSequential(engine, yourDataSource, yourWitnessBuilder, yourProofSink);
+```
+
+## Hash Function: Poseidon2
+
+The reference circuit uses Poseidon2 — a field-native hash function ~100x cheaper in ZK circuits than SHA-256.
+
+## Signatures: Schnorr on Grumpkin
+
+The reference circuit verifies Schnorr signatures on the Grumpkin curve (BN254's embedded curve), natively supported in Noir at ~3K gates per verification.
+
+## Proving System: UltraHonk
+
+Proofs use Barretenberg's UltraHonk in non-ZK mode. Suitable for applications where the proof attests to correct computation rather than data privacy.
 
 ## License
 
