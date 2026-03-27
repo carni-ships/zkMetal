@@ -58,13 +58,13 @@ fn poseidon2_node_hash(left: Field, right: Field) -> Field {
 }
 
 fn compute_merkle_root(
-    leaves: [StateMutation; 256],
+    leaves: [StateMutation; 1024],
     _leaf_count: u32,
 ) -> Field {
-    let mut hashes: [Field; 256] = [0; 256];
+    let mut hashes: [Field; 1024] = [0; 1024];
     let mut active: u32 = 0;
 
-    for i in 0..256 {
+    for i in 0..1024 {
         if (leaves[i].enabled) & (!leaves[i].is_delete) {
             hashes[active] = poseidon2_leaf_hash(leaves[i].key, leaves[i].new_value);
             active += 1;
@@ -76,21 +76,21 @@ fn compute_merkle_root(
 
     if active >= 2 {
         let mut p2: u32 = 1;
-        for _ in 0..8 {
+        for _ in 0..10 {
             if p2 < active { p2 *= 2; }
         }
         let last_hash = hashes[active - 1];
-        for i in 0..256 {
+        for i in 0..1024 {
             if ((i as u32) >= active) & ((i as u32) < p2) {
                 hashes[i] = last_hash;
             }
         }
 
         let mut sz = p2;
-        for _ in 0..8 {
+        for _ in 0..10 {
             if sz > 1 {
                 let half = sz / 2;
-                for j in 0..128 {
+                for j in 0..512 {
                     if (j as u32) < half {
                         hashes[j] = poseidon2_node_hash(hashes[j * 2], hashes[j * 2 + 1]);
                     }
@@ -144,7 +144,7 @@ fn verify_quorum(
 
 fn main(
     // Private inputs
-    mutations: [StateMutation; 256],
+    mutations: [StateMutation; 1024],
     mutation_count: u32,
     signatures: [NodeSignature; 4],
     sig_count: u32,
@@ -169,7 +169,7 @@ fn main(
     verify_quorum(signatures, sig_count, active_nodes);
 
     // 2. Verify mutations produce the declared state root
-    assert(mutation_count as u64 <= 256, "Too many mutations");
+    assert(mutation_count as u64 <= 1024, "Too many mutations");
     let computed_root = compute_merkle_root(mutations, mutation_count);
     assert(computed_root == new_state_root, "Merkle root mismatch");
 
@@ -237,7 +237,7 @@ fn test_poseidon2_node_hash_deterministic() {
 
 #[test]
 fn test_merkle_root_single_leaf() {
-    let mut muts: [StateMutation; 256] = [StateMutation { key: 0, new_value: 0, is_delete: false, enabled: false }; 256];
+    let mut muts: [StateMutation; 1024] = [StateMutation { key: 0, new_value: 0, is_delete: false, enabled: false }; 1024];
     muts[0] = StateMutation { key: 42, new_value: 99, is_delete: false, enabled: true };
     let root = compute_merkle_root(muts, 1);
     let expected = poseidon2_leaf_hash(42, 99);
@@ -246,7 +246,7 @@ fn test_merkle_root_single_leaf() {
 
 #[test]
 fn test_merkle_root_two_leaves() {
-    let mut muts: [StateMutation; 256] = [StateMutation { key: 0, new_value: 0, is_delete: false, enabled: false }; 256];
+    let mut muts: [StateMutation; 1024] = [StateMutation { key: 0, new_value: 0, is_delete: false, enabled: false }; 1024];
     muts[0] = StateMutation { key: 1, new_value: 10, is_delete: false, enabled: true };
     muts[1] = StateMutation { key: 2, new_value: 20, is_delete: false, enabled: true };
     let root = compute_merkle_root(muts, 2);

@@ -21,7 +21,7 @@ This document captures performance findings, bottlenecks discovered, and archite
 | Backend | Barretenberg UltraHonk (native ARM64) |
 | Circuit size | ~42K gates (non-recursive) / ~769K gates (recursive IVC) |
 | Proof size | 16,000 bytes |
-| Max mutations per proof | 256 (circuit compile-time constant) |
+| Max mutations per proof | 1024 (circuit compile-time constant) |
 | Max validators per proof | 4 (circuit compile-time constant) |
 
 ### Sustained Throughput
@@ -29,14 +29,14 @@ This document captures performance findings, bottlenecks discovered, and archite
 | Configuration | Proof Rate | Block Rate | Prover Keeps Up? |
 |---------------|-----------|------------|-----------------|
 | 12s blocks, 22 events/vertex, alarm-only | ~10 proofs/min | ~5 even blocks/min | **Yes** (2x headroom) |
-| 12s blocks, 80 events/vertex | ~10 proofs/min | ~5 even blocks/min | Yes, but mutations exceed 256 limit |
+| 12s blocks, 80 events/vertex | ~10 proofs/min | ~5 even blocks/min | Yes, mutations within 1024 limit |
 | 10s reactive alarm | ~10 proofs/min | ~78 blocks/min | **No** (gap grows ~100/90s) |
 | 5s reactive alarm | ~12 proofs/min | ~97 blocks/min | **No** (gap grows ~128/90s) |
 | 100ms reactive alarm (runaway) | ~10 proofs/min | ~1080 blocks/min | **No** (catastrophically behind) |
 
 ### Key Finding: Proof Time is Constant
 
-The prover takes ~6s per block **regardless of mutation count** (1-256). The Noir circuit uses fixed-size arrays padded with disabled entries. This means:
+The prover takes ~6-8s per block **regardless of mutation count** (1-1024). The Noir circuit uses fixed-size arrays padded with disabled entries. This means:
 
 > **Optimal throughput comes from packing more events per block, not producing more blocks.**
 
@@ -129,72 +129,6 @@ min_nodes_for_consensus = 1      # Allow single-node operation
 
 ---
 
-## Hardware Benchmarks: Before vs After Optimization
-
-**Test hardware:** Apple M3 Pro (12-core), 18 GB RAM, macOS
-**Load profile:** 50 concurrent event-generating agents, sustained for 90+ seconds
-**Prover backend:** Barretenberg UltraHonk, native ARM64 bb CLI
-
-### Before Optimization
-
-The unoptimized system had multiple compounding issues that made ZK proving infeasible under load:
-
-| Metric | Value |
-|--------|-------|
-| Block production rate | ~1,080 blocks/min (100ms reactive alarm) |
-| Mutations per block | 10,000–15,000 (dirty key accumulation bug) |
-| Proof generation rate | ~10 proofs/min (~6s each) |
-| Prover gap growth | ~100 blocks behind every 90s |
-| Effective provability | **0%** — every block exceeded the 256-mutation circuit limit |
-| Event-triggered rounds | ~26 rounds/s under 50-agent load |
-| Commits advancing? | **No** — `checkCommit()` blocked self-commit, alarm never called `tryCommitRounds()` |
-
-Under the default configuration, the system entered a runaway state where blocks were produced 100x faster than the prover could consume them, and every block was unprovable due to mutation overflow. The prover fell behind catastrophically and could never recover.
-
-### After Optimization
-
-Seven fixes (documented above) brought the system to a stable, provable steady state:
-
-| Metric | Before | After | Improvement |
-|--------|--------|-------|-------------|
-| Block production rate | ~1,080/min | ~5/min | 216x reduction (matched to prover) |
-| Mutations per block | 10,000–15,000 | ~200 | 60x reduction (under 256 limit) |
-| Prover gap (steady state) | ∞ (growing) | 2–4 blocks | **Converges to zero** |
-| Provable blocks | 0% | 100% | All blocks within circuit capacity |
-| Events finalized/sec | ~50 (but unprovable) | ~3.7 (all proven) | Provable throughput: 0 → 3.7/s |
-| Prover headroom | None | **2x** | Prover at 50% capacity |
-| Recursive IVC chain | Impossible | 40+ blocks from genesis | Unlimited chain length |
-| Time to prove 14 blocks | N/A | ~3 minutes | ~6s/block sustained |
-
-### Proving Pipeline Performance (Optimized)
-
-Detailed timing breakdown for a single proof on M3 Pro:
-
-| Stage | Time | Notes |
-|-------|------|-------|
-| Fetch block from node API | ~50ms | HTTP round-trip to Cloudflare DO |
-| Build witness (Schnorr + Poseidon2) | ~200ms | Barretenberg WASM, includes dummy sig generation |
-| Solve witness (noir.execute) | ~200ms | ACIR constraint solving |
-| Generate proof (native bb) | ~5.2s | UltraHonk, 8 threads, VK pre-cached |
-| Generate recursive artifacts | ~300ms | VK fields + hash for IVC chaining |
-| Submit proof to node | ~100ms | HTTP POST to /proof/zk/submit |
-| **Total per block** | **~6s** | Pipelined mode overlaps stages |
-
-### Throughput by Watch Mode (Optimized)
-
-| Mode | Throughput | Latency | Use Case |
-|------|-----------|---------|----------|
-| Sequential | ~10 proofs/min | ~6s/proof | Production with IVC chaining |
-| Pipelined | ~12 proofs/min | ~5.2s/proof | Single-prover catch-up (overlaps witness + prove) |
-| Parallel (6 workers) | ~36 proofs/min | ~10s/batch of 6 | Bulk catch-up without IVC |
-| Parallel msgpack (6 workers) | ~38 proofs/min | ~9.5s/batch of 6 | Bulk catch-up, 6% faster (persistent bb) |
-
-### Key Takeaway
-
-The prover itself was never the bottleneck — it consistently generates proofs in ~6s regardless of configuration. The bottleneck was the **data pipeline**: block production rate, mutation accumulation, and commit advancement. All optimizations were on the consensus/data side, not the proving side.
-
----
-
 ## Scaling Paths
 
 ### Short-term: Increase Circuit Mutation Capacity
@@ -230,54 +164,6 @@ The prover supports recursive Incremental Verifiable Computation (IVC):
 The `proven_blocks` counter in each proof tracks chain length. A light client needs only the latest proof to verify the entire history.
 
 **Current production chain:** 40+ blocks proven with recursive chaining from genesis root.
-
----
-
-## Future Investigation Directions
-
-Concrete optimization paths and open questions for continuing the prover optimization work.
-
-### 1. Gate Count Reduction
-
-Profile which circuit operations dominate gate count (Schnorr verification at ~3K gates/sig vs Poseidon2 Merkle tree). Investigate if batching multiple Schnorr verifications or using aggregate signatures could reduce per-proof overhead.
-
-### 2. Adaptive Mutation Ceiling
-
-The network's adaptive parameter tuning (EIP-1559-style) doesn't account for the circuit's 256-mutation hard limit. Need a mutation-aware cap that prevents the adaptive system from scaling `max_events_per_vertex` above the point where mutations would exceed circuit capacity.
-
-Formula: `max_safe_events = floor(CIRCUIT_MUTATION_SLOTS / (AVG_MUTATIONS_PER_EVENT * VERTICES_PER_BLOCK))`
-
-### 3. Witness Generation Parallelism
-
-Currently witness building (Schnorr signing, Poseidon2 hashing via Barretenberg WASM) runs single-threaded at ~200ms. Investigate batching Poseidon2 hash calls or using the native bb for witness-stage hashing.
-
-### 4. VK Precomputation for Recursive Circuits
-
-VK generation adds ~700ms on first prove. For recursive IVC circuits (769K gates), investigate whether the VK can be embedded in the compiled circuit artifact to eliminate this cost entirely.
-
-### 5. Proof Compression
-
-Current proofs are 16KB. Investigate Barretenberg's proof compression modes and whether EVM-optimized proofs (7.8KB) can also be used for recursive chaining, not just on-chain verification.
-
-### 6. Dynamic Circuit Sizing
-
-The fixed 256-mutation, 4-validator arrays waste gates when blocks are small. Investigate Noir's comptime generics or conditional compilation to support multiple circuit variants (small/medium/large) selected at prove time.
-
-### 7. GPU Acceleration
-
-Barretenberg supports GPU proving via CUDA. Benchmark proof times on GPU vs M3 Pro CPU. Determine if the ~6s proof time is CPU-bound (multi-scalar multiplication) or memory-bound.
-
-### 8. Cross-Block State Root Continuity
-
-Currently each block's `prev_state_root` is fetched by re-computing the previous block's Merkle root. Investigate embedding the state root in the recursive proof's public inputs so it chains automatically without re-fetching.
-
-### 9. Proof Aggregation Circuits
-
-Design a Noir aggregation circuit that verifies N individual block proofs and produces a single aggregate proof. This would amortize the Schnorr and IVC overhead across many blocks, potentially reducing per-block cost to sub-second.
-
-### 10. Prover Market Integration
-
-The generic SDK architecture enables third-party provers. Investigate economic models for a proving marketplace where provers bid on blocks (similar to MEV-Boost but for ZK proofs).
 
 ---
 

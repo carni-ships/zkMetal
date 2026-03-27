@@ -11,7 +11,7 @@ import { createHash } from "crypto";
 import { Barretenberg } from "@aztec/bb.js";
 
 const MAX_VALIDATORS = 4;
-const MAX_MUTATIONS = 256;
+const MAX_MUTATIONS = 1024;
 const VK_SIZE = 115;
 const PROOF_SIZE = 449;
 const PUBLIC_INPUTS_SIZE = 8;
