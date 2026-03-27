@@ -133,15 +133,15 @@ min_nodes_for_consensus = 1      # Allow single-node operation
 
 ### Short-term: Increase Circuit Mutation Capacity
 
-The Noir circuit's mutation array is a compile-time constant. Increasing from 256 to 512 or 1024 would allow more events per block:
+The Noir circuit's mutation array is a compile-time constant. Increasing from 256 to 1024 allows more events per block, but gate count scaling is super-linear due to Poseidon2 Merkle tree computation:
 
-| Mutation Slots | Events/Block | Finalized Events/s | Gate Count Impact |
+| Mutation Slots | Events/Block | Finalized Events/s | Actual Gate Count |
 |---------------|-------------|--------------------|--------------------|
-| 256 (current) | ~44 | ~3.7 | ~42K gates |
-| 512 | ~100 | ~8.3 | ~50K gates (est.) |
-| 1024 | ~200 | ~16.7 | ~65K gates (est.) |
+| 1 | ~2 | ~0.2 | 46K |
+| 256 | ~44 | ~3.7 | 632K |
+| 1024 (current) | ~200 | ~16.7 | **9.13M** |
 
-The proof time increase is sublinear — doubling mutations does not double proof time because the Poseidon2 tree hashing is O(n log n) but dominates less than Schnorr verification.
+**Gate count profiling (2026-03):** Detailed component isolation revealed that the Poseidon2 Merkle tree computation accounts for 99.7% of all gates. Schnorr signature verification (4 validators) contributes only ~41K gates (0.45%). Function signature overhead (array inputs) is ~5K gates. Noir compiles all conditional block contents into constraints regardless of runtime values, so loop unrolling and conditional guards do not reduce gate count. The only paths to meaningful reduction are: (1) reducing MAX_MUTATIONS, (2) switching to incremental Merkle proofs (verify paths instead of full tree recomputation), or (3) GPU-accelerated proving to make the large circuit tractable.
 
 ### Medium-term: Parallel Proving
 
@@ -150,6 +150,23 @@ Multiple prover instances can prove non-overlapping blocks simultaneously. The I
 ### Long-term: Proof Aggregation
 
 Batch multiple blocks into a single aggregate proof. Instead of proving each block individually, prove a range of N blocks with one circuit execution. This amortizes the fixed cost (Schnorr verification, IVC overhead) across many blocks.
+
+### Medium-term: Metal GPU Acceleration
+
+A Metal compute shader for BN254 multi-scalar multiplication (MSM) has been implemented in `metal/`. Initial benchmarks on M3 Pro:
+
+| Points | GPU Time | Notes |
+|--------|----------|-------|
+| 1,024 | 169ms | Shader compilation overhead dominates |
+| 4,096 | 358ms | Sublinear scaling begins |
+| 16,384 | 2,542ms | Memory bandwidth limited |
+| 65,536 | 6,843ms | ~10K points/sec sustained |
+
+The MSM kernel uses Pippenger's bucket method with configurable window size. Current implementation uses per-thread bucket accumulation with host-side reduction. Next steps: atomic bucket accumulation, SIMD-group reductions, and integration with Barretenberg's proving pipeline to replace CPU MSM.
+
+### Long-term: Cloudflare Free Tier Prover
+
+Explore whether the proving pipeline can run within the resource constraints of Cloudflare's free tier (Workers, Durable Objects, R2). Key constraints to investigate: Worker CPU time limits (10ms free / 30s paid), memory caps (128MB), no native binary execution (WASM only). Would require the Barretenberg WASM backend and potentially chunked proving across multiple Worker invocations.
 
 ---
 
