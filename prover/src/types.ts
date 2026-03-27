@@ -20,6 +20,8 @@ export interface DataSource<B = unknown> {
   fetchBlock(blockNumber: number): Promise<B>;
   /** Get the latest available block number. */
   fetchLatestBlockNumber(): Promise<number>;
+  /** Get the next committed block after a given number (for sparse block chains). Returns null if none. */
+  fetchNextBlockNumber?(afterBlock: number): Promise<number | null>;
 }
 
 /** Transforms a raw block into the witness map the circuit expects. */

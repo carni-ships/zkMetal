@@ -297,7 +297,10 @@ export async function buildSingleBlockWitness(
 ): Promise<CircuitWitness> {
   const sigs: NodeSignatureWitness[] = [];
   for (const sig of block.signatures) {
-    sigs.push(await buildSignatureWitness(sig));
+    // Skip signatures without Schnorr fields (peers whose keys aren't available)
+    if (sig.grumpkin_x && sig.grumpkin_y && sig.schnorr_s && sig.schnorr_e) {
+      sigs.push(await buildSignatureWitness(sig));
+    }
   }
   const dummy = await getDummySignature();
   while (sigs.length < MAX_VALIDATORS) sigs.push({ ...dummy });
@@ -314,7 +317,7 @@ export async function buildSingleBlockWitness(
     mutations: mutSlice,
     mutation_count: block.mutations.length,
     signatures: sigs.slice(0, MAX_VALIDATORS),
-    sig_count: block.signatures.length,
+    sig_count: sigs.filter(s => s.enabled).length,
     prev_proven_blocks: opts?.prevProvenBlocks ?? 0,
     prev_genesis_root: opts?.prevGenesisRoot ?? "0",
     prev_proof: opts?.prevProof ?? new Array(PROOF_SIZE).fill("0"),

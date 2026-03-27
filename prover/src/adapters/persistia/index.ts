@@ -87,6 +87,14 @@ export class PersistiaDataSource implements DataSource<PersistiaBlock> {
     const data = await res.json() as any;
     return data.last_committed_round ?? data.latest_block ?? data.latestBlock ?? 0;
   }
+
+  async fetchNextBlockNumber(afterBlock: number): Promise<number | null> {
+    const url = nodeUrl(this.nodeBase, `/dag/next_committed?after=${afterBlock}`);
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const data = await res.json() as any;
+    return data.round ?? null;
+  }
 }
 
 // --- Persistia WitnessBuilder ---

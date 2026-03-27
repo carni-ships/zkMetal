@@ -19,6 +19,14 @@ import type {
   RecursiveProofInputs,
 } from "./types.js";
 
+/** Resolve next provable block number using sparse-aware lookup if available. */
+async function nextBlock<B>(dataSource: DataSource<B>, afterBlock: number): Promise<number | null> {
+  if (dataSource.fetchNextBlockNumber) {
+    return dataSource.fetchNextBlockNumber(afterBlock);
+  }
+  return afterBlock + 1;
+}
+
 /** Sequential watcher — proves one block at a time with optional IVC chaining. */
 export async function watchSequential<B>(
   engine: ProverEngine,
@@ -44,7 +52,9 @@ export async function watchSequential<B>(
       const latestBlock = await dataSource.fetchLatestBlockNumber();
 
       while (latestBlock > lastProvenBlock) {
-        const blockNum = lastProvenBlock + 1;
+        const blockNum = await nextBlock(dataSource, lastProvenBlock);
+        if (blockNum === null || blockNum > latestBlock) break;
+
         const outPath = join(proofDir, `block_${blockNum}.json`);
 
         try {
@@ -178,7 +188,11 @@ export async function watchPipelined<B>(
         continue;
       }
 
-      const blockNum = lastProvenBlock + 1;
+      const blockNum = await nextBlock(dataSource, lastProvenBlock);
+      if (blockNum === null || blockNum > latestBlock) {
+        await new Promise((r) => setTimeout(r, intervalSec * 1000));
+        continue;
+      }
 
       // Phase 1: Get solved witness
       let solvedWitness: Uint8Array;
@@ -199,13 +213,13 @@ export async function watchPipelined<B>(
         `/tmp/zkmetal_bb_${blockNum}`,
       );
 
-      const nextBlockNum = blockNum + 1;
+      const nextBlockNum = await nextBlock(dataSource, blockNum);
       let prefetchPromise: Promise<void> = Promise.resolve();
-      if (nextBlockNum <= latestBlock) {
+      if (nextBlockNum !== null && nextBlockNum <= latestBlock) {
         prefetchPromise = (async () => {
           try {
-            const nextBlock = await dataSource.fetchBlock(nextBlockNum);
-            const nextWitness = await witnessBuilder.buildWitness(nextBlock, nextBlockNum);
+            const nb = await dataSource.fetchBlock(nextBlockNum);
+            const nextWitness = await witnessBuilder.buildWitness(nb, nextBlockNum);
             const result = await noir.execute(nextWitness as any);
             prefetchedWitness = { blockNum: nextBlockNum, solved: result.witness };
           } catch {
@@ -287,8 +301,20 @@ export async function watchParallelMsgpack<B>(
         continue;
       }
 
+      // Discover next committed blocks (sparse-aware)
+      const blockNumbers: number[] = [];
+      let cursor = lastProvenBlock;
       const batchSize = Math.min(gap, workers);
-      const blockNumbers = Array.from({ length: batchSize }, (_, i) => lastProvenBlock + 1 + i);
+      for (let i = 0; i < batchSize; i++) {
+        const nb = await nextBlock(dataSource, cursor);
+        if (nb === null || nb > latestBlock) break;
+        blockNumbers.push(nb);
+        cursor = nb;
+      }
+      if (blockNumbers.length === 0) {
+        await new Promise((r) => setTimeout(r, intervalSec * 1000));
+        continue;
+      }
       const batchStart = performance.now();
 
       // Solve witnesses in parallel
@@ -358,9 +384,9 @@ export async function watchParallelMsgpack<B>(
         }
       }
 
-      lastProvenBlock += proved;
+      if (proved > 0) lastProvenBlock = blockNumbers[proved - 1];
       const throughput = (proved / parseFloat(batchElapsed) * 60).toFixed(1);
-      console.log(`[zkMetal] Batch: ${proved}/${batchSize} in ${batchElapsed}s (${throughput} blocks/min)`);
+      console.log(`[zkMetal] Batch: ${proved}/${blockNumbers.length} in ${batchElapsed}s (${throughput} blocks/min)`);
     } catch (e: any) {
       console.error(`[zkMetal] Error: ${e.message}`);
     }
