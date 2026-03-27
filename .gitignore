@@ -1,0 +1,23 @@
+node_modules/
+prover/node_modules/
+prover/proofs/
+prover/proof.json
+
+# Build artifacts (can be regenerated with nargo compile)
+target/persistia_state_proof.gz
+target/light/
+target/vk/
+target/vk_evm/
+target/bb_vk/
+target/bb_vk_evm/
+target/proof/
+target/proof_evm/
+target/proof2/
+
+# Foundry
+test/out/
+test/cache/
+test/lib/forge-std/
+
+# OS
+.DS_Store

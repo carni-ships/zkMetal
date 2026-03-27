@@ -1,0 +1,6 @@
+[profile.default]
+src = "src"
+test = "."
+out = "out"
+libs = ["lib"]
+allow_paths = ["../target"]
