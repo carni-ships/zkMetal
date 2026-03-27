@@ -96,6 +96,19 @@ async function poseidon2Hash(inputs: (string | bigint)[]): Promise<string> {
   return bytesToHex(hash);
 }
 
+/** Batch multiple Poseidon2 hashes in parallel to reduce WASM FFI round-trip overhead. */
+async function poseidon2HashBatch(inputSets: (string | bigint)[][]): Promise<string[]> {
+  const bb = await getBb();
+  const results = await Promise.all(
+    inputSets.map(async (inputs) => {
+      const fieldInputs = inputs.map(fieldToBytes);
+      const { hash } = await bb.poseidon2Hash({ inputs: fieldInputs });
+      return bytesToHex(hash);
+    }),
+  );
+  return results;
+}
+
 async function poseidon2LeafHash(key: string, value: string): Promise<string> {
   return poseidon2Hash(["1", key, value]);
 }
@@ -108,17 +121,17 @@ async function poseidon2NodeHash(left: string, right: string): Promise<string> {
 export async function computePoseidon2MerkleRoot(
   mutations: StateMutationWitness[],
 ): Promise<string> {
-  const hashes: string[] = [];
+  // Collect active (non-delete) mutations
+  const active = mutations.filter((m) => m.enabled && !m.is_delete);
 
-  for (const mut of mutations) {
-    if (mut.enabled && !mut.is_delete) {
-      hashes.push(await poseidon2LeafHash(mut.key, mut.new_value));
-    }
-  }
-
-  if (hashes.length === 0) {
+  if (active.length === 0) {
     return poseidon2Hash(["0"]);
   }
+
+  // Batch all leaf hashes in a single parallel call
+  const leafInputs = active.map((m) => ["1" as string | bigint, m.key, m.new_value]);
+  const hashes = await poseidon2HashBatch(leafInputs);
+
   if (hashes.length === 1) {
     return hashes[0];
   }
@@ -129,12 +142,17 @@ export async function computePoseidon2MerkleRoot(
   const lastHash = hashes[hashes.length - 1];
   while (hashes.length < p2) hashes.push(lastHash);
 
-  // Binary tree reduction
+  // Binary tree reduction — batch each level
   let sz = p2;
   while (sz > 1) {
     const half = sz / 2;
+    const levelInputs: (string | bigint)[][] = [];
     for (let j = 0; j < half; j++) {
-      hashes[j] = await poseidon2NodeHash(hashes[j * 2], hashes[j * 2 + 1]);
+      levelInputs.push(["2", hashes[j * 2], hashes[j * 2 + 1]]);
+    }
+    const levelHashes = await poseidon2HashBatch(levelInputs);
+    for (let j = 0; j < half; j++) {
+      hashes[j] = levelHashes[j];
     }
     sz = half;
   }

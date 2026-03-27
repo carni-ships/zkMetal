@@ -10,6 +10,12 @@ use poseidon::poseidon2::Poseidon2;
 
 // --- Constants ---
 
+// Circuit capacity limits. These are compile-time constants that determine
+// the fixed-size arrays in the circuit. Changing these requires recompilation.
+// The prover and network should query these to avoid exceeding circuit capacity.
+global MAX_MUTATIONS: u32 = 1024;
+global MAX_VALIDATORS: u32 = 4;
+
 // Compile-time toggle for recursive IVC chain verification.
 // When false, the recursive proof verification opcode is eliminated entirely,
 // reducing the circuit from ~769K gates to ~42K gates (~18x smaller, ~10x faster).
@@ -58,13 +64,13 @@ fn poseidon2_node_hash(left: Field, right: Field) -> Field {
 }
 
 fn compute_merkle_root(
-    leaves: [StateMutation; 1024],
+    leaves: [StateMutation; MAX_MUTATIONS],
     _leaf_count: u32,
 ) -> Field {
-    let mut hashes: [Field; 1024] = [0; 1024];
+    let mut hashes: [Field; MAX_MUTATIONS] = [0; MAX_MUTATIONS];
     let mut active: u32 = 0;
 
-    for i in 0..1024 {
+    for i in 0..MAX_MUTATIONS {
         if (leaves[i].enabled) & (!leaves[i].is_delete) {
             hashes[active] = poseidon2_leaf_hash(leaves[i].key, leaves[i].new_value);
             active += 1;
@@ -80,7 +86,7 @@ fn compute_merkle_root(
             if p2 < active { p2 *= 2; }
         }
         let last_hash = hashes[active - 1];
-        for i in 0..1024 {
+        for i in 0..MAX_MUTATIONS {
             if ((i as u32) >= active) & ((i as u32) < p2) {
                 hashes[i] = last_hash;
             }
@@ -116,14 +122,14 @@ fn required_quorum(active_nodes: u32) -> u32 {
 }
 
 fn verify_quorum(
-    signatures: [NodeSignature; 4],
+    signatures: [NodeSignature; MAX_VALIDATORS],
     _sig_count: u32,
     active_nodes: u32,
 ) {
     let quorum = required_quorum(active_nodes);
     let mut valid: u32 = 0;
 
-    for i in 0..4 {
+    for i in 0..MAX_VALIDATORS {
         if signatures[i].enabled {
             let pk = EmbeddedCurvePoint {
                 x: signatures[i].pubkey_x,
@@ -144,9 +150,9 @@ fn verify_quorum(
 
 fn main(
     // Private inputs
-    mutations: [StateMutation; 1024],
+    mutations: [StateMutation; MAX_MUTATIONS],
     mutation_count: u32,
-    signatures: [NodeSignature; 4],
+    signatures: [NodeSignature; MAX_VALIDATORS],
     sig_count: u32,
 
     prev_proven_blocks: u64,
@@ -169,7 +175,7 @@ fn main(
     verify_quorum(signatures, sig_count, active_nodes);
 
     // 2. Verify mutations produce the declared state root
-    assert(mutation_count as u64 <= 1024, "Too many mutations");
+    assert(mutation_count as u64 <= MAX_MUTATIONS as u64, "Too many mutations");
     let computed_root = compute_merkle_root(mutations, mutation_count);
     assert(computed_root == new_state_root, "Merkle root mismatch");
 
@@ -187,6 +193,12 @@ fn main(
             prev_key_hash,
             0,
         );
+
+        // Enforce state root continuity: this block's prev_state_root must
+        // match the previous proof's new_state_root (public input index 1).
+        // This guarantees an unbroken state root chain from genesis.
+        assert(prev_state_root == prev_public_inputs[1], "State root chain broken");
+
         proven_blocks = prev_proven_blocks + 1;
         genesis_root = prev_genesis_root;
     } else {
@@ -237,7 +249,7 @@ fn test_poseidon2_node_hash_deterministic() {
 
 #[test]
 fn test_merkle_root_single_leaf() {
-    let mut muts: [StateMutation; 1024] = [StateMutation { key: 0, new_value: 0, is_delete: false, enabled: false }; 1024];
+    let mut muts: [StateMutation; MAX_MUTATIONS] = [StateMutation { key: 0, new_value: 0, is_delete: false, enabled: false }; MAX_MUTATIONS];
     muts[0] = StateMutation { key: 42, new_value: 99, is_delete: false, enabled: true };
     let root = compute_merkle_root(muts, 1);
     let expected = poseidon2_leaf_hash(42, 99);
@@ -246,7 +258,7 @@ fn test_merkle_root_single_leaf() {
 
 #[test]
 fn test_merkle_root_two_leaves() {
-    let mut muts: [StateMutation; 1024] = [StateMutation { key: 0, new_value: 0, is_delete: false, enabled: false }; 1024];
+    let mut muts: [StateMutation; MAX_MUTATIONS] = [StateMutation { key: 0, new_value: 0, is_delete: false, enabled: false }; MAX_MUTATIONS];
     muts[0] = StateMutation { key: 1, new_value: 10, is_delete: false, enabled: true };
     muts[1] = StateMutation { key: 2, new_value: 20, is_delete: false, enabled: true };
     let root = compute_merkle_root(muts, 2);

@@ -101,7 +101,16 @@ export class PersistiaWitnessBuilder implements WitnessBuilder<PersistiaBlock> {
     blockNumber: number,
     recursiveOpts?: RecursiveProofInputs,
   ): Promise<Record<string, unknown>> {
-    const prevStateRoot = await this.fetchPrevStateRoot(blockNumber);
+    // In recursive mode, extract prev_state_root from the previous proof's
+    // public inputs (index 1 = new_state_root) to avoid re-fetching/recomputing.
+    // The circuit enforces this matches via the state root continuity assertion.
+    let prevStateRoot: string;
+    if (recursiveOpts?.prevPublicInputs && recursiveOpts.prevPublicInputs.length > 1) {
+      prevStateRoot = recursiveOpts.prevPublicInputs[1];
+      this.prevStateRoots.set(blockNumber - 1, prevStateRoot);
+    } else {
+      prevStateRoot = await this.fetchPrevStateRoot(blockNumber);
+    }
 
     const opts = recursiveOpts ? {
       prevProvenBlocks: recursiveOpts.prevProvenBlocks,
