@@ -255,6 +255,16 @@ PointProjective point_add_mixed(PointProjective p, PointAffine q) {
     Fp s2 = fp_mul(q.y, fp_mul(p.z, z1z1)); // S2 = Y2*Z1^3
 
     Fp h = fp_sub(u2, p.x);          // H = U2 - X1
+
+    // Handle special cases: same x-coordinate
+    if (fp_is_zero(h)) {
+        Fp rr_check = fp_double(fp_sub(s2, p.y));
+        if (fp_is_zero(rr_check)) {
+            return point_double(p); // same point → double
+        }
+        return point_identity(); // inverse points → identity
+    }
+
     Fp hh = fp_sqr(h);               // HH = H^2
 
     Fp i = fp_double(fp_double(hh));  // I = 4*H^2
@@ -308,107 +318,125 @@ PointProjective point_add(PointProjective p, PointProjective q) {
     return result;
 }
 
-// --- MSM Kernel: Pippenger's Bucket Method ---
+// --- MSM Kernel: Pippenger's Bucket Method (CPU-sorted, lock-free) ---
 //
-// Each threadgroup handles a window of scalar bits.
-// Phase 1: Accumulate points into buckets based on scalar window value.
-// Phase 2: Reduce buckets into a single result per window.
-// Host combines window results with double-and-add.
+// Host sorts points by bucket index (CPU counting sort — fast for small keys).
+// GPU kernels operate on pre-sorted data without any atomic operations.
+//
+// Phase 1 (msm_reduce_sorted_buckets): Each thread handles one bucket.
+//   Points for bucket i are contiguous at sorted_points[offset[i]..offset[i]+count[i]).
+//   The thread sums them and writes the result.
+// Phase 2 (msm_bucket_sum_parallel): Segmented running sum over weighted buckets.
+// Host combines window results with Horner's method.
 
-// Shared buffer for bucket accumulation
 struct MsmParams {
     uint n_points;       // number of points
     uint window_bits;    // bits per window (e.g., 16)
     uint window_index;   // which window this dispatch handles
 };
 
-kernel void msm_accumulate(
-    device const PointAffine* points   [[buffer(0)]],
-    device const uint* scalars         [[buffer(1)]],  // 8 x uint32 per scalar (256-bit LE)
-    device PointProjective* buckets    [[buffer(2)]],   // per-thread point output
-    device uint* bucket_ids            [[buffer(3)]],   // per-thread bucket index
-    constant MsmParams& params         [[buffer(4)]],
-    uint tid                           [[thread_position_in_grid]]
-) {
-    if (tid >= params.n_points) return;
-
-    uint window_bits = params.window_bits;
-    uint window_index = params.window_index;
-
-    // Extract window_bits bits starting at bit position (window_index * window_bits) from scalar
-    uint bit_offset = window_index * window_bits;
-    uint limb_idx = bit_offset / 32;
-    uint bit_pos = bit_offset % 32;
-
-    // Read the scalar limbs for this point
-    uint scalar_offset = tid * 8;
-    uint bucket_idx = 0;
-
-    if (limb_idx < 8) {
-        bucket_idx = (scalars[scalar_offset + limb_idx] >> bit_pos);
-        if (bit_pos + window_bits > 32 && limb_idx + 1 < 8) {
-            bucket_idx |= (scalars[scalar_offset + limb_idx + 1] << (32 - bit_pos));
-        }
-        bucket_idx &= ((1u << window_bits) - 1u);
-    }
-
-    bucket_ids[tid] = bucket_idx;
-
-    if (bucket_idx == 0) return; // scalar window is zero, skip
-
-    buckets[tid] = point_from_affine(points[tid]);
-}
-
-// Reduce phase: sum all points in the same bucket
-kernel void msm_reduce_buckets(
-    device const PointProjective* thread_buckets [[buffer(0)]],
-    device const uint* bucket_ids               [[buffer(1)]],
-    device PointProjective* reduced_buckets      [[buffer(2)]],
-    constant MsmParams& params                   [[buffer(3)]],
-    uint bucket_id                               [[thread_position_in_grid]]
+// Phase 1: Reduce pre-sorted points per bucket. No atomics needed.
+// Supports batched execution across multiple windows:
+//   tid = window_idx * n_buckets + bucket_idx
+// sorted_points, bucket_offsets, bucket_counts are laid out per-window.
+kernel void msm_reduce_sorted_buckets(
+    device const PointAffine* sorted_points    [[buffer(0)]],
+    device PointProjective* buckets            [[buffer(1)]],
+    device const uint* bucket_offsets          [[buffer(2)]],
+    device const uint* bucket_counts           [[buffer(3)]],
+    constant MsmParams& params                 [[buffer(4)]],
+    constant uint& n_windows                   [[buffer(5)]],
+    uint tid                                   [[thread_position_in_grid]]
 ) {
     uint n_buckets = 1u << params.window_bits;
-    if (bucket_id >= n_buckets || bucket_id == 0) return;
+    uint total = n_buckets * n_windows;
+    if (tid >= total) return;
 
-    PointProjective acc = point_identity();
-
-    for (uint i = 0; i < params.n_points; i++) {
-        if (bucket_ids[i] == bucket_id) {
-            PointProjective pt = thread_buckets[i];
-            if (point_is_identity(acc)) {
-                acc = pt;
-            } else {
-                acc = point_add(acc, pt);
-            }
-        }
+    uint bucket_idx = tid % n_buckets;
+    if (bucket_idx == 0) {
+        buckets[tid] = point_identity();
+        return;
     }
 
-    reduced_buckets[bucket_id] = acc;
+    uint count = bucket_counts[tid];
+    if (count == 0) {
+        buckets[tid] = point_identity();
+        return;
+    }
+
+    uint offset = bucket_offsets[tid];
+    PointProjective acc = point_from_affine(sorted_points[offset]);
+    for (uint i = 1; i < count; i++) {
+        acc = point_add_mixed(acc, sorted_points[offset + i]);
+    }
+    buckets[tid] = acc;
 }
 
-// Final bucket reduction: compute window sum using running-sum technique
-// result = sum(i * bucket[i]) for i in 1..n_buckets
-// = bucket[n-1] + (bucket[n-1] + bucket[n-2]) + ...
-kernel void msm_bucket_sum(
-    device const PointProjective* reduced_buckets [[buffer(0)]],
-    device PointProjective* window_result          [[buffer(1)]],
-    constant MsmParams& params                     [[buffer(2)]],
-    uint tid                                       [[thread_position_in_grid]]
+// Phase 2: Parallel segmented bucket sum.
+// Splits the bucket range into segments, each processed by one thread.
+// Each thread computes:
+//   partial_sum = Σ running-sum over its segment (high to low)
+//   carry = running total at the end of its segment (to pass to the next segment)
+// Host combines segments: adjust each segment's sum by its carry weight.
+//
+// For n_segments threads processing buckets [seg_start..seg_end):
+//   Thread k handles buckets [(k+1)*seg_size .. k*seg_size] (high to low within segment)
+//
+// Output: partial_sums[tid] and carries[tid]
+// Batched bucket sum: tid = window_idx * n_segments + segment_idx
+// Buckets for window w start at buckets[w * n_buckets].
+// Outputs: partial_sums[tid], carries[tid] for each (window, segment).
+kernel void msm_bucket_sum_parallel(
+    device const PointProjective* buckets   [[buffer(0)]],
+    device PointProjective* partial_sums    [[buffer(1)]],
+    device PointProjective* carries         [[buffer(2)]],
+    constant MsmParams& params              [[buffer(3)]],
+    constant uint& n_segments               [[buffer(4)]],
+    constant uint& n_windows                [[buffer(5)]],
+    uint tid                                [[thread_position_in_grid]]
 ) {
-    if (tid != 0) return; // single-threaded reduction for correctness
+    uint total = n_segments * n_windows;
+    if (tid >= total) return;
+
+    uint window_idx = tid / n_segments;
+    uint seg_idx = tid % n_segments;
 
     uint n_buckets = 1u << params.window_bits;
+    uint seg_size = (n_buckets + n_segments - 1) / n_segments;
+    uint bucket_base = window_idx * n_buckets;
+
+    uint hi = n_buckets - seg_idx * seg_size;
+    uint lo_raw = (seg_idx + 1) * seg_size;
+    uint lo = (lo_raw >= n_buckets) ? 1 : (n_buckets - lo_raw);
+    if (lo < 1) lo = 1;
+    if (hi <= lo) {
+        partial_sums[tid] = point_identity();
+        carries[tid] = point_identity();
+        return;
+    }
+
     PointProjective running = point_identity();
     PointProjective sum = point_identity();
 
-    // Iterate from highest bucket to lowest
-    for (uint i = n_buckets - 1; i >= 1; i--) {
-        PointProjective bucket = reduced_buckets[i];
+    for (uint i = hi - 1; i >= lo; i--) {
+        PointProjective bucket = buckets[bucket_base + i];
         if (!point_is_identity(bucket)) {
-            running = point_add(running, bucket);
+            if (point_is_identity(running)) {
+                running = bucket;
+            } else {
+                running = point_add(running, bucket);
+            }
         }
-        sum = point_add(sum, running);
+        if (!point_is_identity(running)) {
+            if (point_is_identity(sum)) {
+                sum = running;
+            } else {
+                sum = point_add(sum, running);
+            }
+        }
+        if (i == lo) break;
     }
 
-    window_result[0] = sum;
+    partial_sums[tid] = sum;
+    carries[tid] = running;
 }
