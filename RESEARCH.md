@@ -233,6 +233,54 @@ The `proven_blocks` counter in each proof tracks chain length. A light client ne
 
 ---
 
+## Future Investigation Directions
+
+Concrete optimization paths and open questions for continuing the prover optimization work.
+
+### 1. Gate Count Reduction
+
+Profile which circuit operations dominate gate count (Schnorr verification at ~3K gates/sig vs Poseidon2 Merkle tree). Investigate if batching multiple Schnorr verifications or using aggregate signatures could reduce per-proof overhead.
+
+### 2. Adaptive Mutation Ceiling
+
+The network's adaptive parameter tuning (EIP-1559-style) doesn't account for the circuit's 256-mutation hard limit. Need a mutation-aware cap that prevents the adaptive system from scaling `max_events_per_vertex` above the point where mutations would exceed circuit capacity.
+
+Formula: `max_safe_events = floor(CIRCUIT_MUTATION_SLOTS / (AVG_MUTATIONS_PER_EVENT * VERTICES_PER_BLOCK))`
+
+### 3. Witness Generation Parallelism
+
+Currently witness building (Schnorr signing, Poseidon2 hashing via Barretenberg WASM) runs single-threaded at ~200ms. Investigate batching Poseidon2 hash calls or using the native bb for witness-stage hashing.
+
+### 4. VK Precomputation for Recursive Circuits
+
+VK generation adds ~700ms on first prove. For recursive IVC circuits (769K gates), investigate whether the VK can be embedded in the compiled circuit artifact to eliminate this cost entirely.
+
+### 5. Proof Compression
+
+Current proofs are 16KB. Investigate Barretenberg's proof compression modes and whether EVM-optimized proofs (7.8KB) can also be used for recursive chaining, not just on-chain verification.
+
+### 6. Dynamic Circuit Sizing
+
+The fixed 256-mutation, 4-validator arrays waste gates when blocks are small. Investigate Noir's comptime generics or conditional compilation to support multiple circuit variants (small/medium/large) selected at prove time.
+
+### 7. GPU Acceleration
+
+Barretenberg supports GPU proving via CUDA. Benchmark proof times on GPU vs M3 Pro CPU. Determine if the ~6s proof time is CPU-bound (multi-scalar multiplication) or memory-bound.
+
+### 8. Cross-Block State Root Continuity
+
+Currently each block's `prev_state_root` is fetched by re-computing the previous block's Merkle root. Investigate embedding the state root in the recursive proof's public inputs so it chains automatically without re-fetching.
+
+### 9. Proof Aggregation Circuits
+
+Design a Noir aggregation circuit that verifies N individual block proofs and produces a single aggregate proof. This would amortize the Schnorr and IVC overhead across many blocks, potentially reducing per-block cost to sub-second.
+
+### 10. Prover Market Integration
+
+The generic SDK architecture enables third-party provers. Investigate economic models for a proving marketplace where provers bid on blocks (similar to MEV-Boost but for ZK proofs).
+
+---
+
 ## Architecture Notes
 
 ### Hash Function: Poseidon2
