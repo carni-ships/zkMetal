@@ -352,31 +352,37 @@ kernel void msm_reduce_sorted_buckets(
     constant MsmParams& params                 [[buffer(4)]],
     constant uint& n_windows                   [[buffer(5)]],
     device const uint* sorted_indices          [[buffer(6)]],
+    device const uint* count_sorted_map        [[buffer(7)]],
     uint tid                                   [[thread_position_in_grid]]
 ) {
     uint nb = 1u << params.window_bits;
-    uint total = nb * n_windows;
+    uint total = params.n_buckets * n_windows;
     if (tid >= total) return;
-    uint window_idx = tid >> params.window_bits;
-    uint bucket_idx = tid & (nb - 1u);
-    if (bucket_idx == 0) {
-        buckets[tid] = point_identity();
+
+    // Map from count-sorted position to original bucket position
+    // Ensures adjacent threads in SIMD group have similar bucket counts (minimal divergence)
+    uint orig_pos = count_sorted_map[tid];
+    uint orig_bucket = orig_pos & (nb - 1u);
+
+    if (orig_bucket == 0) {
+        buckets[orig_pos] = point_identity();
         return;
     }
 
-    uint count = bucket_counts[tid];
+    uint count = bucket_counts[orig_pos];
     if (count == 0) {
-        buckets[tid] = point_identity();
+        buckets[orig_pos] = point_identity();
         return;
     }
 
-    uint base = window_idx * params.n_points;
-    uint offset = bucket_offsets[tid];
+    uint orig_window = orig_pos >> params.window_bits;
+    uint base = orig_window * params.n_points;
+    uint offset = bucket_offsets[orig_pos];
     PointProjective acc = point_from_affine(points[sorted_indices[base + offset]]);
     for (uint i = 1; i < count; i++) {
         acc = point_add_mixed(acc, points[sorted_indices[base + offset + i]]);
     }
-    buckets[tid] = acc;
+    buckets[orig_pos] = acc;
 }
 
 // Phase 2: Direct weighted bucket sum per segment.
