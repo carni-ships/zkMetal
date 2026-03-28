@@ -971,7 +971,7 @@ class MetalMSM {
             }
         }
 
-        // Parallel counting sort across all windows — writes sorted indices (4 bytes each)
+        // Counting sort: extract bucket indices + count + place (all per-window)
         let allOffsets = allOffsetsBuffer.contents().bindMemory(to: UInt32.self, capacity: nBuckets * nWindows)
         let allCounts = allCountsBuffer.contents().bindMemory(to: UInt32.self, capacity: nBuckets * nWindows)
         let sortedIdxPtr = sortedIndicesBuffer.contents().bindMemory(to: UInt32.self, capacity: effectiveN * nWindows)
@@ -987,13 +987,11 @@ class MetalMSM {
             for i in 0..<nBuckets { counts[i] = 0 }
             if let buf = flatScalarBuf {
                 for i in 0..<effectiveN {
-                    let idx = extractBucketIndex(buf + (i * 8), windowBits: windowBits, windowIndex: w)
-                    counts[idx] += 1
+                    counts[extractBucketIndex(buf + (i * 8), windowBits: windowBits, windowIndex: w)] += 1
                 }
             } else {
                 for i in 0..<effectiveN {
-                    let idx = extractBucketIndex(msmScalars[i], windowBits: windowBits, windowIndex: w)
-                    counts[idx] += 1
+                    counts[extractBucketIndex(msmScalars[i], windowBits: windowBits, windowIndex: w)] += 1
                 }
             }
 
