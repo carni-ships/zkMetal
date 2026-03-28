@@ -272,26 +272,31 @@ PointProjective point_add_mixed_unsafe(PointProjective p, PointAffine q) {
 }
 
 // Mixed addition: projective + affine, handles all edge cases (identity, P=Q, P=-Q)
+// Defers s2/rr computation past h=0 check for better register pressure on common path.
 PointProjective point_add_mixed(PointProjective p, PointAffine q) {
     if (point_is_identity(p)) return point_from_affine(q);
 
     Fp z1z1 = fp_sqr(p.z);
     Fp u2 = fp_mul(q.x, z1z1);
-    Fp s2 = fp_mul(q.y, fp_mul(p.z, z1z1));
     Fp h = fp_sub(u2, p.x);
-    Fp rr = fp_double(fp_sub(s2, p.y));
 
     if (fp_is_zero(h)) {
-        if (fp_is_zero(rr)) return point_double(p);  // P = Q
-        return point_identity();                       // P = -Q
+        // Rare: same x-coordinate, check if P=Q (double) or P=-Q (identity)
+        Fp s2 = fp_mul(q.y, fp_mul(p.z, z1z1));
+        Fp rr = fp_double(fp_sub(s2, p.y));
+        if (fp_is_zero(rr)) return point_double(p);
+        return point_identity();
     }
 
+    // Common path: normal addition
+    Fp s2 = fp_mul(q.y, fp_mul(p.z, z1z1));
     PointProjective result;
     result.z = fp_double(fp_mul(p.z, h));
     Fp hh = fp_sqr(h);
     Fp i = fp_double(fp_double(hh));
     Fp v = fp_mul(p.x, i);
     Fp j = fp_mul(h, i);
+    Fp rr = fp_double(fp_sub(s2, p.y));
     result.x = fp_sub(fp_sub(fp_sqr(rr), j), fp_double(v));
     result.y = fp_sub(fp_mul(rr, fp_sub(v, result.x)),
                       fp_double(fp_mul(p.y, j)));
