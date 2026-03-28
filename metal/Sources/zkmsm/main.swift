@@ -918,7 +918,7 @@ class MetalMSM {
         }
         let nWindows = (scalarBits + Int(windowBits) - 1) / Int(windowBits)
         let nBuckets = 1 << windowBits
-        let nSegments = min(256, nBuckets / 2)
+        let nSegments = min(512, nBuckets / 2)
 
         ensureBuffers(n: effectiveN, nBuckets: nBuckets, nSegments: nSegments, nWindows: nWindows)
         guard let pointsBuffer = pointsBuffer,
@@ -942,13 +942,13 @@ class MetalMSM {
 
         // Copy points to GPU-shared buffer
         let gpuPtsPtr = pointsBuffer.contents().bindMemory(to: PointAffine.self, capacity: effectiveN)
+        var endoCmdBuf: MTLCommandBuffer? = nil
         if glvN > 0 {
             // GLV: copy only original n points, GPU will generate endomorphism points
             msmPoints.withUnsafeBufferPointer { src in
                 gpuPtsPtr.update(from: src.baseAddress!, count: glvN)
             }
-            // Launch GPU endomorphism kernel
-            let tEndo = CFAbsoluteTimeGetCurrent()
+            // Launch GPU endomorphism kernel (non-blocking, will overlap with CPU sort)
             guard let cmdBuf = commandQueue.makeCommandBuffer(),
                   let enc = cmdBuf.makeComputeCommandEncoder() else {
                 throw MSMError.gpuError("Failed to create endomorphism command buffer")
@@ -964,9 +964,7 @@ class MetalMSM {
                               threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
             enc.endEncoding()
             cmdBuf.commit()
-            cmdBuf.waitUntilCompleted()
-            let endoTime = CFAbsoluteTimeGetCurrent() - tEndo
-            fputs("endo(\(String(format: "%.1f", endoTime * 1000)))ms, ", stderr)
+            endoCmdBuf = cmdBuf  // Will wait before GPU reduce
         } else {
             msmPoints.withUnsafeBufferPointer { src in
                 gpuPtsPtr.update(from: src.baseAddress!, count: effectiveN)
@@ -1025,6 +1023,9 @@ class MetalMSM {
         }
 
         sortTime = CFAbsoluteTimeGetCurrent() - ts
+
+        // Wait for GPU endomorphism to complete before reduce (overlapped with sort)
+        endoCmdBuf?.waitUntilCompleted()
 
         // Batched GPU reduce for ALL windows in single dispatch
         let totalBuckets = nBuckets * nWindows
