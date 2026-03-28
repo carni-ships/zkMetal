@@ -168,16 +168,7 @@ Batch multiple blocks into a single aggregate proof. Instead of proving each blo
 
 ### Medium-term: Metal GPU Acceleration
 
-A Metal compute shader for BN254 multi-scalar multiplication (MSM) has been implemented in `metal/`. The implementation is fully verified against known BN254 curve points (2G, 3G, 15G all match reference values). Benchmarks on M3 Pro:
-
-| Points | GPU Time | Notes |
-|--------|----------|-------|
-| 1,024 | 205ms | Shader compilation overhead dominates |
-| 4,096 | 496ms | Sublinear scaling begins |
-| 16,384 | 3,075ms | Memory bandwidth limited |
-| 65,536 | 8,166ms | ~8K points/sec sustained |
-
-The MSM kernel uses Pippenger's bucket method with configurable window size. Current implementation uses per-thread bucket accumulation with host-side reduction. The `ProverEngine` includes `metalMsm()` for calling the GPU MSM from TypeScript via subprocess (JSON on stdin/stdout). Next steps: atomic bucket accumulation, SIMD-group reductions, and integration with Barretenberg's proving pipeline to replace CPU MSM (requires bb to expose MSM hooks, or forking Barretenberg).
+A Metal compute shader for BN254 multi-scalar multiplication (MSM) has been implemented in `metal/`. See the dedicated [Metal MSM Optimization Report](#metal-msm-optimization-report) below for the full optimization history. Current best at 524K points on M3 Pro: **~61ms** (down from ~1100ms initial implementation, an **18x speedup** across four optimization sessions).
 
 ### Long-term: Cloudflare Free Tier Prover
 
@@ -220,3 +211,158 @@ Proofs use Barretenberg's UltraHonk proving system in non-ZK mode (`noir-recursi
 ### On-Chain Verification
 
 Generated Solidity verifier contracts (`PersistiaVerifier.sol`) enable on-chain proof verification on any EVM chain. The verifier is ~24KB deployed and costs ~300K gas per verification.
+
+---
+
+## Metal MSM Optimization Report
+
+### Summary
+
+The Metal GPU MSM implementation for BN254 was optimized from **~1100ms to ~61ms** (18x speedup) at 524,288 points on Apple M3 Pro across four optimization sessions. The implementation uses Pippenger's bucket method with GLV endomorphism, CPU counting sort, and GPU parallel bucket accumulation.
+
+### Hardware
+
+- **GPU:** Apple M3 Pro (14 cores, unified memory, SIMD width 32)
+- **Curve:** BN254 (254-bit prime field, y^2 = x^3 + 3)
+- **Point count:** 524,288 (representative of MSM sizes in UltraHonk proving)
+- **Field arithmetic:** 256-bit Montgomery CIOS multiplication (8x32-bit limbs)
+
+### Performance Timeline
+
+| Session | Before | After | Speedup | Key Changes |
+|---------|--------|-------|---------|-------------|
+| 1 | ~1100ms | ~535ms | 2.1x | Pippenger bucket method, GPU reduce/bucketSum/combine |
+| 2 | ~535ms | ~165ms | 3.2x | GLV endomorphism, zero-alloc scalar decomposition |
+| 3 | ~165ms | ~85ms | 1.9x | GPU GLV decompose, 512-segment combine, merged pipeline |
+| 4 | ~85ms | ~61ms | 1.4x | Count-sorted reduce, precomputed indices, batch overlap |
+| **Total** | **~1100ms** | **~61ms** | **18x** | |
+
+### Current Timing Breakdown (524K points, ~61ms)
+
+```
+glv:        3-5ms    GPU scalar decomposition (256-bit → 2x 128-bit)
+sort:       7-9ms    CPU counting sort (overlapped with batch 1 reduce)
+reduce:    ~37ms     GPU bucket accumulation (60% of total)
+bucketSum:  ~6.5ms   GPU segmented weighted sum
+combine:    ~0.6ms   GPU tree reduction of segment results
+horner:     ~0.5ms   CPU window combination (16 doublings per window)
+```
+
+### Session 1: Pippenger Bucket Method (~1100ms → ~535ms)
+
+Replaced naive scalar-times-point accumulation with Pippenger's bucket method:
+
+1. **Window decomposition:** Split each 256-bit scalar into w=16-bit windows (16 windows per scalar). Each window digit selects a bucket index.
+2. **Bucket accumulation (GPU):** For each window, accumulate points into 2^16 = 65,536 buckets. Each GPU thread handles one bucket, summing all assigned points using Jacobian mixed addition.
+3. **Bucket sum (GPU):** Compute weighted sum of buckets per window using running-sum trick: `result = sum(i * bucket[i])`. Segmented across 512 GPU threads per window.
+4. **Window combination (CPU):** Horner's method combines window results: `result = W[n-1] * 2^(16*(n-1)) + ... + W[1] * 2^16 + W[0]`.
+
+CPU counting sort orders points by bucket index before GPU dispatch, enabling lock-free sequential reads per bucket (no atomics needed).
+
+### Session 2: GLV Endomorphism (~535ms → ~165ms)
+
+Exploited the BN254 curve's efficient endomorphism to halve scalar bit-length:
+
+1. **Scalar decomposition:** For each scalar k, compute k1, k2 where k = k1 + lambda * k2 (mod r). Both k1, k2 are ~128 bits (half the original 256 bits). Uses Babai's rounding with precomputed lattice vectors.
+2. **Point doubling:** For each point P, compute Q = beta * P.x (the endomorphism image) at near-zero cost (one field multiply).
+3. **Window reduction:** 128-bit scalars need only 8 windows instead of 16, halving GPU reduce work.
+4. **Zero-alloc implementation:** Inline 128x128-bit multiply and flat scalar buffers avoid heap allocation overhead for 1M+ scalars.
+
+### Session 3: GPU Pipeline Optimization (~165ms → ~85ms)
+
+Moved compute-heavy operations to GPU and improved pipeline overlap:
+
+1. **GPU GLV decomposition:** Moved scalar decomposition from CPU to a Metal compute kernel. Processes all 524K scalars in parallel (~3-5ms vs ~15ms on CPU).
+2. **GPU endomorphism:** Compute endomorphism points (beta * P.x) on GPU, overlapped with CPU sort.
+3. **512-segment bucket sum:** Increased parallelism from 256 to 512 segments per window, improving GPU occupancy.
+4. **Unified GPU pipeline:** Reduce, bucketSum, and combine dispatched in a single command buffer, eliminating inter-kernel launch overhead.
+
+### Session 4: SIMD Divergence Elimination (~85ms → ~61ms)
+
+Three optimizations targeting the CPU-GPU pipeline:
+
+#### 1. Count-Sorted Reduce (reduce: 55ms → 37ms)
+
+**Problem:** Bucket sizes follow a Poisson distribution (mean ~16 for 524K points / 32K buckets). Within a SIMD group of 32 threads, the slowest thread (processing the largest bucket) stalls all others. With Poisson(16), the max of 32 samples averages ~28, wasting ~40% of SIMD cycles.
+
+**Solution:** After counting sort, sort bucket IDs by their point count (descending) within each window. Build a permutation mapping (`count_sorted_map`) so the GPU kernel reads bucket data through indirection. Adjacent threads in a SIMD group now process buckets of similar size, achieving near-zero divergence.
+
+The GPU kernel indexes through the mapping:
+```metal
+uint orig_pos = count_sorted_map[tid];       // sorted → original position
+uint count = bucket_counts[orig_pos];         // indirect read
+uint offset = bucket_offsets[orig_pos];       // indirect read
+// ... accumulate count points sequentially
+buckets[orig_pos] = acc;                      // write to original position
+```
+
+The CPU builds the mapping with a counting sort on bucket counts (O(n) in the max count, which is ~40 for Poisson(16)):
+```
+for each window:
+    histogram bucket counts → prefix sum (descending) → scatter mapping
+```
+
+#### 2. Precomputed Bucket Indices (sort: 14ms → 7ms)
+
+**Problem:** During counting sort, extracting a bucket index requires bit shifting and masking across 32-byte scalar arrays. This is done twice per point per window (once for counting, once for scattering).
+
+**Solution:** Merge bucket index extraction with the counting phase. Store all indices as compact uint16 arrays (2 bytes vs 32 bytes per scalar access). The scatter phase reads from the precomputed uint16 array instead of re-extracting from scalars.
+
+#### 3. Sort-Reduce Batch Overlap (wall time: ~5ms savings)
+
+**Problem:** CPU sort and GPU reduce are sequential — sort all windows, then dispatch all reduces. The CPU is idle during GPU reduce.
+
+**Solution:** Split windows into 2 batches. Sort batch 1, dispatch its GPU reduce (non-blocking), then sort batch 2 while batch 1 reduce runs on GPU. The second batch's CPU sort (~4ms) overlaps with the first batch's GPU reduce (~20ms).
+
+```
+sort(windows 0..4)  →  dispatch reduce(0..4)  →  sort(windows 4..8)  →  dispatch reduce(4..8)
+                        [GPU running]              [overlapped with GPU]
+```
+
+### Ideas Tried and Rejected
+
+| Idea | Expected Gain | Actual Result | Why |
+|------|--------------|---------------|-----|
+| Branchless `point_add_mixed` | Fewer branches | Incorrect results | Metal compiler register allocation sensitivity |
+| Dedicated `fp_sqr` (SOS) | Fewer multiplies | Slower | Register spilling on Metal GPU (tried twice) |
+| Pre-gather points into sorted order | Better locality | No change | Compute-bound, not memory-bound |
+| SoA scalar transposition | Cache-friendly sort | Slower | Transposition overhead > cache benefit |
+| 1024 segments for bucketSum | 2x parallelism | 10.9ms vs 11.7ms | Scalar multiply dominates, not running sum |
+| w=13 with GLV | Fewer buckets | 10-30x slower | M3 Pro GPU pathology (see below) |
+| w=15 with GLV | Fewer buckets | 5x slower | Same GPU pathology, even with count-sorting |
+| 64-bit limb fp_mul | 4 limbs vs 8 | Slower | Metal 64-bit multiply is 1/4 throughput of 32-bit |
+| XYZZ coordinates | -1 squaring | Net +1 operation | Maintenance cost offsets the saving |
+| Batch affine accumulation | Fewer multiplies | Break-even at 61 pts | Average bucket has 16 points; Jacobian 2.3x faster |
+| Signed bucket decomposition | Half bucket count | 67-71ms (worse) | fp_neg per point in reduce hot loop + CPU overhead |
+| Fused reduce+bucketSum kernel | Less launch overhead | Slower | Separate kernels have better occupancy |
+| Max threadgroup (1024) for reduce | Better occupancy | 65ms vs 62ms | 256 is optimal for register pressure |
+
+### M3 Pro GPU Pathology
+
+The M3 Pro GPU exhibits catastrophic slowdowns at certain Pippenger window sizes due to SIMD thread divergence amplification:
+
+- **Fast:** w=13 (8K buckets), w=16 (64K buckets)
+- **Catastrophic (10-30x slower):** w=14, w=15, w=17
+- **Slow (3-5x):** w=12, w=18
+
+Root cause: when capping the reduce inner loop to 16 iterations, ALL window sizes become fast. The GPU handles variable-length loops poorly when some threads in a SIMD group run much longer than others, likely due to register spilling for long-running threads under high register pressure (~100+ registers for 256-bit field arithmetic). Count-sorting mitigates but does not fully resolve this for affected window sizes.
+
+**Recommendation:** Always use w=16 for n > 32K points on M3 Pro.
+
+### Theoretical Limits
+
+The reduce kernel at 37ms is near the theoretical compute bound:
+
+- **Mixed addition cost:** 7M + 4S = 11 fp_mul equivalent (optimal for Jacobian coordinates across all known coordinate systems)
+- **fp_mul cost:** 8-iteration CIOS with 8x32-bit limbs = 136 multiply-accumulate operations per field multiply
+- **Total per point:** 11 * 136 = 1,496 multiply-accumulate operations
+- **Points processed:** 524K points * 8 windows = ~4.2M point additions
+- **SIMD utilization:** Near-perfect after count-sorting (measured ~95%+ vs ~60% before)
+
+Further improvement requires either fewer field operations per point addition (hard — 11 is the known minimum for all projective coordinate systems) or a fundamentally different MSM algorithm.
+
+### Remaining Optimization Opportunities
+
+1. **GPU radix sort** (~5ms savings): Replace 7-9ms CPU counting sort with a 4-pass 4-bit GPU radix sort for 16-bit keys. Significant implementation effort.
+2. **Merge GLV decompose with bucket extraction** (~1-2ms): Fuse the GPU scalar decomposition with CPU-side bucket index extraction to eliminate one buffer read pass.
+3. **Barretenberg integration**: Replace Barretenberg's CPU MSM with this GPU implementation. Requires either bb to expose MSM hooks or forking Barretenberg to call the Metal shader via subprocess/FFI.
