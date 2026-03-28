@@ -621,12 +621,12 @@ class MetalMSM {
         )
         var nWinsBatch = UInt32(nWindows)
 
+        // Batched GPU reduce for ALL windows in single dispatch
         let t0r = CFAbsoluteTimeGetCurrent()
         guard let cb1 = commandQueue.makeCommandBuffer() else {
             throw MSMError.noCommandBuffer
         }
 
-        // No blit fill needed: reduce kernel writes every bucket (identity or sum)
         let enc1 = cb1.makeComputeCommandEncoder()!
         enc1.setComputePipelineState(reduceSortedFunction)
         enc1.setBuffer(pointsBuffer, offset: 0, index: 0)
@@ -652,7 +652,6 @@ class MetalMSM {
         }
 
         let totalSegments = nSegments * nWindows
-        // No blit fill needed: bucket_sum kernel writes every segment result
         var nSegs = UInt32(nSegments)
 
         let enc2 = cb2.makeComputeCommandEncoder()!
@@ -673,7 +672,6 @@ class MetalMSM {
         enc3.setBuffer(segmentResultsBuffer, offset: 0, index: 0)
         enc3.setBuffer(windowResultsBuffer, offset: 0, index: 1)
         enc3.setBytes(&nSegs, length: MemoryLayout<UInt32>.stride, index: 2)
-        // Dispatch: nWindows threadgroups, each with nSegments threads
         enc3.dispatchThreadgroups(
             MTLSize(width: nWindows, height: 1, depth: 1),
             threadsPerThreadgroup: MTLSize(width: nSegments, height: 1, depth: 1))
@@ -683,8 +681,8 @@ class MetalMSM {
         cb2.commit()
         cb2.waitUntilCompleted()
         let gpuPhase2Done = CFAbsoluteTimeGetCurrent()
-        bucketSumTime = gpuPhase2Done - t0b  // includes bucketSum + combine
-        combineTime = 0  // now fused into GPU
+        bucketSumTime = gpuPhase2Done - t0b
+        combineTime = 0
         if let error = cb2.error { throw MSMError.gpuError(error.localizedDescription) }
 
         // Read window results from GPU buffer
@@ -1058,6 +1056,40 @@ func main() throws {
                 let _ = try engine.msm(points: points, scalars: scalars)
                 let elapsed = CFAbsoluteTimeGetCurrent() - start
                 fputs("  w=\(wb): \(String(format: "%.1f", elapsed * 1000))ms\n", stderr)
+            }
+            return
+        }
+        // Allow --wb N to override window bits
+        if let wbIdx = args.firstIndex(of: "--wb"), wbIdx + 1 < args.count,
+           let wb = UInt32(args[wbIdx + 1]) {
+            let engine = try MetalMSM()
+            engine.windowBitsOverride = wb
+            // Run with distinct points
+            let gx = fpFromInt(1); let gy = fpFromInt(2)
+            let g = PointAffine(x: gx, y: gy)
+            fputs("Generating \(n) distinct points...\n", stderr)
+            var projPts = [PointProjective]()
+            projPts.reserveCapacity(n)
+            let gProj = pointFromAffine(g)
+            var ac = gProj
+            for _ in 0..<n { projPts.append(ac); ac = pointAdd(ac, gProj) }
+            let pts = batchToAffine(projPts)
+            var scalars: [[UInt32]] = []
+            var rng: UInt64 = 0xDEAD_BEEF_CAFE_BABE
+            for _ in 0..<n {
+                var limbs: [UInt32] = Array(repeating: 0, count: 8)
+                for j in 0..<8 { rng = rng &* 6364136223846793005 &+ 1442695040888963407; limbs[j] = UInt32(truncatingIfNeeded: rng >> 32) }
+                scalars.append(limbs)
+            }
+            fputs("Warmup...\n", stderr)
+            let _ = try engine.msm(points: pts, scalars: scalars)
+            let start = CFAbsoluteTimeGetCurrent()
+            let result = try engine.msm(points: pts, scalars: scalars)
+            let elapsed = CFAbsoluteTimeGetCurrent() - start
+            fputs("MSM(\(n), w=\(wb)): \(String(format: "%.3f", elapsed * 1000))ms\n", stderr)
+            if let affine = pointToAffine(result) {
+                let xInt = fpToInt(affine.x)
+                fputs("Result.x = 0x\(xInt.reversed().map { String(format: "%016llx", $0) }.joined())\n", stderr)
             }
             return
         }

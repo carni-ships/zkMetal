@@ -53,6 +53,7 @@ constant uint INV = 0xe4866389u;
 Fp fp_add_raw(Fp a, Fp b, thread uint &carry) {
     Fp r;
     ulong c = 0;
+    #pragma unroll
     for (int i = 0; i < 8; i++) {
         c += ulong(a.v[i]) + ulong(b.v[i]);
         r.v[i] = uint(c & 0xFFFFFFFF);
@@ -66,6 +67,7 @@ Fp fp_add_raw(Fp a, Fp b, thread uint &carry) {
 Fp fp_sub_raw(Fp a, Fp b, thread uint &borrow) {
     Fp r;
     long c = 0;
+    #pragma unroll
     for (int i = 0; i < 8; i++) {
         c += long(a.v[i]) - long(b.v[i]);
         r.v[i] = uint(c & 0xFFFFFFFF);
@@ -146,11 +148,14 @@ Fp fp_mul(Fp a, Fp b) {
     // CIOS (Coarsely Integrated Operand Scanning) Montgomery multiplication
     // Working in 32-bit limbs for Metal GPU compatibility
     uint t[10]; // n+2 limbs to handle carries safely
+    #pragma unroll
     for (int i = 0; i < 10; i++) t[i] = 0;
 
+    #pragma unroll
     for (int i = 0; i < 8; i++) {
         // Step 1: t += a[i] * b
         ulong carry = 0;
+        #pragma unroll
         for (int j = 0; j < 8; j++) {
             carry += ulong(t[j]) + ulong(a.v[i]) * ulong(b.v[j]);
             t[j] = uint(carry & 0xFFFFFFFF);
@@ -164,6 +169,7 @@ Fp fp_mul(Fp a, Fp b) {
         uint m = t[0] * INV;
         carry = ulong(t[0]) + ulong(m) * ulong(P[0]);
         carry >>= 32; // t[0] becomes 0 by construction (that's the point of INV)
+        #pragma unroll
         for (int j = 1; j < 8; j++) {
             carry += ulong(t[j]) + ulong(m) * ulong(P[j]);
             t[j - 1] = uint(carry & 0xFFFFFFFF);
