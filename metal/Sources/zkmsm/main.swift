@@ -871,38 +871,36 @@ class MetalMSM {
         if useGLV && n >= 256 {
             let tGlv = CFAbsoluteTimeGetCurrent()
 
-            // Copy input scalars to contiguous GPU buffer (chunked parallel)
-            let scalarInBuf = device.makeBuffer(length: n * 8 * MemoryLayout<UInt32>.stride, options: .storageModeShared)!
-            let scalarInPtr = scalarInBuf.contents().bindMemory(to: UInt32.self, capacity: n * 8)
-            let nChunks = min(16, n)
-            let chunkSize = (n + nChunks - 1) / nChunks
-            DispatchQueue.concurrentPerform(iterations: nChunks) { c in
-                let start = c * chunkSize
-                let end = min(start + chunkSize, n)
-                for i in start..<end {
-                    scalars[i].withUnsafeBufferPointer { sp in
-                        (scalarInPtr + i * 8).update(from: sp.baseAddress!, count: 8)
-                    }
+            // GPU GLV decomposition: upload scalars, dispatch kernel, read back k1/k2 + neg flags
+            let scalarByteCount = n * 8 * MemoryLayout<UInt32>.stride
+            guard let scalarInBuf = device.makeBuffer(length: scalarByteCount, options: .storageModeShared),
+                  let k1MetalBuf = device.makeBuffer(length: 2 * scalarByteCount, options: .storageModeShared),
+                  let neg1MetalBuf = device.makeBuffer(length: n, options: .storageModeShared),
+                  let neg2MetalBuf = device.makeBuffer(length: n, options: .storageModeShared) else {
+                throw MSMError.gpuError("Failed to allocate GLV buffers")
+            }
+
+            // Copy scalars to GPU buffer
+            let scalarDst = scalarInBuf.contents().assumingMemoryBound(to: UInt8.self)
+            for i in 0..<n {
+                scalars[i].withUnsafeBufferPointer { sp in
+                    memcpy(scalarDst + i * 32, sp.baseAddress!, 32)
                 }
             }
 
-            // Single output buffer: [k1_0..k1_{n-1}, k2_0..k2_{n-1}] — GPU writes, CPU reads directly
-            let k2Offset = n * 8 * MemoryLayout<UInt32>.stride
-            let scalarOutBuf = device.makeBuffer(length: 2 * k2Offset, options: .storageModeShared)!
-            neg1Buf = device.makeBuffer(length: n, options: .storageModeShared)!
-            neg2Buf = device.makeBuffer(length: n, options: .storageModeShared)!
+            // k1_out and k2_out share one buffer: k1 at offset 0, k2 at offset scalarByteCount
+            let k2Offset = scalarByteCount
 
-            // Launch GPU GLV decomposition
             guard let cmdBuf = commandQueue.makeCommandBuffer(),
                   let enc = cmdBuf.makeComputeCommandEncoder() else {
-                throw MSMError.gpuError("Failed to create GLV decompose command buffer")
+                throw MSMError.gpuError("Failed to create GLV command buffer")
             }
             enc.setComputePipelineState(glvDecomposeFunction)
             enc.setBuffer(scalarInBuf, offset: 0, index: 0)
-            enc.setBuffer(scalarOutBuf, offset: 0, index: 1)           // k1 at start
-            enc.setBuffer(scalarOutBuf, offset: k2Offset, index: 2)    // k2 at offset
-            enc.setBuffer(neg1Buf, offset: 0, index: 3)
-            enc.setBuffer(neg2Buf, offset: 0, index: 4)
+            enc.setBuffer(k1MetalBuf, offset: 0, index: 1)       // k1
+            enc.setBuffer(k1MetalBuf, offset: k2Offset, index: 2) // k2
+            enc.setBuffer(neg1MetalBuf, offset: 0, index: 3)
+            enc.setBuffer(neg2MetalBuf, offset: 0, index: 4)
             var nVal = UInt32(n)
             enc.setBytes(&nVal, length: 4, index: 5)
             let tg = min(glvDecomposeFunction.maxTotalThreadsPerThreadgroup, 256)
@@ -912,9 +910,13 @@ class MetalMSM {
             cmdBuf.commit()
             cmdBuf.waitUntilCompleted()
 
-            // Point directly at GPU shared memory — no copy needed
-            flatScalarBuf = scalarOutBuf.contents().bindMemory(to: UInt32.self, capacity: 2 * n * 8)
-            scalarOutMetalBuf = scalarOutBuf  // prevent ARC release before sort completes
+            // Point flatScalarBuf at GPU output (k1 then k2, contiguous)
+            let gpuOut = k1MetalBuf.contents().bindMemory(to: UInt32.self, capacity: 2 * n * 8)
+            flatScalarBuf = gpuOut
+            scalarOutMetalBuf = k1MetalBuf  // prevent deallocation; skip manual deallocate
+
+            neg1Buf = neg1MetalBuf
+            neg2Buf = neg2MetalBuf
 
             let glvTime = CFAbsoluteTimeGetCurrent() - tGlv
             fputs("  glv(\(String(format: "%.0f", glvTime * 1000)))ms, ", stderr)
@@ -957,8 +959,6 @@ class MetalMSM {
         let bucketStride = MemoryLayout<PointProjective>.stride
         var sortTime: Double = 0
         var reduceTime: Double = 0
-        var bucketSumTime: Double = 0
-        var combineTime: Double = 0
 
         // --- Phase 1: CPU parallel sort (indices only), then batched GPU reduce ---
         let ts = CFAbsoluteTimeGetCurrent()
@@ -1048,7 +1048,7 @@ class MetalMSM {
         // Wait for GPU endomorphism to complete before reduce (overlapped with sort)
         endoCmdBuf?.waitUntilCompleted()
 
-        // Batched GPU reduce for ALL windows in single dispatch
+        // All GPU work in single command buffer: reduce → bucketSum → combine
         let totalBuckets = nBuckets * nWindows
         var params = MsmParams(
             n_points: UInt32(effectiveN),
@@ -1056,13 +1056,15 @@ class MetalMSM {
             n_buckets: UInt32(nBuckets)
         )
         var nWinsBatch = UInt32(nWindows)
+        let totalSegments = nSegments * nWindows
+        var nSegs = UInt32(nSegments)
 
-        // Batched GPU reduce for ALL windows in single dispatch
         let t0r = CFAbsoluteTimeGetCurrent()
         guard let cb1 = commandQueue.makeCommandBuffer() else {
             throw MSMError.noCommandBuffer
         }
 
+        // Reduce: accumulate points into buckets
         let enc1 = cb1.makeComputeCommandEncoder()!
         enc1.setComputePipelineState(reduceSortedFunction)
         enc1.setBuffer(pointsBuffer, offset: 0, index: 0)
@@ -1077,20 +1079,8 @@ class MetalMSM {
             threadsPerThreadgroup: MTLSize(width: min(256, totalBuckets), height: 1, depth: 1))
         enc1.endEncoding()
 
-        cb1.commit()
-        cb1.waitUntilCompleted()
-        reduceTime = CFAbsoluteTimeGetCurrent() - t0r
-        if let error = cb1.error { throw MSMError.gpuError(error.localizedDescription) }
-
-        // --- Phase 2: Batched direct bucket_sum across ALL windows ---
-        guard let cb2 = commandQueue.makeCommandBuffer() else {
-            throw MSMError.noCommandBuffer
-        }
-
-        let totalSegments = nSegments * nWindows
-        var nSegs = UInt32(nSegments)
-
-        let enc2 = cb2.makeComputeCommandEncoder()!
+        // BucketSum: weighted sum per segment
+        let enc2 = cb1.makeComputeCommandEncoder()!
         enc2.setComputePipelineState(bucketSumDirectFunction)
         enc2.setBuffer(bucketsBuffer, offset: 0, index: 0)
         enc2.setBuffer(segmentResultsBuffer, offset: 0, index: 1)
@@ -1102,24 +1092,23 @@ class MetalMSM {
             threadsPerThreadgroup: MTLSize(width: min(256, totalSegments), height: 1, depth: 1))
         enc2.endEncoding()
 
-        // GPU combine: parallel reduction of segment results per window
-        let enc3 = cb2.makeComputeCommandEncoder()!
+        // Combine: tree reduction of segments per window
+        let enc3 = cb1.makeComputeCommandEncoder()!
         enc3.setComputePipelineState(combineSegmentsFunction)
         enc3.setBuffer(segmentResultsBuffer, offset: 0, index: 0)
         enc3.setBuffer(windowResultsBuffer, offset: 0, index: 1)
         enc3.setBytes(&nSegs, length: MemoryLayout<UInt32>.stride, index: 2)
+        let combineThreads = (nSegments + 1) / 2
         enc3.dispatchThreadgroups(
             MTLSize(width: nWindows, height: 1, depth: 1),
-            threadsPerThreadgroup: MTLSize(width: nSegments, height: 1, depth: 1))
+            threadsPerThreadgroup: MTLSize(width: combineThreads, height: 1, depth: 1))
         enc3.endEncoding()
 
-        let t0b = CFAbsoluteTimeGetCurrent()
-        cb2.commit()
-        cb2.waitUntilCompleted()
-        let gpuPhase2Done = CFAbsoluteTimeGetCurrent()
-        bucketSumTime = gpuPhase2Done - t0b
-        combineTime = 0
-        if let error = cb2.error { throw MSMError.gpuError(error.localizedDescription) }
+        cb1.commit()
+        cb1.waitUntilCompleted()
+        let gpuDone = CFAbsoluteTimeGetCurrent()
+        reduceTime = gpuDone - t0r
+        if let error = cb1.error { throw MSMError.gpuError(error.localizedDescription) }
 
         // Read window results from GPU buffer
         let winResultsPtr = windowResultsBuffer.contents().bindMemory(to: PointProjective.self, capacity: nWindows)
@@ -1140,9 +1129,7 @@ class MetalMSM {
         let hornerTime = CFAbsoluteTimeGetCurrent() - t2
 
         fputs("  sort: \(String(format: "%.1f", sortTime * 1000))ms, " +
-              "reduce(\(nWindows)w): \(String(format: "%.1f", reduceTime * 1000))ms, " +
-              "bucketSum: \(String(format: "%.1f", bucketSumTime * 1000))ms, " +
-              "combine: \(String(format: "%.1f", combineTime * 1000))ms, " +
+              "gpu(\(nWindows)w): \(String(format: "%.1f", reduceTime * 1000))ms, " +
               "horner: \(String(format: "%.1f", hornerTime * 1000))ms\n", stderr)
 
         if scalarOutMetalBuf == nil { flatScalarBuf?.deallocate() }

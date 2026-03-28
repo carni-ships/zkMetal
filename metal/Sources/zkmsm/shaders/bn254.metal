@@ -253,30 +253,6 @@ PointProjective point_double(PointProjective p) {
 
 // Branchless mixed addition — no identity or same-x checks.
 // Safe when caller guarantees p is non-identity and P ≠ ±Q (true for random points).
-// Register-pressure-optimized: Z3 = 2*Z1*H frees p.z and z1z1 early.
-PointProjective point_add_mixed_unsafe(PointProjective p, PointAffine q) {
-    Fp z1z1 = fp_sqr(p.z);                      // Z1^2
-    Fp u2 = fp_mul(q.x, z1z1);                  // U2 = X2*Z1^2
-    Fp s2 = fp_mul(q.y, fp_mul(p.z, z1z1));     // S2 = Y2*Z1^3 (z1z1 last use)
-
-    Fp h = fp_sub(u2, p.x);                     // H = U2 - X1 (u2 dead)
-
-    // Compute Z3 early to free p.z
-    PointProjective result;
-    result.z = fp_double(fp_mul(p.z, h));        // Z3 = 2*Z1*H (p.z dead)
-
-    Fp hh = fp_sqr(h);                           // H^2
-    Fp i = fp_double(fp_double(hh));              // I = 4*H^2 (hh dead)
-    Fp v = fp_mul(p.x, i);                       // V = X1*I (p.x dead)
-    Fp j = fp_mul(h, i);                          // J = H*I (h dead, i dead)
-    Fp rr = fp_double(fp_sub(s2, p.y));           // r = 2*(S2-Y1) (s2 dead)
-
-    result.x = fp_sub(fp_sub(fp_sqr(rr), j), fp_double(v)); // X3 = r^2 - J - 2*V
-    result.y = fp_sub(fp_mul(rr, fp_sub(v, result.x)),
-                      fp_double(fp_mul(p.y, j)));             // Y3 = r*(V-X3) - 2*Y1*J
-    return result;
-}
-
 // Mixed addition: projective + affine, handles all edge cases (identity, P=Q, P=-Q)
 // Defers s2/rr computation past h=0 check for better register pressure on common path.
 PointProjective point_add_mixed(PointProjective p, PointAffine q) {
@@ -503,17 +479,28 @@ kernel void msm_combine_segments(
     uint lid                                      [[thread_index_in_threadgroup]],
     uint tg_size                                  [[threads_per_threadgroup]]
 ) {
-    // Each threadgroup = one window. lid indexes segments within this window.
-    threadgroup PointProjective shared_buf[256]; // max segments per threadgroup
+    // Each threadgroup = one window. Supports up to 2*tg_size segments.
+    // Each thread loads 2 segment results, adds them, then tree reduce on tg_size entries.
+    threadgroup PointProjective shared_buf[256]; // max tg_size entries
 
     uint base = tgid * n_segments;
+    uint idx0 = lid * 2;
+    uint idx1 = lid * 2 + 1;
 
-    // Load: each thread loads one segment result (or identity if out of range)
-    if (lid < n_segments) {
-        shared_buf[lid] = segment_results[base + lid];
+    // Load pair and pre-reduce
+    PointProjective v;
+    if (idx0 >= n_segments) {
+        v = point_identity();
+    } else if (idx1 >= n_segments) {
+        v = segment_results[base + idx0];
     } else {
-        shared_buf[lid] = point_identity();
+        PointProjective a = segment_results[base + idx0];
+        PointProjective b = segment_results[base + idx1];
+        if (point_is_identity(a)) { v = b; }
+        else if (point_is_identity(b)) { v = a; }
+        else { v = point_add(a, b); }
     }
+    shared_buf[lid] = v;
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
     // Tree reduction
@@ -533,106 +520,6 @@ kernel void msm_combine_segments(
     if (lid == 0) {
         window_results[tgid] = shared_buf[0];
     }
-}
-
-// --- Merged Reduce + BucketSum Kernel ---
-// Fuses per-bucket point accumulation and weighted running-sum into a single kernel.
-// Each thread handles one segment: iterates over its bucket range from high to low,
-// accumulates each bucket's points inline, then applies the running-sum trick.
-// Eliminates the 48MB intermediate bucket buffer.
-kernel void msm_reduce_sum_fused(
-    device const PointAffine* points           [[buffer(0)]],
-    device PointProjective* segment_results    [[buffer(1)]],
-    device const uint* bucket_offsets          [[buffer(2)]],
-    device const uint* bucket_counts           [[buffer(3)]],
-    constant MsmParams& params                 [[buffer(4)]],
-    constant uint& n_segments                  [[buffer(5)]],
-    constant uint& n_windows                   [[buffer(6)]],
-    device const uint* sorted_indices          [[buffer(7)]],
-    uint tid                                   [[thread_position_in_grid]]
-) {
-    uint total = n_segments * n_windows;
-    if (tid >= total) return;
-
-    uint window_idx = tid / n_segments;
-    uint seg_idx = tid % n_segments;
-
-    uint nb = 1u << params.window_bits;
-    uint seg_size = (nb + n_segments - 1) / n_segments;
-    uint offset_base = window_idx * nb;
-    uint points_base = window_idx * params.n_points;
-
-    // Segment bounds (high to low bucket indices)
-    int hi_s = int(nb) - int(seg_idx * seg_size);
-    int lo_raw_s = int((seg_idx + 1) * seg_size);
-    int lo_s = (lo_raw_s >= int(nb)) ? 1 : (int(nb) - lo_raw_s);
-    if (lo_s < 1) lo_s = 1;
-    if (hi_s <= lo_s) {
-        segment_results[tid] = point_identity();
-        return;
-    }
-
-    uint hi = uint(hi_s);
-    uint lo = uint(lo_s);
-
-    PointProjective running = point_identity();
-    PointProjective sum = point_identity();
-
-    for (uint bi = hi - 1; bi >= lo; bi--) {
-        uint global_bi = offset_base + bi;
-        uint count = bucket_counts[global_bi];
-
-        if (count > 0) {
-            // Accumulate all points in this bucket inline
-            uint boff = bucket_offsets[global_bi];
-            PointProjective bucket_acc = point_from_affine(points[sorted_indices[points_base + boff]]);
-            for (uint p = 1; p < count; p++) {
-                bucket_acc = point_add_mixed(bucket_acc, points[sorted_indices[points_base + boff + p]]);
-            }
-
-            // Running sum trick
-            if (point_is_identity(running)) {
-                running = bucket_acc;
-            } else {
-                running = point_add(running, bucket_acc);
-            }
-        }
-
-        if (!point_is_identity(running)) {
-            if (point_is_identity(sum)) {
-                sum = running;
-            } else {
-                sum = point_add(sum, running);
-            }
-        }
-        if (bi == lo) break;
-    }
-
-    // Adjust for segment offset: sum + (lo-1) × running
-    uint weight = lo - 1;
-    if (weight > 0 && !point_is_identity(running)) {
-        PointProjective weighted = point_identity();
-        PointProjective base = running;
-        uint k = weight;
-        while (k > 0) {
-            if (k & 1u) {
-                if (point_is_identity(weighted)) {
-                    weighted = base;
-                } else {
-                    weighted = point_add(weighted, base);
-                }
-            }
-            base = point_double(base);
-            k >>= 1;
-        }
-        if (point_is_identity(sum)) {
-            sum = weighted;
-        } else {
-            sum = point_add(sum, weighted);
-        }
-    }
-
-    segment_results[tid] = sum;
 }
 
 // --- GLV Scalar Decomposition Kernel ---
@@ -675,33 +562,36 @@ void u256_add(thread ulong* r, thread const ulong* a, constant ulong* b, thread 
 }
 
 void u256_sub(thread ulong* r, thread const ulong* a, thread const ulong* b, thread bool &borrow) {
-    long c = 0;
+    ulong br = 0;
     for (int i = 0; i < 4; i++) {
-        long d = long(a[i]) - long(b[i]) + c;
-        r[i] = ulong(d);
-        c = (d < 0) ? -1 : 0;
+        ulong diff = a[i] - b[i];
+        ulong diff2 = diff - br;
+        br = ((a[i] < b[i]) || (br && diff == 0)) ? 1uL : 0uL;
+        r[i] = diff2;
     }
-    borrow = c < 0;
+    borrow = br != 0;
 }
 
 void u256_sub_const(thread ulong* r, thread const ulong* a, constant ulong* b, thread bool &borrow) {
-    long c = 0;
+    ulong br = 0;
     for (int i = 0; i < 4; i++) {
-        long d = long(a[i]) - long(b[i]) + c;
-        r[i] = ulong(d);
-        c = (d < 0) ? -1 : 0;
+        ulong diff = a[i] - b[i];
+        ulong diff2 = diff - br;
+        br = ((a[i] < b[i]) || (br && diff == 0)) ? 1uL : 0uL;
+        r[i] = diff2;
     }
-    borrow = c < 0;
+    borrow = br != 0;
 }
 
 void u256_sub_from_const(thread ulong* r, constant ulong* a, thread const ulong* b, thread bool &borrow) {
-    long c = 0;
+    ulong br = 0;
     for (int i = 0; i < 4; i++) {
-        long d = long(a[i]) - long(b[i]) + c;
-        r[i] = ulong(d);
-        c = (d < 0) ? -1 : 0;
+        ulong diff = a[i] - b[i];
+        ulong diff2 = diff - br;
+        br = ((a[i] < b[i]) || (br && diff == 0)) ? 1uL : 0uL;
+        r[i] = diff2;
     }
-    borrow = c < 0;
+    borrow = br != 0;
 }
 
 bool u256_gte_const(thread const ulong* a, constant ulong* b) {
