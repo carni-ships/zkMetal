@@ -1010,6 +1010,29 @@ func runBenchmark(nPoints: Int) throws {
     } else {
         fputs("Result: point at infinity\n", stderr)
     }
+
+    // CPU reference MSM for verification (small n only)
+    if nPoints <= 256 {
+        fputs("Computing CPU reference MSM...\n", stderr)
+        var cpuResult = pointIdentity()
+        for i in 0..<nPoints {
+            var r = pointIdentity()
+            let p = pointFromAffine(points[i])
+            for bit in stride(from: 255, through: 0, by: -1) {
+                r = pointDouble(r)
+                let limbIdx = bit / 32
+                let bitPos = bit % 32
+                if (scalars[i][limbIdx] >> bitPos) & 1 == 1 {
+                    r = pointIsIdentity(r) ? p : pointAdd(r, p)
+                }
+            }
+            cpuResult = pointIsIdentity(cpuResult) ? r : pointAdd(cpuResult, r)
+        }
+        if let affine = pointToAffine(cpuResult) {
+            let xInt = fpToInt(affine.x)
+            fputs("CPU ref.x = 0x\(xInt.reversed().map { String(format: "%016llx", $0) }.joined())\n", stderr)
+        }
+    }
 }
 
 func main() throws {

@@ -53,7 +53,6 @@ constant uint INV = 0xe4866389u;
 Fp fp_add_raw(Fp a, Fp b, thread uint &carry) {
     Fp r;
     ulong c = 0;
-    #pragma clang loop unroll(full)
     for (int i = 0; i < 8; i++) {
         c += ulong(a.v[i]) + ulong(b.v[i]);
         r.v[i] = uint(c & 0xFFFFFFFF);
@@ -67,7 +66,6 @@ Fp fp_add_raw(Fp a, Fp b, thread uint &carry) {
 Fp fp_sub_raw(Fp a, Fp b, thread uint &borrow) {
     Fp r;
     long c = 0;
-    #pragma clang loop unroll(full)
     for (int i = 0; i < 8; i++) {
         c += long(a.v[i]) - long(b.v[i]);
         r.v[i] = uint(c & 0xFFFFFFFF);
@@ -79,7 +77,6 @@ Fp fp_sub_raw(Fp a, Fp b, thread uint &borrow) {
 
 // Compare a >= b
 bool fp_gte(Fp a, Fp b) {
-    #pragma clang loop unroll(full)
     for (int i = 7; i >= 0; i--) {
         if (a.v[i] > b.v[i]) return true;
         if (a.v[i] < b.v[i]) return false;
@@ -148,16 +145,12 @@ Fp fp_one() {
 Fp fp_mul(Fp a, Fp b) {
     // CIOS (Coarsely Integrated Operand Scanning) Montgomery multiplication
     // Working in 32-bit limbs for Metal GPU compatibility
-    // Fully unrolled for maximum GPU instruction scheduling freedom.
     uint t[10]; // n+2 limbs to handle carries safely
-    #pragma clang loop unroll(full)
     for (int i = 0; i < 10; i++) t[i] = 0;
 
-    #pragma clang loop unroll(full)
     for (int i = 0; i < 8; i++) {
         // Step 1: t += a[i] * b
         ulong carry = 0;
-        #pragma clang loop unroll(full)
         for (int j = 0; j < 8; j++) {
             carry += ulong(t[j]) + ulong(a.v[i]) * ulong(b.v[j]);
             t[j] = uint(carry & 0xFFFFFFFF);
@@ -171,7 +164,6 @@ Fp fp_mul(Fp a, Fp b) {
         uint m = t[0] * INV;
         carry = ulong(t[0]) + ulong(m) * ulong(P[0]);
         carry >>= 32; // t[0] becomes 0 by construction (that's the point of INV)
-        #pragma clang loop unroll(full)
         for (int j = 1; j < 8; j++) {
             carry += ulong(t[j]) + ulong(m) * ulong(P[j]);
             t[j - 1] = uint(carry & 0xFFFFFFFF);
@@ -279,10 +271,31 @@ PointProjective point_add_mixed_unsafe(PointProjective p, PointAffine q) {
     return result;
 }
 
-// Mixed addition with identity check (safe wrapper around branchless version)
+// Mixed addition: projective + affine, handles all edge cases (identity, P=Q, P=-Q)
 PointProjective point_add_mixed(PointProjective p, PointAffine q) {
     if (point_is_identity(p)) return point_from_affine(q);
-    return point_add_mixed_unsafe(p, q);
+
+    Fp z1z1 = fp_sqr(p.z);
+    Fp u2 = fp_mul(q.x, z1z1);
+    Fp s2 = fp_mul(q.y, fp_mul(p.z, z1z1));
+    Fp h = fp_sub(u2, p.x);
+    Fp rr = fp_double(fp_sub(s2, p.y));
+
+    if (fp_is_zero(h)) {
+        if (fp_is_zero(rr)) return point_double(p);  // P = Q
+        return point_identity();                       // P = -Q
+    }
+
+    PointProjective result;
+    result.z = fp_double(fp_mul(p.z, h));
+    Fp hh = fp_sqr(h);
+    Fp i = fp_double(fp_double(hh));
+    Fp v = fp_mul(p.x, i);
+    Fp j = fp_mul(h, i);
+    result.x = fp_sub(fp_sub(fp_sqr(rr), j), fp_double(v));
+    result.y = fp_sub(fp_mul(rr, fp_sub(v, result.x)),
+                      fp_double(fp_mul(p.y, j)));
+    return result;
 }
 
 // Full point addition: projective + projective
