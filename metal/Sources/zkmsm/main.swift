@@ -341,19 +341,19 @@ class MetalMSM {
     let device: MTLDevice
     let commandQueue: MTLCommandQueue
     let reduceSortedFunction: MTLComputePipelineState
-    let bucketSumParallelFunction: MTLComputePipelineState
+    let bucketSumDirectFunction: MTLComputePipelineState
 
     // Pre-allocated buffers (lazily sized, reused across calls)
     private var maxAllocatedPoints = 0
     private var maxAllocatedBuckets = 0
-    // Sorted points + per-window offsets/counts for batched GPU reduce
-    private var sortedPointsBuffer: MTLBuffer?  // n * nWindows sorted points
+    // Original points + sorted indices for GPU indexed reduce
+    private var pointsBuffer: MTLBuffer?        // n points (shared with GPU)
+    private var sortedIndicesBuffer: MTLBuffer?  // n * nWindows sorted indices
     private var allOffsetsBuffer: MTLBuffer?
     private var allCountsBuffer: MTLBuffer?
     // Shared output buffers
     private var bucketsBuffer: MTLBuffer?
-    private var partialSumsBuffer: MTLBuffer?
-    private var carriesBuffer: MTLBuffer?
+    private var segmentResultsBuffer: MTLBuffer?
     // CPU-side reusable arrays (per-window for parallel sort)
     private var cpuPerWindowCounts: [[Int]] = []
     private var cpuPerWindowPositions: [[Int]] = []
@@ -390,12 +390,12 @@ class MetalMSM {
         }
 
         guard let reduceSortedFn = library.makeFunction(name: "msm_reduce_sorted_buckets"),
-              let sumParFn = library.makeFunction(name: "msm_bucket_sum_parallel") else {
+              let sumDirectFn = library.makeFunction(name: "msm_bucket_sum_direct") else {
             throw MSMError.missingKernel
         }
 
         self.reduceSortedFunction = try device.makeComputePipelineState(function: reduceSortedFn)
-        self.bucketSumParallelFunction = try device.makeComputePipelineState(function: sumParFn)
+        self.bucketSumDirectFunction = try device.makeComputePipelineState(function: sumDirectFn)
     }
 
     /// Compile shader from source and cache the library for next time.
@@ -416,7 +416,7 @@ class MetalMSM {
         if #available(macOS 11.0, *) {
             let archiveDesc = MTLBinaryArchiveDescriptor()
             if let archive = try? device.makeBinaryArchive(descriptor: archiveDesc) {
-                for name in ["msm_reduce_sorted_buckets", "msm_bucket_sum_parallel"] {
+                for name in ["msm_reduce_sorted_buckets", "msm_bucket_sum_direct"] {
                     let desc = MTLComputePipelineDescriptor()
                     desc.computeFunction = library.makeFunction(name: name)
                     try? archive.addComputePipelineFunctions(descriptor: desc)
@@ -442,19 +442,24 @@ class MetalMSM {
         return idx
     }
 
+
     /// Ensure buffers are allocated for the given sizes. Reuses existing buffers if large enough.
     private var maxAllocatedWindows = 0
+    private var maxAllocatedSegments = 0
 
     private func ensureBuffers(n: Int, nBuckets: Int, nSegments: Int, nWindows: Int) {
-        let needRealloc = n > maxAllocatedPoints || nBuckets > maxAllocatedBuckets || nWindows > maxAllocatedWindows
+        let needRealloc = n > maxAllocatedPoints || nBuckets > maxAllocatedBuckets || nWindows > maxAllocatedWindows || nSegments > maxAllocatedSegments
         if needRealloc {
             let np = max(n, maxAllocatedPoints)
             let nb = max(nBuckets, maxAllocatedBuckets)
             let nw = max(nWindows, maxAllocatedWindows)
-            let ns = min(512, nb)
-            // Sorted points for all windows (batched reduce)
-            sortedPointsBuffer = device.makeBuffer(
-                length: MemoryLayout<PointAffine>.stride * np * nw, options: .storageModeShared)
+            let ns = nSegments
+            // Original points buffer (shared with GPU for indexed reduce)
+            pointsBuffer = device.makeBuffer(
+                length: MemoryLayout<PointAffine>.stride * np, options: .storageModeShared)
+            // Sorted indices for all windows (4 bytes each instead of 64-byte points)
+            sortedIndicesBuffer = device.makeBuffer(
+                length: MemoryLayout<UInt32>.stride * np * nw, options: .storageModeShared)
             allOffsetsBuffer = device.makeBuffer(
                 length: MemoryLayout<UInt32>.stride * nb * nw, options: .storageModeShared)
             allCountsBuffer = device.makeBuffer(
@@ -462,14 +467,13 @@ class MetalMSM {
             // Buckets: sized for ALL windows (batched bucket_sum reads from all windows)
             bucketsBuffer = device.makeBuffer(
                 length: MemoryLayout<PointProjective>.stride * nb * nw, options: .storageModeShared)
-            // Partials/carries: sized for nSegments * nWindows (batched bucket_sum)
-            partialSumsBuffer = device.makeBuffer(
-                length: MemoryLayout<PointProjective>.stride * ns * nw, options: .storageModeShared)
-            carriesBuffer = device.makeBuffer(
+            // Segment results: one per segment per window (direct weighted sum)
+            segmentResultsBuffer = device.makeBuffer(
                 length: MemoryLayout<PointProjective>.stride * ns * nw, options: .storageModeShared)
             maxAllocatedPoints = np
             maxAllocatedBuckets = nb
             maxAllocatedWindows = nw
+            maxAllocatedSegments = nSegments
             // Resize per-window CPU arrays for parallel sort
             cpuPerWindowCounts = (0..<nw).map { _ in [Int](repeating: 0, count: nb) }
             cpuPerWindowPositions = (0..<nw).map { _ in [Int](repeating: 0, count: nb) }
@@ -482,9 +486,7 @@ class MetalMSM {
             throw MSMError.invalidInput
         }
 
-        // Window selection: balance reduce cost (n * nWindows adds) vs bucket_sum cost (2^w * nWindows iterations).
-        // Wider windows = fewer windows = less total reduce work, but bucket_sum iterates more buckets.
-        // At high n, reduce dominates → prefer wider windows. At low n, bucket_sum dominates → prefer narrower.
+        // Window selection
         var windowBits: UInt32
         if n <= 256 {
             windowBits = 8
@@ -493,26 +495,22 @@ class MetalMSM {
         } else if n <= 32768 {
             windowBits = 12
         } else {
-            windowBits = 16  // 65K buckets: good GPU parallelism for reduce
+            windowBits = 16
         }
-        // Allow override for benchmarking
         if let wbOverride = windowBitsOverride {
             windowBits = wbOverride
         }
         let nWindows = (256 + Int(windowBits) - 1) / Int(windowBits)
         let nBuckets = 1 << windowBits
-        // Segments per window for bucket_sum. Total GPU threads = nSegments * nWindows.
-        // More segments = faster GPU bucket_sum (more threads). CPU combine is
-        // GCD-parallel across windows so even 512 segments/window is cheap.
         let nSegments = min(256, nBuckets / 2)
 
         ensureBuffers(n: n, nBuckets: nBuckets, nSegments: nSegments, nWindows: nWindows)
-        guard let sortedPointsBuffer = sortedPointsBuffer,
+        guard let pointsBuffer = pointsBuffer,
+              let sortedIndicesBuffer = sortedIndicesBuffer,
               let allOffsetsBuffer = allOffsetsBuffer,
               let allCountsBuffer = allCountsBuffer,
               let bucketsBuffer = bucketsBuffer,
-              let partialSumsBuffer = partialSumsBuffer,
-              let carriesBuffer = carriesBuffer else {
+              let segmentResultsBuffer = segmentResultsBuffer else {
             throw MSMError.gpuError("Failed to allocate Metal buffers")
         }
 
@@ -522,17 +520,23 @@ class MetalMSM {
         var bucketSumTime: Double = 0
         var combineTime: Double = 0
 
-        // --- Phase 1: CPU parallel sort, then batched GPU reduce ---
+        // --- Phase 1: CPU parallel sort (indices only), then batched GPU reduce ---
         let ts = CFAbsoluteTimeGetCurrent()
 
+        // Copy points to GPU-shared buffer once
+        let gpuPtsPtr = pointsBuffer.contents().bindMemory(to: PointAffine.self, capacity: n)
+        points.withUnsafeBufferPointer { src in
+            gpuPtsPtr.update(from: src.baseAddress!, count: n)
+        }
+
+        // Parallel counting sort across all windows — writes sorted indices (4 bytes each)
         let allOffsets = allOffsetsBuffer.contents().bindMemory(to: UInt32.self, capacity: nBuckets * nWindows)
         let allCounts = allCountsBuffer.contents().bindMemory(to: UInt32.self, capacity: nBuckets * nWindows)
-        let sortedPtsPtr = sortedPointsBuffer.contents().bindMemory(to: PointAffine.self, capacity: n * nWindows)
+        let sortedIdxPtr = sortedIndicesBuffer.contents().bindMemory(to: UInt32.self, capacity: n * nWindows)
 
-        // Parallel counting sort across all windows — writes sorted points directly
         DispatchQueue.concurrentPerform(iterations: nWindows) { w in
             let wOff = w * nBuckets
-            let ptsBase = w * n
+            let idxBase = w * n
             let counts = UnsafeMutableBufferPointer(
                 start: &cpuPerWindowCounts[w][0], count: nBuckets)
             let positions = UnsafeMutableBufferPointer(
@@ -552,11 +556,11 @@ class MetalMSM {
                 runningOffset += counts[i]
             }
 
-            // Write sorted points (64 bytes each — sequential GPU reads)
+            // Write sorted indices (4 bytes each instead of 64-byte points)
             for i in 0..<n {
                 let idx = extractBucketIndex(scalars[i], windowBits: windowBits, windowIndex: w)
                 if idx == 0 { continue }
-                sortedPtsPtr[ptsBase + positions[idx]] = points[i]
+                sortedIdxPtr[idxBase + positions[idx]] = UInt32(i)
                 positions[idx] += 1
             }
         }
@@ -583,12 +587,13 @@ class MetalMSM {
 
         let enc1 = cb1.makeComputeCommandEncoder()!
         enc1.setComputePipelineState(reduceSortedFunction)
-        enc1.setBuffer(sortedPointsBuffer, offset: 0, index: 0)
+        enc1.setBuffer(pointsBuffer, offset: 0, index: 0)
         enc1.setBuffer(bucketsBuffer, offset: 0, index: 1)
         enc1.setBuffer(allOffsetsBuffer, offset: 0, index: 2)
         enc1.setBuffer(allCountsBuffer, offset: 0, index: 3)
         enc1.setBytes(&params, length: MemoryLayout<MsmParams>.stride, index: 4)
         enc1.setBytes(&nWinsBatch, length: MemoryLayout<UInt32>.stride, index: 5)
+        enc1.setBuffer(sortedIndicesBuffer, offset: 0, index: 6)
         enc1.dispatchThreads(
             MTLSize(width: totalBuckets, height: 1, depth: 1),
             threadsPerThreadgroup: MTLSize(width: min(256, totalBuckets), height: 1, depth: 1))
@@ -599,27 +604,25 @@ class MetalMSM {
         reduceTime = CFAbsoluteTimeGetCurrent() - t0r
         if let error = cb1.error { throw MSMError.gpuError(error.localizedDescription) }
 
-        // --- Phase 2: Batched bucket_sum across ALL windows ---
+        // --- Phase 2: Batched direct bucket_sum across ALL windows ---
         guard let cb2 = commandQueue.makeCommandBuffer() else {
             throw MSMError.noCommandBuffer
         }
 
         let totalSegments = nSegments * nWindows
         let blit2 = cb2.makeBlitCommandEncoder()!
-        blit2.fill(buffer: partialSumsBuffer, range: 0..<(bucketStride * totalSegments), value: 0)
-        blit2.fill(buffer: carriesBuffer, range: 0..<(bucketStride * totalSegments), value: 0)
+        blit2.fill(buffer: segmentResultsBuffer, range: 0..<(bucketStride * totalSegments), value: 0)
         blit2.endEncoding()
 
         var nSegs = UInt32(nSegments)
 
         let enc2 = cb2.makeComputeCommandEncoder()!
-        enc2.setComputePipelineState(bucketSumParallelFunction)
+        enc2.setComputePipelineState(bucketSumDirectFunction)
         enc2.setBuffer(bucketsBuffer, offset: 0, index: 0)
-        enc2.setBuffer(partialSumsBuffer, offset: 0, index: 1)
-        enc2.setBuffer(carriesBuffer, offset: 0, index: 2)
-        enc2.setBytes(&params, length: MemoryLayout<MsmParams>.stride, index: 3)
-        enc2.setBytes(&nSegs, length: MemoryLayout<UInt32>.stride, index: 4)
-        enc2.setBytes(&nWinsBatch, length: MemoryLayout<UInt32>.stride, index: 5)
+        enc2.setBuffer(segmentResultsBuffer, offset: 0, index: 1)
+        enc2.setBytes(&params, length: MemoryLayout<MsmParams>.stride, index: 2)
+        enc2.setBytes(&nSegs, length: MemoryLayout<UInt32>.stride, index: 3)
+        enc2.setBytes(&nWinsBatch, length: MemoryLayout<UInt32>.stride, index: 4)
         enc2.dispatchThreads(
             MTLSize(width: totalSegments, height: 1, depth: 1),
             threadsPerThreadgroup: MTLSize(width: min(256, totalSegments), height: 1, depth: 1))
@@ -631,44 +634,18 @@ class MetalMSM {
         bucketSumTime = CFAbsoluteTimeGetCurrent() - t0b
         if let error = cb2.error { throw MSMError.gpuError(error.localizedDescription) }
 
-        // --- Phase 3: CPU combine segments per window (parallel across windows) ---
+        // --- Phase 3: CPU combine — just sum segment results per window ---
         let tc = CFAbsoluteTimeGetCurrent()
-        let allPartials = partialSumsBuffer.contents().bindMemory(to: PointProjective.self, capacity: totalSegments)
-        let allCarries = carriesBuffer.contents().bindMemory(to: PointProjective.self, capacity: totalSegments)
-        let segSize = (nBuckets + nSegments - 1) / nSegments
+        let allSegResults = segmentResultsBuffer.contents().bindMemory(to: PointProjective.self, capacity: totalSegments)
 
         var windowResults = [PointProjective](repeating: pointIdentity(), count: nWindows)
         DispatchQueue.concurrentPerform(iterations: nWindows) { w in
             let base = w * nSegments
-            var windowResult = allPartials[base]
-            var accumulatedCarry = allCarries[base]
-
-            for s in 1..<nSegments {
-                let thisPartial = allPartials[base + s]
-                let thisCarry = allCarries[base + s]
-
-                let hi = nBuckets - s * segSize
-                let loRaw = (s + 1) * segSize
-                let lo = loRaw >= nBuckets ? 1 : (nBuckets - loRaw)
-                let actualCount = hi > lo ? hi - lo : 0
-
-                if !pointIsIdentity(accumulatedCarry) && actualCount > 0 {
-                    let carryContribution = pointMulInt(accumulatedCarry, actualCount)
-                    if !pointIsIdentity(thisPartial) {
-                        windowResult = pointAdd(windowResult, pointAdd(thisPartial, carryContribution))
-                    } else {
-                        windowResult = pointAdd(windowResult, carryContribution)
-                    }
-                } else if !pointIsIdentity(thisPartial) {
-                    windowResult = pointAdd(windowResult, thisPartial)
-                }
-
-                if !pointIsIdentity(thisCarry) {
-                    if pointIsIdentity(accumulatedCarry) {
-                        accumulatedCarry = thisCarry
-                    } else {
-                        accumulatedCarry = pointAdd(accumulatedCarry, thisCarry)
-                    }
+            var windowResult = pointIdentity()
+            for s in 0..<nSegments {
+                let seg = allSegResults[base + s]
+                if !pointIsIdentity(seg) {
+                    windowResult = pointIsIdentity(windowResult) ? seg : pointAdd(windowResult, seg)
                 }
             }
             windowResults[w] = windowResult

@@ -337,14 +337,16 @@ struct MsmParams {
 
 // Phase 1: Reduce pre-sorted points per bucket. No atomics needed.
 // Batched across all windows: tid = window_idx * n_buckets + bucket_idx
-// sorted_points layout: [window0: n_points][window1: n_points]...
+// Uses sorted indices to read from original points array (saves sort memcpy).
+// sorted_indices layout: [window0: n_points][window1: n_points]...
 kernel void msm_reduce_sorted_buckets(
-    device const PointAffine* sorted_points    [[buffer(0)]],
+    device const PointAffine* points           [[buffer(0)]],
     device PointProjective* buckets            [[buffer(1)]],
     device const uint* bucket_offsets          [[buffer(2)]],
     device const uint* bucket_counts           [[buffer(3)]],
     constant MsmParams& params                 [[buffer(4)]],
     constant uint& n_windows                   [[buffer(5)]],
+    device const uint* sorted_indices          [[buffer(6)]],
     uint tid                                   [[thread_position_in_grid]]
 ) {
     uint nb = 1u << params.window_bits;
@@ -365,35 +367,28 @@ kernel void msm_reduce_sorted_buckets(
 
     uint base = window_idx * params.n_points;
     uint offset = bucket_offsets[tid];
-    PointProjective acc = point_from_affine(sorted_points[base + offset]);
+    PointProjective acc = point_from_affine(points[sorted_indices[base + offset]]);
     for (uint i = 1; i < count; i++) {
-        acc = point_add_mixed(acc, sorted_points[base + offset + i]);
+        acc = point_add_mixed(acc, points[sorted_indices[base + offset + i]]);
     }
     buckets[tid] = acc;
 }
 
-// Phase 2: Parallel segmented bucket sum.
-// Splits the bucket range into segments, each processed by one thread.
-// Each thread computes:
-//   partial_sum = Σ running-sum over its segment (high to low)
-//   carry = running total at the end of its segment (to pass to the next segment)
-// Host combines segments: adjust each segment's sum by its carry weight.
+// Phase 2: Direct weighted bucket sum per segment.
+// Each thread independently computes the exact weighted contribution of its segment:
+//   segment_result = sum + (lo - 1) × running
+// where sum = Σ (i - lo + 1) × bucket[i] via running-sum trick,
+// and running = Σ bucket[i] over the segment.
+// Host just adds all segment_results per window — no carry propagation needed.
 //
-// For n_segments threads processing buckets [seg_start..seg_end):
-//   Thread k handles buckets [(k+1)*seg_size .. k*seg_size] (high to low within segment)
-//
-// Output: partial_sums[tid] and carries[tid]
-// Batched bucket sum: tid = window_idx * n_segments + segment_idx
-// Buckets for window w start at buckets[w * n_buckets].
-// Outputs: partial_sums[tid], carries[tid] for each (window, segment).
-kernel void msm_bucket_sum_parallel(
-    device const PointProjective* buckets   [[buffer(0)]],
-    device PointProjective* partial_sums    [[buffer(1)]],
-    device PointProjective* carries         [[buffer(2)]],
-    constant MsmParams& params              [[buffer(3)]],
-    constant uint& n_segments               [[buffer(4)]],
-    constant uint& n_windows                [[buffer(5)]],
-    uint tid                                [[thread_position_in_grid]]
+// Batched: tid = window_idx * n_segments + segment_idx
+kernel void msm_bucket_sum_direct(
+    device const PointProjective* buckets       [[buffer(0)]],
+    device PointProjective* segment_results     [[buffer(1)]],
+    constant MsmParams& params                  [[buffer(2)]],
+    constant uint& n_segments                   [[buffer(3)]],
+    constant uint& n_windows                    [[buffer(4)]],
+    uint tid                                    [[thread_position_in_grid]]
 ) {
     uint total = n_segments * n_windows;
     if (tid >= total) return;
@@ -404,14 +399,13 @@ kernel void msm_bucket_sum_parallel(
     uint seg_size = (n_buckets + n_segments - 1) / n_segments;
     uint bucket_base = window_idx * n_buckets;
 
-    // Use signed arithmetic to avoid unsigned underflow
+    // Compute segment bounds (high to low bucket indices)
     int hi_s = int(n_buckets) - int(seg_idx * seg_size);
     int lo_raw_s = int((seg_idx + 1) * seg_size);
     int lo_s = (lo_raw_s >= int(n_buckets)) ? 1 : (int(n_buckets) - lo_raw_s);
     if (lo_s < 1) lo_s = 1;
     if (hi_s <= lo_s) {
-        partial_sums[tid] = point_identity();
-        carries[tid] = point_identity();
+        segment_results[tid] = point_identity();
         return;
     }
 
@@ -439,6 +433,32 @@ kernel void msm_bucket_sum_parallel(
         if (i == lo) break;
     }
 
-    partial_sums[tid] = sum;
-    carries[tid] = running;
+    // Adjust sum to get exact weighted contribution:
+    // We computed sum = Σ (i - lo + 1) × bucket[i]
+    // We want: Σ i × bucket[i] = sum + (lo - 1) × running
+    uint weight = lo - 1;
+    if (weight > 0 && !point_is_identity(running)) {
+        // Scalar multiply: weight × running using double-and-add
+        PointProjective weighted = point_identity();
+        PointProjective base = running;
+        uint k = weight;
+        while (k > 0) {
+            if (k & 1u) {
+                if (point_is_identity(weighted)) {
+                    weighted = base;
+                } else {
+                    weighted = point_add(weighted, base);
+                }
+            }
+            base = point_double(base);
+            k >>= 1;
+        }
+        if (point_is_identity(sum)) {
+            sum = weighted;
+        } else {
+            sum = point_add(sum, weighted);
+        }
+    }
+
+    segment_results[tid] = sum;
 }
