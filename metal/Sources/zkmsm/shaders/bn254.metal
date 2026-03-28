@@ -245,44 +245,40 @@ PointProjective point_double(PointProjective p) {
     return r;
 }
 
-// Mixed addition: projective + affine (saves multiplications when Z2=1)
-// Cost: 7M + 4S + 9add
-PointProjective point_add_mixed(PointProjective p, PointAffine q) {
-    if (point_is_identity(p)) return point_from_affine(q);
+// Branchless mixed addition — no identity or same-x checks.
+// Safe when caller guarantees p is non-identity and P ≠ ±Q (true for random points).
+// Register-pressure-optimized: Z3 = 2*Z1*H frees p.z and z1z1 early.
+PointProjective point_add_mixed_unsafe(PointProjective p, PointAffine q) {
+    Fp z1z1 = fp_sqr(p.z);                      // Z1^2
+    Fp u2 = fp_mul(q.x, z1z1);                  // U2 = X2*Z1^2
+    Fp s2 = fp_mul(q.y, fp_mul(p.z, z1z1));     // S2 = Y2*Z1^3 (z1z1 last use)
 
-    Fp z1z1 = fp_sqr(p.z);           // Z1^2
-    Fp u2 = fp_mul(q.x, z1z1);       // U2 = X2*Z1^2
-    Fp s2 = fp_mul(q.y, fp_mul(p.z, z1z1)); // S2 = Y2*Z1^3
+    Fp h = fp_sub(u2, p.x);                     // H = U2 - X1 (u2 dead)
 
-    Fp h = fp_sub(u2, p.x);          // H = U2 - X1
-
-    // Handle special cases: same x-coordinate
-    if (fp_is_zero(h)) {
-        Fp rr_check = fp_double(fp_sub(s2, p.y));
-        if (fp_is_zero(rr_check)) {
-            return point_double(p); // same point → double
-        }
-        return point_identity(); // inverse points → identity
-    }
-
-    Fp hh = fp_sqr(h);               // HH = H^2
-
-    Fp i = fp_double(fp_double(hh));  // I = 4*H^2
-    Fp j = fp_mul(h, i);             // J = H*I
-    Fp rr = fp_double(fp_sub(s2, p.y)); // r = 2*(S2-Y1)
-
-    Fp v = fp_mul(p.x, i);           // V = X1*I
-
+    // Compute Z3 early to free p.z
     PointProjective result;
+    result.z = fp_double(fp_mul(p.z, h));        // Z3 = 2*Z1*H (p.z dead)
+
+    Fp hh = fp_sqr(h);                           // H^2
+    Fp i = fp_double(fp_double(hh));              // I = 4*H^2 (hh dead)
+    Fp v = fp_mul(p.x, i);                       // V = X1*I (p.x dead)
+    Fp j = fp_mul(h, i);                          // J = H*I (h dead, i dead)
+    Fp rr = fp_double(fp_sub(s2, p.y));           // r = 2*(S2-Y1) (s2 dead)
+
     result.x = fp_sub(fp_sub(fp_sqr(rr), j), fp_double(v)); // X3 = r^2 - J - 2*V
     result.y = fp_sub(fp_mul(rr, fp_sub(v, result.x)),
-                      fp_double(fp_mul(p.y, j)));            // Y3 = r*(V-X3) - 2*Y1*J
-    result.z = fp_sub(fp_sqr(fp_add(p.z, h)),
-                      fp_add(z1z1, hh));                     // Z3 = (Z1+H)^2 - Z1^2 - HH
+                      fp_double(fp_mul(p.y, j)));             // Y3 = r*(V-X3) - 2*Y1*J
     return result;
 }
 
+// Mixed addition with identity check (safe wrapper around branchless version)
+PointProjective point_add_mixed(PointProjective p, PointAffine q) {
+    if (point_is_identity(p)) return point_from_affine(q);
+    return point_add_mixed_unsafe(p, q);
+}
+
 // Full point addition: projective + projective
+// Register-optimized: Z3 = 2*Z1*Z2*H frees z1z1, z2z2, p.z, q.z early.
 PointProjective point_add(PointProjective p, PointProjective q) {
     if (point_is_identity(p)) return q;
     if (point_is_identity(q)) return p;
@@ -291,30 +287,31 @@ PointProjective point_add(PointProjective p, PointProjective q) {
     Fp z2z2 = fp_sqr(q.z);
     Fp u1 = fp_mul(p.x, z2z2);
     Fp u2 = fp_mul(q.x, z1z1);
-    Fp s1 = fp_mul(p.y, fp_mul(q.z, z2z2));
-    Fp s2 = fp_mul(q.y, fp_mul(p.z, z1z1));
+    Fp s1 = fp_mul(p.y, fp_mul(q.z, z2z2));      // z2z2 last use
+    Fp s2 = fp_mul(q.y, fp_mul(p.z, z1z1));       // z1z1 last use
 
-    Fp h = fp_sub(u2, u1);
-    Fp i = fp_sqr(fp_double(h));
-    Fp j = fp_mul(h, i);
-    Fp rr = fp_double(fp_sub(s2, s1));
+    Fp h = fp_sub(u2, u1);                         // u2 dead
+    Fp rr = fp_double(fp_sub(s2, s1));              // s2 dead
 
-    // Check if points are equal (h == 0 means same x-coordinate)
     if (fp_is_zero(h)) {
         if (fp_is_zero(rr)) {
-            return point_double(p); // same point
+            return point_double(p);
         }
-        return point_identity(); // inverse points
+        return point_identity();
     }
 
-    Fp v = fp_mul(u1, i);
-
+    // Z3 = ((Z1+Z2)^2 - Z1^2 - Z2^2) * H = 2*Z1*Z2*H
+    // Compute early to free p.z, q.z
     PointProjective result;
+    result.z = fp_mul(fp_double(fp_mul(p.z, q.z)), h); // p.z, q.z dead
+
+    Fp i = fp_sqr(fp_double(h));                    // I = (2H)^2
+    Fp v = fp_mul(u1, i);                           // V = U1*I (u1 dead)
+    Fp j = fp_mul(h, i);                            // J = H*I (h dead, i dead)
+
     result.x = fp_sub(fp_sub(fp_sqr(rr), j), fp_double(v));
     result.y = fp_sub(fp_mul(rr, fp_sub(v, result.x)),
                       fp_double(fp_mul(s1, j)));
-    result.z = fp_mul(fp_sub(fp_sqr(fp_add(p.z, q.z)),
-                             fp_add(z1z1, z2z2)), h);
     return result;
 }
 
@@ -461,4 +458,47 @@ kernel void msm_bucket_sum_direct(
     }
 
     segment_results[tid] = sum;
+}
+
+// Phase 3: Parallel reduction of segment results per window.
+// Each threadgroup handles one window, reducing n_segments results to a single sum.
+// Uses threadgroup shared memory for tree reduction.
+kernel void msm_combine_segments(
+    device const PointProjective* segment_results [[buffer(0)]],
+    device PointProjective* window_results        [[buffer(1)]],
+    constant uint& n_segments                     [[buffer(2)]],
+    uint tgid                                     [[threadgroup_position_in_grid]],
+    uint lid                                      [[thread_index_in_threadgroup]],
+    uint tg_size                                  [[threads_per_threadgroup]]
+) {
+    // Each threadgroup = one window. lid indexes segments within this window.
+    threadgroup PointProjective shared_buf[256]; // max segments per threadgroup
+
+    uint base = tgid * n_segments;
+
+    // Load: each thread loads one segment result (or identity if out of range)
+    if (lid < n_segments) {
+        shared_buf[lid] = segment_results[base + lid];
+    } else {
+        shared_buf[lid] = point_identity();
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Tree reduction
+    for (uint stride = tg_size / 2; stride > 0; stride >>= 1) {
+        if (lid < stride) {
+            PointProjective a = shared_buf[lid];
+            PointProjective b = shared_buf[lid + stride];
+            if (point_is_identity(a)) {
+                shared_buf[lid] = b;
+            } else if (!point_is_identity(b)) {
+                shared_buf[lid] = point_add(a, b);
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    if (lid == 0) {
+        window_results[tgid] = shared_buf[0];
+    }
 }

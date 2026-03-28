@@ -335,6 +335,37 @@ func pointToAffine(_ p: PointProjective) -> PointAffine? {
     return PointAffine(x: fpMul(p.x, zinv2), y: fpMul(p.y, zinv3))
 }
 
+/// Batch convert projective points to affine using Montgomery's trick (single inversion).
+func batchToAffine(_ points: [PointProjective]) -> [PointAffine] {
+    let n = points.count
+    if n == 0 { return [] }
+
+    // Prefix products of z-coordinates
+    var prods = [Fp](repeating: .one, count: n)
+    prods[0] = points[0].z
+    for i in 1..<n {
+        prods[i] = pointIsIdentity(points[i]) ? prods[i-1] : fpMul(prods[i-1], points[i].z)
+    }
+
+    // Single inversion of total product
+    var inv = fpInverse(prods[n - 1])
+
+    // Back-propagate to get individual z-inverses
+    var result = [PointAffine](repeating: PointAffine(x: .one, y: .one), count: n)
+    for i in stride(from: n - 1, through: 0, by: -1) {
+        if pointIsIdentity(points[i]) {
+            // Identity — output arbitrary point (shouldn't be used)
+            continue
+        }
+        let zinv = (i > 0) ? fpMul(inv, prods[i - 1]) : inv
+        if i > 0 { inv = fpMul(inv, points[i].z) }
+        let zinv2 = fpSqr(zinv)
+        let zinv3 = fpMul(zinv2, zinv)
+        result[i] = PointAffine(x: fpMul(points[i].x, zinv2), y: fpMul(points[i].y, zinv3))
+    }
+    return result
+}
+
 // MARK: - Metal MSM Engine
 
 class MetalMSM {
@@ -342,6 +373,7 @@ class MetalMSM {
     let commandQueue: MTLCommandQueue
     let reduceSortedFunction: MTLComputePipelineState
     let bucketSumDirectFunction: MTLComputePipelineState
+    let combineSegmentsFunction: MTLComputePipelineState
 
     // Pre-allocated buffers (lazily sized, reused across calls)
     private var maxAllocatedPoints = 0
@@ -354,6 +386,7 @@ class MetalMSM {
     // Shared output buffers
     private var bucketsBuffer: MTLBuffer?
     private var segmentResultsBuffer: MTLBuffer?
+    private var windowResultsBuffer: MTLBuffer?
     // CPU-side reusable arrays (per-window for parallel sort)
     private var cpuPerWindowCounts: [[Int]] = []
     private var cpuPerWindowPositions: [[Int]] = []
@@ -378,11 +411,17 @@ class MetalMSM {
         let library: MTLLibrary
         let cacheFile = MetalMSM.cacheDir.appendingPathComponent("bn254.metallib")
 
+        let requiredKernels = ["msm_reduce_sorted_buckets", "msm_bucket_sum_direct", "msm_combine_segments"]
         if FileManager.default.fileExists(atPath: cacheFile.path) {
             do {
-                library = try device.makeLibrary(URL: cacheFile)
+                let cached = try device.makeLibrary(URL: cacheFile)
+                // Verify all required kernels are present
+                if requiredKernels.allSatisfy({ cached.makeFunction(name: $0) != nil }) {
+                    library = cached
+                } else {
+                    library = try MetalMSM.compileAndCache(device: device, cacheFile: cacheFile)
+                }
             } catch {
-                // Cache invalid (device changed?), recompile
                 library = try MetalMSM.compileAndCache(device: device, cacheFile: cacheFile)
             }
         } else {
@@ -390,12 +429,14 @@ class MetalMSM {
         }
 
         guard let reduceSortedFn = library.makeFunction(name: "msm_reduce_sorted_buckets"),
-              let sumDirectFn = library.makeFunction(name: "msm_bucket_sum_direct") else {
+              let sumDirectFn = library.makeFunction(name: "msm_bucket_sum_direct"),
+              let combineFn = library.makeFunction(name: "msm_combine_segments") else {
             throw MSMError.missingKernel
         }
 
         self.reduceSortedFunction = try device.makeComputePipelineState(function: reduceSortedFn)
         self.bucketSumDirectFunction = try device.makeComputePipelineState(function: sumDirectFn)
+        self.combineSegmentsFunction = try device.makeComputePipelineState(function: combineFn)
     }
 
     /// Compile shader from source and cache the library for next time.
@@ -470,6 +511,9 @@ class MetalMSM {
             // Segment results: one per segment per window (direct weighted sum)
             segmentResultsBuffer = device.makeBuffer(
                 length: MemoryLayout<PointProjective>.stride * ns * nw, options: .storageModeShared)
+            // Window results: one per window (from GPU combine)
+            windowResultsBuffer = device.makeBuffer(
+                length: MemoryLayout<PointProjective>.stride * nw, options: .storageModeShared)
             maxAllocatedPoints = np
             maxAllocatedBuckets = nb
             maxAllocatedWindows = nw
@@ -510,7 +554,8 @@ class MetalMSM {
               let allOffsetsBuffer = allOffsetsBuffer,
               let allCountsBuffer = allCountsBuffer,
               let bucketsBuffer = bucketsBuffer,
-              let segmentResultsBuffer = segmentResultsBuffer else {
+              let segmentResultsBuffer = segmentResultsBuffer,
+              let windowResultsBuffer = windowResultsBuffer else {
             throw MSMError.gpuError("Failed to allocate Metal buffers")
         }
 
@@ -628,29 +673,32 @@ class MetalMSM {
             threadsPerThreadgroup: MTLSize(width: min(256, totalSegments), height: 1, depth: 1))
         enc2.endEncoding()
 
+        // GPU combine: parallel reduction of segment results per window
+        let enc3 = cb2.makeComputeCommandEncoder()!
+        enc3.setComputePipelineState(combineSegmentsFunction)
+        enc3.setBuffer(segmentResultsBuffer, offset: 0, index: 0)
+        enc3.setBuffer(windowResultsBuffer, offset: 0, index: 1)
+        enc3.setBytes(&nSegs, length: MemoryLayout<UInt32>.stride, index: 2)
+        // Dispatch: nWindows threadgroups, each with nSegments threads
+        enc3.dispatchThreadgroups(
+            MTLSize(width: nWindows, height: 1, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: nSegments, height: 1, depth: 1))
+        enc3.endEncoding()
+
         let t0b = CFAbsoluteTimeGetCurrent()
         cb2.commit()
         cb2.waitUntilCompleted()
-        bucketSumTime = CFAbsoluteTimeGetCurrent() - t0b
+        let gpuPhase2Done = CFAbsoluteTimeGetCurrent()
+        bucketSumTime = gpuPhase2Done - t0b  // includes bucketSum + combine
+        combineTime = 0  // now fused into GPU
         if let error = cb2.error { throw MSMError.gpuError(error.localizedDescription) }
 
-        // --- Phase 3: CPU combine — just sum segment results per window ---
-        let tc = CFAbsoluteTimeGetCurrent()
-        let allSegResults = segmentResultsBuffer.contents().bindMemory(to: PointProjective.self, capacity: totalSegments)
-
+        // Read window results from GPU buffer
+        let winResultsPtr = windowResultsBuffer.contents().bindMemory(to: PointProjective.self, capacity: nWindows)
         var windowResults = [PointProjective](repeating: pointIdentity(), count: nWindows)
-        DispatchQueue.concurrentPerform(iterations: nWindows) { w in
-            let base = w * nSegments
-            var windowResult = pointIdentity()
-            for s in 0..<nSegments {
-                let seg = allSegResults[base + s]
-                if !pointIsIdentity(seg) {
-                    windowResult = pointIsIdentity(windowResult) ? seg : pointAdd(windowResult, seg)
-                }
-            }
-            windowResults[w] = windowResult
+        for w in 0..<nWindows {
+            windowResults[w] = winResultsPtr[w]
         }
-        combineTime = CFAbsoluteTimeGetCurrent() - tc
 
         // Combine windows using Horner's method
         let t2 = CFAbsoluteTimeGetCurrent()
@@ -911,13 +959,26 @@ func runBenchmark(nPoints: Int) throws {
 
     let engine = try MetalMSM()
 
-    // Use BN254 generator G=(1,2) and scalar multiples as test data
+    // Use BN254 generator G=(1,2) and scalar multiples as distinct test points
     let gx = fpFromInt(1)
     let gy = fpFromInt(2)
     let g = PointAffine(x: gx, y: gy)
 
-    // Generate points as G (all same, real bench would use SRS) and pseudo-random scalars
-    var points: [PointAffine] = Array(repeating: g, count: nPoints)
+    // Generate distinct points: G, 2G, 3G, ..., nG (simulates SRS)
+    // Use batch affine conversion for speed (single field inversion)
+    fputs("Generating \(nPoints) distinct points...\n", stderr)
+    let setupStart = CFAbsoluteTimeGetCurrent()
+    var projPoints = [PointProjective]()
+    projPoints.reserveCapacity(nPoints)
+    let gProj = pointFromAffine(g)
+    var acc = gProj
+    for _ in 0..<nPoints {
+        projPoints.append(acc)
+        acc = pointAdd(acc, gProj)
+    }
+    let points = batchToAffine(projPoints)
+    fputs("Point generation: \(String(format: "%.1f", (CFAbsoluteTimeGetCurrent() - setupStart) * 1000))ms\n", stderr)
+
     var scalars: [[UInt32]] = []
 
     // Use a simple LCG for reproducible pseudo-random 256-bit scalars
