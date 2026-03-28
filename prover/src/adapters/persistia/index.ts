@@ -175,7 +175,9 @@ export class PersistiaProofSink implements ProofSink {
         vk: proof.vk,
         block_number: proof.blockNumber,
         proven_blocks: proof.provenBlocks,
-        state_root: proof.meta?.state_root,
+        // Use circuit-computed state root from public inputs (Poseidon2 Merkle root)
+        // which may differ from the API's SHA-256 state root
+        state_root: proof.publicInputs?.[1] || proof.meta?.state_root,
         genesis_root: proof.meta?.genesis_root,
         proof_type: "noir-ultrahonk",
         prover: proof.prover,

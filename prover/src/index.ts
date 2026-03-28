@@ -18,6 +18,9 @@ export { PersistentBb } from "./persistent-bb.js";
 // Watch loops
 export { watchSequential, watchPipelined, watchParallelMsgpack } from "./watcher.js";
 
+// Witness utilities
+export { setMaxMutations, getMaxMutations } from "./witness.js";
+
 // Types
 export type {
   ProverConfig,

@@ -10,6 +10,7 @@
     "./engine": "./src/engine.ts",
     "./watcher": "./src/watcher.ts",
     "./persistent-bb": "./src/persistent-bb.ts",
+    "./witness": "./src/witness.ts",
     "./adapters/persistia": "./src/adapters/persistia/index.ts"
   },
   "bin": {

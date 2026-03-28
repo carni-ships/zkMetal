@@ -11,7 +11,13 @@ import { createHash } from "crypto";
 import { Barretenberg } from "@aztec/bb.js";
 
 const MAX_VALIDATORS = 4;
-const MAX_MUTATIONS = 1024;
+let MAX_MUTATIONS = 1024;
+
+/** Override the maximum mutations per witness (must match your circuit's compile-time constant). */
+export function setMaxMutations(n: number) { MAX_MUTATIONS = n; }
+
+/** Get the current maximum mutations setting. */
+export function getMaxMutations(): number { return MAX_MUTATIONS; }
 const VK_SIZE = 115;
 const PROOF_SIZE = 449;
 const PUBLIC_INPUTS_SIZE = 8;
@@ -327,7 +333,9 @@ export async function buildSingleBlockWitness(
     prev_state_root: prevStateRoot,
     new_state_root: computedRoot,
     block_number: block.block_number,
-    active_nodes: block.active_nodes,
+    // Use Schnorr-capable node count for quorum check — nodes without Schnorr sigs
+    // can't participate in ZK verification, so active_nodes should reflect only those
+    active_nodes: Math.max(sigs.filter(s => s.enabled).length, 1),
   };
 }
 
