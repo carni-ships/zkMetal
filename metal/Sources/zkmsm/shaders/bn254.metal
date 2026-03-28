@@ -535,6 +535,366 @@ kernel void msm_combine_segments(
     }
 }
 
+// --- Merged Reduce + BucketSum Kernel ---
+// Fuses per-bucket point accumulation and weighted running-sum into a single kernel.
+// Each thread handles one segment: iterates over its bucket range from high to low,
+// accumulates each bucket's points inline, then applies the running-sum trick.
+// Eliminates the 48MB intermediate bucket buffer.
+kernel void msm_reduce_sum_fused(
+    device const PointAffine* points           [[buffer(0)]],
+    device PointProjective* segment_results    [[buffer(1)]],
+    device const uint* bucket_offsets          [[buffer(2)]],
+    device const uint* bucket_counts           [[buffer(3)]],
+    constant MsmParams& params                 [[buffer(4)]],
+    constant uint& n_segments                  [[buffer(5)]],
+    constant uint& n_windows                   [[buffer(6)]],
+    device const uint* sorted_indices          [[buffer(7)]],
+    uint tid                                   [[thread_position_in_grid]]
+) {
+    uint total = n_segments * n_windows;
+    if (tid >= total) return;
+
+    uint window_idx = tid / n_segments;
+    uint seg_idx = tid % n_segments;
+
+    uint nb = 1u << params.window_bits;
+    uint seg_size = (nb + n_segments - 1) / n_segments;
+    uint offset_base = window_idx * nb;
+    uint points_base = window_idx * params.n_points;
+
+    // Segment bounds (high to low bucket indices)
+    int hi_s = int(nb) - int(seg_idx * seg_size);
+    int lo_raw_s = int((seg_idx + 1) * seg_size);
+    int lo_s = (lo_raw_s >= int(nb)) ? 1 : (int(nb) - lo_raw_s);
+    if (lo_s < 1) lo_s = 1;
+    if (hi_s <= lo_s) {
+        segment_results[tid] = point_identity();
+        return;
+    }
+
+    uint hi = uint(hi_s);
+    uint lo = uint(lo_s);
+
+    PointProjective running = point_identity();
+    PointProjective sum = point_identity();
+
+    for (uint bi = hi - 1; bi >= lo; bi--) {
+        uint global_bi = offset_base + bi;
+        uint count = bucket_counts[global_bi];
+
+        if (count > 0) {
+            // Accumulate all points in this bucket inline
+            uint boff = bucket_offsets[global_bi];
+            PointProjective bucket_acc = point_from_affine(points[sorted_indices[points_base + boff]]);
+            for (uint p = 1; p < count; p++) {
+                bucket_acc = point_add_mixed(bucket_acc, points[sorted_indices[points_base + boff + p]]);
+            }
+
+            // Running sum trick
+            if (point_is_identity(running)) {
+                running = bucket_acc;
+            } else {
+                running = point_add(running, bucket_acc);
+            }
+        }
+
+        if (!point_is_identity(running)) {
+            if (point_is_identity(sum)) {
+                sum = running;
+            } else {
+                sum = point_add(sum, running);
+            }
+        }
+        if (bi == lo) break;
+    }
+
+    // Adjust for segment offset: sum + (lo-1) × running
+    uint weight = lo - 1;
+    if (weight > 0 && !point_is_identity(running)) {
+        PointProjective weighted = point_identity();
+        PointProjective base = running;
+        uint k = weight;
+        while (k > 0) {
+            if (k & 1u) {
+                if (point_is_identity(weighted)) {
+                    weighted = base;
+                } else {
+                    weighted = point_add(weighted, base);
+                }
+            }
+            base = point_double(base);
+            k >>= 1;
+        }
+        if (point_is_identity(sum)) {
+            sum = weighted;
+        } else {
+            sum = point_add(sum, weighted);
+        }
+    }
+
+    segment_results[tid] = sum;
+}
+
+// --- GLV Scalar Decomposition Kernel ---
+// BN254 scalar field order r
+constant ulong FR_ORDER[4] = {
+    0x43e1f593f0000001uL, 0x2833e84879b97091uL,
+    0xb85045b68181585duL, 0x30644e72e131a029uL
+};
+
+// GLV lattice constants
+constant ulong GLV_G1_0 = 0x7a7bd9d4391eb18duL;
+constant ulong GLV_G1_1 = 0x4ccef014a773d2cfuL;
+constant ulong GLV_G1_2 = 0x2uL;
+constant ulong GLV_G2_0 = 0xd91d232ec7e0b3d7uL;
+constant ulong GLV_G2_1 = 0x2uL;
+constant ulong GLV_A1 = 0x89d3256894d213e3uL;
+constant ulong GLV_MINUS_B1_0 = 0x8211bbeb7d4f1128uL;
+constant ulong GLV_MINUS_B1_1 = 0x6f4d8248eeb859fcuL;
+constant ulong GLV_A2_0 = 0x0be4e1541221250buL;
+constant ulong GLV_A2_1 = 0x6f4d8248eeb859fduL;
+constant ulong GLV_B2 = 0x89d3256894d213e3uL;
+
+constant ulong HALF_R[4] = {
+    (0x43e1f593f0000001uL >> 1) | (0x2833e84879b97091uL << 63),
+    (0x2833e84879b97091uL >> 1) | (0xb85045b68181585duL << 63),
+    (0xb85045b68181585duL >> 1) | (0x30644e72e131a029uL << 63),
+    0x30644e72e131a029uL >> 1
+};
+
+// 256-bit add with carry (using ulong limbs)
+void u256_add(thread ulong* r, thread const ulong* a, constant ulong* b, thread bool &carry) {
+    ulong c = 0;
+    for (int i = 0; i < 4; i++) {
+        ulong s = a[i] + b[i];
+        ulong t = s + c;
+        r[i] = t;
+        c = (s < a[i] || t < s) ? 1uL : 0uL;
+    }
+    carry = c != 0;
+}
+
+void u256_sub(thread ulong* r, thread const ulong* a, thread const ulong* b, thread bool &borrow) {
+    long c = 0;
+    for (int i = 0; i < 4; i++) {
+        long d = long(a[i]) - long(b[i]) + c;
+        r[i] = ulong(d);
+        c = (d < 0) ? -1 : 0;
+    }
+    borrow = c < 0;
+}
+
+void u256_sub_const(thread ulong* r, thread const ulong* a, constant ulong* b, thread bool &borrow) {
+    long c = 0;
+    for (int i = 0; i < 4; i++) {
+        long d = long(a[i]) - long(b[i]) + c;
+        r[i] = ulong(d);
+        c = (d < 0) ? -1 : 0;
+    }
+    borrow = c < 0;
+}
+
+void u256_sub_from_const(thread ulong* r, constant ulong* a, thread const ulong* b, thread bool &borrow) {
+    long c = 0;
+    for (int i = 0; i < 4; i++) {
+        long d = long(a[i]) - long(b[i]) + c;
+        r[i] = ulong(d);
+        c = (d < 0) ? -1 : 0;
+    }
+    borrow = c < 0;
+}
+
+bool u256_gte_const(thread const ulong* a, constant ulong* b) {
+    for (int i = 3; i >= 0; i--) {
+        if (a[i] > b[i]) return true;
+        if (a[i] < b[i]) return false;
+    }
+    return true;
+}
+
+// 256×192 multiply, return bits [256..383] as (lo, hi)
+void mul256x192(thread const ulong* k, ulong g0, ulong g1, ulong g2,
+                thread ulong &out_lo, thread ulong &out_hi) {
+    ulong prod[7] = {0,0,0,0,0,0,0};
+    ulong gv[3] = {g0, g1, g2};
+    for (int i = 0; i < 4; i++) {
+        ulong carry = 0;
+        for (int j = 0; j < 3; j++) {
+            ulong hi = mulhi(k[i], gv[j]);
+            ulong lo = k[i] * gv[j];
+            ulong s1 = prod[i+j] + lo;
+            ulong c1 = (s1 < prod[i+j]) ? 1uL : 0uL;
+            ulong s2 = s1 + carry;
+            ulong c2 = (s2 < s1) ? 1uL : 0uL;
+            prod[i+j] = s2;
+            carry = hi + c1 + c2;
+        }
+        prod[i+3] += carry;
+    }
+    out_lo = prod[4];
+    out_hi = prod[5];
+}
+
+// 256×128 multiply, return bits [256..319]
+ulong mul256x128(thread const ulong* k, ulong g0, ulong g1) {
+    ulong prod[6] = {0,0,0,0,0,0};
+    ulong gv[2] = {g0, g1};
+    for (int i = 0; i < 4; i++) {
+        ulong carry = 0;
+        for (int j = 0; j < 2; j++) {
+            ulong hi = mulhi(k[i], gv[j]);
+            ulong lo = k[i] * gv[j];
+            ulong s1 = prod[i+j] + lo;
+            ulong c1 = (s1 < prod[i+j]) ? 1uL : 0uL;
+            ulong s2 = s1 + carry;
+            ulong c2 = (s2 < s1) ? 1uL : 0uL;
+            prod[i+j] = s2;
+            carry = hi + c1 + c2;
+        }
+        prod[i+2] += carry;
+    }
+    return prod[4];
+}
+
+// 128×128 multiply → 256-bit result
+void mul128x128_gpu(ulong a0, ulong a1, ulong b0, ulong b1, thread ulong* r) {
+    ulong h00 = mulhi(a0, b0), l00 = a0 * b0;
+    ulong h01 = mulhi(a0, b1), l01 = a0 * b1;
+    ulong h10 = mulhi(a1, b0), l10 = a1 * b0;
+    ulong h11 = mulhi(a1, b1), l11 = a1 * b1;
+
+    r[0] = l00;
+    ulong s1 = l01 + h00;
+    ulong c1a = (s1 < l01) ? 1uL : 0uL;
+    ulong s1b = s1 + l10;
+    ulong c1b = (s1b < s1) ? 1uL : 0uL;
+    r[1] = s1b;
+    ulong s2 = h01 + h10;
+    ulong c2a = (s2 < h01) ? 1uL : 0uL;
+    s2 += l11;
+    ulong c2b = (s2 < l11) ? 1uL : 0uL;
+    s2 += c1a + c1b;
+    r[2] = s2;
+    r[3] = h11 + c2a + c2b + ((s2 < c1a + c1b) ? 1uL : 0uL);
+}
+
+// 64×128 multiply → 192-bit
+void mul64x128_gpu(ulong a, ulong b0, ulong b1, thread ulong &r0, thread ulong &r1, thread ulong &r2) {
+    ulong h0 = mulhi(a, b0), l0 = a * b0;
+    ulong h1 = mulhi(a, b1), l1 = a * b1;
+    r0 = l0;
+    ulong s1 = l1 + h0;
+    r1 = s1;
+    r2 = h1 + ((s1 < l1) ? 1uL : 0uL);
+}
+
+// 128×64 multiply → 192-bit
+void mul128x64_gpu(ulong a0, ulong a1, ulong b, thread ulong &r0, thread ulong &r1, thread ulong &r2) {
+    ulong h0 = mulhi(a0, b), l0 = a0 * b;
+    ulong h1 = mulhi(a1, b), l1 = a1 * b;
+    r0 = l0;
+    ulong s1 = l1 + h0;
+    r1 = s1;
+    r2 = h1 + ((s1 < l1) ? 1uL : 0uL);
+}
+
+// GPU GLV scalar decomposition kernel
+// Reads 256-bit scalars, writes 128-bit k1/k2 and neg flags
+kernel void glv_decompose(
+    const device uint* scalars_in [[buffer(0)]],    // n × 8 uint32 (256-bit scalars)
+    device uint* k1_out [[buffer(1)]],              // n × 8 uint32 (output k1)
+    device uint* k2_out [[buffer(2)]],              // n × 8 uint32 (output k2)
+    device uchar* neg1_out [[buffer(3)]],
+    device uchar* neg2_out [[buffer(4)]],
+    constant uint& n [[buffer(5)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    if (gid >= n) return;
+
+    // Read scalar as 4×ulong
+    const device uint* sp = scalars_in + gid * 8;
+    ulong kr[4] = {
+        ulong(sp[0]) | (ulong(sp[1]) << 32),
+        ulong(sp[2]) | (ulong(sp[3]) << 32),
+        ulong(sp[4]) | (ulong(sp[5]) << 32),
+        ulong(sp[6]) | (ulong(sp[7]) << 32)
+    };
+
+    // Reduce mod r
+    bool borrow;
+    while (u256_gte_const(kr, FR_ORDER)) {
+        ulong tmp[4];
+        u256_sub_const(tmp, kr, FR_ORDER, borrow);
+        for (int i = 0; i < 4; i++) kr[i] = tmp[i];
+    }
+
+    // c1 = (k * g1) >> 256
+    ulong c1_lo, c1_hi;
+    mul256x192(kr, GLV_G1_0, GLV_G1_1, GLV_G1_2, c1_lo, c1_hi);
+
+    // c2 = (k * g2) >> 256
+    ulong c2 = mul256x128(kr, GLV_G2_0, GLV_G2_1);
+
+    // k1 = k - c2*a1 - c1*a2
+    ulong c2a1_hi = mulhi(c2, GLV_A1);
+    ulong c2a1_lo = c2 * GLV_A1;
+
+    ulong c1a2[4];
+    mul128x128_gpu(c1_lo, c1_hi, GLV_A2_0, GLV_A2_1, c1a2);
+
+    ulong k1[4];
+    ulong sub1[4] = {c2a1_lo, c2a1_hi, 0, 0};
+    u256_sub(k1, kr, sub1, borrow);
+    if (borrow) u256_add(k1, k1, FR_ORDER, borrow);
+    ulong k1b[4];
+    u256_sub(k1b, k1, c1a2, borrow);
+    if (borrow) { ulong tmp[4]; u256_add(tmp, k1b, FR_ORDER, borrow); for (int i=0;i<4;i++) k1b[i]=tmp[i]; }
+    for (int i = 0; i < 4; i++) k1[i] = k1b[i];
+
+    // k2 = c2*|b1| - c1*b2
+    ulong c2mb1_0, c2mb1_1, c2mb1_2;
+    mul64x128_gpu(c2, GLV_MINUS_B1_0, GLV_MINUS_B1_1, c2mb1_0, c2mb1_1, c2mb1_2);
+
+    ulong c1b2_0, c1b2_1, c1b2_2;
+    mul128x64_gpu(c1_lo, c1_hi, GLV_B2, c1b2_0, c1b2_1, c1b2_2);
+
+    ulong k2_a[4] = {c2mb1_0, c2mb1_1, c2mb1_2, 0};
+    ulong k2_b[4] = {c1b2_0, c1b2_1, c1b2_2, 0};
+    ulong k2[4];
+    u256_sub(k2, k2_a, k2_b, borrow);
+    bool k2_neg = false;
+    if (borrow) {
+        k2_neg = true;
+        ulong n0 = ~k2[0] + 1;
+        ulong c0 = (k2[0] == 0) ? 1uL : 0uL;
+        ulong n1 = ~k2[1] + c0;
+        ulong cc1 = (k2[1] == 0 && c0 == 1) ? 1uL : 0uL;
+        ulong n2 = ~k2[2] + cc1;
+        ulong cc2 = (k2[2] == 0 && cc1 == 1) ? 1uL : 0uL;
+        ulong n3 = ~k2[3] + cc2;
+        k2[0] = n0; k2[1] = n1; k2[2] = n2; k2[3] = n3;
+    }
+
+    // If k1 > r/2, negate
+    bool neg1 = false;
+    if (u256_gte_const(k1, HALF_R)) {
+        u256_sub_from_const(k1, FR_ORDER, k1, borrow);
+        neg1 = true;
+    }
+
+    // Write outputs
+    device uint* k1p = k1_out + gid * 8;
+    device uint* k2p = k2_out + gid * 8;
+    for (int i = 0; i < 4; i++) {
+        k1p[i*2] = uint(k1[i] & 0xFFFFFFFF);
+        k1p[i*2+1] = uint(k1[i] >> 32);
+        k2p[i*2] = uint(k2[i] & 0xFFFFFFFF);
+        k2p[i*2+1] = uint(k2[i] >> 32);
+    }
+    neg1_out[gid] = neg1 ? 1 : 0;
+    neg2_out[gid] = k2_neg ? 1 : 0;
+}
+
 // --- GLV Endomorphism Kernel ---
 // Applies φ(P) = (β·x, y) and optional negation for GLV MSM.
 // Reads original points[0..n-1], writes endomorphism points[n..2n-1]

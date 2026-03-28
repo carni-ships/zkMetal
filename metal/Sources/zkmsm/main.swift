@@ -676,6 +676,7 @@ class MetalMSM {
     let bucketSumDirectFunction: MTLComputePipelineState
     let combineSegmentsFunction: MTLComputePipelineState
     let endomorphismFunction: MTLComputePipelineState
+    let glvDecomposeFunction: MTLComputePipelineState
 
     // Pre-allocated buffers (lazily sized, reused across calls)
     private var maxAllocatedPoints = 0
@@ -713,7 +714,7 @@ class MetalMSM {
         let library: MTLLibrary
         let cacheFile = MetalMSM.cacheDir.appendingPathComponent("bn254.metallib")
 
-        let requiredKernels = ["msm_reduce_sorted_buckets", "msm_bucket_sum_direct", "msm_combine_segments", "glv_endomorphism"]
+        let requiredKernels = ["msm_reduce_sorted_buckets", "msm_bucket_sum_direct", "msm_combine_segments", "glv_endomorphism", "glv_decompose"]
         if FileManager.default.fileExists(atPath: cacheFile.path) {
             do {
                 let cached = try device.makeLibrary(URL: cacheFile)
@@ -733,7 +734,8 @@ class MetalMSM {
         guard let reduceSortedFn = library.makeFunction(name: "msm_reduce_sorted_buckets"),
               let sumDirectFn = library.makeFunction(name: "msm_bucket_sum_direct"),
               let combineFn = library.makeFunction(name: "msm_combine_segments"),
-              let endoFn = library.makeFunction(name: "glv_endomorphism") else {
+              let endoFn = library.makeFunction(name: "glv_endomorphism"),
+              let glvDecomposeFn = library.makeFunction(name: "glv_decompose") else {
             throw MSMError.missingKernel
         }
 
@@ -741,6 +743,7 @@ class MetalMSM {
         self.bucketSumDirectFunction = try device.makeComputePipelineState(function: sumDirectFn)
         self.combineSegmentsFunction = try device.makeComputePipelineState(function: combineFn)
         self.endomorphismFunction = try device.makeComputePipelineState(function: endoFn)
+        self.glvDecomposeFunction = try device.makeComputePipelineState(function: glvDecomposeFn)
     }
 
     /// Compile shader from source and cache the library for next time.
@@ -858,6 +861,7 @@ class MetalMSM {
 
         // Flat scalar buffer for GLV path (avoids 1M+ array allocations)
         var flatScalarBuf: UnsafeMutablePointer<UInt32>? = nil
+        var scalarOutMetalBuf: MTLBuffer? = nil  // keeps GPU buffer alive; non-nil = don't deallocate flatScalarBuf
 
         // GLV neg flags for GPU endomorphism kernel
         var neg1Buf: MTLBuffer? = nil
@@ -867,36 +871,55 @@ class MetalMSM {
         if useGLV && n >= 256 {
             let tGlv = CFAbsoluteTimeGetCurrent()
 
-            let buf = UnsafeMutablePointer<UInt32>.allocate(capacity: 2 * n * 8)
-            buf.initialize(repeating: 0, count: 2 * n * 8)
-            flatScalarBuf = buf
-
-            // Allocate neg flags
-            let neg1Flags = UnsafeMutablePointer<UInt8>.allocate(capacity: n)
-            let neg2Flags = UnsafeMutablePointer<UInt8>.allocate(capacity: n)
-
-            // CPU: scalar decomposition only (no fpMul!)
-            DispatchQueue.concurrentPerform(iterations: n) { i in
-                scalars[i].withUnsafeBufferPointer { sp in
-                    let k1Ptr = buf + (i * 8)
-                    let k2Ptr = buf + ((n + i) * 8)
-                    let (neg1, neg2) = glvDecompose(sp.baseAddress!, k1Out: k1Ptr, k2Out: k2Ptr)
-                    neg1Flags[i] = neg1 ? 1 : 0
-                    neg2Flags[i] = neg2 ? 1 : 0
+            // Copy input scalars to contiguous GPU buffer (chunked parallel)
+            let scalarInBuf = device.makeBuffer(length: n * 8 * MemoryLayout<UInt32>.stride, options: .storageModeShared)!
+            let scalarInPtr = scalarInBuf.contents().bindMemory(to: UInt32.self, capacity: n * 8)
+            let nChunks = min(16, n)
+            let chunkSize = (n + nChunks - 1) / nChunks
+            DispatchQueue.concurrentPerform(iterations: nChunks) { c in
+                let start = c * chunkSize
+                let end = min(start + chunkSize, n)
+                for i in start..<end {
+                    scalars[i].withUnsafeBufferPointer { sp in
+                        (scalarInPtr + i * 8).update(from: sp.baseAddress!, count: 8)
+                    }
                 }
             }
+
+            // Single output buffer: [k1_0..k1_{n-1}, k2_0..k2_{n-1}] — GPU writes, CPU reads directly
+            let k2Offset = n * 8 * MemoryLayout<UInt32>.stride
+            let scalarOutBuf = device.makeBuffer(length: 2 * k2Offset, options: .storageModeShared)!
+            neg1Buf = device.makeBuffer(length: n, options: .storageModeShared)!
+            neg2Buf = device.makeBuffer(length: n, options: .storageModeShared)!
+
+            // Launch GPU GLV decomposition
+            guard let cmdBuf = commandQueue.makeCommandBuffer(),
+                  let enc = cmdBuf.makeComputeCommandEncoder() else {
+                throw MSMError.gpuError("Failed to create GLV decompose command buffer")
+            }
+            enc.setComputePipelineState(glvDecomposeFunction)
+            enc.setBuffer(scalarInBuf, offset: 0, index: 0)
+            enc.setBuffer(scalarOutBuf, offset: 0, index: 1)           // k1 at start
+            enc.setBuffer(scalarOutBuf, offset: k2Offset, index: 2)    // k2 at offset
+            enc.setBuffer(neg1Buf, offset: 0, index: 3)
+            enc.setBuffer(neg2Buf, offset: 0, index: 4)
+            var nVal = UInt32(n)
+            enc.setBytes(&nVal, length: 4, index: 5)
+            let tg = min(glvDecomposeFunction.maxTotalThreadsPerThreadgroup, 256)
+            enc.dispatchThreads(MTLSize(width: n, height: 1, depth: 1),
+                              threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+            enc.endEncoding()
+            cmdBuf.commit()
+            cmdBuf.waitUntilCompleted()
+
+            // Point directly at GPU shared memory — no copy needed
+            flatScalarBuf = scalarOutBuf.contents().bindMemory(to: UInt32.self, capacity: 2 * n * 8)
+            scalarOutMetalBuf = scalarOutBuf  // prevent ARC release before sort completes
 
             let glvTime = CFAbsoluteTimeGetCurrent() - tGlv
             fputs("  glv(\(String(format: "%.0f", glvTime * 1000)))ms, ", stderr)
 
-            // Create Metal buffers for neg flags
-            neg1Buf = device.makeBuffer(bytes: neg1Flags, length: n, options: .storageModeShared)
-            neg2Buf = device.makeBuffer(bytes: neg2Flags, length: n, options: .storageModeShared)
-            neg1Flags.deallocate()
-            neg2Flags.deallocate()
-
             glvN = n
-            // msmPoints stays as original points — GPU will apply endomorphism
             scalarBits = 128
         }
 
@@ -1122,7 +1145,8 @@ class MetalMSM {
               "combine: \(String(format: "%.1f", combineTime * 1000))ms, " +
               "horner: \(String(format: "%.1f", hornerTime * 1000))ms\n", stderr)
 
-        flatScalarBuf?.deallocate()
+        if scalarOutMetalBuf == nil { flatScalarBuf?.deallocate() }
+        _ = scalarOutMetalBuf  // prevent early ARC release
         return result
     }
 }
