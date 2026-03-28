@@ -407,21 +407,55 @@ func mulSchoolbook(_ a: [UInt64], _ na: Int, _ b: [UInt64], _ nb: Int) -> [UInt6
     return prod
 }
 
+// Index a U256 tuple by position (avoids array allocation)
+@inline(__always)
+func u256at(_ v: U256, _ i: Int) -> UInt64 {
+    switch i { case 0: return v.0; case 1: return v.1; case 2: return v.2; default: return v.3 }
+}
+
 // Multiply 256-bit k by GLV_G1 (192-bit), return bits [256..383]
-// Fully unrolled to avoid array allocation in hot path.
+// Uses stack allocation only (no heap arrays).
 func mulScalarByG1(_ k: U256) -> (UInt64, UInt64) {
-    let kv = [k.0, k.1, k.2, k.3]
-    let gv = [GLV_G1.0, GLV_G1.1, GLV_G1.2]
-    let prod = mulSchoolbook(kv, 4, gv, 3)
-    return (prod[4], prod[5])
+    let g = (GLV_G1.0, GLV_G1.1, GLV_G1.2)
+    return withUnsafeTemporaryAllocation(of: UInt64.self, capacity: 7) { prod in
+        for i in 0..<7 { prod[i] = 0 }
+        for i in 0..<4 {
+            let ki = u256at(k, i)
+            var carry: UInt64 = 0
+            for j in 0..<3 {
+                let gj = j == 0 ? g.0 : (j == 1 ? g.1 : g.2)
+                let (hi, lo) = ki.multipliedFullWidth(by: gj)
+                let (s1, c1) = prod[i+j].addingReportingOverflow(lo)
+                let (s2, c2) = s1.addingReportingOverflow(carry)
+                prod[i+j] = s2
+                carry = hi &+ (c1 ? 1 : 0) &+ (c2 ? 1 : 0)
+            }
+            prod[i+3] &+= carry
+        }
+        return (prod[4], prod[5])
+    }
 }
 
 // Multiply 256-bit k by GLV_G2 (66-bit), return bits [256..383]
 func mulScalarByG2(_ k: U256) -> UInt64 {
-    let kv = [k.0, k.1, k.2, k.3]
-    let gv = [GLV_G2.0, GLV_G2.1]
-    let prod = mulSchoolbook(kv, 4, gv, 2)
-    return prod[4]
+    let g = (GLV_G2.0, GLV_G2.1)
+    return withUnsafeTemporaryAllocation(of: UInt64.self, capacity: 6) { prod in
+        for i in 0..<6 { prod[i] = 0 }
+        for i in 0..<4 {
+            let ki = u256at(k, i)
+            var carry: UInt64 = 0
+            for j in 0..<2 {
+                let gj = j == 0 ? g.0 : g.1
+                let (hi, lo) = ki.multipliedFullWidth(by: gj)
+                let (s1, c1) = prod[i+j].addingReportingOverflow(lo)
+                let (s2, c2) = s1.addingReportingOverflow(carry)
+                prod[i+j] = s2
+                carry = hi &+ (c1 ? 1 : 0) &+ (c2 ? 1 : 0)
+            }
+            prod[i+2] &+= carry
+        }
+        return prod[4]
+    }
 }
 
 // Inline 128×128 → 256-bit multiply (no heap allocation)
@@ -641,6 +675,7 @@ class MetalMSM {
     let reduceSortedFunction: MTLComputePipelineState
     let bucketSumDirectFunction: MTLComputePipelineState
     let combineSegmentsFunction: MTLComputePipelineState
+    let endomorphismFunction: MTLComputePipelineState
 
     // Pre-allocated buffers (lazily sized, reused across calls)
     private var maxAllocatedPoints = 0
@@ -678,7 +713,7 @@ class MetalMSM {
         let library: MTLLibrary
         let cacheFile = MetalMSM.cacheDir.appendingPathComponent("bn254.metallib")
 
-        let requiredKernels = ["msm_reduce_sorted_buckets", "msm_bucket_sum_direct", "msm_combine_segments"]
+        let requiredKernels = ["msm_reduce_sorted_buckets", "msm_bucket_sum_direct", "msm_combine_segments", "glv_endomorphism"]
         if FileManager.default.fileExists(atPath: cacheFile.path) {
             do {
                 let cached = try device.makeLibrary(URL: cacheFile)
@@ -697,13 +732,15 @@ class MetalMSM {
 
         guard let reduceSortedFn = library.makeFunction(name: "msm_reduce_sorted_buckets"),
               let sumDirectFn = library.makeFunction(name: "msm_bucket_sum_direct"),
-              let combineFn = library.makeFunction(name: "msm_combine_segments") else {
+              let combineFn = library.makeFunction(name: "msm_combine_segments"),
+              let endoFn = library.makeFunction(name: "glv_endomorphism") else {
             throw MSMError.missingKernel
         }
 
         self.reduceSortedFunction = try device.makeComputePipelineState(function: reduceSortedFn)
         self.bucketSumDirectFunction = try device.makeComputePipelineState(function: sumDirectFn)
         self.combineSegmentsFunction = try device.makeComputePipelineState(function: combineFn)
+        self.endomorphismFunction = try device.makeComputePipelineState(function: endoFn)
     }
 
     /// Compile shader from source and cache the library for next time.
@@ -822,33 +859,48 @@ class MetalMSM {
         // Flat scalar buffer for GLV path (avoids 1M+ array allocations)
         var flatScalarBuf: UnsafeMutablePointer<UInt32>? = nil
 
+        // GLV neg flags for GPU endomorphism kernel
+        var neg1Buf: MTLBuffer? = nil
+        var neg2Buf: MTLBuffer? = nil
+        var glvN: Int = 0
+
         if useGLV && n >= 256 {
             let tGlv = CFAbsoluteTimeGetCurrent()
 
             let buf = UnsafeMutablePointer<UInt32>.allocate(capacity: 2 * n * 8)
             buf.initialize(repeating: 0, count: 2 * n * 8)
             flatScalarBuf = buf
-            var glvPoints = [PointAffine](repeating: PointAffine(x: .zero, y: .zero), count: 2 * n)
 
+            // Allocate neg flags
+            let neg1Flags = UnsafeMutablePointer<UInt8>.allocate(capacity: n)
+            let neg2Flags = UnsafeMutablePointer<UInt8>.allocate(capacity: n)
+
+            // CPU: scalar decomposition only (no fpMul!)
             DispatchQueue.concurrentPerform(iterations: n) { i in
                 scalars[i].withUnsafeBufferPointer { sp in
                     let k1Ptr = buf + (i * 8)
                     let k2Ptr = buf + ((n + i) * 8)
                     let (neg1, neg2) = glvDecompose(sp.baseAddress!, k1Out: k1Ptr, k2Out: k2Ptr)
-                    glvPoints[i] = neg1 ? pointNegateAffine(points[i]) : points[i]
-                    let endoP = applyEndomorphism(points[i])
-                    glvPoints[n + i] = neg2 ? pointNegateAffine(endoP) : endoP
+                    neg1Flags[i] = neg1 ? 1 : 0
+                    neg2Flags[i] = neg2 ? 1 : 0
                 }
             }
 
             let glvTime = CFAbsoluteTimeGetCurrent() - tGlv
             fputs("  glv(\(String(format: "%.0f", glvTime * 1000)))ms, ", stderr)
 
-            msmPoints = glvPoints
+            // Create Metal buffers for neg flags
+            neg1Buf = device.makeBuffer(bytes: neg1Flags, length: n, options: .storageModeShared)
+            neg2Buf = device.makeBuffer(bytes: neg2Flags, length: n, options: .storageModeShared)
+            neg1Flags.deallocate()
+            neg2Flags.deallocate()
+
+            glvN = n
+            // msmPoints stays as original points — GPU will apply endomorphism
             scalarBits = 128
         }
 
-        let effectiveN = msmPoints.count
+        let effectiveN = glvN > 0 ? 2 * glvN : msmPoints.count
 
         // Window selection
         var windowBits: UInt32
@@ -888,10 +940,37 @@ class MetalMSM {
         // --- Phase 1: CPU parallel sort (indices only), then batched GPU reduce ---
         let ts = CFAbsoluteTimeGetCurrent()
 
-        // Copy points to GPU-shared buffer once
+        // Copy points to GPU-shared buffer
         let gpuPtsPtr = pointsBuffer.contents().bindMemory(to: PointAffine.self, capacity: effectiveN)
-        msmPoints.withUnsafeBufferPointer { src in
-            gpuPtsPtr.update(from: src.baseAddress!, count: effectiveN)
+        if glvN > 0 {
+            // GLV: copy only original n points, GPU will generate endomorphism points
+            msmPoints.withUnsafeBufferPointer { src in
+                gpuPtsPtr.update(from: src.baseAddress!, count: glvN)
+            }
+            // Launch GPU endomorphism kernel
+            let tEndo = CFAbsoluteTimeGetCurrent()
+            guard let cmdBuf = commandQueue.makeCommandBuffer(),
+                  let enc = cmdBuf.makeComputeCommandEncoder() else {
+                throw MSMError.gpuError("Failed to create endomorphism command buffer")
+            }
+            enc.setComputePipelineState(endomorphismFunction)
+            enc.setBuffer(pointsBuffer, offset: 0, index: 0)
+            enc.setBuffer(neg1Buf, offset: 0, index: 1)
+            enc.setBuffer(neg2Buf, offset: 0, index: 2)
+            var nVal = UInt32(glvN)
+            enc.setBytes(&nVal, length: 4, index: 3)
+            let tg = min(endomorphismFunction.maxTotalThreadsPerThreadgroup, 256)
+            enc.dispatchThreads(MTLSize(width: glvN, height: 1, depth: 1),
+                              threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+            enc.endEncoding()
+            cmdBuf.commit()
+            cmdBuf.waitUntilCompleted()
+            let endoTime = CFAbsoluteTimeGetCurrent() - tEndo
+            fputs("endo(\(String(format: "%.1f", endoTime * 1000)))ms, ", stderr)
+        } else {
+            msmPoints.withUnsafeBufferPointer { src in
+                gpuPtsPtr.update(from: src.baseAddress!, count: effectiveN)
+            }
         }
 
         // Parallel counting sort across all windows — writes sorted indices (4 bytes each)

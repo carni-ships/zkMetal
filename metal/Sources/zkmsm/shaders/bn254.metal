@@ -534,3 +534,49 @@ kernel void msm_combine_segments(
         window_results[tgid] = shared_buf[0];
     }
 }
+
+// --- GLV Endomorphism Kernel ---
+// Applies φ(P) = (β·x, y) and optional negation for GLV MSM.
+// Reads original points[0..n-1], writes endomorphism points[n..2n-1]
+// and optionally negates original points based on neg1 flags.
+kernel void glv_endomorphism(
+    device PointAffine* points [[buffer(0)]],
+    const device uchar* neg1_flags [[buffer(1)]],
+    const device uchar* neg2_flags [[buffer(2)]],
+    constant uint& n [[buffer(3)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    if (gid >= n) return;
+
+    PointAffine p = points[gid];
+
+    // Apply neg1 to original point
+    if (neg1_flags[gid]) {
+        // -P = (x, p - y)
+        Fp py = fp_modulus();
+        uint borrow;
+        p.y = fp_sub_raw(py, p.y, borrow);
+        points[gid] = p;
+        // Read back the original p for endomorphism (before negation)
+        p.y = fp_sub_raw(fp_modulus(), p.y, borrow); // undo for φ
+    }
+
+    // β in Montgomery form: cube root of unity in Fp
+    Fp beta;
+    beta.v[0] = 0xd782e155u; beta.v[1] = 0x71930c11u;
+    beta.v[2] = 0xffbe3323u; beta.v[3] = 0xa6bb947cu;
+    beta.v[4] = 0xd4741444u; beta.v[5] = 0xaa303344u;
+    beta.v[6] = 0x26594943u; beta.v[7] = 0x2c3b3f0du;
+
+    PointAffine endo;
+    endo.x = fp_mul(beta, p.x);
+
+    if (neg2_flags[gid]) {
+        uint borrow;
+        endo.y = fp_sub_raw(fp_modulus(), p.y, borrow);
+    } else {
+        endo.y = p.y;
+    }
+
+    points[n + gid] = endo;
+}
