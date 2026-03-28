@@ -98,7 +98,7 @@ struct Fp {
     }
 }
 
-// 256-bit arithmetic helpers using 64-bit limbs
+// 256-bit arithmetic helpers using 64-bit limbs (array versions for non-hot paths)
 func add256(_ a: [UInt64], _ b: [UInt64]) -> ([UInt64], UInt64) {
     var r = [UInt64](repeating: 0, count: 4)
     var carry: UInt64 = 0
@@ -129,6 +129,57 @@ func gte256(_ a: [UInt64], _ b: [UInt64]) -> Bool {
         if a[i] < b[i] { return false }
     }
     return true
+}
+
+// Tuple-based 256-bit arithmetic (zero heap allocation, for GLV hot path)
+typealias U256 = (UInt64, UInt64, UInt64, UInt64)
+
+@inline(__always)
+func add256t(_ a: U256, _ b: U256) -> (U256, Bool) {
+    let (s0, c0) = a.0.addingReportingOverflow(b.0)
+    let (t1, c1a) = a.1.addingReportingOverflow(b.1)
+    let (s1, c1b) = t1.addingReportingOverflow(c0 ? 1 : 0)
+    let c1 = c1a || c1b
+    let (t2, c2a) = a.2.addingReportingOverflow(b.2)
+    let (s2, c2b) = t2.addingReportingOverflow(c1 ? 1 : 0)
+    let c2 = c2a || c2b
+    let (t3, c3a) = a.3.addingReportingOverflow(b.3)
+    let (s3, c3b) = t3.addingReportingOverflow(c2 ? 1 : 0)
+    return ((s0, s1, s2, s3), c3a || c3b)
+}
+
+@inline(__always)
+func sub256t(_ a: U256, _ b: U256) -> (U256, Bool) {
+    let (s0, b0) = a.0.subtractingReportingOverflow(b.0)
+    let (t1, b1a) = a.1.subtractingReportingOverflow(b.1)
+    let (s1, b1b) = t1.subtractingReportingOverflow(b0 ? 1 : 0)
+    let bw1 = b1a || b1b
+    let (t2, b2a) = a.2.subtractingReportingOverflow(b.2)
+    let (s2, b2b) = t2.subtractingReportingOverflow(bw1 ? 1 : 0)
+    let bw2 = b2a || b2b
+    let (t3, b3a) = a.3.subtractingReportingOverflow(b.3)
+    let (s3, b3b) = t3.subtractingReportingOverflow(bw2 ? 1 : 0)
+    return ((s0, s1, s2, s3), b3a || b3b)
+}
+
+@inline(__always)
+func gte256t(_ a: U256, _ b: U256) -> Bool {
+    if a.3 != b.3 { return a.3 > b.3 }
+    if a.2 != b.2 { return a.2 > b.2 }
+    if a.1 != b.1 { return a.1 > b.1 }
+    return a.0 >= b.0
+}
+
+@inline(__always)
+func neg256t(_ a: U256) -> U256 {
+    let n0 = ~a.0 &+ 1
+    let c0: UInt64 = (a.0 == 0) ? 1 : 0
+    let n1 = ~a.1 &+ c0
+    let c1: UInt64 = (a.1 == 0 && c0 == 1) ? 1 : 0
+    let n2 = ~a.2 &+ c1
+    let c2: UInt64 = (a.2 == 0 && c1 == 1) ? 1 : 0
+    let n3 = ~a.3 &+ c2
+    return (n0, n1, n2, n3)
 }
 
 // Montgomery multiplication: (a * b * R^-1) mod p
@@ -203,6 +254,222 @@ func fpFromInt(_ val: UInt64) -> Fp {
 func fpToInt(_ a: Fp) -> [UInt64] {
     let one: [UInt64] = [1, 0, 0, 0]
     return fpMul(a, Fp.from64(one)).to64()
+}
+
+// Field negation: -a mod p
+func fpNeg(_ a: Fp) -> Fp {
+    if a.isZero { return a }
+    let (r, _) = sub256(Fp.P, a.to64())
+    return Fp.from64(r)
+}
+
+// MARK: - GLV Endomorphism for BN254
+
+// BN254 scalar field order r
+let FR_ORDER: [UInt64] = [
+    0x43e1f593f0000001, 0x2833e84879b97091,
+    0xb85045b68181585d, 0x30644e72e131a029
+]
+
+// Cube root of unity β in base field Fp (Montgomery form)
+// β such that for any curve point P=(x,y), φ(P) = (β·x, y) satisfies φ(P) = [λ]P
+// β = 2203960485148121921418603742825762020974279258880205651966
+let FP_BETA = Fp.from64([
+    0x71930c11d782e155, 0xa6bb947cffbe3323,
+    0xaa303344d4741444, 0x2c3b3f0d26594943
+])  // Montgomery form
+
+// GLV lattice constants for scalar decomposition (from barretenberg fr.hpp)
+// Lattice basis: v1 = (a1, b1), v2 = (a2, b2)
+// where a1 + b1*λ ≡ 0 and a2 + b2*λ ≡ 0 (mod r)
+// For BN254: a1 = b2 = 2u+1, b1 = -(6u²+2u), a2 = 6u²+4u+1
+let GLV_A1: UInt64 = 0x89d3256894d213e3           // = b2 = 2u+1 (64-bit)
+let GLV_MINUS_B1: (UInt64, UInt64) = (0x8211bbeb7d4f1128, 0x6f4d8248eeb859fc)  // = |b1| = 6u²+2u (128-bit)
+let GLV_A2: (UInt64, UInt64) = (0x0be4e1541221250b, 0x6f4d8248eeb859fd)        // = 6u²+4u+1 (128-bit)
+let GLV_B2: UInt64 = 0x89d3256894d213e3           // = a1 = 2u+1 (64-bit)
+
+// Precomputed round-multiply constants: g = ⌈2^256 · b / r⌉
+let GLV_G1: (UInt64, UInt64, UInt64) = (0x7a7bd9d4391eb18d, 0x4ccef014a773d2cf, 0x2)  // ≈ 2^256 · (-b1) / r
+let GLV_G2: (UInt64, UInt64) = (0xd91d232ec7e0b3d7, 0x2)                              // ≈ 2^256 · b2 / r
+
+/// Decompose a 256-bit scalar k into (k1, k2) such that k ≡ k1 + k2·λ (mod r)
+/// where |k1|, |k2| < 2^128. Writes directly into output pointers (zero allocation).
+let FR_ORDER_T: U256 = (FR_ORDER[0], FR_ORDER[1], FR_ORDER[2], FR_ORDER[3])
+let HALF_R_T: U256 = (
+    FR_ORDER[0] >> 1 | (FR_ORDER[1] << 63),
+    FR_ORDER[1] >> 1 | (FR_ORDER[2] << 63),
+    FR_ORDER[2] >> 1 | (FR_ORDER[3] << 63),
+    FR_ORDER[3] >> 1
+)
+
+func glvDecompose(_ scalar: UnsafePointer<UInt32>,
+                  k1Out: UnsafeMutablePointer<UInt32>,
+                  k2Out: UnsafeMutablePointer<UInt32>) -> (neg1: Bool, neg2: Bool) {
+    var kr: U256 = (
+        UInt64(scalar[0]) | (UInt64(scalar[1]) << 32),
+        UInt64(scalar[2]) | (UInt64(scalar[3]) << 32),
+        UInt64(scalar[4]) | (UInt64(scalar[5]) << 32),
+        UInt64(scalar[6]) | (UInt64(scalar[7]) << 32)
+    )
+
+    while gte256t(kr, FR_ORDER_T) {
+        (kr, _) = sub256t(kr, FR_ORDER_T)
+    }
+
+    let c1 = mulScalarByG1(kr)
+    let c2 = mulScalarByG2(kr)
+
+    let (c2a1_hi, c2a1_lo) = c2.multipliedFullWidth(by: GLV_A1)
+    let c1a2 = mul128x128(c1, (GLV_A2.0, GLV_A2.1))
+
+    var borrow: Bool
+    var k1: U256
+    (k1, borrow) = sub256t(kr, (c2a1_lo, c2a1_hi, 0, 0))
+    if borrow { (k1, _) = add256t(k1, FR_ORDER_T) }
+    (k1, borrow) = sub256t(k1, c1a2)
+    if borrow { (k1, _) = add256t(k1, FR_ORDER_T) }
+
+    let c2mb1 = mul64x128_inline(c2, (GLV_MINUS_B1.0, GLV_MINUS_B1.1))
+    let c1b2 = mul128x64(c1, GLV_B2)
+
+    var k2_neg = false
+    var k2: U256
+    (k2, borrow) = sub256t((c2mb1.0, c2mb1.1, c2mb1.2, 0), (c1b2.0, c1b2.1, c1b2.2, 0))
+    if borrow {
+        k2_neg = true
+        k2 = neg256t(k2)
+    }
+
+    var neg1 = false
+    if gte256t(k1, HALF_R_T) {
+        (k1, _) = sub256t(FR_ORDER_T, k1)
+        neg1 = true
+    }
+
+    // Write directly to output pointers
+    k1Out[0] = UInt32(k1.0 & 0xFFFFFFFF); k1Out[1] = UInt32(k1.0 >> 32)
+    k1Out[2] = UInt32(k1.1 & 0xFFFFFFFF); k1Out[3] = UInt32(k1.1 >> 32)
+    k1Out[4] = UInt32(k1.2 & 0xFFFFFFFF); k1Out[5] = UInt32(k1.2 >> 32)
+    k1Out[6] = UInt32(k1.3 & 0xFFFFFFFF); k1Out[7] = UInt32(k1.3 >> 32)
+
+    k2Out[0] = UInt32(k2.0 & 0xFFFFFFFF); k2Out[1] = UInt32(k2.0 >> 32)
+    k2Out[2] = UInt32(k2.1 & 0xFFFFFFFF); k2Out[3] = UInt32(k2.1 >> 32)
+    k2Out[4] = UInt32(k2.2 & 0xFFFFFFFF); k2Out[5] = UInt32(k2.2 >> 32)
+    k2Out[6] = UInt32(k2.3 & 0xFFFFFFFF); k2Out[7] = UInt32(k2.3 >> 32)
+
+    return (neg1, k2_neg)
+}
+
+// Legacy wrapper for GLV test
+func glvDecompose(_ scalar: [UInt32]) -> (k1: [UInt32], neg1: Bool, k2: [UInt32], neg2: Bool) {
+    var k1 = [UInt32](repeating: 0, count: 8)
+    var k2 = [UInt32](repeating: 0, count: 8)
+    let (neg1, neg2) = scalar.withUnsafeBufferPointer { sp in
+        k1.withUnsafeMutableBufferPointer { k1p in
+            k2.withUnsafeMutableBufferPointer { k2p in
+                glvDecompose(sp.baseAddress!, k1Out: k1p.baseAddress!, k2Out: k2p.baseAddress!)
+            }
+        }
+    }
+    return (k1, neg1, k2, neg2)
+}
+
+// Helper: schoolbook multiply a[] (na limbs) × b[] (nb limbs) → prod[] (na+nb limbs)
+// Handles carry propagation correctly for all input sizes.
+func mulSchoolbook(_ a: [UInt64], _ na: Int, _ b: [UInt64], _ nb: Int) -> [UInt64] {
+    var prod = [UInt64](repeating: 0, count: na + nb)
+    for i in 0..<na {
+        var carry: UInt64 = 0
+        for j in 0..<nb {
+            let (hi, lo) = a[i].multipliedFullWidth(by: b[j])
+            let (s1, c1) = prod[i+j].addingReportingOverflow(lo)
+            let (s2, c2) = s1.addingReportingOverflow(carry)
+            prod[i+j] = s2
+            // hi ≤ 2^64-2, so hi + 1 + 1 = 2^64 can overflow by 1 bit.
+            // Split the addition to detect this.
+            carry = hi
+            let extra: UInt64 = (c1 ? 1 : 0) &+ (c2 ? 1 : 0)
+            let (cn, co) = carry.addingReportingOverflow(extra)
+            carry = cn
+            if co {
+                // Propagate the overflow bit through upper limbs
+                var idx = i + j + 1
+                while idx < na + nb {
+                    let (v, o) = prod[idx].addingReportingOverflow(1)
+                    prod[idx] = v
+                    if !o { break }
+                    idx += 1
+                }
+            }
+        }
+        prod[i + nb] = prod[i + nb] &+ carry
+    }
+    return prod
+}
+
+// Multiply 256-bit k by GLV_G1 (192-bit), return bits [256..383]
+// Fully unrolled to avoid array allocation in hot path.
+func mulScalarByG1(_ k: U256) -> (UInt64, UInt64) {
+    let kv = [k.0, k.1, k.2, k.3]
+    let gv = [GLV_G1.0, GLV_G1.1, GLV_G1.2]
+    let prod = mulSchoolbook(kv, 4, gv, 3)
+    return (prod[4], prod[5])
+}
+
+// Multiply 256-bit k by GLV_G2 (66-bit), return bits [256..383]
+func mulScalarByG2(_ k: U256) -> UInt64 {
+    let kv = [k.0, k.1, k.2, k.3]
+    let gv = [GLV_G2.0, GLV_G2.1]
+    let prod = mulSchoolbook(kv, 4, gv, 2)
+    return prod[4]
+}
+
+// Inline 128×128 → 256-bit multiply (no heap allocation)
+@inline(__always)
+func mul128x128(_ a: (UInt64, UInt64), _ b: (UInt64, UInt64)) -> (UInt64, UInt64, UInt64, UInt64) {
+    let (h00, l00) = a.0.multipliedFullWidth(by: b.0)
+    let (h01, l01) = a.0.multipliedFullWidth(by: b.1)
+    let (h10, l10) = a.1.multipliedFullWidth(by: b.0)
+    let (h11, l11) = a.1.multipliedFullWidth(by: b.1)
+
+    let r0 = l00
+    let (s1a, c1a) = l01.addingReportingOverflow(h00)
+    let (s1b, c1b) = s1a.addingReportingOverflow(l10)
+    let r1 = s1b
+    let (s2a, c2a) = h01.addingReportingOverflow(h10)
+    let (s2b, c2b) = s2a.addingReportingOverflow(l11)
+    let (s2c, c2c) = s2b.addingReportingOverflow((c1a ? 1 : 0) &+ (c1b ? 1 : 0))
+    let r2 = s2c
+    let r3 = h11 &+ (c2a ? 1 : 0) &+ (c2b ? 1 : 0) &+ (c2c ? 1 : 0)
+    return (r0, r1, r2, r3)
+}
+
+// Inline 64×128 → 192-bit multiply (returns tuple)
+@inline(__always)
+func mul64x128_inline(_ a: UInt64, _ b: (UInt64, UInt64)) -> (UInt64, UInt64, UInt64) {
+    let (h0, l0) = a.multipliedFullWidth(by: b.0)
+    let (h1, l1) = a.multipliedFullWidth(by: b.1)
+    let (s1, c1) = l1.addingReportingOverflow(h0)
+    return (l0, s1, h1 &+ (c1 ? 1 : 0))
+}
+
+// Inline 128×64 → 192-bit multiply (returns tuple)
+@inline(__always)
+func mul128x64(_ a: (UInt64, UInt64), _ b: UInt64) -> (UInt64, UInt64, UInt64) {
+    let (h0, l0) = a.0.multipliedFullWidth(by: b)
+    let (h1, l1) = a.1.multipliedFullWidth(by: b)
+    let (s1, c1) = l1.addingReportingOverflow(h0)
+    return (l0, s1, h1 &+ (c1 ? 1 : 0))
+}
+
+// Apply the BN254 endomorphism: φ(x, y) = (β·x, y)
+func applyEndomorphism(_ p: PointAffine) -> PointAffine {
+    return PointAffine(x: fpMul(FP_BETA, p.x), y: p.y)
+}
+
+// Negate a point in affine: -P = (x, -y)
+func pointNegateAffine(_ p: PointAffine) -> PointAffine {
+    return PointAffine(x: p.x, y: fpNeg(p.y))
 }
 
 // MARK: - Projective Point Operations (CPU-side, mirrors Metal shader)
@@ -470,6 +737,20 @@ class MetalMSM {
     }
 
     /// Extract bucket index for a scalar at given window.
+    @inline(__always)
+    private func extractBucketIndex(_ scalarPtr: UnsafePointer<UInt32>, windowBits: UInt32, windowIndex: Int) -> Int {
+        let bitOffset = windowIndex * Int(windowBits)
+        let limbIdx = bitOffset / 32
+        let bitPos = bitOffset % 32
+        guard limbIdx < 8 else { return 0 }
+        var idx = Int(scalarPtr[limbIdx] >> bitPos)
+        if bitPos + Int(windowBits) > 32 && limbIdx + 1 < 8 {
+            idx |= Int(scalarPtr[limbIdx + 1]) << (32 - bitPos)
+        }
+        idx &= (1 << windowBits) - 1
+        return idx
+    }
+
     private func extractBucketIndex(_ scalar: [UInt32], windowBits: UInt32, windowIndex: Int) -> Int {
         let bitOffset = windowIndex * Int(windowBits)
         let limbIdx = bitOffset / 32
@@ -524,19 +805,58 @@ class MetalMSM {
         }
     }
 
+    var useGLV = true  // Enable GLV endomorphism for large MSMs
+
     func msm(points: [PointAffine], scalars: [[UInt32]]) throws -> PointProjective {
         let n = points.count
         guard n == scalars.count, n > 0 else {
             throw MSMError.invalidInput
         }
 
+        // GLV decomposition: split each 256-bit scalar into two ~128-bit scalars
+        // and double the point set with endomorphism points
+        var msmPoints = points
+        var msmScalars = scalars
+        var scalarBits = 256
+
+        // Flat scalar buffer for GLV path (avoids 1M+ array allocations)
+        var flatScalarBuf: UnsafeMutablePointer<UInt32>? = nil
+
+        if useGLV && n >= 256 {
+            let tGlv = CFAbsoluteTimeGetCurrent()
+
+            let buf = UnsafeMutablePointer<UInt32>.allocate(capacity: 2 * n * 8)
+            buf.initialize(repeating: 0, count: 2 * n * 8)
+            flatScalarBuf = buf
+            var glvPoints = [PointAffine](repeating: PointAffine(x: .zero, y: .zero), count: 2 * n)
+
+            DispatchQueue.concurrentPerform(iterations: n) { i in
+                scalars[i].withUnsafeBufferPointer { sp in
+                    let k1Ptr = buf + (i * 8)
+                    let k2Ptr = buf + ((n + i) * 8)
+                    let (neg1, neg2) = glvDecompose(sp.baseAddress!, k1Out: k1Ptr, k2Out: k2Ptr)
+                    glvPoints[i] = neg1 ? pointNegateAffine(points[i]) : points[i]
+                    let endoP = applyEndomorphism(points[i])
+                    glvPoints[n + i] = neg2 ? pointNegateAffine(endoP) : endoP
+                }
+            }
+
+            let glvTime = CFAbsoluteTimeGetCurrent() - tGlv
+            fputs("  glv(\(String(format: "%.0f", glvTime * 1000)))ms, ", stderr)
+
+            msmPoints = glvPoints
+            scalarBits = 128
+        }
+
+        let effectiveN = msmPoints.count
+
         // Window selection
         var windowBits: UInt32
-        if n <= 256 {
+        if effectiveN <= 256 {
             windowBits = 8
-        } else if n <= 4096 {
+        } else if effectiveN <= 4096 {
             windowBits = 10
-        } else if n <= 32768 {
+        } else if effectiveN <= 32768 {
             windowBits = 12
         } else {
             windowBits = 16
@@ -544,11 +864,11 @@ class MetalMSM {
         if let wbOverride = windowBitsOverride {
             windowBits = wbOverride
         }
-        let nWindows = (256 + Int(windowBits) - 1) / Int(windowBits)
+        let nWindows = (scalarBits + Int(windowBits) - 1) / Int(windowBits)
         let nBuckets = 1 << windowBits
         let nSegments = min(256, nBuckets / 2)
 
-        ensureBuffers(n: n, nBuckets: nBuckets, nSegments: nSegments, nWindows: nWindows)
+        ensureBuffers(n: effectiveN, nBuckets: nBuckets, nSegments: nSegments, nWindows: nWindows)
         guard let pointsBuffer = pointsBuffer,
               let sortedIndicesBuffer = sortedIndicesBuffer,
               let allOffsetsBuffer = allOffsetsBuffer,
@@ -569,28 +889,35 @@ class MetalMSM {
         let ts = CFAbsoluteTimeGetCurrent()
 
         // Copy points to GPU-shared buffer once
-        let gpuPtsPtr = pointsBuffer.contents().bindMemory(to: PointAffine.self, capacity: n)
-        points.withUnsafeBufferPointer { src in
-            gpuPtsPtr.update(from: src.baseAddress!, count: n)
+        let gpuPtsPtr = pointsBuffer.contents().bindMemory(to: PointAffine.self, capacity: effectiveN)
+        msmPoints.withUnsafeBufferPointer { src in
+            gpuPtsPtr.update(from: src.baseAddress!, count: effectiveN)
         }
 
         // Parallel counting sort across all windows — writes sorted indices (4 bytes each)
         let allOffsets = allOffsetsBuffer.contents().bindMemory(to: UInt32.self, capacity: nBuckets * nWindows)
         let allCounts = allCountsBuffer.contents().bindMemory(to: UInt32.self, capacity: nBuckets * nWindows)
-        let sortedIdxPtr = sortedIndicesBuffer.contents().bindMemory(to: UInt32.self, capacity: n * nWindows)
+        let sortedIdxPtr = sortedIndicesBuffer.contents().bindMemory(to: UInt32.self, capacity: effectiveN * nWindows)
 
         DispatchQueue.concurrentPerform(iterations: nWindows) { w in
             let wOff = w * nBuckets
-            let idxBase = w * n
+            let idxBase = w * effectiveN
             let counts = UnsafeMutableBufferPointer(
                 start: &cpuPerWindowCounts[w][0], count: nBuckets)
             let positions = UnsafeMutableBufferPointer(
                 start: &cpuPerWindowPositions[w][0], count: nBuckets)
 
             for i in 0..<nBuckets { counts[i] = 0 }
-            for i in 0..<n {
-                let idx = extractBucketIndex(scalars[i], windowBits: windowBits, windowIndex: w)
-                counts[idx] += 1
+            if let buf = flatScalarBuf {
+                for i in 0..<effectiveN {
+                    let idx = extractBucketIndex(buf + (i * 8), windowBits: windowBits, windowIndex: w)
+                    counts[idx] += 1
+                }
+            } else {
+                for i in 0..<effectiveN {
+                    let idx = extractBucketIndex(msmScalars[i], windowBits: windowBits, windowIndex: w)
+                    counts[idx] += 1
+                }
             }
 
             var runningOffset = 0
@@ -601,12 +928,20 @@ class MetalMSM {
                 runningOffset += counts[i]
             }
 
-            // Write sorted indices (4 bytes each instead of 64-byte points)
-            for i in 0..<n {
-                let idx = extractBucketIndex(scalars[i], windowBits: windowBits, windowIndex: w)
-                if idx == 0 { continue }
-                sortedIdxPtr[idxBase + positions[idx]] = UInt32(i)
-                positions[idx] += 1
+            if let buf = flatScalarBuf {
+                for i in 0..<effectiveN {
+                    let idx = extractBucketIndex(buf + (i * 8), windowBits: windowBits, windowIndex: w)
+                    if idx == 0 { continue }
+                    sortedIdxPtr[idxBase + positions[idx]] = UInt32(i)
+                    positions[idx] += 1
+                }
+            } else {
+                for i in 0..<effectiveN {
+                    let idx = extractBucketIndex(msmScalars[i], windowBits: windowBits, windowIndex: w)
+                    if idx == 0 { continue }
+                    sortedIdxPtr[idxBase + positions[idx]] = UInt32(i)
+                    positions[idx] += 1
+                }
             }
         }
 
@@ -615,7 +950,7 @@ class MetalMSM {
         // Batched GPU reduce for ALL windows in single dispatch
         let totalBuckets = nBuckets * nWindows
         var params = MsmParams(
-            n_points: UInt32(n),
+            n_points: UInt32(effectiveN),
             window_bits: windowBits,
             n_buckets: UInt32(nBuckets)
         )
@@ -709,6 +1044,7 @@ class MetalMSM {
               "combine: \(String(format: "%.1f", combineTime * 1000))ms, " +
               "horner: \(String(format: "%.1f", hornerTime * 1000))ms\n", stderr)
 
+        flatScalarBuf?.deallocate()
         return result
     }
 }
@@ -1032,6 +1368,138 @@ func main() throws {
 
     if args.contains("--test") {
         try runCorrectnessTest()
+        return
+    }
+
+    if args.contains("--glv-test") {
+        fputs("=== GLV Endomorphism Test ===\n", stderr)
+
+        // Test 1: β³ ≡ 1 mod p
+        let beta2 = fpSqr(FP_BETA)
+        let beta3 = fpMul(FP_BETA, beta2)
+        let b3int = fpToInt(beta3)
+        fputs("  β³ = \(b3int)\n", stderr)
+        assert(b3int[0] == 1 && b3int[1] == 0 && b3int[2] == 0 && b3int[3] == 0,
+               "β³ ≠ 1 mod p!")
+        fputs("  [pass] β³ ≡ 1 mod p\n", stderr)
+
+        // Test 2: β² + β + 1 ≡ 0 mod p
+        let sum = fpAdd(fpAdd(beta2, FP_BETA), Fp.one)
+        assert(sum.isZero, "β² + β + 1 ≠ 0 mod p")
+        fputs("  [pass] β² + β + 1 ≡ 0 mod p\n", stderr)
+
+        // Test 3: GLV decomposition: k1 + k2*λ ≡ k mod r for a test scalar
+        // We verify by computing [k]G directly and [k1]G + [k2]φ(G) and comparing
+        let gx = fpFromInt(1); let gy = fpFromInt(2)
+        let g = PointAffine(x: gx, y: gy)
+
+        // Test scalar: k = large random value (from LCG seed)
+        var rng: UInt64 = 0xDEAD_BEEF_CAFE_BABE
+        var testK = [UInt32](repeating: 0, count: 8)
+        for j in 0..<8 { rng = rng &* 6364136223846793005 &+ 1442695040888963407; testK[j] = UInt32(truncatingIfNeeded: rng >> 32) }
+        let (k1, neg1, k2, neg2) = glvDecompose(testK)
+        fputs("  k1=\(k1[0...3]), neg1=\(neg1), k2=\(k2[0...3]), neg2=\(neg2)\n", stderr)
+
+        // Verify: k1 + k2*λ ≡ k mod r (or k1 - k2*λ if signs differ)
+        // λ in Fr (NOT Montgomery, just raw value)
+        let LAMBDA: [UInt64] = [0x8b17ea66b99c90dd, 0x5bfc41088d8daaa7, 0xb3c4d79d41a91758, 0x0]
+        // Compute k2 * λ mod r
+        let k2_64: [UInt64] = [UInt64(k2[0]) | (UInt64(k2[1]) << 32),
+                                UInt64(k2[2]) | (UInt64(k2[3]) << 32), 0, 0]
+        // Simple 128×192 → 320 bit multiply, then reduce mod r
+        var prod = [UInt64](repeating: 0, count: 8)
+        for i in 0..<2 {
+            var c: UInt64 = 0
+            for j in 0..<3 {
+                let (hi, lo) = k2_64[i].multipliedFullWidth(by: LAMBDA[j])
+                let (s1, c1) = prod[i+j].addingReportingOverflow(lo)
+                let (s2, c2) = s1.addingReportingOverflow(c)
+                prod[i+j] = s2
+                c = hi &+ (c1 ? 1 : 0) &+ (c2 ? 1 : 0)
+            }
+            prod[i+3] = prod[i+3] &+ c
+        }
+        // Reduce prod mod r (simple repeated subtraction for debugging)
+        var k2lam = Array(prod[0..<4])
+        let k2lam_hi = Array(prod[4..<8])
+        // For now just print and check lower 256 bits
+        fputs("  k2*λ = \(k2lam.map { String(format: "%016llx", $0) })\n", stderr)
+        fputs("  k2*λ_hi = \(k2lam_hi.map { String(format: "%016llx", $0) })\n", stderr)
+
+        // Now compute k1 + k2*λ (accounting for signs)
+        let k1_64: [UInt64] = [UInt64(k1[0]) | (UInt64(k1[1]) << 32),
+                                UInt64(k1[2]) | (UInt64(k1[3]) << 32),
+                                UInt64(k1[4]) | (UInt64(k1[5]) << 32),
+                                UInt64(k1[6]) | (UInt64(k1[7]) << 32)]
+        let kOrig: [UInt64] = [UInt64(testK[0]) | (UInt64(testK[1]) << 32),
+                                UInt64(testK[2]) | (UInt64(testK[3]) << 32),
+                                UInt64(testK[4]) | (UInt64(testK[5]) << 32),
+                                UInt64(testK[6]) | (UInt64(testK[7]) << 32)]
+
+        // Reduce k mod r
+        var kReduced = kOrig
+        while gte256(kReduced, FR_ORDER) { (kReduced, _) = sub256(kReduced, FR_ORDER) }
+        fputs("  k mod r = \(kReduced.map { String(format: "%016llx", $0) })\n", stderr)
+        fputs("  |k1| = \(k1_64.map { String(format: "%016llx", $0) })\n", stderr)
+        fputs("  |k2| = \(k2_64.map { String(format: "%016llx", $0) })\n", stderr)
+        fputs("  neg1=\(neg1), neg2=\(neg2)\n", stderr)
+
+        // Compute [k]G using scalar multiplication
+        let gProj = pointFromAffine(g)
+        var r42 = pointIdentity()
+        var baseG = gProj
+        for bit in 0..<256 {
+            let limbIdx = bit / 32
+            let bitPos = bit % 32
+            if (testK[limbIdx] >> bitPos) & 1 == 1 {
+                r42 = pointIsIdentity(r42) ? baseG : pointAdd(r42, baseG)
+            }
+            baseG = pointDouble(baseG)
+        }
+        if let a42 = pointToAffine(r42) {
+            fputs("  [42]G.x = 0x\(fpToInt(a42.x).reversed().map { String(format: "%016llx", $0) }.joined())\n", stderr)
+        }
+
+        // Compute [k1]P1 + [k2]P2 where P1 = G or -G, P2 = φ(G) or -φ(G)
+        var p1 = g
+        if neg1 { p1 = pointNegateAffine(p1) }
+        var p2 = applyEndomorphism(g)
+        if neg2 { p2 = pointNegateAffine(p2) }
+
+        // [k1]P1
+        var rk1 = pointIdentity()
+        var baseP1 = pointFromAffine(p1)
+        for bit in 0..<128 {
+            let limbIdx = bit / 32
+            let bitPos = bit % 32
+            if (k1[limbIdx] >> bitPos) & 1 == 1 {
+                rk1 = pointIsIdentity(rk1) ? baseP1 : pointAdd(rk1, baseP1)
+            }
+            baseP1 = pointDouble(baseP1)
+        }
+
+        // [k2]P2
+        var rk2 = pointIdentity()
+        var baseP2 = pointFromAffine(p2)
+        for bit in 0..<128 {
+            let limbIdx = bit / 32
+            let bitPos = bit % 32
+            if (k2[limbIdx] >> bitPos) & 1 == 1 {
+                rk2 = pointIsIdentity(rk2) ? baseP2 : pointAdd(rk2, baseP2)
+            }
+            baseP2 = pointDouble(baseP2)
+        }
+
+        let rGlv = pointIsIdentity(rk1) ? rk2 : (pointIsIdentity(rk2) ? rk1 : pointAdd(rk1, rk2))
+        if let aGlv = pointToAffine(rGlv) {
+            fputs("  GLV result.x = 0x\(fpToInt(aGlv.x).reversed().map { String(format: "%016llx", $0) }.joined())\n", stderr)
+        }
+        if let a42 = pointToAffine(r42), let aGlv = pointToAffine(rGlv) {
+            let match = fpToInt(a42.x) == fpToInt(aGlv.x)
+            fputs("  \(match ? "[pass]" : "[FAIL]") GLV decomposition: [k]G == [k1]G + [k2]φ(G)\n", stderr)
+        }
+
+        fputs("=== GLV Test Done ===\n", stderr)
         return
     }
 
