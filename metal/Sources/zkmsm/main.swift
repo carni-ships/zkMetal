@@ -626,10 +626,7 @@ class MetalMSM {
             throw MSMError.noCommandBuffer
         }
 
-        let blit = cb1.makeBlitCommandEncoder()!
-        blit.fill(buffer: bucketsBuffer, range: 0..<(bucketStride * totalBuckets), value: 0)
-        blit.endEncoding()
-
+        // No blit fill needed: reduce kernel writes every bucket (identity or sum)
         let enc1 = cb1.makeComputeCommandEncoder()!
         enc1.setComputePipelineState(reduceSortedFunction)
         enc1.setBuffer(pointsBuffer, offset: 0, index: 0)
@@ -655,10 +652,7 @@ class MetalMSM {
         }
 
         let totalSegments = nSegments * nWindows
-        let blit2 = cb2.makeBlitCommandEncoder()!
-        blit2.fill(buffer: segmentResultsBuffer, range: 0..<(bucketStride * totalSegments), value: 0)
-        blit2.endEncoding()
-
+        // No blit fill needed: bucket_sum kernel writes every segment result
         var nSegs = UInt32(nSegments)
 
         let enc2 = cb2.makeComputeCommandEncoder()!
