@@ -2,10 +2,8 @@
 \PassOptionsToPackage{unicode}{hyperref}
 \PassOptionsToPackage{hyphens}{url}
 \documentclass[
-  11pt,
 ]{article}
 \usepackage{xcolor}
-\usepackage[margin=1in]{geometry}
 \usepackage{amsmath,amssymb}
 \setcounter{secnumdepth}{-\maxdimen} % remove section numbering
 \usepackage{iftex}
@@ -97,19 +95,10 @@
   hidelinks,
   pdfcreator={LaTeX via pandoc}}
 
-\title{UltraHonk Prover Optimization Report}
-\usepackage{etoolbox}
-\makeatletter
-\providecommand{\subtitle}[1]{% add subtitle to \maketitle
-  \apptocmd{\@title}{\par {\large #1 \par}}{}{}
-}
-\makeatother
-\subtitle{Apple Silicon M3 Pro}
 \author{}
-\date{March 2026}
+\date{}
 
 \begin{document}
-\maketitle
 
 \section{UltraHonk Prover Optimization Report --- Apple Silicon M3
 Pro}\label{ultrahonk-prover-optimization-report-apple-silicon-m3-pro}
@@ -117,7 +106,7 @@ Pro}\label{ultrahonk-prover-optimization-report-apple-silicon-m3-pro}
 \textbf{Target:} Barretenberg UltraHonk prover for 428K-gate circuit
 (persistia\_incremental) \textbf{Platform:} Apple M3 Pro (12-core CPU,
 18-core GPU), macOS, Metal GPU \textbf{Period:} 2026-03-28 through
-2026-03-31 (13 optimization sessions)
+2026-03-31 (14 optimization sessions)
 
 \begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
 
@@ -132,21 +121,21 @@ Metric & Before & After & Improvement \\
 \bottomrule\noalign{}
 \endlastfoot
 \textbf{Prove time (cold, precomputed VK)} & 3,850ms &
-\textasciitilde870ms & \textbf{-77\%} \\
+\textasciitilde855ms & \textbf{-78\%} \\
 \textbf{Prove time (cached, precomputed VK)} & --- &
-\textasciitilde810ms & --- \\
+\textasciitilde795ms & --- \\
 \textbf{GPU MSM (201K points)} & 267ms & 55ms & \textbf{-79\%} \\
-\textbf{create\_circuit} & 252ms & 108ms & \textbf{-57\%} \\
+\textbf{create\_circuit} & 252ms & 93ms & \textbf{-63\%} \\
 \textbf{ProverInstance (cached)} & 75ms & 16ms & \textbf{-79\%} \\
-\textbf{Peak memory} & \textasciitilde500 MiB & \textasciitilde318 MiB &
-\textbf{-36\%} \\
+\textbf{Peak memory} & \textasciitilde500 MiB & \textasciitilde308 MiB &
+\textbf{-38\%} \\
 \end{longtable}
 }
 
 \begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
 
 \subsection{Prove Time Breakdown (Final Profile,
-\textasciitilde969ms)}\label{prove-time-breakdown-final-profile-969ms}
+\textasciitilde955ms)}\label{prove-time-breakdown-final-profile-955ms}
 
 {\def\LTcaptype{none} % do not increment counter
 \begin{longtable}[]{@{}lrrl@{}}
@@ -156,22 +145,22 @@ Component & Time (ms) & \% & Bound By \\
 \endhead
 \bottomrule\noalign{}
 \endlastfoot
-OinkProver (GPU MSMs) & 316 & 32\% & GPU throughput \\
+OinkProver (GPU MSMs) & 316 & 33\% & GPU throughput \\
 Sumcheck & 145 & 15\% & CPU compute \\
-create\_circuit & 108 & 11\% & CPU + memory \\
+create\_circuit & 93 & 10\% & CPU + memory \\
 Gemini folds (GPU) & 84 & 9\% & GPU throughput \\
 ProverInstance & 70 & 7\% & CPU trace \\
 Shplonk quotient & 62 & 6\% & CPU compute \\
 CommitmentKey commit (GPU) & 62 & 6\% & GPU throughput \\
 KZG commit (GPU) & 52 & 5\% & GPU throughput \\
 compute\_batched & 23 & 2\% & CPU bandwidth \\
-Other overhead & \textasciitilde47 & 5\% & Various \\
+Other overhead & \textasciitilde48 & 5\% & Various \\
 \end{longtable}
 }
 
-\textbf{GPU total: \textasciitilde514ms (53\%)} \textbar{} \textbf{CPU
-total: \textasciitilde408ms (42\%)} \textbar{} \textbf{Overhead:
-\textasciitilde47ms (5\%)}
+\textbf{GPU total: \textasciitilde514ms (54\%)} \textbar{} \textbf{CPU
+total: \textasciitilde393ms (41\%)} \textbar{} \textbf{Overhead:
+\textasciitilde48ms (5\%)}
 
 \begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
 
@@ -282,6 +271,8 @@ A\_0\_pos direct copy & \textasciitilde5ms & Avoid zero-init +
 accumulate pattern \\
 \textbf{Circuit builder preallocation} & \textbf{143ms} & reserve() for
 variables + block vectors before build\_constraints \\
+\textbf{Batch Poseidon2 permutation} & \textbf{14ms} & Pre-compute
+native states + batch add\_variables + batch gate creation \\
 \end{longtable}
 }
 
@@ -486,9 +477,21 @@ The prover is now within \textasciitilde15-20\% of theoretical hardware
 limits:
 
 {\def\LTcaptype{none} % do not increment counter
-\begin{longtable}[]{@{}lrrr@{}}
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\linewidth - 6\tabcolsep) * \real{0.2000}}
+  >{\raggedleft\arraybackslash}p{(\linewidth - 6\tabcolsep) * \real{0.2667}}
+  >{\raggedleft\arraybackslash}p{(\linewidth - 6\tabcolsep) * \real{0.2667}}
+  >{\raggedleft\arraybackslash}p{(\linewidth - 6\tabcolsep) * \real{0.2667}}@{}}
 \toprule\noalign{}
-Component & Current & Theoretical Min & Gap \\
+\begin{minipage}[b]{\linewidth}\raggedright
+Component
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+Current
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+Theoretical Min
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+Gap
+\end{minipage} \\
 \midrule\noalign{}
 \endhead
 \bottomrule\noalign{}
@@ -496,8 +499,8 @@ Component & Current & Theoretical Min & Gap \\
 GPU MSMs (total) & 514ms & \textasciitilde400ms & 22\% (occupancy,
 dispatch) \\
 Sumcheck & 145ms & \textasciitilde120ms & 17\% (bandwidth ceiling) \\
-create\_circuit & 108ms & \textasciitilde60ms & 44\% (native Poseidon2
-field ops) \\
+create\_circuit & 93ms & \textasciitilde60ms & 35\% (per-gate overhead,
+virtual dispatch) \\
 Shplonk & 62ms & \textasciitilde50ms & 19\% \\
 \end{longtable}
 }
@@ -505,9 +508,7 @@ Shplonk & 62ms & \textasciitilde50ms & 19\% \\
 \textbf{Further gains require:} - Hardware: M4 Pro/Max with more GPU
 cores (2x GPU MSM improvement expected) - Protocol: Fewer commitment
 rounds or different PCS (would eliminate GPU round-trips) - Algorithm:
-Different MSM bucket reduction strategy (currently 80\%+ of MSM time) -
-Batch Poseidon2: \textasciitilde30ms potential from separating native
-compute from circuit building (medium-effort refactor)
+Different MSM bucket reduction strategy (currently 80\%+ of MSM time)
 
 \begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
 
@@ -536,8 +537,8 @@ Prover flow & 5 & OinkProver async, skip\_imbalance, wire commit \\
 Commitment schemes & 4 & Gemini, Shplonk, KZG timing removal +
 optimizations \\
 Polynomials & 3 & DontZeroMemory, Horner evaluate, share() \\
-Circuit builder & 3 & reserve\_variables, block reserve,
-preallocation \\
+Circuit builder & 6 & reserve\_variables, block reserve, preallocation,
+batch Poseidon2 \\
 Trace/ProverInstance & 4 & DontZeroMemory, PrecomputedCache,
 populate\_wires\_only \\
 ACIR/DSL & 1 & Pre-allocate in create\_circuit \\
