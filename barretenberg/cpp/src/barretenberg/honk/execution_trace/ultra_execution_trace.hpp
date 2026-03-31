@@ -210,6 +210,28 @@ class UltraTracePoseidon2InternalBlock : public UltraTraceBlock {
         gate_selector.emplace_back(value);
     }
 
+    /**
+     * @brief Batch set gate selectors for count active gates + 1 propagate gate.
+     * @details Avoids per-row virtual dispatch on zero selectors by bulk-resizing them.
+     */
+    void set_gate_selectors_batch(size_t active_count)
+    {
+        const size_t total = active_count + 1; // active gates + 1 propagate gate
+        // All zero gate selectors just need size incremented
+        q_lookup().resize(q_lookup().size() + total);
+        q_arith().resize(q_arith().size() + total);
+        q_delta_range().resize(q_delta_range().size() + total);
+        q_elliptic().resize(q_elliptic().size() + total);
+        q_memory().resize(q_memory().size() + total);
+        q_nnf().resize(q_nnf().size() + total);
+        q_poseidon2_external().resize(q_poseidon2_external().size() + total);
+        // Gate selector: 1 for active gates, 0 for propagate
+        for (size_t i = 0; i < active_count; ++i) {
+            gate_selector.emplace_back(1);
+        }
+        gate_selector.emplace_back(0);
+    }
+
   private:
     SlabVectorSelector<fr> gate_selector;
 };

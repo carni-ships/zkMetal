@@ -288,6 +288,23 @@ class MegaTracePoseidon2InternalBlock : public MegaTraceBlock {
         gate_selector.emplace_back(value);
     }
 
+    void set_gate_selectors_batch(size_t active_count)
+    {
+        const size_t total = active_count + 1;
+        q_busread().resize(q_busread().size() + total);
+        q_lookup().resize(q_lookup().size() + total);
+        q_arith().resize(q_arith().size() + total);
+        q_delta_range().resize(q_delta_range().size() + total);
+        q_elliptic().resize(q_elliptic().size() + total);
+        q_memory().resize(q_memory().size() + total);
+        q_nnf().resize(q_nnf().size() + total);
+        q_poseidon2_external().resize(q_poseidon2_external().size() + total);
+        for (size_t i = 0; i < active_count; ++i) {
+            gate_selector.emplace_back(1);
+        }
+        gate_selector.emplace_back(0);
+    }
+
   private:
     SlabVectorSelector<fr> gate_selector;
 };

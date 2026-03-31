@@ -224,6 +224,26 @@ template <typename FF_> class CircuitBuilderBase {
      */
     virtual uint32_t add_variable(const FF& in);
 
+    /**
+     * @brief Batch-add multiple variables at once, avoiding per-element function call overhead.
+     * @param values Pointer to array of field elements to add.
+     * @param count Number of elements.
+     * @return The index of the first added variable. Subsequent indices are contiguous.
+     */
+    uint32_t add_variables_batch(const FF* values, size_t count)
+    {
+        const uint32_t base = static_cast<uint32_t>(variables.size());
+        variables.insert(variables.end(), values, values + count);
+        real_variable_index.reserve(real_variable_index.size() + count);
+        for (uint32_t i = 0; i < count; i++) {
+            real_variable_index.emplace_back(base + i);
+        }
+        next_var_index.insert(next_var_index.end(), count, REAL_VARIABLE);
+        prev_var_index.insert(prev_var_index.end(), count, FIRST_VARIABLE_IN_CLASS);
+        real_variable_tags.insert(real_variable_tags.end(), count, DEFAULT_TAG);
+        return base;
+    }
+
     // Disallow add_variable for non-FF types to prevent implicit conversions (specifically, using indices rather
     // than values)
     template <typename OT> uint32_t add_variable(const OT& in) = delete;

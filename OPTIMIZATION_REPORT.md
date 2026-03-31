@@ -2,7 +2,7 @@
 
 **Target:** Barretenberg UltraHonk prover for 428K-gate circuit (persistia_incremental)
 **Platform:** Apple M3 Pro (12-core CPU, 18-core GPU), macOS, Metal GPU
-**Period:** 2026-03-28 through 2026-03-31 (13 optimization sessions)
+**Period:** 2026-03-28 through 2026-03-31 (14 optimization sessions)
 
 ---
 
@@ -10,31 +10,31 @@
 
 | Metric | Before | After | Improvement |
 |---|---:|---:|---:|
-| **Prove time (cold, precomputed VK)** | 3,850ms | ~870ms | **-77%** |
-| **Prove time (cached, precomputed VK)** | — | ~810ms | — |
+| **Prove time (cold, precomputed VK)** | 3,850ms | ~855ms | **-78%** |
+| **Prove time (cached, precomputed VK)** | — | ~795ms | — |
 | **GPU MSM (201K points)** | 267ms | 55ms | **-79%** |
-| **create_circuit** | 252ms | 108ms | **-57%** |
+| **create_circuit** | 252ms | 93ms | **-63%** |
 | **ProverInstance (cached)** | 75ms | 16ms | **-79%** |
-| **Peak memory** | ~500 MiB | ~318 MiB | **-36%** |
+| **Peak memory** | ~500 MiB | ~308 MiB | **-38%** |
 
 ---
 
-## Prove Time Breakdown (Final Profile, ~969ms)
+## Prove Time Breakdown (Final Profile, ~955ms)
 
 | Component | Time (ms) | % | Bound By |
 |---|---:|---:|---|
-| OinkProver (GPU MSMs) | 316 | 32% | GPU throughput |
+| OinkProver (GPU MSMs) | 316 | 33% | GPU throughput |
 | Sumcheck | 145 | 15% | CPU compute |
-| create_circuit | 108 | 11% | CPU + memory |
+| create_circuit | 93 | 10% | CPU + memory |
 | Gemini folds (GPU) | 84 | 9% | GPU throughput |
 | ProverInstance | 70 | 7% | CPU trace |
 | Shplonk quotient | 62 | 6% | CPU compute |
 | CommitmentKey commit (GPU) | 62 | 6% | GPU throughput |
 | KZG commit (GPU) | 52 | 5% | GPU throughput |
 | compute_batched | 23 | 2% | CPU bandwidth |
-| Other overhead | ~47 | 5% | Various |
+| Other overhead | ~48 | 5% | Various |
 
-**GPU total: ~514ms (53%)** | **CPU total: ~408ms (42%)** | **Overhead: ~47ms (5%)**
+**GPU total: ~514ms (54%)** | **CPU total: ~393ms (41%)** | **Overhead: ~48ms (5%)**
 
 ---
 
@@ -75,6 +75,7 @@
 | DontZeroMemory (Gemini/Shplonk) | ~10ms | Various scratch buffers overwritten before use |
 | A_0_pos direct copy | ~5ms | Avoid zero-init + accumulate pattern |
 | **Circuit builder preallocation** | **143ms** | reserve() for variables + block vectors before build_constraints |
+| **Batch Poseidon2 permutation** | **14ms** | Pre-compute native states + batch add_variables + batch gate creation |
 
 ### 4. Application-Level
 
@@ -161,14 +162,13 @@ The prover is now within ~15-20% of theoretical hardware limits:
 |---|---:|---:|---:|
 | GPU MSMs (total) | 514ms | ~400ms | 22% (occupancy, dispatch) |
 | Sumcheck | 145ms | ~120ms | 17% (bandwidth ceiling) |
-| create_circuit | 108ms | ~60ms | 44% (native Poseidon2 field ops) |
+| create_circuit | 93ms | ~60ms | 35% (per-gate overhead, virtual dispatch) |
 | Shplonk | 62ms | ~50ms | 19% |
 
 **Further gains require:**
 - Hardware: M4 Pro/Max with more GPU cores (2x GPU MSM improvement expected)
 - Protocol: Fewer commitment rounds or different PCS (would eliminate GPU round-trips)
 - Algorithm: Different MSM bucket reduction strategy (currently 80%+ of MSM time)
-- Batch Poseidon2: ~30ms potential from separating native compute from circuit building (medium-effort refactor)
 
 ---
 
@@ -180,7 +180,7 @@ The prover is now within ~15-20% of theoretical hardware limits:
 | Prover flow | 5 | OinkProver async, skip_imbalance, wire commit |
 | Commitment schemes | 4 | Gemini, Shplonk, KZG timing removal + optimizations |
 | Polynomials | 3 | DontZeroMemory, Horner evaluate, share() |
-| Circuit builder | 3 | reserve_variables, block reserve, preallocation |
+| Circuit builder | 6 | reserve_variables, block reserve, preallocation, batch Poseidon2 |
 | Trace/ProverInstance | 4 | DontZeroMemory, PrecomputedCache, populate_wires_only |
 | ACIR/DSL | 1 | Pre-allocate in create_circuit |
 | Build system | 1 | PGO + LTO cmake flags |
