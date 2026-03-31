@@ -18,6 +18,7 @@
 #include <mutex>
 #include <future>
 #include <dispatch/dispatch.h>
+#include <CoreFoundation/CFDate.h>
 
 #include "metal_msm.hpp"
 #include "barretenberg/common/assert.hpp"
@@ -92,11 +93,14 @@ class MetalMSMContext {
     id<MTLBuffer> count_sorted_map_buffer = nil;
     id<MTLBuffer> large_bucket_ids_buffer = nil;
     id<MTLBuffer> scatter_pos_buffer = nil;
-    // sorted_points_buffer removed: fused gather+reduce reads sorted_indices + points directly
+    // gathered_points_buffer tested and removed: reduce is compute-bound (81ms vs 83ms sequential),
+    // random access only adds ~2ms. Gather-in-scatter was net slower due to 14ms sort overhead.
 
     // GPU CSM output buffers (for compute_csm_fn kernel)
     id<MTLBuffer> n_large_buckets_out_buffer = nil;  // atomic uint: count of large buckets
     id<MTLBuffer> imbalance_flag_buffer = nil;        // atomic uint: set to 1 if imbalanced
+
+    // Elastic MSM: pair match counting buffer
 
     // GLV buffers
     id<MTLBuffer> scalars_buffer = nil;
@@ -138,11 +142,13 @@ class MetalMSMContext {
             @autoreleasepool {
                 device = MTLCreateSystemDefaultDevice();
                 if (!device) {
+                    fprintf(stderr, "[Metal GPU] No Metal device found. GPU MSM disabled.\n");
                     return;
                 }
 
                 command_queue = [device newCommandQueue];
                 if (!command_queue) {
+                    fprintf(stderr, "[Metal GPU] Failed to create command queue. GPU MSM disabled.\n");
                     return;
                 }
 
@@ -152,38 +158,51 @@ class MetalMSMContext {
                 if (!library) {
                     NSString* shader_source = load_shader_source();
                     if (!shader_source) {
+                        fprintf(stderr, "[Metal GPU] Failed to load shader source. GPU MSM disabled.\n");
                         return;
                     }
                     MTLCompileOptions* options = [[MTLCompileOptions alloc] init];
                     options.fastMathEnabled = YES;
                     library = [device newLibraryWithSource:shader_source options:options error:&error];
                     if (!library) {
-                        NSLog(@"Metal shader compilation failed: %@", error);
+                        fprintf(stderr, "[Metal GPU] Shader compilation failed: %s. GPU MSM disabled.\n",
+                                error ? [[error localizedDescription] UTF8String] : "unknown error");
                         return;
                     }
                 }
 
-                id<MTLFunction> reduce_fn = [library newFunctionWithName:@"msm_reduce_sorted_buckets"];
-                id<MTLFunction> reduce_par_fn = [library newFunctionWithName:@"msm_reduce_parallel"];
-                id<MTLFunction> reduce_half_fn_obj = [library newFunctionWithName:@"msm_reduce_sorted_buckets_half"];
-                id<MTLFunction> combine_halves_fn_obj = [library newFunctionWithName:@"msm_combine_bucket_halves"];
-                id<MTLFunction> reduce_quarter_fn_obj = [library newFunctionWithName:@"msm_reduce_sorted_buckets_quarter"];
-                id<MTLFunction> combine_quarter_fn_obj = [library newFunctionWithName:@"msm_combine_quarter_results"];
-                id<MTLFunction> reduce_large_fn = [library newFunctionWithName:@"msm_reduce_large_bucket"];
-                id<MTLFunction> sum_fn = [library newFunctionWithName:@"msm_bucket_sum_direct"];
-                id<MTLFunction> combine_fn = [library newFunctionWithName:@"msm_combine_segments"];
-                id<MTLFunction> combine_l1_fn = [library newFunctionWithName:@"msm_combine_segments_l1"];
-                id<MTLFunction> glv_dec_fn = [library newFunctionWithName:@"glv_decompose"];
-                id<MTLFunction> glv_endo_fn = [library newFunctionWithName:@"glv_endomorphism"];
-                id<MTLFunction> glv_precomp_fn = [library newFunctionWithName:@"glv_precompute_cache"];
-                id<MTLFunction> glv_neg_fn = [library newFunctionWithName:@"glv_apply_neg_flags"];
-                id<MTLFunction> sort_hist_fn = [library newFunctionWithName:@"msm_sort_histogram"];
-                id<MTLFunction> sort_pfx_fn = [library newFunctionWithName:@"msm_sort_prefix_sum"];
-                id<MTLFunction> sort_scat_fn = [library newFunctionWithName:@"msm_sort_scatter"];
-                id<MTLFunction> gather_fn = [library newFunctionWithName:@"msm_gather_sorted_points"];
-                id<MTLFunction> reduce_gath_fn = [library newFunctionWithName:@"msm_reduce_gathered"];
-                id<MTLFunction> reduce_gath_win_fn = [library newFunctionWithName:@"msm_reduce_gathered_single_window"];
-                id<MTLFunction> compute_csm_fn_obj = [library newFunctionWithName:@"msm_compute_csm"];
+                // Load all kernel functions with explicit error reporting.
+                // A missing kernel must never silently disable all GPU MSM.
+                auto load_fn = [&](const char* name) -> id<MTLFunction> {
+                    id<MTLFunction> fn = [library newFunctionWithName:[NSString stringWithUTF8String:name]];
+                    if (!fn) {
+                        fprintf(stderr, "[Metal GPU] FATAL: kernel '%s' not found in shader. "
+                                "GPU MSM disabled — all proving will use CPU fallback.\n", name);
+                    }
+                    return fn;
+                };
+
+                id<MTLFunction> reduce_fn        = load_fn("msm_reduce_sorted_buckets");
+                id<MTLFunction> reduce_par_fn     = load_fn("msm_reduce_parallel");
+                id<MTLFunction> reduce_half_fn_obj = load_fn("msm_reduce_sorted_buckets_half");
+                id<MTLFunction> combine_halves_fn_obj = load_fn("msm_combine_bucket_halves");
+                id<MTLFunction> reduce_quarter_fn_obj = load_fn("msm_reduce_sorted_buckets_quarter");
+                id<MTLFunction> combine_quarter_fn_obj = load_fn("msm_combine_quarter_results");
+                id<MTLFunction> reduce_large_fn  = load_fn("msm_reduce_large_bucket");
+                id<MTLFunction> sum_fn            = load_fn("msm_bucket_sum_direct");
+                id<MTLFunction> combine_fn        = load_fn("msm_combine_segments");
+                id<MTLFunction> combine_l1_fn     = load_fn("msm_combine_segments_l1");
+                id<MTLFunction> glv_dec_fn        = load_fn("glv_decompose");
+                id<MTLFunction> glv_endo_fn       = load_fn("glv_endomorphism");
+                id<MTLFunction> glv_precomp_fn    = load_fn("glv_precompute_cache");
+                id<MTLFunction> glv_neg_fn        = load_fn("glv_apply_neg_flags");
+                id<MTLFunction> sort_hist_fn      = load_fn("msm_sort_histogram");
+                id<MTLFunction> sort_pfx_fn       = load_fn("msm_sort_prefix_sum");
+                id<MTLFunction> sort_scat_fn      = load_fn("msm_sort_scatter");
+                id<MTLFunction> gather_fn         = load_fn("msm_gather_sorted_points");
+                id<MTLFunction> reduce_gath_fn    = load_fn("msm_reduce_gathered");
+                id<MTLFunction> reduce_gath_win_fn = load_fn("msm_reduce_gathered_single_window");
+                id<MTLFunction> compute_csm_fn_obj = load_fn("msm_compute_csm");
                 if (!reduce_fn || !reduce_par_fn || !reduce_half_fn_obj || !combine_halves_fn_obj ||
                     !reduce_quarter_fn_obj || !combine_quarter_fn_obj ||
                     !reduce_large_fn || !sum_fn ||
@@ -195,27 +214,37 @@ class MetalMSMContext {
                     return;
                 }
 
-                reduce_sorted_fn = [device newComputePipelineStateWithFunction:reduce_fn error:&error];
-                reduce_parallel_fn = [device newComputePipelineStateWithFunction:reduce_par_fn error:&error];
-                reduce_half_fn = [device newComputePipelineStateWithFunction:reduce_half_fn_obj error:&error];
-                combine_halves_fn = [device newComputePipelineStateWithFunction:combine_halves_fn_obj error:&error];
-                reduce_quarter_fn = [device newComputePipelineStateWithFunction:reduce_quarter_fn_obj error:&error];
-                combine_quarter_fn = [device newComputePipelineStateWithFunction:combine_quarter_fn_obj error:&error];
-                reduce_large_bucket_fn = [device newComputePipelineStateWithFunction:reduce_large_fn error:&error];
-                bucket_sum_direct_fn = [device newComputePipelineStateWithFunction:sum_fn error:&error];
-                combine_segments_fn = [device newComputePipelineStateWithFunction:combine_fn error:&error];
-                combine_segments_l1_fn = [device newComputePipelineStateWithFunction:combine_l1_fn error:&error];
-                glv_decompose_fn = [device newComputePipelineStateWithFunction:glv_dec_fn error:&error];
-                glv_endomorphism_fn = [device newComputePipelineStateWithFunction:glv_endo_fn error:&error];
-                glv_precompute_cache_fn = [device newComputePipelineStateWithFunction:glv_precomp_fn error:&error];
-                glv_apply_neg_flags_fn = [device newComputePipelineStateWithFunction:glv_neg_fn error:&error];
-                sort_histogram_fn = [device newComputePipelineStateWithFunction:sort_hist_fn error:&error];
-                sort_prefix_sum_fn = [device newComputePipelineStateWithFunction:sort_pfx_fn error:&error];
-                sort_scatter_fn = [device newComputePipelineStateWithFunction:sort_scat_fn error:&error];
-                gather_sorted_fn = [device newComputePipelineStateWithFunction:gather_fn error:&error];
-                reduce_gathered_fn = [device newComputePipelineStateWithFunction:reduce_gath_fn error:&error];
-                reduce_gathered_win_fn = [device newComputePipelineStateWithFunction:reduce_gath_win_fn error:&error];
-                compute_csm_fn = [device newComputePipelineStateWithFunction:compute_csm_fn_obj error:&error];
+                auto make_pipeline = [&](const char* name, id<MTLFunction> fn) -> id<MTLComputePipelineState> {
+                    id<MTLComputePipelineState> ps = [device newComputePipelineStateWithFunction:fn error:&error];
+                    if (!ps) {
+                        fprintf(stderr, "[Metal GPU] FATAL: pipeline creation failed for '%s': %s. "
+                                "GPU MSM disabled.\n", name,
+                                error ? [[error localizedDescription] UTF8String] : "unknown error");
+                    }
+                    return ps;
+                };
+
+                reduce_sorted_fn     = make_pipeline("msm_reduce_sorted_buckets", reduce_fn);
+                reduce_parallel_fn   = make_pipeline("msm_reduce_parallel", reduce_par_fn);
+                reduce_half_fn       = make_pipeline("msm_reduce_sorted_buckets_half", reduce_half_fn_obj);
+                combine_halves_fn    = make_pipeline("msm_combine_bucket_halves", combine_halves_fn_obj);
+                reduce_quarter_fn    = make_pipeline("msm_reduce_sorted_buckets_quarter", reduce_quarter_fn_obj);
+                combine_quarter_fn   = make_pipeline("msm_combine_quarter_results", combine_quarter_fn_obj);
+                reduce_large_bucket_fn = make_pipeline("msm_reduce_large_bucket", reduce_large_fn);
+                bucket_sum_direct_fn = make_pipeline("msm_bucket_sum_direct", sum_fn);
+                combine_segments_fn  = make_pipeline("msm_combine_segments", combine_fn);
+                combine_segments_l1_fn = make_pipeline("msm_combine_segments_l1", combine_l1_fn);
+                glv_decompose_fn     = make_pipeline("glv_decompose", glv_dec_fn);
+                glv_endomorphism_fn  = make_pipeline("glv_endomorphism", glv_endo_fn);
+                glv_precompute_cache_fn = make_pipeline("glv_precompute_cache", glv_precomp_fn);
+                glv_apply_neg_flags_fn = make_pipeline("glv_apply_neg_flags", glv_neg_fn);
+                sort_histogram_fn    = make_pipeline("msm_sort_histogram", sort_hist_fn);
+                sort_prefix_sum_fn   = make_pipeline("msm_sort_prefix_sum", sort_pfx_fn);
+                sort_scatter_fn      = make_pipeline("msm_sort_scatter", sort_scat_fn);
+                gather_sorted_fn     = make_pipeline("msm_gather_sorted_points", gather_fn);
+                reduce_gathered_fn   = make_pipeline("msm_reduce_gathered", reduce_gath_fn);
+                reduce_gathered_win_fn = make_pipeline("msm_reduce_gathered_single_window", reduce_gath_win_fn);
+                compute_csm_fn       = make_pipeline("msm_compute_csm", compute_csm_fn_obj);
 
                 if (!reduce_sorted_fn || !reduce_parallel_fn || !reduce_half_fn || !combine_halves_fn ||
                     !reduce_quarter_fn || !combine_quarter_fn ||
@@ -334,9 +363,18 @@ class MetalMSMContext {
                                                       options:MTLResourceStorageModeShared];
         scatter_pos_buffer = [device newBufferWithLength:sizeof(uint32_t) * nb * nw
                                                  options:MTLResourceStorageModeShared];
+        // gathered_points_buffer removed: reduce is compute-bound, not memory-bound
         // GPU CSM output buffers
-        n_large_buckets_out_buffer = [device newBufferWithLength:sizeof(uint32_t)
+        // n_large_buckets_out_buffer: 3 × uint32 formatted as Metal indirect dispatch args {count, 1, 1}
+        // The CSM kernel atomically increments [0]; [1] and [2] stay at 1 for indirect dispatch.
+        n_large_buckets_out_buffer = [device newBufferWithLength:3 * sizeof(uint32_t)
                                                          options:MTLResourceStorageModeShared];
+        {
+            auto* args = static_cast<uint32_t*>([n_large_buckets_out_buffer contents]);
+            args[0] = 0;
+            args[1] = 1;
+            args[2] = 1;
+        }
         imbalance_flag_buffer = [device newBufferWithLength:sizeof(uint32_t)
                                                     options:MTLResourceStorageModeShared];
         // sorted_points_buffer removed: fused gather+reduce reads sorted_indices + points directly
@@ -498,12 +536,37 @@ class MetalMSMContext {
             } else {
                 std::memcpy(gpu_scalars_dst, scalars, sizeof(curve::BN254::ScalarField) * n);
             }
-
             // Phase 1+2: GPU GLV + counting sort + CSM
             // Merging GLV, sort, and count-sorted mapping into one command buffer
             // eliminates CPU/GPU round-trips. Metal auto-inserts barriers between
             // compute encoders for data dependencies.
             {
+                static int gpu_profile_level = []() {
+                    const char* env = std::getenv("BB_GPU_PROFILE");
+                    if (!env) return 0;
+                    int v = atoi(env);
+                    return (v >= 2) ? 2 : 1;
+                }();
+                bool gpu_profile = (gpu_profile_level >= 1);
+                bool gpu_profile_phases = (gpu_profile_level >= 2);
+                auto gpu_time = [](const char* /*label*/) -> double { return CFAbsoluteTimeGetCurrent(); };
+
+                // Per-phase timing: commit current CB, record GPU time, start new CB
+                struct PhaseTime { const char* name; double gpu_ms; };
+                std::vector<PhaseTime> phase_times;
+                auto phase_barrier = [&](id<MTLCommandBuffer> __strong& cb, const char* phase_name) {
+                    if (!gpu_profile_phases) return;
+                    [cb commit];
+                    [cb waitUntilCompleted];
+                    if ([cb error]) {
+                        fprintf(stderr, "[GPU_ERR] %s: %s\n", phase_name, [[cb error] localizedDescription].UTF8String);
+                    }
+                    double gs = [cb GPUStartTime];
+                    double ge = [cb GPUEndTime];
+                    phase_times.push_back({phase_name, (ge - gs) * 1000.0});
+                    cb = [command_queue commandBuffer];
+                };
+
                 uint32_t n_u32 = static_cast<uint32_t>(n);
                 uint32_t wb_u32 = static_cast<uint32_t>(window_bits);
                 uint32_t nb_u32 = static_cast<uint32_t>(n_buckets);
@@ -561,15 +624,16 @@ class MetalMSMContext {
                 [enc_neg dispatchThreads:grid_n threadsPerThreadgroup:tg_n];
                 [enc_neg endEncoding];
 
+                phase_barrier(cb_prep, "glv");
+
                 id<MTLBlitCommandEncoder> blit_sort = [cb_prep blitCommandEncoder];
                 [blit_sort fillBuffer:all_counts_buffer
                                 range:NSMakeRange(0, sizeof(uint32_t) * n_buckets * n_windows)
                                 value:0];
-                // Zero sorted_indices so bucket-0 entries (never written by scatter)
-                // have index 0 when the gather kernel reads them.
-                [blit_sort fillBuffer:sorted_indices_buffer
-                                range:NSMakeRange(0, sizeof(uint32_t) * n2 * n_windows)
-                                value:0];
+                // sorted_indices zero-fill removed: bucket-0 has count=0 (histogram
+                // skips d==0), so reduce_gathered returns early at the count==0 check
+                // and never reads bucket-0 entries. All other positions are written
+                // by the scatter kernel before being read. Saves ~1.4ms per 1M MSM.
                 [blit_sort endEncoding];
 
                 id<MTLComputeCommandEncoder> enc_hist = [cb_prep computeCommandEncoder];
@@ -610,11 +674,15 @@ class MetalMSMContext {
                 [enc_scat dispatchThreads:grid_scat threadsPerThreadgroup:tg_scat];
                 [enc_scat endEncoding];
 
+                phase_barrier(cb_prep, "sort");
+
                 // Phase 2: GPU Count-Sorted Mapping (CSM)
                 // Replaces CPU CSM loop: the GPU kernel computes CSM, detects imbalance,
                 // and identifies large buckets in a single dispatch per window.
                 {
-                    // Zero the atomic output buffers before GPU CSM dispatch
+                    // Zero the atomic output buffers before GPU CSM dispatch.
+                    // Only zero first 4 bytes of n_large_buckets_out (the count); bytes 4-11 stay {1,1}
+                    // for indirect dispatch args format {threadgroups_x, 1, 1}.
                     id<MTLBlitCommandEncoder> blit_csm = [cb_prep blitCommandEncoder];
                     [blit_csm fillBuffer:n_large_buckets_out_buffer range:NSMakeRange(0, sizeof(uint32_t)) value:0];
                     [blit_csm fillBuffer:imbalance_flag_buffer range:NSMakeRange(0, sizeof(uint32_t)) value:0];
@@ -642,50 +710,26 @@ class MetalMSMContext {
                     [enc_csm endEncoding];
                 }
 
-                // Commit GLV+sort+CSM, all in single command buffer
-                [cb_prep commit];
-                [cb_prep waitUntilCompleted];
-                if ([cb_prep error]) {
-                    fprintf(stderr, "[GPU_ERR] cb_prep error: %s\n", [[cb_prep error] localizedDescription].UTF8String);
-                    return false;
-                }
+                phase_barrier(cb_prep, "csm");
 
-            }
+                // --- Phase 3+4 kernels merged into same command buffer ---
+                // Metal auto-inserts barriers between compute encoders for data dependencies.
+                // Eliminates one GPU-CPU roundtrip (waitUntilCompleted) per MSM call.
 
-            // Read back GPU CSM results: imbalance flag and large bucket count
-            uint32_t imbalance_val = *static_cast<uint32_t*>([imbalance_flag_buffer contents]);
-            if (imbalance_val != 0) {
-                if (n >= 65536) fprintf(stderr, "[MSM %zu] FAIL: GPU CSM detected bucket imbalance\n", n);
-                return false;
-            }
-            size_t n_large_buckets_total = *static_cast<uint32_t*>([n_large_buckets_out_buffer contents]);
-
-
-            // Phase 3+4: GPU fused reduce + bucket_sum + combine
-            // All kernels in a single command buffer — Metal auto-barriers between encoders.
-            // Gather step eliminated: reduce reads sorted_indices + points directly.
-            {
                 MsmParams params = { static_cast<uint32_t>(n2), window_bits, static_cast<uint32_t>(n_buckets) };
                 uint32_t n_segs = static_cast<uint32_t>(n_segments);
                 uint32_t n_wins = static_cast<uint32_t>(n_windows);
                 size_t total_segments = n_segments * n_windows;
                 size_t total_buckets = n_buckets * n_windows;
 
-                id<MTLCommandBuffer> cb_phase3 = [command_queue commandBuffer];
-
-                // Zero buckets buffer
-                {
-                    id<MTLBlitCommandEncoder> blit = [cb_phase3 blitCommandEncoder];
-                    [blit fillBuffer:buckets_buffer
-                               range:NSMakeRange(0, sizeof(GpuPointProjective) * total_buckets)
-                               value:0];
-                    [blit endEncoding];
-                }
+                // Buckets buffer zero-fill removed: reduce_gathered writes every bucket
+                // position — identity for bucket-0/count-0/large, accumulated for normal.
+                // Large buckets are then overwritten by reduce_large_bucket. Saves ~0.6ms.
 
                 // Fused gather+reduce: reads sorted_indices + points directly
                 {
                     uint32_t nw_u32_r = static_cast<uint32_t>(n_windows);
-                    id<MTLComputeCommandEncoder> enc_r = [cb_phase3 computeCommandEncoder];
+                    id<MTLComputeCommandEncoder> enc_r = [cb_prep computeCommandEncoder];
                     [enc_r setComputePipelineState:reduce_gathered_fn];
                     [enc_r setBuffer:points_buffer offset:0 atIndex:0];
                     [enc_r setBuffer:buckets_buffer offset:0 atIndex:1];
@@ -701,11 +745,12 @@ class MetalMSMContext {
                     [enc_r endEncoding];
                 }
 
-                // Large bucket reduce (256 threads/bucket, tree reduction) — conditional
-                if (n_large_buckets_total > 0) {
+                // Large bucket reduce via indirect dispatch — GPU reads threadgroup count
+                // from n_large_buckets_out_buffer (formatted as {count, 1, 1}).
+                // If count is 0, Metal dispatches zero threadgroups (no-op).
+                {
                     uint32_t n2_per_win = static_cast<uint32_t>(n2);
-                    uint32_t nb_u32 = static_cast<uint32_t>(n_buckets);
-                    id<MTLComputeCommandEncoder> enc = [cb_phase3 computeCommandEncoder];
+                    id<MTLComputeCommandEncoder> enc = [cb_prep computeCommandEncoder];
                     [enc setComputePipelineState:reduce_large_bucket_fn];
                     [enc setBuffer:points_buffer offset:0 atIndex:0];
                     [enc setBuffer:buckets_buffer offset:0 atIndex:1];
@@ -715,14 +760,17 @@ class MetalMSMContext {
                     [enc setBuffer:large_bucket_ids_buffer offset:0 atIndex:5];
                     [enc setBytes:&n2_per_win length:sizeof(uint32_t) atIndex:6];
                     [enc setBytes:&nb_u32 length:sizeof(uint32_t) atIndex:7];
-                    [enc dispatchThreadgroups:MTLSizeMake(n_large_buckets_total, 1, 1)
-                            threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+                    [enc dispatchThreadgroupsWithIndirectBuffer:n_large_buckets_out_buffer
+                                          indirectBufferOffset:0
+                                         threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
                     [enc endEncoding];
                 }
 
+                phase_barrier(cb_prep, "reduce");
+
                 // bucket_sum: Horner's sum per segment, parallelized across segments.
                 {
-                    id<MTLComputeCommandEncoder> enc = [cb_phase3 computeCommandEncoder];
+                    id<MTLComputeCommandEncoder> enc = [cb_prep computeCommandEncoder];
                     [enc setComputePipelineState:bucket_sum_direct_fn];
                     [enc setBuffer:buckets_buffer offset:0 atIndex:0];
                     [enc setBuffer:segment_results_buffer offset:0 atIndex:1];
@@ -735,9 +783,11 @@ class MetalMSMContext {
                     [enc endEncoding];
                 }
 
+                phase_barrier(cb_prep, "bucket_sum");
+
                 // combine_segments: two-pass for n_segments > 256
                 if (n_segments <= 256) {
-                    id<MTLComputeCommandEncoder> enc = [cb_phase3 computeCommandEncoder];
+                    id<MTLComputeCommandEncoder> enc = [cb_prep computeCommandEncoder];
                     [enc setComputePipelineState:combine_segments_fn];
                     [enc setBuffer:segment_results_buffer offset:0 atIndex:0];
                     [enc setBuffer:window_results_buffer offset:0 atIndex:1];
@@ -754,7 +804,7 @@ class MetalMSMContext {
                     size_t n_chunks = (n_segments + CHUNK_SIZE - 1) / CHUNK_SIZE;
                     size_t n_total_chunks = n_chunks * n_windows;
                     {
-                        id<MTLComputeCommandEncoder> enc = [cb_phase3 computeCommandEncoder];
+                        id<MTLComputeCommandEncoder> enc = [cb_prep computeCommandEncoder];
                         [enc setComputePipelineState:combine_segments_l1_fn];
                         [enc setBuffer:segment_results_buffer offset:0 atIndex:0];
                         [enc setBuffer:chunk_results_buffer offset:0 atIndex:1];
@@ -766,7 +816,7 @@ class MetalMSMContext {
                     }
                     {
                         uint32_t n_chunks_u32 = static_cast<uint32_t>(n_chunks);
-                        id<MTLComputeCommandEncoder> enc = [cb_phase3 computeCommandEncoder];
+                        id<MTLComputeCommandEncoder> enc = [cb_prep computeCommandEncoder];
                         [enc setComputePipelineState:combine_segments_fn];
                         [enc setBuffer:chunk_results_buffer offset:0 atIndex:0];
                         [enc setBuffer:window_results_buffer offset:0 atIndex:1];
@@ -779,9 +829,46 @@ class MetalMSMContext {
                     }
                 }
 
-                [cb_phase3 commit];
-                [cb_phase3 waitUntilCompleted];
+                // Single commit+wait for the entire pipeline (GLV+sort+CSM+reduce+bucket_sum+combine)
+                double t_pre_commit = gpu_time("pre_commit");
+                [cb_prep commit];
+                [cb_prep waitUntilCompleted];
+                double t_post_wait = gpu_time("post_wait");
+                if ([cb_prep error]) {
+                    fprintf(stderr, "[GPU_ERR] cb error: %s\n", [[cb_prep error] localizedDescription].UTF8String);
+                    return false;
+                }
+                if (gpu_profile) {
+                    if (gpu_profile_phases) {
+                        // Per-phase mode: last CB is "combine" phase
+                        double gs = [cb_prep GPUStartTime];
+                        double ge = [cb_prep GPUEndTime];
+                        phase_times.push_back({"combine", (ge - gs) * 1000.0});
+                        double total_gpu = 0;
+                        fprintf(stderr, "[GPU_MSM n=%zu phases]", n);
+                        for (auto& pt : phase_times) {
+                            fprintf(stderr, " %s=%.2fms", pt.name, pt.gpu_ms);
+                            total_gpu += pt.gpu_ms;
+                        }
+                        fprintf(stderr, " total=%.2fms wall=%.2fms\n", total_gpu, (t_post_wait - t_pre_commit) * 1000.0);
+                    } else {
+                        double gpu_start = [cb_prep GPUStartTime];
+                        double gpu_end = [cb_prep GPUEndTime];
+                        fprintf(stderr, "[GPU_MSM n=%zu] wall=%.2fms gpu=%.2fms\n",
+                                n, (t_post_wait - t_pre_commit) * 1000.0,
+                                (gpu_end - gpu_start) * 1000.0);
+                    }
+                }
 
+            }
+
+            // Check imbalance after all GPU work completes.
+            // If imbalanced, the phase3 work was wasted but the result is discarded.
+            // Imbalance is rare (pathological scalar distributions only).
+            uint32_t imbalance_val = *static_cast<uint32_t*>([imbalance_flag_buffer contents]);
+            if (imbalance_val != 0) {
+                if (n >= 65536) fprintf(stderr, "[MSM %zu] FAIL: GPU CSM detected bucket imbalance\n", n);
+                return false;
             }
 
             // Phase 5: Read window results and combine with Horner's method (CPU)
