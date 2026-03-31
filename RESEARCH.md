@@ -141,7 +141,7 @@ The Noir circuit's mutation array is a compile-time constant. Increasing from 25
 | 256 | ~44 | ~3.7 | 632K |
 | 1024 (current) | ~200 | ~16.7 | **9.13M** |
 
-**Gate count profiling (2026-03):** Detailed component isolation revealed that the Poseidon2 Merkle tree computation accounts for 99.7% of all gates. Schnorr signature verification (4 validators) contributes only ~41K gates (0.45%). Function signature overhead (array inputs) is ~5K gates. Noir compiles all conditional block contents into constraints regardless of runtime values, so loop unrolling and conditional guards do not reduce gate count. The only paths to meaningful reduction are: (1) reducing MAX_MUTATIONS, (2) switching to incremental Merkle proofs (verify paths instead of full tree recomputation), or (3) GPU-accelerated proving to make the large circuit tractable.
+**Gate count profiling (profiled):** Detailed component isolation revealed that the Poseidon2 Merkle tree computation accounts for 99.7% of all gates. Schnorr signature verification (4 validators) contributes only ~41K gates (0.45%). Function signature overhead (array inputs) is ~5K gates. Noir compiles all conditional block contents into constraints regardless of runtime values, so loop unrolling and conditional guards do not reduce gate count. The only paths to meaningful reduction are: (1) reducing MAX_MUTATIONS, (2) switching to incremental Merkle proofs (verify paths instead of full tree recomputation), or (3) GPU-accelerated proving to make the large circuit tractable.
 
 ### Short-term: Incremental Merkle Proof Circuit (Implemented)
 
