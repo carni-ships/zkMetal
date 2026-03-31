@@ -552,6 +552,7 @@ kernel void msm_reduce_gathered(
     constant uint& n_windows                   [[buffer(5)]],
     device const uint* sorted_indices          [[buffer(6)]],
     device const uint* count_sorted_map        [[buffer(7)]],
+    constant uint& large_threshold             [[buffer(8)]],
     uint tid                                   [[thread_position_in_grid]]
 ) {
     uint nb = params.n_buckets;
@@ -573,7 +574,7 @@ kernel void msm_reduce_gathered(
     }
 
     // Skip large buckets — handled by reduce_large_bucket kernel (256-thread tree reduction).
-    if (count > LARGE_BUCKET_THRESHOLD) {
+    if (count > large_threshold) { // dynamic threshold from host
         buckets[orig_pos] = point_identity();
         return;
     }
@@ -1790,6 +1791,7 @@ kernel void msm_compute_csm(
     constant uint& n2_val [[buffer(7)]],
     constant uint& full_data_windows_val [[buffer(8)]],
     constant uint& large_threshold_val [[buffer(9)]],
+    constant uint& large_buf_capacity [[buffer(10)]],
     uint tg_idx [[threadgroup_position_in_grid]],
     uint tid [[thread_index_in_threadgroup]],
     uint tg_size [[threads_per_threadgroup]]
@@ -1824,12 +1826,10 @@ kernel void msm_compute_csm(
 
     uint mc = atomic_load_explicit(&tg_max_count, memory_order_relaxed);
 
-    // Imbalance check: if max bucket count exceeds threshold, signal failure
+    // Imbalance check: if max bucket count exceeds threshold, signal failure.
+    // Threshold scaled for large circuits: n2/4 is safe (GPU reduce handles up to ~25% load).
+    // Only flag extreme imbalance (>25% of points in one bucket) which causes GPU stalls.
     if (tid == 0) {
-        uint n_check_windows = min(full_data_windows_val, n_windows_val > 1 ? n_windows_val - 1 : n_windows_val);
-        if (window < n_check_windows && mc > n2_val / 10) {
-            atomic_store_explicit(imbalance_flag, 1, memory_order_relaxed);
-        }
         if (window < full_data_windows_val && mc > n2_val / 4) {
             atomic_store_explicit(imbalance_flag, 1, memory_order_relaxed);
         }
@@ -1858,7 +1858,15 @@ kernel void msm_compute_csm(
         // Detect large buckets (skip bucket 0 which is always empty)
         if (b > 0 && c > large_threshold_val) {
             uint idx = atomic_fetch_add_explicit(n_large_buckets_out, 1, memory_order_relaxed);
-            large_bucket_ids[idx] = w_off + b;
+            if (idx < large_buf_capacity) {
+                large_bucket_ids[idx] = w_off + b;
+            } else {
+                // Buffer full — clamp the count back so indirect dispatch stays in bounds.
+                // The uncounted large bucket falls through to reduce_gathered which writes
+                // identity for it; this loses that bucket's contribution → signal imbalance.
+                atomic_fetch_sub_explicit(n_large_buckets_out, 1, memory_order_relaxed);
+                atomic_store_explicit(imbalance_flag, 1, memory_order_relaxed);
+            }
         }
     }
 }

@@ -357,8 +357,11 @@ class MetalMSMContext {
                                                    options:MTLResourceStorageModeShared];
         count_sorted_map_buffer = [device newBufferWithLength:sizeof(uint32_t) * nb * nw
                                                       options:MTLResourceStorageModeShared];
-        // Large bucket IDs: allocate for realistic worst case (wire polynomials produce ~1100)
-        size_t large_buf_size = std::max(size_t(8192), nw * 64);
+        // Large bucket IDs: allocate for worst case (all buckets across all windows).
+        // At large n (e.g. 4M points, avg 256/bucket), half the buckets can exceed
+        // the threshold, producing ~150K large bucket IDs. Previous 8192 cap caused
+        // out-of-bounds writes and GPU memory corruption.
+        size_t large_buf_size = nb * nw;
         large_bucket_ids_buffer = [device newBufferWithLength:sizeof(uint32_t) * large_buf_size
                                                       options:MTLResourceStorageModeShared];
         scatter_pos_buffer = [device newBufferWithLength:sizeof(uint32_t) * nb * nw
@@ -676,6 +679,12 @@ class MetalMSMContext {
 
                 phase_barrier(cb_prep, "sort");
 
+                // Scale threshold with n to avoid classifying too many buckets as "large".
+                // At n=4M, avg count/bucket ≈ 256 so threshold=256 would send half to large path.
+                // Use max(256, 4× average) to keep large buckets to statistical outliers.
+                uint32_t avg_per_bucket = static_cast<uint32_t>(n2 / n_buckets + 1);
+                uint32_t large_thresh_u32 = std::max(uint32_t(256), avg_per_bucket * 4);
+
                 // Phase 2: GPU Count-Sorted Mapping (CSM)
                 // Replaces CPU CSM loop: the GPU kernel computes CSM, detects imbalance,
                 // and identifies large buckets in a single dispatch per window.
@@ -689,8 +698,6 @@ class MetalMSMContext {
                     [blit_csm endEncoding];
 
                     uint32_t full_data_windows_u32 = static_cast<uint32_t>(128 / window_bits);
-                    constexpr uint32_t LARGE_BUCKET_THRESHOLD = 256;
-                    uint32_t large_thresh_u32 = LARGE_BUCKET_THRESHOLD;
 
                     id<MTLComputeCommandEncoder> enc_csm = [cb_prep computeCommandEncoder];
                     [enc_csm setComputePipelineState:compute_csm_fn];
@@ -704,6 +711,8 @@ class MetalMSMContext {
                     [enc_csm setBytes:&n2_u32 length:sizeof(uint32_t) atIndex:7];
                     [enc_csm setBytes:&full_data_windows_u32 length:sizeof(uint32_t) atIndex:8];
                     [enc_csm setBytes:&large_thresh_u32 length:sizeof(uint32_t) atIndex:9];
+                    uint32_t large_buf_cap_u32 = static_cast<uint32_t>(n_buckets * n_windows);
+                    [enc_csm setBytes:&large_buf_cap_u32 length:sizeof(uint32_t) atIndex:10];
                     // One threadgroup per window, 256 threads each
                     [enc_csm dispatchThreadgroups:MTLSizeMake(n_windows, 1, 1)
                           threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
@@ -739,6 +748,7 @@ class MetalMSMContext {
                     [enc_r setBytes:&nw_u32_r length:sizeof(uint32_t) atIndex:5];
                     [enc_r setBuffer:sorted_indices_buffer offset:0 atIndex:6];
                     [enc_r setBuffer:count_sorted_map_buffer offset:0 atIndex:7];
+                    [enc_r setBytes:&large_thresh_u32 length:sizeof(uint32_t) atIndex:8];
                     MTLSize grid = MTLSizeMake(total_buckets, 1, 1);
                     MTLSize tg = MTLSizeMake(std::min(size_t(256), total_buckets), 1, 1);
                     [enc_r dispatchThreads:grid threadsPerThreadgroup:tg];

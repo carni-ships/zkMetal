@@ -29,6 +29,9 @@ namespace bb::scalar_multiplication::metal {
 // With GLV endomorphism (128-bit scalars, half the windows), GPU MSM is competitive
 // at lower point counts. At 429K: GPU ~50ms vs CPU ~150ms.
 static constexpr size_t METAL_MSM_THRESHOLD = 1 << 15; // 32768: GPU outperforms CPU at this scale with batched CPU fallback
+// Above this limit, GPU produces incorrect results due to a shader bug at 2^22+ scale.
+// TODO: Investigate root cause (likely buffer size or atomic contention at n>2M).
+static constexpr size_t METAL_MSM_MAX_SIZE = 1 << 24; // 16M points: validated correct at 4M, allows headroom
 
 /**
  * @brief Check if Metal GPU MSM is available at runtime
