@@ -472,3 +472,126 @@ All phases within 15-35% of theoretical hardware limits:
 | Shplonk | 62ms | ~50ms | 19% |
 
 **Key lesson:** On Apple Silicon, Clang + LLVM generates near-optimal code for 256-bit field arithmetic. Assembly, SIMD (NEON), and GPU approaches all fail for field math. Gains come from algorithmic changes, memory layout, and GPU offloading of inherently parallel operations (MSM bucket accumulation).
+
+---
+
+## Memory Optimization: Fitting Root Rollup in 18 GiB
+
+### Problem
+
+The Aztec root rollup circuit (13M gates, dyadic 2^24) is the final epoch proof that settles on Ethereum L1. Standard UltraHonk proving requires ~29 GiB peak memory during sumcheck — far exceeding the 18 GiB available on Apple M3 Pro.
+
+The bottleneck: UltraHonk allocates 36 polynomials (28 precomputed + 8 witness), each 512 MiB at 2^24. During sumcheck round 1, all 36 source polys (18 GiB) coexist with 41 half-size partial evaluation destination polys (10 GiB), plus the SRS (1 GiB).
+
+### Solution: Disk-Backed Streaming Proving
+
+Six optimizations, activated by the `--slow_low_memory` flag, reduce peak memory from ~29 GiB to ~10 GiB:
+
+#### 1. Streaming Sumcheck (Option C)
+
+All sumcheck rounds stream polynomials from disk instead of keeping them in memory:
+
+- **Before sumcheck:** Serialize all `get_all()` polys (36 polys) to disk, free from memory
+- **compute_univariate:** Memory-map all 42 polys once, process in 2M-row chunks via pointer arithmetic. Peak: ~1.3 GiB
+- **partial_evaluate:** Memory-map each source poly one at a time, evaluate to half-size, write back to same path. Peak: 1 source + 1 dest poly
+- **After all rounds:** Load tiny (1-element) final polys for evaluation extraction
+
+#### 2. Progressive Oink Memory Management (Option D)
+
+Calls OinkProver rounds individually, freeing precomputed polynomials between rounds:
+
+1. **Before Oink:** Serialize 28 precomputed polys to disk (immutable, safe to serialize early)
+2. **Free 11 unused polys** after serialization (q_l, q_4, q_arith, q_delta_range, q_elliptic, etc.)
+3. **After log-derivative round:** Free q_lookup, table_1..4, q_m, q_c, q_r, q_o (9 polys)
+4. **After grand product round:** Free sigma_1..4, id_1..4 (8 polys)
+5. **After Oink:** Serialize witness polys (post-Oink, with correct w_4/lookup_inverses/z_perm)
+
+**Critical insight:** Witness polys MUST be serialized AFTER Oink because Oink modifies w_4 (RAM/ROM records), computes lookup_inverses, and computes z_perm. Precomputed polys are immutable and safe to serialize before Oink.
+
+#### 3. Memory-Mapped Polynomial I/O
+
+Replaced per-chunk `fread` with `mmap` for zero-copy disk access:
+
+- `Polynomial::mmap_from_file()` opens serialized poly, mmaps entire file, returns Polynomial backed by mmap'd memory with `MADV_SEQUENTIAL` hint
+- OS handles page faults, prefetch, and eviction transparently
+- Chunk size increased from 2^20 to 2^21 (fewer iterations)
+
+#### 4. Memory-Mapped SRS
+
+SRS points written to a native-format temp file and mmap'd instead of stored in `std::vector`:
+
+- After deserialization from .dat (big-endian + Montgomery conversion), writes native format to temp file
+- `MAP_PRIVATE` + `MADV_RANDOM` (SRS accessed semi-randomly during Pippenger MSM)
+- Pages are OS-evictable under memory pressure (file-backed vs anonymous heap)
+
+**Note:** The .dat file cannot be mmap'd directly because it uses big-endian encoding + Montgomery conversion. A per-process native cache file is required.
+
+#### 5. File-Backed Polynomial Allocation (Discovered)
+
+When `slow_low_memory=true`, the existing `BackingMemory::allocate()` creates mmap'd temp files for ALL polynomial allocations during ProverInstance construction. At 2^24, this means 41 polys × 512 MiB = 20.5 GiB is virtual (file-backed), not physical. The OS transparently manages page eviction.
+
+#### 6. Disk-Backed PCS (Gemini/Shplonk)
+
+`PolynomialBatcher::compute_batched_from_disk()` memory-maps polys one at a time for batching. Each poly goes out of scope (munmap'd) before the next is loaded. Peak: 1 poly (512 MiB) + accumulators (1 GiB).
+
+### Benchmark Results
+
+**Parity-base circuit (2.27M gates, 2^22) — controlled comparison:**
+
+| Mode | Time | Peak RSS | Peak Footprint |
+|------|------|----------|----------------|
+| Normal | 12.2s | 5.1 GiB | 8.4 GiB |
+| Low-memory (all opts) | 31.6s | 5.4 GiB | 2.0 GiB |
+
+**Root rollup circuit (13M gates, 2^24) — the real target:**
+
+| Metric | Value |
+|--------|-------|
+| Total time | 306.8s (~5.1 min) |
+| Peak RSS | **10.36 GiB** |
+| Peak memory footprint | **8.07 GiB** |
+| Circuit construction | 39.8s |
+| Page faults | 7.5M (disk-backed I/O) |
+
+**Result: The 13M-gate root rollup fits comfortably in 18 GiB with ~7.6 GiB headroom.** Without these optimizations, proving would require ~29 GiB and fail with OOM.
+
+### Memory Trajectory at 2^24
+
+```
+Phase                                    Memory
+─────────────────────────────────────────────────
+Circuit construction                     10.4 GiB (file-backed polys, evictable)
+After Oink frees precomputed polys       ~4 GiB
+Serialize witness polys to disk          ~3 GiB
+Streaming sumcheck (all 24 rounds)       ~1.3 GiB (flat, no partial eval spike)
+PCS: stream from disk, 1 poly at a time  ~1.5 GiB
+```
+
+### Tradeoffs
+
+- **2.6x slower** at 2^22 (31.6s vs 12.2s) — acceptable for a flag that explicitly opts in to memory-constrained proving
+- **7.5M page faults** at 2^24 — heavy disk I/O, but M3 Pro SSD delivers ~7 GB/s
+- **GPU disabled** in low-memory mode — CPU-only MSMs avoid a known bucket imbalance bug at n≥2^22
+- **~18 GiB temp disk space** required for serialized polynomials
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `polynomial.hpp/cpp` | `serialize_to_file`, `deserialize_from_file`, `deserialize_range_from_file`, `mmap_from_file` |
+| `sumcheck.hpp` | `streaming_compute_univariate`, `streaming_partial_eval_to_disk`, `accumulate_edges` (chunk support) |
+| `sumcheck_round.hpp` | `accumulate_edges` with chunk_start/chunk_end, `finalize_univariate` |
+| `ultra_prover.cpp` | `construct_proof_low_memory()` — progressive Oink, serialize/free, streaming sumcheck |
+| `commitment_key.hpp` | Disable GPU MSM when `slow_low_memory` |
+| `mem_bn254_crs_factory.cpp` | mmap-backed SRS storage |
+| `gemini.hpp` | `compute_batched_from_disk()` — disk-backed PCS batching |
+
+### Key Technical Decisions
+
+1. **mmap vs fread:** mmap is 32% faster for streaming sumcheck (47s → 32s at 2^22). OS prefetch with `MADV_SEQUENTIAL` eliminates per-chunk syscall overhead.
+
+2. **MAP_PRIVATE for SRS:** Although SRS is read-only, `MAP_PRIVATE` allows the `std::span` type to be non-const. Any writes would COW but never occur in practice.
+
+3. **AssertMode::WARN for benchmarking:** The root rollup circuit verifies two checkpoint rollup proofs internally. Real checkpoint proofs only exist transiently during Aztec's prover pipeline — they're never exposed via any public API. Used barretenberg's built-in `AssertMode::WARN` to suppress witness-validity assertions during benchmarking. Circuit size and proving workload are identical regardless of whether inner proofs are real.
+
+4. **No lazy ProverInstance needed:** The existing `BackingMemory::FileBackedData` infrastructure already creates file-backed mmap allocations for all polynomials when `slow_low_memory=true`. The OS manages paging transparently, achieving the same effect as lazy allocation without code restructuring.

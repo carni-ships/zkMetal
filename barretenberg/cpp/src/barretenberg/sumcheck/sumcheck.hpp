@@ -352,6 +352,18 @@ template <typename Flavor> class SumcheckProver {
 
     RowDisablingPolynomial<FF> row_disabling_polynomial;
 
+    // Streaming sumcheck state: when streaming_temp_dir_ is non-empty, streaming mode is active.
+    // Source polynomials are freed during partial evaluation to reduce peak memory.
+    std::string streaming_temp_dir_;
+    // Bitmask over get_all() indices: true = this poly is a shifted source (shares backing
+    // memory with a shifted view later in get_all()). Must not be freed until views are processed.
+    std::vector<bool> streaming_is_shifted_source_;
+    // Chunked streaming: paths to all get_all() polys on disk. When non-empty, enables chunked
+    // compute_univariate (loads row chunks from disk) and disk-backed partial evaluation.
+    std::vector<std::string> streaming_all_poly_paths_;
+    // Effective round size for streaming (computed before polys are freed).
+    size_t streaming_effective_round_size_ = 0;
+
     // SumcheckProver constructor for MultilinearBatchingFlavor.
     SumcheckProver(size_t multivariate_n,
                    ProverPolynomials& prover_polynomials,
@@ -406,31 +418,68 @@ template <typename Flavor> class SumcheckProver {
 
         multivariate_challenge.reserve(virtual_log_n);
 
-        auto round_univariate =
-            round.compute_univariate(full_polynomials, relation_parameters, gate_separators, alphas);
+        // Round 0: compute the first univariate and partially evaluate.
+        // In chunked streaming mode, polys are already freed; load from disk in chunks.
+        decltype(round.compute_univariate(full_polynomials, relation_parameters, gate_separators, alphas))
+            round_univariate;
+        if (!streaming_all_poly_paths_.empty()) {
+            round_univariate = streaming_compute_univariate(relation_parameters, gate_separators, alphas);
+        } else {
+            round_univariate =
+                round.compute_univariate(full_polynomials, relation_parameters, gate_separators, alphas);
+        }
 
+        // Place the evaluations of the round univariate into transcript.
         transcript->send_to_verifier("Sumcheck:univariate_0", round_univariate);
         FF round_challenge = transcript->template get_challenge<FF>("Sumcheck:u_0");
         multivariate_challenge.emplace_back(round_challenge);
 
-        PartiallyEvaluatedMultivariates partially_evaluated_polynomials =
-            partially_evaluate_first_round(full_polynomials, round_challenge);
+        // Populate the book-keeping table for partial evaluation.
+        PartiallyEvaluatedMultivariates partially_evaluated_polynomials;
+        if (!streaming_all_poly_paths_.empty()) {
+            // Fully disk-backed streaming: partial-eval to disk, no in-memory accumulation
+            streaming_partial_eval_to_disk(round_challenge);
+            // After round 0, effective_round_size is no longer relevant (was for skipping
+            // zero witness regions in full-size polys). Reset so subsequent rounds use round.round_size.
+            streaming_effective_round_size_ = 0;
+        } else if (!streaming_temp_dir_.empty()) {
+            // Legacy streaming: polys in memory, free progressively during partial eval
+            partially_evaluated_polynomials = streaming_partially_evaluate_first_round(
+                full_polynomials, round_challenge);
+        } else {
+            partially_evaluated_polynomials =
+                partially_evaluate_first_round(full_polynomials, round_challenge);
+        }
 
         gate_separators.partially_evaluate(round_challenge);
         round.round_size = round.round_size >> 1;
         for (size_t round_idx = 1; round_idx < multivariate_d; round_idx++) {
             BB_BENCH_NAME("sumcheck loop");
 
-            round_univariate =
-                round.compute_univariate(partially_evaluated_polynomials, relation_parameters, gate_separators, alphas);
+            if (!streaming_all_poly_paths_.empty()) {
+                // Disk-backed: load chunks from disk for compute_univariate
+                round_univariate = streaming_compute_univariate(relation_parameters, gate_separators, alphas);
+            } else {
+                round_univariate =
+                    round.compute_univariate(partially_evaluated_polynomials, relation_parameters, gate_separators, alphas);
+            }
             transcript->send_to_verifier("Sumcheck:univariate_" + std::to_string(round_idx), round_univariate);
             FF round_challenge = transcript->template get_challenge<FF>("Sumcheck:u_" + std::to_string(round_idx));
             multivariate_challenge.emplace_back(round_challenge);
-            partially_evaluate_in_place(partially_evaluated_polynomials, round_challenge);
+            if (!streaming_all_poly_paths_.empty()) {
+                streaming_partial_eval_to_disk(round_challenge);
+            } else {
+                partially_evaluate_in_place(partially_evaluated_polynomials, round_challenge);
+            }
             gate_separators.partially_evaluate(round_challenge);
             round.round_size = round.round_size >> 1;
         }
         vinfo("completed ", multivariate_d, " rounds of sumcheck");
+
+        // If streaming, load the final tiny polys (1 element each) from disk
+        if (!streaming_all_poly_paths_.empty()) {
+            partially_evaluated_polynomials = streaming_load_final_polys();
+        }
 
         GateSeparatorPolynomial<FF> virtual_gate_separator(gate_challenges, multivariate_challenge);
         // If required, extend prover's multilinear polynomials in `multivariate_d` variables by zero to get multilinear
@@ -524,9 +573,18 @@ template <typename Flavor> class SumcheckProver {
 
         multivariate_challenge.reserve(multivariate_d);
         size_t round_idx = 0;
+        // In the first round, we compute the first univariate polynomial and populate the book-keeping table of
+        // #partially_evaluated_polynomials, which has \f$ n/2 \f$ rows and \f$ N \f$ columns.
 
-        auto round_univariate =
-            round.compute_univariate(full_polynomials, relation_parameters, gate_separators, alphas);
+        // Compute the round univariate (chunked streaming loads from disk)
+        decltype(round.compute_univariate(full_polynomials, relation_parameters, gate_separators, alphas))
+            round_univariate;
+        if (!streaming_all_poly_paths_.empty()) {
+            round_univariate = streaming_compute_univariate(relation_parameters, gate_separators, alphas);
+        } else {
+            round_univariate =
+                round.compute_univariate(full_polynomials, relation_parameters, gate_separators, alphas);
+        }
 
         // Add the contribution from the Libra univariates
         auto hiding_univariate = round.compute_libra_univariate(zk_sumcheck_data, round_idx);
@@ -534,16 +592,42 @@ template <typename Flavor> class SumcheckProver {
 
         // Handle disabled rows contribution
         if constexpr (UseRowDisablingPolynomial<Flavor>) {
-            round_univariate += round.compute_disabled_contribution(
-                full_polynomials, relation_parameters, gate_separators, alphas, row_disabling_polynomial, masking_tail);
+            if (!streaming_all_poly_paths_.empty()) {
+                // Load polys from disk for disabled contribution (only touches last few rows)
+                ProverPolynomials tail_polys;
+                auto tail_view = tail_polys.get_all();
+                size_t tail_start = round.round_size >= 4 ? round.round_size - 4 : 0;
+                for (size_t i = 0; i < streaming_all_poly_paths_.size(); i++) {
+                    if (!streaming_all_poly_paths_[i].empty()) {
+                        tail_view[i] = Polynomial<FF>::deserialize_range_from_file(
+                            streaming_all_poly_paths_[i], tail_start, round.round_size);
+                    }
+                }
+                round_univariate += round.compute_disabled_contribution(
+                    tail_polys, relation_parameters, gate_separators, alphas, row_disabling_polynomial, masking_tail);
+            } else {
+                round_univariate += round.compute_disabled_contribution(
+                    full_polynomials, relation_parameters, gate_separators, alphas, row_disabling_polynomial, masking_tail);
+            }
         }
 
         handler.process_round_univariate(round_idx, round_univariate);
         const FF round_challenge = transcript->template get_challenge<FF>("Sumcheck:u_0");
         multivariate_challenge.emplace_back(round_challenge);
 
-        PartiallyEvaluatedMultivariates partially_evaluated_polynomials =
-            partially_evaluate_first_round(full_polynomials, round_challenge);
+        // Populate the book-keeping table
+        PartiallyEvaluatedMultivariates partially_evaluated_polynomials;
+        if (!streaming_all_poly_paths_.empty()) {
+            // Fully disk-backed streaming: partial-eval to disk
+            streaming_partial_eval_to_disk(round_challenge);
+            streaming_effective_round_size_ = 0;
+        } else if (!streaming_temp_dir_.empty()) {
+            partially_evaluated_polynomials = streaming_partially_evaluate_first_round(
+                full_polynomials, round_challenge);
+        } else {
+            partially_evaluated_polynomials =
+                partially_evaluate_first_round(full_polynomials, round_challenge);
+        }
 
         if constexpr (UseRowDisablingPolynomial<Flavor>) {
             masking_tail.fold_masking_values(round_challenge, round_idx, round.round_size, &full_polynomials);
@@ -559,17 +643,40 @@ template <typename Flavor> class SumcheckProver {
         for (size_t round_idx = 1; round_idx < multivariate_d; round_idx++) {
             BB_BENCH_NAME("sumcheck loop");
 
-            round_univariate =
-                round.compute_univariate(partially_evaluated_polynomials, relation_parameters, gate_separators, alphas);
+            if (!streaming_all_poly_paths_.empty()) {
+                round_univariate = streaming_compute_univariate(relation_parameters, gate_separators, alphas);
+            } else {
+                round_univariate =
+                    round.compute_univariate(partially_evaluated_polynomials, relation_parameters, gate_separators, alphas);
+            }
             hiding_univariate = round.compute_libra_univariate(zk_sumcheck_data, round_idx);
             round_univariate += hiding_univariate;
             if constexpr (UseRowDisablingPolynomial<Flavor>) {
-                round_univariate += round.compute_disabled_contribution(partially_evaluated_polynomials,
-                                                                        relation_parameters,
-                                                                        gate_separators,
-                                                                        alphas,
-                                                                        row_disabling_polynomial,
-                                                                        masking_tail);
+                if (!streaming_all_poly_paths_.empty()) {
+                    // Load tail polys from disk for disabled contribution
+                    PartiallyEvaluatedMultivariates tail_polys;
+                    auto tail_view = tail_polys.get_all();
+                    size_t tail_start = round.round_size >= 4 ? round.round_size - 4 : 0;
+                    for (size_t i = 0; i < streaming_all_poly_paths_.size(); i++) {
+                        if (!streaming_all_poly_paths_[i].empty()) {
+                            tail_view[i] = Polynomial<FF>::deserialize_range_from_file(
+                                streaming_all_poly_paths_[i], tail_start, round.round_size);
+                        }
+                    }
+                    round_univariate += round.compute_disabled_contribution(tail_polys,
+                                                                            relation_parameters,
+                                                                            gate_separators,
+                                                                            alphas,
+                                                                            row_disabling_polynomial,
+                                                                            masking_tail);
+                } else {
+                    round_univariate += round.compute_disabled_contribution(partially_evaluated_polynomials,
+                                                                            relation_parameters,
+                                                                            gate_separators,
+                                                                            alphas,
+                                                                            row_disabling_polynomial,
+                                                                            masking_tail);
+                }
             }
 
             handler.process_round_univariate(round_idx, round_univariate);
@@ -582,7 +689,11 @@ template <typename Flavor> class SumcheckProver {
                 masking_tail.fold_masking_values(
                     round_challenge, round_idx, round.round_size, &partially_evaluated_polynomials);
             }
-            partially_evaluate_in_place(partially_evaluated_polynomials, round_challenge);
+            if (!streaming_all_poly_paths_.empty()) {
+                streaming_partial_eval_to_disk(round_challenge);
+            } else {
+                partially_evaluate_in_place(partially_evaluated_polynomials, round_challenge);
+            }
 
             if constexpr (IsTranslatorFlavor<Flavor>) {
                 if (round_idx == Flavor::LOG_MINI_CIRCUIT_SIZE - 1) {
@@ -599,6 +710,11 @@ template <typename Flavor> class SumcheckProver {
         handler.finalize_last_round(multivariate_d, round_univariate, multivariate_challenge[multivariate_d - 1]);
 
         vinfo("completed ", multivariate_d, " rounds of sumcheck");
+
+        // If streaming, load the final tiny polys from disk
+        if (!streaming_all_poly_paths_.empty()) {
+            partially_evaluated_polynomials = streaming_load_final_polys();
+        }
 
         // Zero univariates are used to pad the proof to the fixed size virtual_log_n.
         auto zero_univariate = bb::Univariate<FF, Flavor::BATCHED_RELATION_PARTIAL_LENGTH>::zero();
@@ -689,6 +805,185 @@ template <typename Flavor> class SumcheckProver {
         PartiallyEvaluatedMultivariates partially_evaluated_polynomials(full_polynomials, multivariate_n);
         partially_evaluate(full_polynomials, partially_evaluated_polynomials, round_challenge);
         return partially_evaluated_polynomials;
+    }
+
+    /**
+     * @brief Memory-efficient version of partially_evaluate_first_round that processes polynomials sequentially,
+     * serializing source polys to disk and freeing them to reduce peak memory from ~28 GiB to ~18 GiB for 2^24
+     * circuits. Activated by --slow_low_memory CLI flag.
+     *
+     * @param full_polynomials Source polynomials (MODIFIED: sources are cleared after processing)
+     * @param round_challenge The first sumcheck challenge
+     */
+    PartiallyEvaluatedMultivariates streaming_partially_evaluate_first_round(
+        ProverPolynomials& full_polynomials,
+        const FF& round_challenge)
+    {
+        using Poly = bb::Polynomial<FF>;
+
+        PartiallyEvaluatedMultivariates dest;
+        auto source_view = full_polynomials.get_all();
+        auto dest_view = dest.get_all();
+        const size_t num_all = source_view.size();
+        const size_t half_n = multivariate_n / 2;
+
+        // Helper: partial-evaluate one polynomial (source → dest)
+        auto partial_eval_one = [&](size_t j) {
+            const auto& poly = source_view[j];
+            size_t limit = poly.end_index();
+            size_t desired_size = (limit / 2) + (limit % 2);
+            dest_view[j] = Poly(desired_size, half_n, Poly::DontZeroMemory::FLAG);
+            for (size_t i = 0; i < limit; i += 2) {
+                dest_view[j].at(i >> 1) = poly[i] + round_challenge * (poly[i + 1] - poly[i]);
+            }
+        };
+
+        // Determine which indices are shifted views (last entries in get_all()).
+        const size_t num_shifted_sources =
+            streaming_is_shifted_source_.empty()
+                ? 0
+                : static_cast<size_t>(
+                      std::count(streaming_is_shifted_source_.begin(), streaming_is_shifted_source_.end(), true));
+        const size_t shifted_view_start = num_all - num_shifted_sources;
+
+        // Phase A: Independent polys — partial-eval then free immediately.
+        for (size_t j = 0; j < shifted_view_start; j++) {
+            if (source_view[j].is_empty()) {
+                continue;
+            }
+            partial_eval_one(j);
+            bool is_shifted_source = !streaming_is_shifted_source_.empty() && streaming_is_shifted_source_[j];
+            if (!is_shifted_source) {
+                source_view[j] = Poly(); // free source
+            }
+        }
+
+        // Phase B: Shifted-source polys — partial-eval but keep alive (views need their memory).
+        for (size_t j = 0; j < shifted_view_start; j++) {
+            if (streaming_is_shifted_source_.empty() || !streaming_is_shifted_source_[j]) {
+                continue;
+            }
+            if (source_view[j].is_empty()) {
+                continue;
+            }
+            partial_eval_one(j);
+        }
+
+        // Phase C: Shifted views — partial-eval, then free both the view and its source.
+        for (size_t j = shifted_view_start; j < num_all; j++) {
+            if (source_view[j].is_empty()) {
+                continue;
+            }
+            partial_eval_one(j);
+        }
+        // Now safe to free shifted sources and views
+        for (size_t j = 0; j < num_all; j++) {
+            if (!source_view[j].is_empty()) {
+                source_view[j] = Poly();
+            }
+        }
+
+        vinfo("streaming partial evaluate: freed source polynomials, peak memory reduced");
+        return dest;
+    }
+
+    /**
+     * @brief Streaming compute_univariate: mmap all polys once, process in chunks via pointer access.
+     * @details Uses mmap instead of per-chunk fread for zero-copy access. The OS handles paging
+     * and readahead. Peak memory: ~1-2 chunk_sizes across all polys (OS pages in only active pages).
+     */
+    auto streaming_compute_univariate(
+        const RelationParameters<FF>& relation_params,
+        const GateSeparatorPolynomial<FF>& gate_separators,
+        const typename SumcheckProverRound<Flavor>::SubrelationSeparators& alpha_powers)
+    {
+        using Poly = bb::Polynomial<FF>;
+        constexpr size_t STREAMING_CHUNK_ROWS = size_t{ 1 } << 21; // 2M rows per chunk
+
+        const size_t total_edges =
+            streaming_effective_round_size_ > 0 ? streaming_effective_round_size_ : round.round_size;
+
+        // mmap all polys once — OS handles paging, no per-chunk I/O syscalls
+        ProverPolynomials mmap_polys;
+        auto mmap_view = mmap_polys.get_all();
+        for (size_t i = 0; i < streaming_all_poly_paths_.size(); i++) {
+            if (!streaming_all_poly_paths_[i].empty()) {
+                mmap_view[i] = Poly::mmap_from_file(streaming_all_poly_paths_[i]);
+            }
+        }
+
+        for (size_t chunk_start = 0; chunk_start < total_edges; chunk_start += STREAMING_CHUNK_ROWS) {
+            size_t chunk_end = std::min(chunk_start + STREAMING_CHUNK_ROWS, total_edges);
+            // Ensure chunk_end is even for edge pairs
+            chunk_end += chunk_end % 2;
+            chunk_end = std::min(chunk_end, total_edges);
+
+            // Accumulate edges directly from mmap'd data — no copy needed
+            round.accumulate_edges(
+                mmap_polys, relation_params, gate_separators, alpha_powers, chunk_start, chunk_end);
+        }
+
+        // munmap all polys (automatic via destructor)
+        for (size_t i = 0; i < mmap_view.size(); i++) {
+            mmap_view[i] = Poly();
+        }
+
+        vinfo("streaming compute_univariate: processed ", total_edges, " edges via mmap");
+        return round.finalize_univariate(alpha_powers, gate_separators);
+    }
+
+    /**
+     * @brief Chunked streaming: partial-evaluate by loading each poly from disk one at a time,
+     * writing the half-size result back to the same path on disk. No in-memory accumulation.
+     * @details Peak memory: 1 source poly + 1 dest poly (e.g. 512 MiB + 256 MiB at round 0 for 2^24).
+     * After this call, streaming_all_poly_paths_ contain the halved polynomials.
+     */
+    void streaming_partial_eval_to_disk(const FF& round_challenge)
+    {
+        using Poly = bb::Polynomial<FF>;
+        const size_t dest_virtual_size = round.round_size >> 1;
+
+        for (size_t j = 0; j < streaming_all_poly_paths_.size(); j++) {
+            if (streaming_all_poly_paths_[j].empty()) {
+                continue;
+            }
+            // mmap source for zero-copy read (OS handles paging + readahead)
+            auto source = Poly::mmap_from_file(streaming_all_poly_paths_[j]);
+
+            size_t limit = source.end_index();
+            size_t desired_size = (limit / 2) + (limit % 2);
+            Poly dest(desired_size, dest_virtual_size, Poly::DontZeroMemory::FLAG);
+            for (size_t i = 0; i < limit; i += 2) {
+                dest.at(i >> 1) = source[i] + round_challenge * (source[i + 1] - source[i]);
+            }
+            source = Poly(); // munmap
+
+            dest.serialize_to_file(streaming_all_poly_paths_[j]);
+        }
+
+        vinfo("streaming partial eval to disk: halved ", streaming_all_poly_paths_.size(), " polys to size ", dest_virtual_size);
+    }
+
+    /**
+     * @brief Load final tiny polys (1-2 elements each) from disk into PartiallyEvaluatedMultivariates.
+     * @details Called after all d rounds of streaming partial evaluation complete.
+     * The polys on disk are now single-element (or 2-element for virtual round handling).
+     */
+    PartiallyEvaluatedMultivariates streaming_load_final_polys()
+    {
+        using Poly = bb::Polynomial<FF>;
+        PartiallyEvaluatedMultivariates result;
+        auto result_view = result.get_all();
+
+        for (size_t j = 0; j < streaming_all_poly_paths_.size(); j++) {
+            if (streaming_all_poly_paths_[j].empty()) {
+                continue;
+            }
+            result_view[j] = Poly::deserialize_from_file(streaming_all_poly_paths_[j]);
+        }
+
+        vinfo("streaming: loaded ", streaming_all_poly_paths_.size(), " final polys from disk");
+        return result;
     }
 
     /**

@@ -19,6 +19,7 @@
 #include <memory>
 #include <mutex>
 #include <span>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <unordered_map>
 #include <utility>
@@ -287,6 +288,135 @@ template <typename Fr> Polynomial<Fr> Polynomial<Fr>::reverse() const
         reversed.at(end_index - idx) = this->at(idx - 1);
     }
     return reversed;
+}
+
+template <typename Fr> void Polynomial<Fr>::serialize_to_file(const std::string& path) const
+{
+    std::ofstream file(path, std::ios::binary);
+    if (!file) {
+        throw_or_abort("Failed to open file for polynomial serialization: " + path);
+    }
+    uint64_t si = start_index();
+    uint64_t ei = end_index();
+    uint64_t vs = virtual_size();
+    file.write(reinterpret_cast<const char*>(&si), sizeof(si));
+    file.write(reinterpret_cast<const char*>(&ei), sizeof(ei));
+    file.write(reinterpret_cast<const char*>(&vs), sizeof(vs));
+    // Write the raw coefficient data (size() elements starting from data())
+    file.write(reinterpret_cast<const char*>(data()), static_cast<std::streamsize>(size() * sizeof(Fr)));
+}
+
+template <typename Fr> Polynomial<Fr> Polynomial<Fr>::deserialize_from_file(const std::string& path)
+{
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        throw_or_abort("Failed to open file for polynomial deserialization: " + path);
+    }
+    uint64_t si = 0;
+    uint64_t ei = 0;
+    uint64_t vs = 0;
+    file.read(reinterpret_cast<char*>(&si), sizeof(si));
+    file.read(reinterpret_cast<char*>(&ei), sizeof(ei));
+    file.read(reinterpret_cast<char*>(&vs), sizeof(vs));
+    size_t actual_size = ei - si;
+    Polynomial result(actual_size, vs, si, DontZeroMemory::FLAG);
+    file.read(reinterpret_cast<char*>(result.data()), static_cast<std::streamsize>(actual_size * sizeof(Fr)));
+    return result;
+}
+
+template <typename Fr>
+Polynomial<Fr> Polynomial<Fr>::deserialize_range_from_file(const std::string& path, size_t range_start, size_t range_end)
+{
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        throw_or_abort("Failed to open file for polynomial range deserialization: " + path);
+    }
+    uint64_t si = 0;
+    uint64_t ei = 0;
+    uint64_t vs = 0;
+    file.read(reinterpret_cast<char*>(&si), sizeof(si));
+    file.read(reinterpret_cast<char*>(&ei), sizeof(ei));
+    file.read(reinterpret_cast<char*>(&vs), sizeof(vs));
+
+    // Intersect requested range with actual data range
+    size_t load_start = std::max(range_start, static_cast<size_t>(si));
+    size_t load_end = std::min(range_end, static_cast<size_t>(ei));
+    if (load_start >= load_end) {
+        return Polynomial(); // no data in range
+    }
+
+    size_t count = load_end - load_start;
+    Polynomial result(count, vs, load_start, DontZeroMemory::FLAG);
+
+    // Seek past header + skip elements before load_start
+    auto file_offset = static_cast<std::streamoff>(3 * sizeof(uint64_t) + (load_start - si) * sizeof(Fr));
+    file.seekg(file_offset);
+    file.read(reinterpret_cast<char*>(result.data()), static_cast<std::streamsize>(count * sizeof(Fr)));
+    return result;
+}
+
+template <typename Fr> Polynomial<Fr> Polynomial<Fr>::mmap_from_file(const std::string& path)
+{
+#ifdef __wasm__
+    // WASM has no mmap — fall back to regular deserialization
+    return deserialize_from_file(path);
+#else
+    // Read header via ifstream (avoids POSIX read() name collision)
+    std::ifstream hdr(path, std::ios::binary);
+    if (!hdr) {
+        throw_or_abort("Failed to open file for mmap: " + path);
+    }
+    uint64_t si = 0, ei = 0, vs = 0;
+    hdr.read(reinterpret_cast<char*>(&si), sizeof(si));
+    hdr.read(reinterpret_cast<char*>(&ei), sizeof(ei));
+    hdr.read(reinterpret_cast<char*>(&vs), sizeof(vs));
+    hdr.close();
+
+    size_t actual_size = ei - si;
+    if (actual_size == 0) {
+        return Polynomial();
+    }
+
+    // mmap the entire file (header + data)
+    constexpr size_t header_bytes = 3 * sizeof(uint64_t);
+    size_t data_bytes = actual_size * sizeof(Fr);
+    size_t total_bytes = header_bytes + data_bytes;
+
+    int fd = open(path.c_str(), O_RDONLY);
+    if (fd < 0) {
+        throw_or_abort("Failed to open file for mmap: " + path);
+    }
+
+    void* addr = mmap(nullptr, total_bytes, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (addr == MAP_FAILED) {
+        close(fd);
+        throw_or_abort("mmap failed for: " + path);
+    }
+
+    // Advise OS for sequential access (enables aggressive readahead)
+    madvise(addr, total_bytes, MADV_SEQUENTIAL);
+
+    // Data starts after the header
+    Fr* data_ptr = reinterpret_cast<Fr*>(static_cast<char*>(addr) + header_bytes);
+
+    // Build BackingMemory with FileBackedData for automatic munmap cleanup
+    // Set filename="" so destructor doesn't delete the external file
+    auto file_data = std::make_shared<typename BackingMemory<Fr>::FileBackedData>();
+    file_data->file_size = total_bytes;
+    file_data->filename = ""; // Don't delete external file
+    file_data->fd = fd;
+    file_data->raw_data_ptr = static_cast<Fr*>(addr); // munmap needs original addr
+
+    // Construct the Polynomial by directly setting up the internal array
+    Polynomial result;
+    result.coefficients_.start_ = si;
+    result.coefficients_.end_ = ei;
+    result.coefficients_.virtual_size_ = vs;
+    result.coefficients_.backing_memory_.raw_data = data_ptr;
+    result.coefficients_.backing_memory_.file_backed = std::move(file_data);
+
+    return result;
+#endif
 }
 
 template class Polynomial<bb::fr>;

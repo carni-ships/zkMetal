@@ -401,6 +401,33 @@ template <typename Fr> class Polynomial {
         }
     }
 
+    /**
+     * @brief Serialize polynomial to a binary file for later retrieval.
+     * @details Format: [uint64_t start_index][uint64_t end_index][uint64_t virtual_size][raw Fr data]
+     * Used by streaming sumcheck to spill polynomials to disk and reduce peak memory.
+     */
+    void serialize_to_file(const std::string& path) const;
+
+    /**
+     * @brief Deserialize a polynomial from a binary file written by serialize_to_file.
+     */
+    static Polynomial deserialize_from_file(const std::string& path);
+
+    /**
+     * @brief Deserialize a contiguous row range [range_start, range_end) from a serialized polynomial file.
+     * @details Reads only the requested subrange, intersected with the file's actual data range [si, ei).
+     * Returns an empty polynomial if the intersection is empty. Used by chunked streaming sumcheck.
+     */
+    static Polynomial deserialize_range_from_file(const std::string& path, size_t range_start, size_t range_end);
+
+    /**
+     * @brief Memory-map a serialized polynomial file for zero-copy read access.
+     * @details The returned Polynomial is backed by mmap'd memory. The OS handles paging
+     * and prefetch. The file is NOT deleted when the Polynomial is destroyed.
+     * Use MADV_SEQUENTIAL for streaming access patterns.
+     */
+    static Polynomial mmap_from_file(const std::string& path);
+
   private:
     // allocate a fresh memory pointer for backing memory
     // DOES NOT initialize memory
