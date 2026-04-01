@@ -11,7 +11,26 @@ The optimized build includes Metal GPU acceleration for:
 
 Metal GPU is **automatically enabled** when building on macOS — no flags needed.
 
-## Prerequisites
+## Quick Start (Pre-built Binary)
+
+A pre-built ARM64 binary with Metal GPU support is included at `bin/bb`:
+
+```bash
+# Install the pre-built binary
+mkdir -p ~/.bb
+cp bin/bb ~/.bb/bb
+cp bin/bn254.metal ~/.bb/
+cp bin/prover_ops.metal ~/.bb/
+
+# Verify it works
+~/.bb/bb --version
+```
+
+Skip to [Using the Prover](#using-the-prover) if you don't need to build from source.
+
+## Building from Source
+
+### Prerequisites
 
 ```bash
 # Required
@@ -62,15 +81,13 @@ otool -L build/bin/bb | grep Metal
 ls build/bin/bn254.metal build/bin/prover_ops.metal
 ```
 
-## Installing the Binary
+## Installing a Source-Built Binary
 
-The prover SDK expects `bb` at `~/.bb/bb`:
+If you built from source, install the binary and shaders:
 
 ```bash
 mkdir -p ~/.bb
 cp barretenberg/cpp/build/bin/bb ~/.bb/bb
-
-# Also copy the Metal shader files (required at runtime)
 cp barretenberg/cpp/build/bin/bn254.metal ~/.bb/
 cp barretenberg/cpp/build/bin/prover_ops.metal ~/.bb/
 ```
