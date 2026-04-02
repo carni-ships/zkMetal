@@ -1,3 +1,0 @@
-[workspace]
-members = ["circuits/full-tree", "circuits/incremental"]
-default-member = "circuits/full-tree"
