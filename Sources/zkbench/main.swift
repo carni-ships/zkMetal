@@ -96,8 +96,6 @@ if cmd == "calibrate" {
     runFRIBench()
 } else if cmd == "sumcheck" || cmd == "sc" {
     runSumcheckBench()
-} else if cmd == "kzg" {
-    runKZGBench()
 } else if cmd == "all" {
     runNTTBench()
     runPoseidon2Bench()
@@ -106,7 +104,6 @@ if cmd == "calibrate" {
     runPolyBench()
     runFRIBench()
     runSumcheckBench()
-    runKZGBench()
 } else {
     try runMSMBench()
 }

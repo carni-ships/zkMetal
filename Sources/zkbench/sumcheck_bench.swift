@@ -93,7 +93,7 @@ public func runSumcheckBench() {
 
         // Performance benchmark
         print("\n--- Performance ---")
-        let sizes = [14, 16, 18, 20]
+        let sizes = [14, 16, 18, 20, 22]
 
         for numVars in sizes {
             let n = 1 << numVars

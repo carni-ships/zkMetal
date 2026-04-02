@@ -14,7 +14,6 @@ GPU-accelerated zero-knowledge cryptography primitives for Apple Silicon, writte
 | **FRI** | Fast Reed-Solomon IOP folding (fused 2/4-round kernels) |
 | **Sumcheck** | Interactive sumcheck protocol (fused round+reduce with SIMD shuffles) |
 | **Polynomial Ops** | Evaluation, interpolation, subproduct trees |
-| **KZG** | Polynomial commitment scheme (commit + open, composes MSM + poly eval) |
 
 ## Performance
 
@@ -49,9 +48,12 @@ NTT is also available for Goldilocks (249ms at 2^24) and BabyBear (262ms at 2^24
 |-----------|-----------|-----|-------|---------|
 | Poseidon2 | 2^14 | 0.5 µs/hash | 113 µs/hash | **240x** |
 | Poseidon2 | 2^16 | 0.3 µs/hash | 113 µs/hash | **340x** |
+| Poseidon2 | 2^18 | 1.2 µs/hash | 113 µs/hash | **97x** |
+| Poseidon2 | 2^20 | 1.1 µs/hash | 113 µs/hash | **103x** |
 | Keccak-256 | 2^14 | 0.18 µs/hash | 6.4 µs/hash | **35x** |
 | Keccak-256 | 2^16 | 0.05 µs/hash | 6.4 µs/hash | **140x** |
 | Keccak-256 | 2^18 | 0.04 µs/hash | 6.4 µs/hash | **180x** |
+| Keccak-256 | 2^20 | 0.04 µs/hash | 6.4 µs/hash | **160x** |
 
 ### Merkle Trees
 
@@ -61,9 +63,15 @@ NTT is also available for Goldilocks (249ms at 2^24) and BabyBear (262ms at 2^24
 | Poseidon2 | 2^12 | 41ms | 487ms | **12x** |
 | Poseidon2 | 2^14 | 75ms | 1.9s | **26x** |
 | Poseidon2 | 2^16 | 122ms | 7.9s | **65x** |
+| Poseidon2 | 2^18 | 350ms | — | |
+| Poseidon2 | 2^20 | 1.2s | — | |
 | Keccak-256 | 2^12 | 8ms | 25ms | **3x** |
 | Keccak-256 | 2^14 | 16ms | 101ms | **6x** |
 | Keccak-256 | 2^16 | 17ms | 390ms | **23x** |
+| Keccak-256 | 2^18 | 45ms | — | |
+| Keccak-256 | 2^20 | 154ms | — | |
+
+CPU omitted at 2^18+ because single-threaded Merkle construction exceeds practical limits.
 
 ### FRI Folding (BN254 Fr)
 
@@ -73,6 +81,7 @@ NTT is also available for Goldilocks (249ms at 2^24) and BabyBear (262ms at 2^24
 | 2^16 | 2.9ms | 37ms | **13x** |
 | 2^18 | 7.4ms | 137ms | **18x** |
 | 2^20 | 22ms | 578ms | **26x** |
+| 2^22 | 32ms | — | |
 
 Full fold-to-constant: 2^20 in 32ms (20 rounds, fused 4-round kernels).
 
@@ -84,6 +93,7 @@ Full fold-to-constant: 2^20 in 32ms (20 rounds, fused 4-round kernels).
 | 2^16 | 14ms | 85ms | **6x** |
 | 2^18 | 27ms | 328ms | **12x** |
 | 2^20 | 46ms | 1.3s | **29x** |
+| 2^22 | 69ms | — | |
 
 ### Polynomial Ops (BN254 Fr)
 
@@ -120,7 +130,6 @@ Sources/
     Hash/          # Poseidon2, Keccak, Merkle tree engines
     Polynomial/    # FRI, Sumcheck engines
     Poly/          # Polynomial operations engine
-    KZG/           # KZG polynomial commitment engine
   zkbench/         # Benchmark harness
   zkmsm-cli/       # Standalone MSM CLI tool
 Tests/
@@ -163,11 +172,6 @@ let folded = try fri.multiFold(evals: evaluations, betas: challenges)
 let sc = try SumcheckEngine()
 let (rounds, finalEval) = try sc.fullSumcheck(evals: evals, challenges: challenges)
 
-// KZG polynomial commitment
-let kzg = try KZGEngine(srs: srsPoints)
-let commitment = try kzg.commit(polyCoeffs)
-let proof = try kzg.open(polyCoeffs, at: challengePoint)
-
 ```
 
 ### Benchmarks
@@ -180,7 +184,6 @@ swift run -c release zkbench keccak    # Keccak-256
 swift run -c release zkbench merkle    # Merkle trees
 swift run -c release zkbench fri       # FRI folding
 swift run -c release zkbench sumcheck  # Sumcheck
-swift run -c release zkbench kzg       # KZG commitment
 swift run -c release zkbench all       # Everything
 swift run -c release zkbench calibrate # Re-calibrate GPU parameters
 ```
@@ -238,7 +241,6 @@ All GPU kernels are verified against CPU reference implementations. The CPU impl
 | **Sumcheck** | Standard interactive protocol | Protocol-level verification (S(0)+S(1) = sum at each round) |
 | **Goldilocks** | p = 2^64 - 2^32 + 1 (standard) | NTT round-trip + CPU cross-check |
 | **BabyBear** | p = 2^31 - 2^27 + 1 (standard) | NTT round-trip + CPU cross-check |
-| **KZG** | Standard polynomial commitment scheme | Determinism + evaluation correctness |
 
 Every benchmark run includes correctness checks (printed as PASS/FAIL). The test suite (`swift test`) covers field arithmetic, curve operations, and NTT correctness.
 

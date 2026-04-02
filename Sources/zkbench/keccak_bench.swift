@@ -72,7 +72,7 @@ public func runKeccakBench() {
         }
 
         // GPU batch benchmarks
-        for logN in [10, 12, 14, 16, 18] {
+        for logN in [10, 12, 14, 16, 18, 20] {
             let n = 1 << logN
             var input = [UInt8](repeating: 0, count: n * 64)
             var rng: UInt64 = 0xCAFEBABE

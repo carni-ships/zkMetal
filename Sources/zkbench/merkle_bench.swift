@@ -9,7 +9,7 @@ public func runMerkleBench() {
     do {
         let engine = try Poseidon2MerkleEngine()
 
-        for logN in [10, 12, 14, 16] {
+        for logN in [10, 12, 14, 16, 18, 20] {
             let n = 1 << logN
             var leaves = [Fr](repeating: Fr.zero, count: n)
             for i in 0..<n { leaves[i] = frFromInt(UInt64(i + 1)) }
@@ -67,7 +67,7 @@ public func runMerkleBench() {
     do {
         let engine = try KeccakMerkleEngine()
 
-        for logN in [10, 12, 14, 16] {
+        for logN in [10, 12, 14, 16, 18, 20] {
             let n = 1 << logN
             var leaves = [[UInt8]]()
             for i in 0..<n {
