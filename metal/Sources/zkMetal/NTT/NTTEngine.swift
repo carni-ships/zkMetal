@@ -41,6 +41,10 @@ public class NTTEngine {
     private var scratchBuffer: MTLBuffer?  // scratch buffer for fused-bitrev (avoids read-write race)
     private var scratchCapacity: Int = 0
 
+    // Cached data buffer for ntt/intt array APIs
+    private var cachedDataBuf: MTLBuffer?
+    private var cachedDataBufElements: Int = 0
+
     public init() throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw MSMError.noGPU
@@ -1139,30 +1143,49 @@ public class NTTEngine {
     }
 
     /// High-level NTT: takes Fr array, returns NTT'd array.
+    /// Uses cached buffer to avoid per-call Metal allocation overhead.
     public func ntt(_ input: [Fr]) throws -> [Fr] {
         let n = input.count
         precondition(n > 0 && (n & (n - 1)) == 0, "NTT size must be power of 2")
         let logN = Int(log2(Double(n)))
+        let stride = MemoryLayout<Fr>.stride
 
-        guard let dataBuf = createFrBuffer(input) else {
-            throw MSMError.gpuError("Failed to create data buffer")
+        if n > cachedDataBufElements {
+            guard let buf = device.makeBuffer(length: n * stride, options: .storageModeShared) else {
+                throw MSMError.gpuError("Failed to create data buffer")
+            }
+            cachedDataBuf = buf
+            cachedDataBufElements = n
+        }
+        let dataBuf = cachedDataBuf!
+        input.withUnsafeBytes { src in
+            memcpy(dataBuf.contents(), src.baseAddress!, n * stride)
         }
 
         try ntt(data: dataBuf, logN: logN)
 
-        // Read back
         let ptr = dataBuf.contents().bindMemory(to: Fr.self, capacity: n)
         return Array(UnsafeBufferPointer(start: ptr, count: n))
     }
 
     /// High-level iNTT: takes NTT'd array, returns original coefficients.
+    /// Uses cached buffer to avoid per-call Metal allocation overhead.
     public func intt(_ input: [Fr]) throws -> [Fr] {
         let n = input.count
         precondition(n > 0 && (n & (n - 1)) == 0, "NTT size must be power of 2")
         let logN = Int(log2(Double(n)))
+        let stride = MemoryLayout<Fr>.stride
 
-        guard let dataBuf = createFrBuffer(input) else {
-            throw MSMError.gpuError("Failed to create data buffer")
+        if n > cachedDataBufElements {
+            guard let buf = device.makeBuffer(length: n * stride, options: .storageModeShared) else {
+                throw MSMError.gpuError("Failed to create data buffer")
+            }
+            cachedDataBuf = buf
+            cachedDataBufElements = n
+        }
+        let dataBuf = cachedDataBuf!
+        input.withUnsafeBytes { src in
+            memcpy(dataBuf.contents(), src.baseAddress!, n * stride)
         }
 
         try intt(data: dataBuf, logN: logN)

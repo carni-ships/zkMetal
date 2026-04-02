@@ -33,6 +33,8 @@ public class GoldilocksNTTEngine {
     private var invNCache: [Int: MTLBuffer] = [:]
     private var scratchBuffer: MTLBuffer?
     private var scratchCapacity: Int = 0
+    private var cachedDataBuf: MTLBuffer?
+    private var cachedDataBufElements: Int = 0
 
     // 4096 Gl elements * 8 bytes = 32KB threadgroup memory
     public static let maxFusedElements = 4096
@@ -510,8 +512,17 @@ public class GoldilocksNTTEngine {
         let n = input.count
         precondition(n > 0 && (n & (n - 1)) == 0, "NTT size must be power of 2")
         let logN = Int(log2(Double(n)))
-        guard let dataBuf = createGlBuffer(input) else {
-            throw MSMError.gpuError("Failed to create data buffer")
+        let stride = MemoryLayout<Gl>.stride
+        if n > cachedDataBufElements {
+            guard let buf = device.makeBuffer(length: n * stride, options: .storageModeShared) else {
+                throw MSMError.gpuError("Failed to create data buffer")
+            }
+            cachedDataBuf = buf
+            cachedDataBufElements = n
+        }
+        let dataBuf = cachedDataBuf!
+        input.withUnsafeBytes { src in
+            memcpy(dataBuf.contents(), src.baseAddress!, n * stride)
         }
         try ntt(data: dataBuf, logN: logN)
         let ptr = dataBuf.contents().bindMemory(to: Gl.self, capacity: n)
@@ -522,8 +533,17 @@ public class GoldilocksNTTEngine {
         let n = input.count
         precondition(n > 0 && (n & (n - 1)) == 0, "NTT size must be power of 2")
         let logN = Int(log2(Double(n)))
-        guard let dataBuf = createGlBuffer(input) else {
-            throw MSMError.gpuError("Failed to create data buffer")
+        let stride = MemoryLayout<Gl>.stride
+        if n > cachedDataBufElements {
+            guard let buf = device.makeBuffer(length: n * stride, options: .storageModeShared) else {
+                throw MSMError.gpuError("Failed to create data buffer")
+            }
+            cachedDataBuf = buf
+            cachedDataBufElements = n
+        }
+        let dataBuf = cachedDataBuf!
+        input.withUnsafeBytes { src in
+            memcpy(dataBuf.contents(), src.baseAddress!, n * stride)
         }
         try intt(data: dataBuf, logN: logN)
         let ptr = dataBuf.contents().bindMemory(to: Gl.self, capacity: n)
