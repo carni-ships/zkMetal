@@ -7,6 +7,8 @@ import Metal
 
 public class Poseidon2MerkleEngine {
     private let engine: Poseidon2Engine
+    private var cachedTreeBuf: MTLBuffer?
+    private var cachedTreeBufNodes: Int = 0
 
     public init() throws {
         self.engine = try Poseidon2Engine()
@@ -22,11 +24,16 @@ public class Poseidon2MerkleEngine {
 
         let treeSize = 2 * n - 1
         let stride = MemoryLayout<Fr>.stride
-        let totalBytes = treeSize * stride
 
-        guard let treeBuf = engine.device.makeBuffer(length: totalBytes, options: .storageModeShared) else {
-            throw MSMError.gpuError("Failed to allocate Merkle tree buffer")
+        // Reuse cached tree buffer when possible
+        if treeSize > cachedTreeBufNodes {
+            guard let buf = engine.device.makeBuffer(length: treeSize * stride, options: .storageModeShared) else {
+                throw MSMError.gpuError("Failed to allocate Merkle tree buffer")
+            }
+            cachedTreeBuf = buf
+            cachedTreeBufNodes = treeSize
         }
+        let treeBuf = cachedTreeBuf!
 
         // Copy leaves to GPU buffer once
         leaves.withUnsafeBytes { src in
@@ -37,9 +44,9 @@ public class Poseidon2MerkleEngine {
             throw MSMError.noCommandBuffer
         }
 
-        // Level-by-level is faster than fused subtrees for Poseidon2:
-        // Each hash is compute-heavy (~200µs), so dispatch overhead is negligible,
-        // while fused subtrees waste ~80% of GPU cycles on idle threads at upper levels.
+        // Level-by-level for Poseidon2: each hash is compute-heavy, so dispatch overhead
+        // is negligible relative to hash time, while fused subtrees waste GPU occupancy
+        // on idle threads at upper levels within each subtree.
         let enc = cmdBuf.makeComputeCommandEncoder()!
 
         var levelStart = 0
@@ -86,6 +93,8 @@ public class Poseidon2MerkleEngine {
 
 public class KeccakMerkleEngine {
     private let engine: Keccak256Engine
+    private var cachedTreeBuf: MTLBuffer?
+    private var cachedTreeBufNodes: Int = 0
 
     public init() throws {
         self.engine = try Keccak256Engine()
@@ -100,11 +109,15 @@ public class KeccakMerkleEngine {
         precondition(leaves.allSatisfy { $0.count == 32 }, "Leaves must be 32 bytes each")
 
         let treeSize = 2 * n - 1
-        let totalBytes = treeSize * 32
 
-        guard let treeBuf = engine.device.makeBuffer(length: totalBytes, options: .storageModeShared) else {
-            throw MSMError.gpuError("Failed to allocate Keccak Merkle buffer")
+        if treeSize > cachedTreeBufNodes {
+            guard let buf = engine.device.makeBuffer(length: treeSize * 32, options: .storageModeShared) else {
+                throw MSMError.gpuError("Failed to allocate Keccak Merkle buffer")
+            }
+            cachedTreeBuf = buf
+            cachedTreeBufNodes = treeSize
         }
+        let treeBuf = cachedTreeBuf!
 
         // Copy leaves to GPU buffer once (contiguous 32-byte hashes)
         let ptr = treeBuf.contents().assumingMemoryBound(to: UInt8.self)
