@@ -81,7 +81,6 @@ public class RadixSortEngine {
         }
         let candidates = [
             "\(execDir)/../Sources/Shaders",
-            "./metal/Sources/Shaders",
             "./Sources/Shaders",
         ]
         for path in candidates {

@@ -1,192 +1,199 @@
 # zkMetal
 
-Generic Noir prover SDK — load any compiled circuit, generate UltraHonk proofs, verify, and run continuous proving pipelines.
+GPU-accelerated zero-knowledge cryptography primitives for Apple Silicon, written in Metal and Swift.
 
-Built on [Barretenberg](https://github.com/AztecProtocol/barretenberg) with support for WASM, native CLI, and persistent msgpack worker pools.
+## Primitives
 
-## Features
+| Primitive | Description |
+|-----------|-------------|
+| **MSM** | Multi-scalar multiplication (Pippenger + signed-digit + GLV endomorphism) |
+| **NTT** | Number theoretic transform (four-step FFT with fused sub-blocks) |
+| **Poseidon2** | Algebraic hash function (t=3, BN254 Fr) |
+| **Keccak-256** | SHA-3 hash (fused subtree Merkle) |
+| **Merkle Trees** | Poseidon2 and Keccak-256 backends |
+| **FRI** | Fast Reed-Solomon IOP folding (fused 2/4-round kernels) |
+| **Sumcheck** | Interactive sumcheck protocol (fused round+reduce with SIMD shuffles) |
+| **Polynomial Ops** | Evaluation, interpolation, subproduct trees |
+| **Radix Sort** | LSD radix-256 GPU sort |
 
-- **Any Noir circuit** — point at a compiled JSON, start proving
-- **Multiple proving modes** — WASM, native bb CLI, pipelined, parallel msgpack workers
-- **Recursive IVC** — chain proofs for incremental verifiable computation
-- **Pluggable architecture** — implement `DataSource`, `WitnessBuilder`, `ProofSink` for your app
-- **Solidity verifiers** — generate on-chain verification contracts
+## Performance (Apple M3 Pro)
 
-## Quick Start
+### MSM (BN254 G1)
 
-```bash
-cd prover
-npm install
+| Points | Time |
+|--------|------|
+| 65,536 | ~12ms |
 
-# Prove a single block (using Persistia adapter)
-npx tsx src/cli.ts prove --node https://your-node.com?shard=node-1 --block 100
+### NTT
 
-# Watch mode (continuous proving)
-npx tsx src/cli.ts watch --node https://your-node.com?shard=node-1 --mode sequential --recursive
+| Size | BN254 Fr | Goldilocks | BabyBear |
+|------|----------|------------|----------|
+| 2^14 | 11ms | 7ms | 2ms |
+| 2^16 | 26ms | 9ms | 1ms |
+| 2^18 | 56ms | 16ms | 16ms |
+| 2^20 | 134ms | 54ms | 101ms |
+| 2^22 | 405ms | 221ms | 260ms |
+| 2^24 | - | 116ms | 285ms |
 
-# Parallel proving with persistent bb workers
-npx tsx src/cli.ts watch --node https://your-node.com?shard=node-1 --mode parallel --workers 6
+### Hashing
 
-# Verify a proof
-npx tsx src/cli.ts verify --proof proofs/block_100.json
+| Primitive | Batch Size | Time | Throughput |
+|-----------|-----------|------|------------|
+| Poseidon2 | 2^14 | 5.1ms | 3.2M hash/s |
+| Poseidon2 | 2^16 | 21ms | 3.1M hash/s |
+| Keccak-256 | 2^14 | 2.3ms | 7.1M hash/s |
+| Keccak-256 | 2^16 | 5.7ms | 11.5M hash/s |
+| Keccak-256 | 2^18 | 13ms | 19.7M hash/s |
 
-# Benchmark
-npx tsx src/cli.ts bench --node https://your-node.com?shard=node-1 --block 100
-```
+### Merkle Trees
 
-## SDK Usage
+| Backend | Leaves | Time |
+|---------|--------|------|
+| Poseidon2 | 2^14 | 49ms |
+| Poseidon2 | 2^16 | 68ms |
+| Keccak-256 | 2^14 | 19ms |
+| Keccak-256 | 2^16 | 21ms |
 
-```typescript
-import { ProverEngine, watchSequential } from "zkmetal";
-import type { DataSource, WitnessBuilder, ProofSink } from "zkmetal/types";
+### FRI Folding (BN254 Fr)
 
-// 1. Point at your compiled circuit
-const engine = new ProverEngine({
-  circuitPath: "./target/my_circuit.json",
-  threads: 8,
-});
+| Size | Single Fold | Full Protocol (fold to 1) |
+|------|-------------|--------------------------|
+| 2^16 | 2.0ms | 8.0ms |
+| 2^18 | 9.7ms | 10.5ms |
+| 2^20 | 24ms | 19ms |
 
-// 2. Implement the three interfaces for your application
-const dataSource: DataSource<MyBlock> = {
-  fetchBlock: async (n) => { /* fetch block n from your chain/API */ },
-  fetchLatestBlockNumber: async () => { /* return latest block number */ },
-};
+### Sumcheck (BN254 Fr)
 
-const witnessBuilder: WitnessBuilder<MyBlock> = {
-  buildWitness: async (block, blockNumber, recursiveOpts?) => {
-    // Transform your block data into the witness map your circuit expects
-    return { field1: "value1", field2: "value2", ... };
-  },
-};
+| Variables | Time |
+|-----------|------|
+| 2^14 | 4.7ms |
+| 2^16 | 9.9ms |
+| 2^18 | 17ms |
+| 2^20 | 32ms |
 
-const proofSink: ProofSink = {
-  submitProof: async (proof) => { /* POST proof to your verifier */ },
-};
+### Radix Sort
 
-// 3. Start proving
-await watchSequential(engine, dataSource, witnessBuilder, proofSink, {
-  intervalSec: 10,
-  recursive: true,
-});
-```
+| Elements | Time | Throughput |
+|----------|------|------------|
+| 65,536 | 12ms | 5M keys/s |
+| 262,144 | 40ms | 7M keys/s |
+| 1,048,576 | 116ms | 9M keys/s |
 
-### Using the Persistia Adapter
+## Supported Fields
 
-```typescript
-import { ProverEngine, watchSequential } from "zkmetal";
-import { createPersistiaAdapter } from "zkmetal/adapters/persistia";
-
-const engine = new ProverEngine({
-  circuitPath: "./target/persistia_state_proof.json",
-});
-
-const { dataSource, witnessBuilder, proofSink } = createPersistiaAdapter(
-  "https://your-persistia-node.com?shard=node-1"
-);
-
-await watchSequential(engine, dataSource, witnessBuilder, proofSink, {
-  recursive: true,
-  useNative: true,
-});
-```
-
-## Performance
-
-| Metric | Value |
-|--------|-------|
-| Proof time | ~6s per block (Apple Silicon, native ARM64) |
-| Circuit size | ~42K gates (non-recursive) / ~769K gates (recursive IVC) |
-| Proof size | 16 KB |
-| Sustained throughput | ~10 proofs/min (sequential) |
-
-See [RESEARCH.md](RESEARCH.md) for detailed performance analysis and scaling paths.
+- **BN254 Fr** (scalar field) -- Montgomery CIOS, 8x32-bit limbs
+- **BN254 Fp** (base field) -- Montgomery CIOS, SOS squaring
+- **Goldilocks** (p = 2^64 - 2^32 + 1) -- native 64-bit reduction
+- **BabyBear** (p = 2^31 - 2^27 + 1) -- 32-bit arithmetic
 
 ## Architecture
 
-### Proving Engine (`ProverEngine`)
-
-Core class that wraps Noir + Barretenberg. Handles circuit loading, witness execution, proof generation, and verification. Supports both WASM and native bb CLI backends.
-
-### Watch Modes
-
-| Mode | Description | Best For |
-|------|-------------|----------|
-| `sequential` | One block at a time, supports IVC chaining | Production with recursive proofs |
-| `pipelined` | Overlaps witness solving with native proving | Single-prover catch-up |
-| `parallel` | Multiple persistent bb workers via msgpack | High-throughput catch-up |
-
-### Adapter Pattern
+All compute runs on Metal GPU shaders. The Swift layer handles buffer management, pipeline dispatch, and host-device coordination.
 
 ```
-┌─────────────┐     ┌──────────────┐     ┌───────────────┐
-│ DataSource   │────>│ ProverEngine │────>│ ProofSink     │
-│ (fetch data) │     │ (prove)      │     │ (submit)      │
-└─────────────┘     └──────────────┘     └───────────────┘
-       ↑                    ↑                     ↑
-       │            ┌──────────────┐              │
-       │            │WitnessBuilder│              │
-       │            │(data→witness)│              │
-       │            └──────────────┘              │
-       │                                          │
-   Your chain API                          Your verifier
+Sources/
+  Shaders/         # Metal GPU kernels
+    fields/        # Field arithmetic (BN254 Fr/Fp, Goldilocks, BabyBear)
+    geometry/      # Elliptic curve operations (BN254 G1)
+    msm/           # Multi-scalar multiplication kernels
+    ntt/           # NTT butterfly + fused sub-block kernels
+    hash/          # Poseidon2, Keccak-256
+    fri/           # FRI folding kernels
+    sumcheck/      # Sumcheck round kernels
+    poly/          # Polynomial evaluation/interpolation
+    sort/          # GPU radix sort
+  zkMetal/         # Swift engine layer
+    Fields/        # CPU-side field arithmetic
+    MSM/           # MSM engine (Pippenger, GLV, signed-digit)
+    NTT/           # NTT engines (BN254, Goldilocks, BabyBear)
+    Hash/          # Poseidon2, Keccak, Merkle tree engines
+    Polynomial/    # FRI, Sumcheck engines
+    Poly/          # Polynomial operations engine
+    Sort/          # Radix sort engine
+  zkbench/         # Benchmark harness
+  zkmsm-cli/       # Standalone MSM CLI tool
+Tests/
+  zkMetalTests/    # Correctness tests
 ```
 
-Implement `DataSource`, `WitnessBuilder`, and `ProofSink` from `zkmetal/types` to connect any data source to the proving pipeline.
+## Usage
 
-### Project Structure
+### As a library
 
-```
-src/main.nr                    # Noir circuit (reference: Persistia state proof)
-Nargo.toml                     # Noir project config
+```swift
+import zkMetal
 
-prover/
-  src/
-    index.ts                   # SDK exports
-    types.ts                   # Core interfaces (DataSource, WitnessBuilder, ProofSink)
-    engine.ts                  # ProverEngine (circuit loading, proving, verification)
-    watcher.ts                 # Watch loops (sequential, pipelined, parallel)
-    persistent-bb.ts           # PersistentBb msgpack worker
-    witness.ts                 # Persistia-specific witness generation
-    cli.ts                     # CLI entrypoint
-    adapters/
-      persistia/index.ts       # Persistia adapter (reference implementation)
-  test/                        # Integration tests and benchmarks
+// MSM
+let msm = try MetalMSM()
+let result = try msm.msm(points: points, scalars: scalars)
 
-target/
-  persistia_state_proof.json   # Compiled circuit
-  PersistiaVerifier.sol        # Generated Solidity verifier
+// NTT (BN254)
+let ntt = try NTTEngine()
+let transformed = try ntt.ntt(values)
+let inverse = try ntt.intt(transformed)
 
-test/
-  PersistiaVerifier.t.sol      # Foundry tests for on-chain verification
-```
+// Poseidon2 hashing
+let p2 = try Poseidon2Engine()
+let hashes = try p2.hashBatch(inputs)
 
-## Writing a Custom Adapter
+// Keccak-256
+let keccak = try Keccak256Engine()
+let digests = try keccak.hashBatch(messages)
 
-To prove a different Noir circuit with your own data source:
+// Merkle tree (Poseidon2)
+let merkle = try Poseidon2MerkleEngine()
+let tree = try merkle.buildTree(leaves)
 
-1. **Compile your circuit**: `nargo compile` in your circuit directory
-2. **Implement `DataSource<B>`**: fetch your blocks/units of work
-3. **Implement `WitnessBuilder<B>`**: transform blocks into the witness map your circuit expects
-4. **Implement `ProofSink`** (optional): submit proofs to your verifier
-5. **Wire it up**:
+// FRI folding
+let fri = try FRIEngine()
+let folded = try fri.multiFold(evals: evaluations, betas: challenges)
 
-```typescript
-const engine = new ProverEngine({ circuitPath: "./target/your_circuit.json" });
-await watchSequential(engine, yourDataSource, yourWitnessBuilder, yourProofSink);
+// Sumcheck
+let sc = try SumcheckEngine()
+let (rounds, finalEval) = try sc.fullSumcheck(evals: evals, challenges: challenges)
+
+// Radix sort
+let sort = try RadixSortEngine()
+let sorted = try sort.sort(keys)
 ```
 
-## Hash Function: Poseidon2
+### Benchmarks
 
-The reference circuit uses Poseidon2 — a field-native hash function ~100x cheaper in ZK circuits than SHA-256.
+```bash
+swift run -c release zkbench msm       # MSM (65K points)
+swift run -c release zkbench ntt       # NTT (all fields)
+swift run -c release zkbench p2        # Poseidon2
+swift run -c release zkbench keccak    # Keccak-256
+swift run -c release zkbench merkle    # Merkle trees
+swift run -c release zkbench fri       # FRI folding
+swift run -c release zkbench sumcheck  # Sumcheck
+swift run -c release zkbench sort      # Radix sort
+swift run -c release zkbench all       # Everything
+```
 
-## Signatures: Schnorr on Grumpkin
+### MSM CLI
 
-The reference circuit verifies Schnorr signatures on the Grumpkin curve (BN254's embedded curve), natively supported in Noir at ~3K gates per verification.
+```bash
+# Benchmark
+swift run -c release zkmsm --bench 65536
 
-## Proving System: UltraHonk
+# Compute from JSON
+echo '{"points": [["0x1","0x2"]], "scalars": ["0x2a"]}' | swift run -c release zkmsm
+```
 
-Proofs use Barretenberg's UltraHonk in non-ZK mode. Suitable for applications where the proof attests to correct computation rather than data privacy.
+## Building
 
-## License
+Requires macOS 13+ and Xcode with Metal support.
 
-MIT
+```bash
+swift build -c release
+```
+
+## Design Decisions
+
+- **Montgomery form everywhere**: All field elements stay in Montgomery representation on GPU. Conversion happens only at host boundaries.
+- **Buffer caching**: GPU Metal buffers are cached and reused across calls to avoid allocation overhead.
+- **Four-step FFT**: Large NTTs (>2^16) split into sub-blocks processed in shared memory, reducing global memory traffic.
+- **Fused kernels**: Multi-round FRI folding and Poseidon2 full permutations avoid intermediate buffer round-trips.
+- **Signed-digit MSM**: Scalar recoding halves bucket count, reducing bucket accumulation work.
+- **GLV endomorphism**: BN254's efficient endomorphism splits 256-bit scalar muls into two 128-bit half-width muls.

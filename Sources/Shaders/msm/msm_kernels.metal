@@ -251,3 +251,73 @@ kernel void msm_combine_segments(
         window_results[tgid] = shared_buf[0];
     }
 }
+
+// Horner's method to combine window results into final MSM result
+kernel void msm_horner_combine(
+    device const PointProjective* window_results [[buffer(0)]],
+    device PointProjective* final_result         [[buffer(1)]],
+    constant uint& n_windows                     [[buffer(2)]],
+    constant uint& window_bits                   [[buffer(3)]],
+    uint tid                                     [[thread_position_in_grid]]
+) {
+    if (tid != 0) return;
+
+    PointProjective result = window_results[n_windows - 1];
+    for (int w = int(n_windows) - 2; w >= 0; w--) {
+        for (uint b = 0; b < window_bits; b++) {
+            result = point_double(result);
+        }
+        PointProjective wr = window_results[w];
+        if (!point_is_identity(wr)) {
+            if (point_is_identity(result)) {
+                result = wr;
+            } else {
+                result = point_add(result, wr);
+            }
+        }
+    }
+    final_result[0] = result;
+}
+
+// Signed-digit scalar recoding: extract window digits with carry propagation
+kernel void signed_digit_extract(
+    device const uint* scalars          [[buffer(0)]],
+    device uint* digits                 [[buffer(1)]],
+    constant uint& n_points             [[buffer(2)]],
+    constant uint& window_bits          [[buffer(3)]],
+    constant uint& n_windows            [[buffer(4)]],
+    uint gid                            [[thread_position_in_grid]]
+) {
+    if (gid >= n_points) return;
+
+    const device uint* sp = scalars + gid * 8;
+    uint mask = (1u << window_bits) - 1u;
+    uint half_bk = 1u << (window_bits - 1u);
+    uint full_bk = 1u << window_bits;
+    uint carry = 0;
+
+    for (uint w = 0; w < n_windows; w++) {
+        uint bit_off = w * window_bits;
+        uint limb_idx = bit_off / 32u;
+        uint bit_pos = bit_off % 32u;
+
+        uint idx = 0;
+        if (limb_idx < 8u) {
+            idx = sp[limb_idx] >> bit_pos;
+            if (bit_pos + window_bits > 32u && limb_idx + 1u < 8u) {
+                idx |= sp[limb_idx + 1u] << (32u - bit_pos);
+            }
+            idx &= mask;
+        }
+
+        uint digit = idx + carry;
+        carry = 0;
+        if (digit > half_bk) {
+            digit = full_bk - digit;
+            carry = 1;
+            digits[w * n_points + gid] = digit | 0x80000000u;
+        } else {
+            digits[w * n_points + gid] = digit;
+        }
+    }
+}

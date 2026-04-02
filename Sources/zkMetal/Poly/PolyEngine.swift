@@ -111,7 +111,7 @@ public class PolyEngine {
                 }
             }
         }
-        for path in ["\(execDir)/../Sources/Shaders", "./metal/Sources/Shaders", "./Sources/Shaders"] {
+        for path in ["\(execDir)/../Sources/Shaders", "./Sources/Shaders"] {
             if FileManager.default.fileExists(atPath: "\(path)/fields/bn254_fr.metal") { return path }
         }
         return "./Sources/Shaders"

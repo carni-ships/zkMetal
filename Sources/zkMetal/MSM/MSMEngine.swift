@@ -101,11 +101,34 @@ public class MetalMSM {
 
     /// Compile shader from source and cache the library for next time.
     private static func compileAndCache(device: MTLDevice, cacheFile: URL) throws -> MTLLibrary {
-        let shaderPath = findShaderPath()
-        let shaderSource = try String(contentsOfFile: shaderPath, encoding: .utf8)
+        let shaderDir = findShaderDir()
+
+        // Load and concatenate shader sources in dependency order
+        let fpSource = try String(contentsOfFile: shaderDir + "/fields/bn254_fp.metal", encoding: .utf8)
+        let curveSource = try String(contentsOfFile: shaderDir + "/geometry/bn254_curve.metal", encoding: .utf8)
+        let glvSource = try String(contentsOfFile: shaderDir + "/msm/glv_kernels.metal", encoding: .utf8)
+        let msmSource = try String(contentsOfFile: shaderDir + "/msm/msm_kernels.metal", encoding: .utf8)
+
+        func stripIncludes(_ s: String) -> String {
+            s.split(separator: "\n").filter { !$0.contains("#include") }.joined(separator: "\n")
+        }
+        func stripGuards(_ s: String) -> String {
+            s.replacingOccurrences(of: "#ifndef BN254_FP_METAL", with: "")
+             .replacingOccurrences(of: "#define BN254_FP_METAL", with: "")
+             .replacingOccurrences(of: "#endif // BN254_FP_METAL", with: "")
+             .replacingOccurrences(of: "#ifndef BN254_CURVE_METAL", with: "")
+             .replacingOccurrences(of: "#define BN254_CURVE_METAL", with: "")
+             .replacingOccurrences(of: "#endif // BN254_CURVE_METAL", with: "")
+        }
+
+        let combined = stripGuards(fpSource) + "\n" +
+                        stripGuards(stripIncludes(curveSource)) + "\n" +
+                        stripIncludes(glvSource) + "\n" +
+                        stripIncludes(msmSource)
+
         let options = MTLCompileOptions()
         options.fastMathEnabled = true
-        let library = try device.makeLibrary(source: shaderSource, options: options)
+        let library = try device.makeLibrary(source: combined, options: options)
 
         try? FileManager.default.createDirectory(
             at: MetalMSM.cacheDir, withIntermediateDirectories: true)
@@ -123,6 +146,29 @@ public class MetalMSM {
         }
 
         return library
+    }
+
+    private static func findShaderDir() -> String {
+        let execPath = CommandLine.arguments[0]
+        let execDir = (execPath as NSString).deletingLastPathComponent
+        for bundle in Bundle.allBundles {
+            if let url = bundle.url(forResource: "Shaders", withExtension: nil) {
+                let path = url.appendingPathComponent("fields/bn254_fp.metal").path
+                if FileManager.default.fileExists(atPath: path) {
+                    return url.path
+                }
+            }
+        }
+        let candidates = [
+            "\(execDir)/../Sources/Shaders",
+            "./Sources/Shaders",
+        ]
+        for path in candidates {
+            if FileManager.default.fileExists(atPath: "\(path)/fields/bn254_fp.metal") {
+                return path
+            }
+        }
+        return "./Sources/Shaders"
     }
 
     @inline(__always)
@@ -641,35 +687,3 @@ public class MetalMSM {
     }
 }
 
-/// Find the Metal shader source path (checks multiple locations).
-public func findShaderPath() -> String {
-    let execPath = CommandLine.arguments[0]
-    let execDir = (execPath as NSString).deletingLastPathComponent
-
-    // Check Bundle resources first (for library target with SPM resources)
-    if let bundlePath = Bundle.main.path(forResource: "bn254", ofType: "metal", inDirectory: "Shaders/msm") {
-        return bundlePath
-    }
-
-    // Check SPM resource bundle (zkMetal_zkMetal.bundle)
-    for bundle in Bundle.allBundles {
-        if let url = bundle.url(forResource: "Shaders", withExtension: nil) {
-            let shaderPath = url.appendingPathComponent("msm/msm_kernels.metal").path
-            if FileManager.default.fileExists(atPath: shaderPath) {
-                // Monolithic shader still needed for Metal compiler (no #include support at runtime)
-                // Fall through to find the monolithic bn254.metal
-            }
-        }
-    }
-
-    let candidates = [
-        "\(execDir)/shaders/bn254.metal",
-        "\(execDir)/../Sources/zkmsm/shaders/bn254.metal",
-        "./metal/Sources/zkmsm/shaders/bn254.metal",
-        "./Sources/zkmsm/shaders/bn254.metal",
-    ]
-    for path in candidates {
-        if FileManager.default.fileExists(atPath: path) { return path }
-    }
-    return "metal/Sources/zkmsm/shaders/bn254.metal"
-}

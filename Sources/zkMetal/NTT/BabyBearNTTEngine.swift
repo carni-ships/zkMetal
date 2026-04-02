@@ -1,12 +1,12 @@
-// Goldilocks NTT Engine — GPU-accelerated NTT on Goldilocks field (p = 2^64 - 2^32 + 1)
+// BabyBear NTT Engine — GPU-accelerated NTT on BabyBear field (p = 0x78000001)
 // Forward NTT: Cooley-Tukey radix-2 DIT (bit-reversal + butterfly stages)
 // Inverse NTT: Gentleman-Sande radix-2 DIF (butterfly stages + bit-reversal + scale)
-// Goldilocks elements are 8 bytes → 4x denser than BN254 Fr in threadgroup memory
+// BabyBear elements are 4 bytes → 8x denser than BN254 Fr in threadgroup memory
 
 import Foundation
 import Metal
 
-public class GoldilocksNTTEngine {
+public class BabyBearNTTEngine {
     public let device: MTLDevice
     public let commandQueue: MTLCommandQueue
     let butterflyFunction: MTLComputePipelineState
@@ -17,6 +17,7 @@ public class GoldilocksNTTEngine {
     let invButterflyFusedFunction: MTLComputePipelineState
     let scaleFunction: MTLComputePipelineState
     let bitrevInplaceFunction: MTLComputePipelineState
+    // Four-step kernels
     let columnFusedFunction: MTLComputePipelineState
     let rowFusedFunction: MTLComputePipelineState
     let twiddleMultiplyFunction: MTLComputePipelineState
@@ -36,10 +37,10 @@ public class GoldilocksNTTEngine {
     private var cachedDataBuf: MTLBuffer?
     private var cachedDataBufElements: Int = 0
 
-    // 4096 Gl elements * 8 bytes = 32KB threadgroup memory
-    public static let maxFusedElements = 4096
-    public static let maxFusedLogN = 12  // log2(4096)
-    private static let fourStepMinGlobalStages = 10  // enable four-step for logN >= 22 (8-byte elements need large n for strided access to pay off)
+    // 8192 Bb elements * 4 bytes = 32KB threadgroup memory
+    public static let maxFusedElements = 8192
+    public static let maxFusedLogN = 13  // log2(8192)
+    private static let fourStepMinGlobalStages = 6  // enable four-step for logN >= 19 (BabyBear 4-byte elements benefit earlier than Goldilocks)
 
     public init() throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
@@ -52,26 +53,26 @@ public class GoldilocksNTTEngine {
         }
         self.commandQueue = queue
 
-        let library = try GoldilocksNTTEngine.compileShaders(device: device)
+        let library = try BabyBearNTTEngine.compileShaders(device: device)
 
-        guard let butterflyFn = library.makeFunction(name: "gl_ntt_butterfly"),
-              let butterflyRadix4Fn = library.makeFunction(name: "gl_ntt_butterfly_radix4"),
-              let invButterflyFn = library.makeFunction(name: "gl_intt_butterfly"),
-              let invButterflyRadix4Fn = library.makeFunction(name: "gl_intt_butterfly_radix4"),
-              let butterflyFusedFn = library.makeFunction(name: "gl_ntt_butterfly_fused"),
-              let invButterflyFusedFn = library.makeFunction(name: "gl_intt_butterfly_fused"),
-              let scaleFn = library.makeFunction(name: "gl_ntt_scale"),
-              let bitrevInplaceFn = library.makeFunction(name: "gl_ntt_bitrev_inplace"),
-              let columnFusedFn = library.makeFunction(name: "gl_ntt_column_fused"),
-              let rowFusedFn = library.makeFunction(name: "gl_ntt_row_fused"),
-              let twiddleMultiplyFn = library.makeFunction(name: "gl_ntt_twiddle_multiply"),
-              let transposeFn = library.makeFunction(name: "gl_ntt_transpose"),
-              let invColumnFusedFn = library.makeFunction(name: "gl_intt_column_fused"),
-              let invRowFusedFn = library.makeFunction(name: "gl_intt_row_fused"),
-              let butterflyFusedBitrevFn = library.makeFunction(name: "gl_ntt_butterfly_fused_bitrev"),
-              let rowFusedTwiddleFn = library.makeFunction(name: "gl_ntt_row_fused_twiddle"),
-              let invRowFusedTwiddleFn = library.makeFunction(name: "gl_intt_row_fused_twiddle"),
-              let invColumnFusedScaleFn = library.makeFunction(name: "gl_intt_column_fused_scale") else {
+        guard let butterflyFn = library.makeFunction(name: "bb_ntt_butterfly"),
+              let butterflyRadix4Fn = library.makeFunction(name: "bb_ntt_butterfly_radix4"),
+              let invButterflyFn = library.makeFunction(name: "bb_intt_butterfly"),
+              let invButterflyRadix4Fn = library.makeFunction(name: "bb_intt_butterfly_radix4"),
+              let butterflyFusedFn = library.makeFunction(name: "bb_ntt_butterfly_fused"),
+              let invButterflyFusedFn = library.makeFunction(name: "bb_intt_butterfly_fused"),
+              let scaleFn = library.makeFunction(name: "bb_ntt_scale"),
+              let bitrevInplaceFn = library.makeFunction(name: "bb_ntt_bitrev_inplace"),
+              let columnFusedFn = library.makeFunction(name: "bb_ntt_column_fused"),
+              let rowFusedFn = library.makeFunction(name: "bb_ntt_row_fused"),
+              let twiddleFn = library.makeFunction(name: "bb_ntt_twiddle_multiply"),
+              let transposeFn = library.makeFunction(name: "bb_ntt_transpose"),
+              let invColumnFusedFn = library.makeFunction(name: "bb_intt_column_fused"),
+              let invRowFusedFn = library.makeFunction(name: "bb_intt_row_fused"),
+              let butterflyFusedBitrevFn = library.makeFunction(name: "bb_ntt_butterfly_fused_bitrev"),
+              let rowFusedTwiddleFn = library.makeFunction(name: "bb_ntt_row_fused_twiddle"),
+              let invRowFusedTwiddleFn = library.makeFunction(name: "bb_intt_row_fused_twiddle"),
+              let invColumnFusedScaleFn = library.makeFunction(name: "bb_intt_column_fused_scale") else {
             throw MSMError.missingKernel
         }
 
@@ -85,7 +86,7 @@ public class GoldilocksNTTEngine {
         self.bitrevInplaceFunction = try device.makeComputePipelineState(function: bitrevInplaceFn)
         self.columnFusedFunction = try device.makeComputePipelineState(function: columnFusedFn)
         self.rowFusedFunction = try device.makeComputePipelineState(function: rowFusedFn)
-        self.twiddleMultiplyFunction = try device.makeComputePipelineState(function: twiddleMultiplyFn)
+        self.twiddleMultiplyFunction = try device.makeComputePipelineState(function: twiddleFn)
         self.transposeFunction = try device.makeComputePipelineState(function: transposeFn)
         self.invColumnFusedFunction = try device.makeComputePipelineState(function: invColumnFusedFn)
         self.invRowFusedFunction = try device.makeComputePipelineState(function: invRowFusedFn)
@@ -96,7 +97,7 @@ public class GoldilocksNTTEngine {
     }
 
     private func getScratchBuffer(n: Int) -> MTLBuffer {
-        let needed = n * MemoryLayout<Gl>.stride
+        let needed = n * MemoryLayout<Bb>.stride
         if needed <= scratchCapacity, let buf = scratchBuffer { return buf }
         scratchBuffer = device.makeBuffer(length: needed, options: .storageModeShared)
         scratchCapacity = needed
@@ -105,14 +106,14 @@ public class GoldilocksNTTEngine {
 
     private static func compileShaders(device: MTLDevice) throws -> MTLLibrary {
         let shaderDir = findShaderDir()
-        let fieldSource = try String(contentsOfFile: shaderDir + "/fields/goldilocks.metal", encoding: .utf8)
-        let nttSource = try String(contentsOfFile: shaderDir + "/ntt/ntt_goldilocks.metal", encoding: .utf8)
+        let fieldSource = try String(contentsOfFile: shaderDir + "/fields/babybear.metal", encoding: .utf8)
+        let nttSource = try String(contentsOfFile: shaderDir + "/ntt/ntt_babybear.metal", encoding: .utf8)
 
         let cleanNTT = nttSource.split(separator: "\n").filter { !$0.contains("#include") }.joined(separator: "\n")
         let cleanField = fieldSource
-            .replacingOccurrences(of: "#ifndef GOLDILOCKS_METAL", with: "")
-            .replacingOccurrences(of: "#define GOLDILOCKS_METAL", with: "")
-            .replacingOccurrences(of: "#endif // GOLDILOCKS_METAL", with: "")
+            .replacingOccurrences(of: "#ifndef BABYBEAR_METAL", with: "")
+            .replacingOccurrences(of: "#define BABYBEAR_METAL", with: "")
+            .replacingOccurrences(of: "#endif // BABYBEAR_METAL", with: "")
 
         let combined = cleanField + "\n" + cleanNTT
         let options = MTLCompileOptions()
@@ -125,7 +126,7 @@ public class GoldilocksNTTEngine {
         let execDir = (execPath as NSString).deletingLastPathComponent
         for bundle in Bundle.allBundles {
             if let url = bundle.url(forResource: "Shaders", withExtension: nil) {
-                let path = url.appendingPathComponent("fields/goldilocks.metal").path
+                let path = url.appendingPathComponent("fields/babybear.metal").path
                 if FileManager.default.fileExists(atPath: path) {
                     return url.path
                 }
@@ -133,11 +134,10 @@ public class GoldilocksNTTEngine {
         }
         let candidates = [
             "\(execDir)/../Sources/Shaders",
-            "./metal/Sources/Shaders",
             "./Sources/Shaders",
         ]
         for path in candidates {
-            if FileManager.default.fileExists(atPath: "\(path)/fields/goldilocks.metal") {
+            if FileManager.default.fileExists(atPath: "\(path)/fields/babybear.metal") {
                 return path
             }
         }
@@ -148,31 +148,31 @@ public class GoldilocksNTTEngine {
 
     private func getTwiddles(logN: Int) -> MTLBuffer {
         if let cached = twiddleCache[logN] { return cached }
-        let twiddles = glPrecomputeTwiddles(logN: logN)
-        let buf = createGlBuffer(twiddles)!
+        let twiddles = bbPrecomputeTwiddles(logN: logN)
+        let buf = createBbBuffer(twiddles)!
         twiddleCache[logN] = buf
         return buf
     }
 
     private func getInvTwiddles(logN: Int) -> MTLBuffer {
         if let cached = invTwiddleCache[logN] { return cached }
-        let twiddles = glPrecomputeInverseTwiddles(logN: logN)
-        let buf = createGlBuffer(twiddles)!
+        let twiddles = bbPrecomputeInverseTwiddles(logN: logN)
+        let buf = createBbBuffer(twiddles)!
         invTwiddleCache[logN] = buf
         return buf
     }
 
     private func getInvN(logN: Int) -> MTLBuffer {
         if let cached = invNCache[logN] { return cached }
-        let n = UInt64(1 << logN)
-        let invN = glInverse(Gl(v: n))
-        let buf = createGlBuffer([invN])!
+        let n = UInt32(1 << logN)
+        let invN = bbInverse(Bb(v: n))
+        let buf = createBbBuffer([invN])!
         invNCache[logN] = buf
         return buf
     }
 
-    private func createGlBuffer(_ data: [Gl]) -> MTLBuffer? {
-        let byteCount = data.count * MemoryLayout<Gl>.stride
+    private func createBbBuffer(_ data: [Bb]) -> MTLBuffer? {
+        let byteCount = data.count * MemoryLayout<Bb>.stride
         guard let buf = device.makeBuffer(length: byteCount, options: .storageModeShared) else {
             return nil
         }
@@ -185,8 +185,8 @@ public class GoldilocksNTTEngine {
     // MARK: - Forward NTT
 
     public func ntt(data: MTLBuffer, logN: Int) throws {
-        let globalStages = logN - GoldilocksNTTEngine.maxFusedLogN
-        if globalStages >= GoldilocksNTTEngine.fourStepMinGlobalStages {
+        let globalStages = logN - BabyBearNTTEngine.maxFusedLogN
+        if globalStages >= BabyBearNTTEngine.fourStepMinGlobalStages {
             try nttFourStep(data: data, logN: logN)
             return
         }
@@ -202,7 +202,7 @@ public class GoldilocksNTTEngine {
         var nVal = n
         var logNVal = UInt32(logN)
 
-        let fusedStages = min(logN, GoldilocksNTTEngine.maxFusedLogN)
+        let fusedStages = min(logN, BabyBearNTTEngine.maxFusedLogN)
         let hasFused = fusedStages > 1
         let scratch: MTLBuffer? = hasFused ? getScratchBuffer(n: nInt) : nil
         let workBuf = hasFused ? scratch! : data
@@ -224,6 +224,7 @@ public class GoldilocksNTTEngine {
             enc.dispatchThreadgroups(MTLSize(width: numGroups, height: 1, depth: 1),
                                    threadsPerThreadgroup: MTLSize(width: tgThreads, height: 1, depth: 1))
         } else {
+            // Fallback: separate bitrev
             enc.setComputePipelineState(bitrevInplaceFunction)
             enc.setBuffer(data, offset: 0, index: 0)
             enc.setBytes(&nVal, length: 4, index: 1)
@@ -270,7 +271,7 @@ public class GoldilocksNTTEngine {
 
         if hasFused {
             let blit = cmdBuf.makeBlitCommandEncoder()!
-            blit.copy(from: scratch!, sourceOffset: 0, to: data, destinationOffset: 0, size: nInt * MemoryLayout<Gl>.stride)
+            blit.copy(from: scratch!, sourceOffset: 0, to: data, destinationOffset: 0, size: nInt * MemoryLayout<Bb>.stride)
             blit.endEncoding()
         }
 
@@ -284,8 +285,8 @@ public class GoldilocksNTTEngine {
     // MARK: - Inverse NTT
 
     public func intt(data: MTLBuffer, logN: Int) throws {
-        let globalStages = logN - GoldilocksNTTEngine.maxFusedLogN
-        if globalStages >= GoldilocksNTTEngine.fourStepMinGlobalStages {
+        let globalStages = logN - BabyBearNTTEngine.maxFusedLogN
+        if globalStages >= BabyBearNTTEngine.fourStepMinGlobalStages {
             try inttFourStep(data: data, logN: logN)
             return
         }
@@ -299,17 +300,17 @@ public class GoldilocksNTTEngine {
         }
 
         var nVal = n
-        let fusedStages = min(logN, GoldilocksNTTEngine.maxFusedLogN)
+        let fusedStages = min(logN, BabyBearNTTEngine.maxFusedLogN)
 
         let enc = cmdBuf.makeComputeCommandEncoder()!
 
-        // Step 1: Global DIF stages (radix-4 where possible)
+        // Step 1: Global DIF stages with radix-4
         let globalEnd = fusedStages > 1 ? UInt32(fusedStages) : 0
         let numGlobalStages = UInt32(logN) - globalEnd
         if numGlobalStages > 0 {
             var s: UInt32 = 0
 
-            // DIF goes from highest stage downward
+            // Radix-4 for pairs of stages (DIF: from highest stage down)
             while s + 1 < numGlobalStages {
                 if s > 0 { enc.memoryBarrier(scope: .buffers) }
                 let stage = UInt32(logN) - 1 - s
@@ -326,7 +327,7 @@ public class GoldilocksNTTEngine {
                 s += 2
             }
 
-            // Handle odd remaining stage with radix-2
+            // Odd remaining stage
             if s < numGlobalStages {
                 if s > 0 { enc.memoryBarrier(scope: .buffers) }
                 let stage = UInt32(logN) - 1 - s
@@ -343,7 +344,7 @@ public class GoldilocksNTTEngine {
             }
         }
 
-        // Step 2: Fused DIF stages
+        // Step 2: Fused DIF stages (lowest stages)
         if fusedStages > 1 {
             enc.memoryBarrier(scope: .buffers)
             enc.setComputePipelineState(invButterflyFusedFunction)
@@ -356,7 +357,7 @@ public class GoldilocksNTTEngine {
             enc.setBytes(&stageOffset, length: 4, index: 4)
             let tgThreads = (1 << fusedStages) / 2
             let numGroups = Int(n) / (1 << fusedStages)
-            enc.setThreadgroupMemoryLength((1 << fusedStages) * MemoryLayout<Gl>.stride, index: 0)
+            enc.setThreadgroupMemoryLength((1 << fusedStages) * MemoryLayout<Bb>.stride, index: 0)
             enc.dispatchThreadgroups(MTLSize(width: numGroups, height: 1, depth: 1),
                                    threadsPerThreadgroup: MTLSize(width: tgThreads, height: 1, depth: 1))
         }
@@ -508,11 +509,11 @@ public class GoldilocksNTTEngine {
 
     // MARK: - High-level API
 
-    public func ntt(_ input: [Gl]) throws -> [Gl] {
+    public func ntt(_ input: [Bb]) throws -> [Bb] {
         let n = input.count
         precondition(n > 0 && (n & (n - 1)) == 0, "NTT size must be power of 2")
         let logN = Int(log2(Double(n)))
-        let stride = MemoryLayout<Gl>.stride
+        let stride = MemoryLayout<Bb>.stride
         if n > cachedDataBufElements {
             guard let buf = device.makeBuffer(length: n * stride, options: .storageModeShared) else {
                 throw MSMError.gpuError("Failed to create data buffer")
@@ -525,15 +526,15 @@ public class GoldilocksNTTEngine {
             memcpy(dataBuf.contents(), src.baseAddress!, n * stride)
         }
         try ntt(data: dataBuf, logN: logN)
-        let ptr = dataBuf.contents().bindMemory(to: Gl.self, capacity: n)
+        let ptr = dataBuf.contents().bindMemory(to: Bb.self, capacity: n)
         return Array(UnsafeBufferPointer(start: ptr, count: n))
     }
 
-    public func intt(_ input: [Gl]) throws -> [Gl] {
+    public func intt(_ input: [Bb]) throws -> [Bb] {
         let n = input.count
         precondition(n > 0 && (n & (n - 1)) == 0, "NTT size must be power of 2")
         let logN = Int(log2(Double(n)))
-        let stride = MemoryLayout<Gl>.stride
+        let stride = MemoryLayout<Bb>.stride
         if n > cachedDataBufElements {
             guard let buf = device.makeBuffer(length: n * stride, options: .storageModeShared) else {
                 throw MSMError.gpuError("Failed to create data buffer")
@@ -546,48 +547,48 @@ public class GoldilocksNTTEngine {
             memcpy(dataBuf.contents(), src.baseAddress!, n * stride)
         }
         try intt(data: dataBuf, logN: logN)
-        let ptr = dataBuf.contents().bindMemory(to: Gl.self, capacity: n)
+        let ptr = dataBuf.contents().bindMemory(to: Bb.self, capacity: n)
         return Array(UnsafeBufferPointer(start: ptr, count: n))
     }
 
     // MARK: - CPU reference
 
-    public static func cpuNTT(_ input: [Gl], logN: Int) -> [Gl] {
+    public static func cpuNTT(_ input: [Bb], logN: Int) -> [Bb] {
         let n = input.count
         var data = bitReverse(input, logN: logN)
-        let omega = glRootOfUnity(logN: logN)
+        let omega = bbRootOfUnity(logN: logN)
 
         for s in 0..<logN {
             let halfBlock = 1 << s
             let blockSize = halfBlock << 1
             let stepsToOmega = n / blockSize
-            var w_m = Gl.one
+            var w_m = Bb.one
             var temp = omega
             var k = stepsToOmega
             while k > 0 {
-                if k & 1 == 1 { w_m = glMul(w_m, temp) }
-                temp = glSqr(temp)
+                if k & 1 == 1 { w_m = bbMul(w_m, temp) }
+                temp = bbSqr(temp)
                 k >>= 1
             }
 
             for block in stride(from: 0, to: n, by: blockSize) {
-                var w = Gl.one
+                var w = Bb.one
                 for j in 0..<halfBlock {
                     let u = data[block + j]
-                    let v = glMul(w, data[block + j + halfBlock])
-                    data[block + j] = glAdd(u, v)
-                    data[block + j + halfBlock] = glSub(u, v)
-                    w = glMul(w, w_m)
+                    let v = bbMul(w, data[block + j + halfBlock])
+                    data[block + j] = bbAdd(u, v)
+                    data[block + j + halfBlock] = bbSub(u, v)
+                    w = bbMul(w, w_m)
                 }
             }
         }
         return data
     }
 
-    public static func cpuINTT(_ input: [Gl], logN: Int) -> [Gl] {
+    public static func cpuINTT(_ input: [Bb], logN: Int) -> [Bb] {
         let n = input.count
-        let omega = glRootOfUnity(logN: logN)
-        let omegaInv = glInverse(omega)
+        let omega = bbRootOfUnity(logN: logN)
+        let omegaInv = bbInverse(omega)
 
         var data = input
 
@@ -596,37 +597,37 @@ public class GoldilocksNTTEngine {
             let halfBlock = 1 << s
             let blockSize = halfBlock << 1
             let stepsToOmega = n / blockSize
-            var w_m = Gl.one
+            var w_m = Bb.one
             var temp = omegaInv
             var k = stepsToOmega
             while k > 0 {
-                if k & 1 == 1 { w_m = glMul(w_m, temp) }
-                temp = glSqr(temp)
+                if k & 1 == 1 { w_m = bbMul(w_m, temp) }
+                temp = bbSqr(temp)
                 k >>= 1
             }
 
             for block in stride(from: 0, to: n, by: blockSize) {
-                var w = Gl.one
+                var w = Bb.one
                 for j in 0..<halfBlock {
                     let a = data[block + j]
                     let b = data[block + j + halfBlock]
-                    data[block + j] = glAdd(a, b)
-                    data[block + j + halfBlock] = glMul(glSub(a, b), w)
-                    w = glMul(w, w_m)
+                    data[block + j] = bbAdd(a, b)
+                    data[block + j + halfBlock] = bbMul(bbSub(a, b), w)
+                    w = bbMul(w, w_m)
                 }
             }
         }
 
         data = bitReverse(data, logN: logN)
 
-        let invN = glInverse(Gl(v: UInt64(n)))
+        let invN = bbInverse(Bb(v: UInt32(n)))
         for i in 0..<n {
-            data[i] = glMul(data[i], invN)
+            data[i] = bbMul(data[i], invN)
         }
         return data
     }
 
-    private static func bitReverse(_ data: [Gl], logN: Int) -> [Gl] {
+    private static func bitReverse(_ data: [Bb], logN: Int) -> [Bb] {
         let n = data.count
         var result = data
         for i in 0..<n {
@@ -642,36 +643,27 @@ public class GoldilocksNTTEngine {
     }
 }
 
-// MARK: - Twiddle factor precomputation for Goldilocks
+// MARK: - Twiddle factor precomputation for BabyBear
 
-public func glRootOfUnity(logN: Int) -> Gl {
-    precondition(logN <= Gl.TWO_ADICITY)
-    var omega = Gl(v: Gl.ROOT_OF_UNITY)
-    for _ in 0..<(Gl.TWO_ADICITY - logN) {
-        omega = glSqr(omega)
-    }
-    return omega
-}
-
-public func glPrecomputeTwiddles(logN: Int) -> [Gl] {
+public func bbPrecomputeTwiddles(logN: Int) -> [Bb] {
     let n = 1 << logN
     let halfN = n / 2
-    let omega = glRootOfUnity(logN: logN)
-    var twiddles = [Gl](repeating: Gl.one, count: halfN)
+    let omega = bbRootOfUnity(logN: logN)
+    var twiddles = [Bb](repeating: Bb.one, count: halfN)
     for i in 1..<halfN {
-        twiddles[i] = glMul(twiddles[i - 1], omega)
+        twiddles[i] = bbMul(twiddles[i - 1], omega)
     }
     return twiddles
 }
 
-public func glPrecomputeInverseTwiddles(logN: Int) -> [Gl] {
+public func bbPrecomputeInverseTwiddles(logN: Int) -> [Bb] {
     let n = 1 << logN
     let halfN = n / 2
-    let omega = glRootOfUnity(logN: logN)
-    let omegaInv = glInverse(omega)
-    var twiddles = [Gl](repeating: Gl.one, count: halfN)
+    let omega = bbRootOfUnity(logN: logN)
+    let omegaInv = bbInverse(omega)
+    var twiddles = [Bb](repeating: Bb.one, count: halfN)
     for i in 1..<halfN {
-        twiddles[i] = glMul(twiddles[i - 1], omegaInv)
+        twiddles[i] = bbMul(twiddles[i - 1], omegaInv)
     }
     return twiddles
 }

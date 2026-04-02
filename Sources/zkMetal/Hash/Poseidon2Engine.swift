@@ -93,7 +93,6 @@ public class Poseidon2Engine {
 
         let candidates = [
             "\(execDir)/../Sources/Shaders",
-            "./metal/Sources/Shaders",
             "./Sources/Shaders",
         ]
         for path in candidates {
