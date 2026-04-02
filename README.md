@@ -30,7 +30,9 @@ Run `swift run -c release zkbench all` to reproduce.
 | 16,384 | 169ms |
 | 65,536 | 270ms |
 
-No single-threaded CPU comparison is provided -- a naive CPU MSM at 65K points takes minutes. For reference, Barretenberg's multithreaded Pippenger on the same hardware takes ~200ms for 200K points.
+No single-threaded CPU comparison is provided -- a naive CPU MSM at 65K points takes minutes. Optimized multithreaded CPU implementations (e.g. Barretenberg) are faster here (~200ms for 200K points) because 256-bit field arithmetic benefits from native 64-bit multiply, out-of-order execution, and hand-tuned assembly -- advantages that Metal's 32-bit ALUs cannot match. GPU MSM becomes competitive for smaller fields (Goldilocks, BabyBear) where the arithmetic fits native GPU word sizes.
+
+GPU scaling is strongly sublinear: 256x more points (256 to 65K) costs only 3.7x more time, as fixed GPU overhead dominates at small sizes.
 
 ### NTT (BN254 Fr)
 
@@ -46,6 +48,8 @@ No single-threaded CPU comparison is provided -- a naive CPU MSM at 65K points t
 
 NTT is also available for Goldilocks (249ms at 2^24) and BabyBear (262ms at 2^24).
 
+GPU scales sublinearly (O(n log n) algorithm, but GPU utilization improves with size): 2^10 to 2^22 is 4096x more data for ~100x more time. CPU scales linearly with n log n. Speedup grows with input size.
+
 ### Hashing
 
 | Primitive | Batch Size | GPU | CPU (single-core) | Speedup |
@@ -58,6 +62,8 @@ NTT is also available for Goldilocks (249ms at 2^24) and BabyBear (262ms at 2^24
 | Keccak-256 | 2^16 | 0.05 µs/hash | 6.4 µs/hash | **140x** |
 | Keccak-256 | 2^18 | 0.04 µs/hash | 6.4 µs/hash | **180x** |
 | Keccak-256 | 2^20 | 0.04 µs/hash | 6.4 µs/hash | **160x** |
+
+GPU per-hash cost is roughly constant across batch sizes (linear scaling), while CPU per-hash cost is constant by definition. Speedup peaks at 2^16--2^18 where GPU occupancy is saturated without memory pressure.
 
 ### Merkle Trees
 
@@ -75,6 +81,8 @@ NTT is also available for Goldilocks (249ms at 2^24) and BabyBear (262ms at 2^24
 | Keccak-256 | 2^18 | 39ms | 1.5s | **40x** |
 | Keccak-256 | 2^20 | 155ms | 6.2s | **42x** |
 
+Both GPU and CPU scale linearly (O(n) tree construction). GPU speedup grows with size as fixed dispatch overhead is amortized -- Poseidon2 reaches 90x at 2^20, while Keccak plateaus around 42x due to its simpler per-hash arithmetic offering less GPU parallelism advantage.
+
 ### FRI Folding (BN254 Fr)
 
 | Size | GPU | CPU | Speedup |
@@ -87,6 +95,8 @@ NTT is also available for Goldilocks (249ms at 2^24) and BabyBear (262ms at 2^24
 
 Full fold-to-constant: 2^20 in 32ms (20 rounds, fused 4-round kernels).
 
+GPU scales sublinearly: 2^14 to 2^22 is 256x more data for ~10x more time, as each folding round halves the domain. CPU scales linearly. Speedup grows from 3x to 61x.
+
 ### Sumcheck (BN254 Fr)
 
 | Variables | GPU | CPU | Speedup |
@@ -96,6 +106,8 @@ Full fold-to-constant: 2^20 in 32ms (20 rounds, fused 4-round kernels).
 | 2^18 | 27ms | 328ms | **12x** |
 | 2^20 | 46ms | 1.3s | **29x** |
 | 2^22 | 84ms | 5.1s | **61x** |
+
+GPU scales sublinearly: 2^14 to 2^22 is 256x more variables for ~16x more time. CPU scales linearly. Each sumcheck round reduces the problem by half, and fused round+reduce kernels keep GPU utilization high.
 
 ### Polynomial Ops (BN254 Fr)
 
