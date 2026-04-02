@@ -204,16 +204,80 @@ Fp fp_mul(Fp a, Fp b) {
     return r;
 }
 
-// Modular squaring — delegates to fp_mul.
-// Dedicated SOS squaring was tested: reduces limb-muls from 128 to 100 but requires
-// 17-element ulong array (vs 10 uint for CIOS), killing GPU occupancy. Net 10% regression.
+// SOS squaring: 36 cross-term muls + 8 diagonal vs 64 for general mul.
+// Uses uint t[17] (not ulong) to avoid excessive register pressure.
 Fp fp_sqr(Fp a) {
-    return fp_mul(a, a);
+    uint t[17];
+    for (int i = 0; i < 17; i++) t[i] = 0;
+
+    for (int i = 0; i < 7; i++) {
+        ulong carry = 0;
+        for (int j = i + 1; j < 8; j++) {
+            carry += ulong(t[i + j]) + ulong(a.v[i]) * ulong(a.v[j]);
+            t[i + j] = uint(carry & 0xFFFFFFFF);
+            carry >>= 32;
+        }
+        t[i + 8] += uint(carry);
+    }
+
+    uint top_carry = 0;
+    for (int i = 1; i < 16; i++) {
+        ulong doubled = (ulong(t[i]) << 1) | ulong(top_carry);
+        t[i] = uint(doubled & 0xFFFFFFFF);
+        top_carry = uint(doubled >> 32);
+    }
+
+    ulong carry = 0;
+    for (int i = 0; i < 8; i++) {
+        carry += ulong(t[2*i]) + ulong(a.v[i]) * ulong(a.v[i]);
+        t[2*i] = uint(carry & 0xFFFFFFFF);
+        carry >>= 32;
+        carry += ulong(t[2*i + 1]);
+        t[2*i + 1] = uint(carry & 0xFFFFFFFF);
+        carry >>= 32;
+    }
+
+    for (int i = 0; i < 8; i++) {
+        uint m = t[i] * INV;
+        ulong c = ulong(t[i]) + ulong(m) * ulong(P[0]);
+        c >>= 32;
+        for (int j = 1; j < 8; j++) {
+            c += ulong(t[i + j]) + ulong(m) * ulong(P[j]);
+            t[i + j] = uint(c & 0xFFFFFFFF);
+            c >>= 32;
+        }
+        for (int j = i + 8; j < 16; j++) {
+            c += ulong(t[j]);
+            t[j] = uint(c & 0xFFFFFFFF);
+            c >>= 32;
+            if (c == 0) break;
+        }
+    }
+
+    Fp r;
+    for (int i = 0; i < 8; i++) r.v[i] = t[i + 8];
+    if (fp_gte(r, fp_modulus())) {
+        uint borrow;
+        r = fp_sub_raw(r, fp_modulus(), borrow);
+    }
+    return r;
 }
 
-// Double in field: 2*a mod p
+// Double in field: left-shift by 1, conditional subtract
 Fp fp_double(Fp a) {
-    return fp_add(a, a);
+    Fp r;
+    uint carry = 0;
+    #pragma unroll
+    for (int i = 0; i < 8; i++) {
+        uint doubled = (a.v[i] << 1) | carry;
+        carry = a.v[i] >> 31;
+        r.v[i] = doubled;
+    }
+    if (carry || fp_gte(r, fp_modulus())) {
+        uint borrow;
+        r = fp_sub_raw(r, fp_modulus(), borrow);
+    }
+    return r;
 }
 
 // --- Projective Point Operations ---

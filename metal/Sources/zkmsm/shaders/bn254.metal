@@ -86,10 +86,11 @@ bool fp_gte(Fp a, Fp b) {
     return true; // equal
 }
 
-// Load modulus P into Fp
+// Load modulus P into Fp (inline constants)
 Fp fp_modulus() {
     Fp r;
-    for (int i = 0; i < 8; i++) r.v[i] = P[i];
+    r.v[0] = 0xd87cfd47u; r.v[1] = 0x3c208c16u; r.v[2] = 0x6871ca8du; r.v[3] = 0x97816a91u;
+    r.v[4] = 0x8181585du; r.v[5] = 0xb85045b6u; r.v[6] = 0xe131a029u; r.v[7] = 0x30644e72u;
     return r;
 }
 
@@ -129,6 +130,13 @@ Fp fp_zero() {
     Fp r;
     for (int i = 0; i < 8; i++) r.v[i] = 0;
     return r;
+}
+
+// Modular negation: p - a (returns 0 if a == 0)
+Fp fp_neg(Fp a) {
+    if (fp_is_zero(a)) return a;
+    uint borrow;
+    return fp_sub_raw(fp_modulus(), a, borrow);
 }
 
 // Return Fp(1) in Montgomery form
@@ -192,9 +200,47 @@ Fp fp_mul(Fp a, Fp b) {
     return r;
 }
 
-// Modular squaring (delegates to mul — separate function would increase register pressure)
+// Modular squaring — CIOS style (same structure as fp_mul for better unrolling)
 Fp fp_sqr(Fp a) {
-    return fp_mul(a, a);
+    uint t[10];
+    #pragma unroll
+    for (int i = 0; i < 10; i++) t[i] = 0;
+
+    #pragma unroll
+    for (int i = 0; i < 8; i++) {
+        ulong carry = 0;
+        #pragma unroll
+        for (int j = 0; j < 8; j++) {
+            carry += ulong(t[j]) + ulong(a.v[i]) * ulong(a.v[j]);
+            t[j] = uint(carry & 0xFFFFFFFF);
+            carry >>= 32;
+        }
+        ulong ext = ulong(t[8]) + carry;
+        t[8] = uint(ext & 0xFFFFFFFF);
+        t[9] = uint(ext >> 32);
+
+        uint m = t[0] * INV;
+        carry = ulong(t[0]) + ulong(m) * ulong(P[0]);
+        carry >>= 32;
+        #pragma unroll
+        for (int j = 1; j < 8; j++) {
+            carry += ulong(t[j]) + ulong(m) * ulong(P[j]);
+            t[j - 1] = uint(carry & 0xFFFFFFFF);
+            carry >>= 32;
+        }
+        ext = ulong(t[8]) + carry;
+        t[7] = uint(ext & 0xFFFFFFFF);
+        t[8] = t[9] + uint(ext >> 32);
+        t[9] = 0;
+    }
+
+    Fp r;
+    for (int i = 0; i < 8; i++) r.v[i] = t[i];
+    if (t[8] != 0 || fp_gte(r, fp_modulus())) {
+        uint borrow;
+        r = fp_sub_raw(r, fp_modulus(), borrow);
+    }
+    return r;
 }
 
 // Double in field: 2*a mod p
@@ -228,99 +274,179 @@ PointProjective point_from_affine(PointAffine a) {
     return p;
 }
 
-// Point doubling in Jacobian coordinates
-// Cost: 4M + 6S + 1*a + 7add (a=0 for BN254)
+// Point doubling — noinline, flattened, 2YZ
+__attribute__((noinline))
 PointProjective point_double(PointProjective p) {
     if (point_is_identity(p)) return p;
 
-    Fp a = fp_sqr(p.x);       // a = X^2
-    Fp b = fp_sqr(p.y);       // b = Y^2
-    Fp c = fp_sqr(b);         // c = Y^4
+    Fp t0 = fp_sqr(p.x);       // X^2
+    Fp t1 = fp_sqr(p.y);       // Y^2
+    Fp t2 = fp_sqr(t1);        // Y^4
 
-    Fp d = fp_sub(fp_sqr(fp_add(p.x, b)), fp_add(a, c));
-    d = fp_double(d);         // d = 2*((X+Y^2)^2 - X^2 - Y^4)
+    Fp t3 = fp_add(p.x, t1);
+    t3 = fp_sqr(t3);
+    Fp t4 = fp_add(t0, t2);
+    t3 = fp_sub(t3, t4);
+    t3 = fp_double(t3);        // d = 2*((X+Y^2)^2 - X^2 - Y^4)
 
-    Fp e = fp_add(fp_double(a), a); // e = 3*X^2 (a_coeff=0 for BN254)
+    t4 = fp_double(t0);
+    t4 = fp_add(t4, t0);       // e = 3*X^2
 
-    Fp f = fp_sqr(e);         // f = (3*X^2)^2
+    Fp t5 = fp_sqr(t4);        // f = e^2
 
     PointProjective r;
-    r.x = fp_sub(f, fp_double(d));      // X3 = f - 2*d
-    r.y = fp_sub(fp_mul(e, fp_sub(d, r.x)), fp_double(fp_double(fp_double(c)))); // Y3 = e*(d-X3) - 8*c
-    r.z = fp_sub(fp_sqr(fp_add(p.y, p.z)), fp_add(b, fp_sqr(p.z))); // Z3 = (Y+Z)^2 - Y^2 - Z^2
+    r.x = fp_double(t3);
+    r.x = fp_sub(t5, r.x);     // X3 = f - 2*d
+
+    r.z = fp_mul(p.y, p.z);
+    r.z = fp_double(r.z);      // Z3 = 2*Y*Z
+
+    t5 = fp_sub(t3, r.x);
+    t5 = fp_mul(t4, t5);
+    t2 = fp_double(t2);
+    t2 = fp_double(t2);
+    t2 = fp_double(t2);        // 8*Y^4
+    r.y = fp_sub(t5, t2);      // Y3 = e*(d-X3) - 8*Y^4
+
     return r;
 }
 
-// Branchless mixed addition — no identity or same-x checks.
-// Safe when caller guarantees p is non-identity and P ≠ ±Q (true for random points).
-// Mixed addition: projective + affine, handles all edge cases (identity, P=Q, P=-Q)
-// Defers s2/rr computation past h=0 check for better register pressure on common path.
+// Mixed addition: projective + affine — noinline, flattened
+__attribute__((noinline))
 PointProjective point_add_mixed(PointProjective p, PointAffine q) {
     if (point_is_identity(p)) return point_from_affine(q);
 
-    Fp z1z1 = fp_sqr(p.z);
-    Fp u2 = fp_mul(q.x, z1z1);
-    Fp h = fp_sub(u2, p.x);
+    Fp t0 = fp_sqr(p.z);           // Z1^2
+    Fp t1 = fp_mul(q.x, t0);       // U2 = X2*Z1^2
+    Fp t2 = fp_sub(t1, p.x);       // H = U2 - X1
 
-    if (fp_is_zero(h)) {
-        // Rare: same x-coordinate, check if P=Q (double) or P=-Q (identity)
-        Fp s2 = fp_mul(q.y, fp_mul(p.z, z1z1));
-        Fp rr = fp_double(fp_sub(s2, p.y));
-        if (fp_is_zero(rr)) return point_double(p);
+    if (fp_is_zero(t2)) {
+        Fp t3 = fp_mul(p.z, t0);
+        t3 = fp_mul(q.y, t3);
+        t3 = fp_sub(t3, p.y);
+        t3 = fp_double(t3);
+        if (fp_is_zero(t3)) return point_double(p);
         return point_identity();
     }
 
-    // Common path: normal addition
-    Fp s2 = fp_mul(q.y, fp_mul(p.z, z1z1));
-    PointProjective result;
-    result.z = fp_double(fp_mul(p.z, h));
-    Fp hh = fp_sqr(h);
-    Fp i = fp_double(fp_double(hh));
-    Fp v = fp_mul(p.x, i);
-    Fp j = fp_mul(h, i);
-    Fp rr = fp_double(fp_sub(s2, p.y));
-    result.x = fp_sub(fp_sub(fp_sqr(rr), j), fp_double(v));
-    result.y = fp_sub(fp_mul(rr, fp_sub(v, result.x)),
-                      fp_double(fp_mul(p.y, j)));
-    return result;
+    Fp t3 = fp_mul(p.z, t0);       // Z1^3
+    t3 = fp_mul(q.y, t3);          // S2 = Y2*Z1^3
+
+    PointProjective r;
+    r.z = fp_mul(p.z, t2);
+    r.z = fp_double(r.z);          // Z3 = 2*Z1*H
+
+    t0 = fp_sqr(t2);               // H^2
+    t1 = fp_double(t0);
+    t1 = fp_double(t1);            // I = 4*H^2
+    Fp t4 = fp_mul(p.x, t1);       // V = X1*I
+    Fp t5 = fp_mul(t2, t1);        // J = H*I
+
+    t3 = fp_sub(t3, p.y);
+    t3 = fp_double(t3);            // rr = 2*(S2-Y1)
+
+    r.x = fp_sqr(t3);
+    r.x = fp_sub(r.x, t5);
+    t0 = fp_double(t4);
+    r.x = fp_sub(r.x, t0);        // X3 = rr^2 - J - 2*V
+
+    t1 = fp_sub(t4, r.x);
+    t1 = fp_mul(t3, t1);
+    t2 = fp_mul(p.y, t5);
+    t2 = fp_double(t2);
+    r.y = fp_sub(t1, t2);          // Y3 = rr*(V-X3) - 2*Y1*J
+
+    return r;
 }
 
-// Full point addition: projective + projective
-// Register-optimized: Z3 = 2*Z1*Z2*H frees z1z1, z2z2, p.z, q.z early.
-PointProjective point_add(PointProjective p, PointProjective q) {
-    if (point_is_identity(p)) return q;
-    if (point_is_identity(q)) return p;
+// Specialized mixed addition when Z=1 (first addition per bucket)
+__attribute__((noinline))
+PointProjective point_add_mixed_z1(PointAffine p, PointAffine q) {
+    Fp t0 = fp_sub(q.x, p.x);      // H = X2 - X1
 
-    Fp z1z1 = fp_sqr(p.z);
-    Fp z2z2 = fp_sqr(q.z);
-    Fp u1 = fp_mul(p.x, z2z2);
-    Fp u2 = fp_mul(q.x, z1z1);
-    Fp s1 = fp_mul(p.y, fp_mul(q.z, z2z2));      // z2z2 last use
-    Fp s2 = fp_mul(q.y, fp_mul(p.z, z1z1));       // z1z1 last use
-
-    Fp h = fp_sub(u2, u1);                         // u2 dead
-    Fp rr = fp_double(fp_sub(s2, s1));              // s2 dead
-
-    if (fp_is_zero(h)) {
-        if (fp_is_zero(rr)) {
-            return point_double(p);
+    if (fp_is_zero(t0)) {
+        Fp t1 = fp_sub(q.y, p.y);
+        t1 = fp_double(t1);
+        if (fp_is_zero(t1)) {
+            PointProjective r;
+            r.x = p.x; r.y = p.y; r.z = fp_one();
+            return point_double(r);
         }
         return point_identity();
     }
 
-    // Z3 = ((Z1+Z2)^2 - Z1^2 - Z2^2) * H = 2*Z1*Z2*H
-    // Compute early to free p.z, q.z
-    PointProjective result;
-    result.z = fp_mul(fp_double(fp_mul(p.z, q.z)), h); // p.z, q.z dead
+    PointProjective r;
+    r.z = fp_double(t0);            // Z3 = 2*H
 
-    Fp i = fp_sqr(fp_double(h));                    // I = (2H)^2
-    Fp v = fp_mul(u1, i);                           // V = U1*I (u1 dead)
-    Fp j = fp_mul(h, i);                            // J = H*I (h dead, i dead)
+    Fp t1 = fp_sqr(t0);             // H^2
+    Fp t2 = fp_double(t1);
+    t2 = fp_double(t2);             // I = 4*H^2
+    Fp t3 = fp_mul(p.x, t2);        // V = X1*I
+    Fp t4 = fp_mul(t0, t2);         // J = H*I
 
-    result.x = fp_sub(fp_sub(fp_sqr(rr), j), fp_double(v));
-    result.y = fp_sub(fp_mul(rr, fp_sub(v, result.x)),
-                      fp_double(fp_mul(s1, j)));
-    return result;
+    t1 = fp_sub(q.y, p.y);
+    t1 = fp_double(t1);             // rr = 2*(Y2-Y1)
+
+    r.x = fp_sqr(t1);
+    r.x = fp_sub(r.x, t4);
+    t0 = fp_double(t3);
+    r.x = fp_sub(r.x, t0);          // X3 = rr^2 - J - 2*V
+
+    t2 = fp_sub(t3, r.x);
+    t2 = fp_mul(t1, t2);
+    Fp t5 = fp_mul(p.y, t4);
+    t5 = fp_double(t5);
+    r.y = fp_sub(t2, t5);           // Y3 = rr*(V-X3) - 2*Y1*J
+
+    return r;
+}
+
+// Full point addition — noinline, flattened
+__attribute__((noinline))
+PointProjective point_add(PointProjective p, PointProjective q) {
+    if (point_is_identity(p)) return q;
+    if (point_is_identity(q)) return p;
+
+    Fp t0 = fp_sqr(p.z);           // Z1^2
+    Fp t1 = fp_sqr(q.z);           // Z2^2
+    Fp t2 = fp_mul(p.x, t1);       // U1
+    Fp t3 = fp_mul(q.x, t0);       // U2
+    Fp t4 = fp_mul(q.z, t1);       // Z2^3
+    t4 = fp_mul(p.y, t4);          // S1
+    Fp t5 = fp_mul(p.z, t0);       // Z1^3
+    t5 = fp_mul(q.y, t5);          // S2
+
+    t0 = fp_sub(t3, t2);           // H
+    t1 = fp_sub(t5, t4);
+    t1 = fp_double(t1);            // rr
+
+    if (fp_is_zero(t0)) {
+        if (fp_is_zero(t1)) return point_double(p);
+        return point_identity();
+    }
+
+    PointProjective r;
+    r.z = fp_mul(p.z, q.z);
+    r.z = fp_mul(r.z, t0);
+    r.z = fp_double(r.z);          // Z3 = 2*Z1*Z2*H
+
+    t3 = fp_double(t0);
+    t3 = fp_sqr(t3);               // I = (2H)^2
+    t5 = fp_mul(t2, t3);           // V = U1*I
+    Fp t6 = fp_mul(t0, t3);        // J = H*I
+
+    r.x = fp_sqr(t1);
+    r.x = fp_sub(r.x, t6);
+    t0 = fp_double(t5);
+    r.x = fp_sub(r.x, t0);        // X3
+
+    t3 = fp_sub(t5, r.x);
+    t3 = fp_mul(t1, t3);
+    t2 = fp_mul(t4, t6);
+    t2 = fp_double(t2);
+    r.y = fp_sub(t3, t2);          // Y3
+
+    return r;
 }
 
 // --- MSM Kernel: Pippenger's Bucket Method (CPU-sorted, lock-free) ---
@@ -355,14 +481,15 @@ kernel void msm_reduce_sorted_buckets(
     device const uint* count_sorted_map        [[buffer(7)]],
     uint tid                                   [[thread_position_in_grid]]
 ) {
-    uint nb = 1u << params.window_bits;
-    uint total = params.n_buckets * n_windows;
+    uint nb = params.n_buckets;
+    uint total = nb * n_windows;
     if (tid >= total) return;
 
-    // Map from count-sorted position to original bucket position
-    // Ensures adjacent threads in SIMD group have similar bucket counts (minimal divergence)
-    uint orig_pos = count_sorted_map[tid];
-    uint orig_bucket = orig_pos & (nb - 1u);
+    // Unpack: upper 16 bits = window, lower 16 bits = bucket index
+    uint packed = count_sorted_map[tid];
+    uint orig_bucket = packed & 0xFFFFu;
+    uint orig_window = packed >> 16u;
+    uint orig_pos = orig_window * nb + orig_bucket;
 
     if (orig_bucket == 0) {
         buckets[orig_pos] = point_identity();
@@ -374,15 +501,108 @@ kernel void msm_reduce_sorted_buckets(
         buckets[orig_pos] = point_identity();
         return;
     }
-
-    uint orig_window = orig_pos >> params.window_bits;
     uint base = orig_window * params.n_points;
     uint offset = bucket_offsets[orig_pos];
-    PointProjective acc = point_from_affine(points[sorted_indices[base + offset]]);
-    for (uint i = 1; i < count; i++) {
-        acc = point_add_mixed(acc, points[sorted_indices[base + offset + i]]);
+
+    // Read point with conditional Y negation (no zero check — Y is never zero for curve points)
+    uint raw0 = sorted_indices[base + offset];
+    PointAffine first = points[raw0 & 0x7FFFFFFFu];
+    if (raw0 & 0x80000000u) { uint borrow; first.y = fp_sub_raw(fp_modulus(), first.y, borrow); }
+
+    PointProjective acc;
+    if (count == 1) {
+        acc = point_from_affine(first);
+    } else {
+        uint raw1 = sorted_indices[base + offset + 1];
+        PointAffine second = points[raw1 & 0x7FFFFFFFu];
+        if (raw1 & 0x80000000u) { uint borrow; second.y = fp_sub_raw(fp_modulus(), second.y, borrow); }
+        acc = point_add_mixed_z1(first, second);
+        for (uint i = 2; i < count; i++) {
+            uint rawI = sorted_indices[base + offset + i];
+            PointAffine pt = points[rawI & 0x7FFFFFFFu];
+            if (rawI & 0x80000000u) { uint borrow; pt.y = fp_sub_raw(fp_modulus(), pt.y, borrow); }
+            acc = point_add_mixed(acc, pt);
+        }
     }
     buckets[orig_pos] = acc;
+}
+
+// SIMD shuffle helper for PointProjective (24 uint lanes)
+inline PointProjective simd_shuffle_down_point(PointProjective p, uint offset) {
+    PointProjective r;
+    for (int k = 0; k < 8; k++) {
+        r.x.v[k] = simd_shuffle_down(p.x.v[k], offset);
+        r.y.v[k] = simd_shuffle_down(p.y.v[k], offset);
+        r.z.v[k] = simd_shuffle_down(p.z.v[k], offset);
+    }
+    return r;
+}
+
+// Phase 1b: Cooperative reduce — one SIMD group (32 threads) per bucket.
+// Each thread accumulates its portion with stride 32, then SIMD tree reduction merges.
+kernel void msm_reduce_cooperative(
+    device const PointAffine* points           [[buffer(0)]],
+    device PointProjective* buckets            [[buffer(1)]],
+    device const uint* bucket_offsets          [[buffer(2)]],
+    device const uint* bucket_counts           [[buffer(3)]],
+    constant MsmParams& params                 [[buffer(4)]],
+    constant uint& n_windows                   [[buffer(5)]],
+    device const uint* sorted_indices          [[buffer(6)]],
+    device const uint* count_sorted_map        [[buffer(7)]],
+    uint tgid                                  [[threadgroup_position_in_grid]],
+    uint lid                                   [[thread_index_in_threadgroup]]
+) {
+    uint nb = params.n_buckets;
+    uint total = nb * n_windows;
+    if (tgid >= total) return;
+
+    // Same packed encoding as msm_reduce_sorted_buckets
+    uint packed = count_sorted_map[tgid];
+    uint orig_bucket = packed & 0xFFFFu;
+    uint orig_window = packed >> 16u;
+    uint orig_pos = orig_window * nb + orig_bucket;
+
+    // Identity for bucket 0 or empty buckets
+    if (orig_bucket == 0 || bucket_counts[orig_pos] == 0) {
+        if (lid == 0) {
+            buckets[orig_pos] = point_identity();
+        }
+        return;
+    }
+
+    uint count = bucket_counts[orig_pos];
+    uint base = orig_window * params.n_points;
+    uint offset = bucket_offsets[orig_pos];
+
+    // Each thread accumulates points at stride 32
+    PointProjective acc = point_identity();
+    for (uint i = lid; i < count; i += 32) {
+        uint rawI = sorted_indices[base + offset + i];
+        PointAffine pt = points[rawI & 0x7FFFFFFFu];
+        if (rawI & 0x80000000u) { uint borrow; pt.y = fp_sub_raw(fp_modulus(), pt.y, borrow); }
+
+        if (point_is_identity(acc)) {
+            acc = point_from_affine(pt);
+        } else {
+            acc = point_add_mixed(acc, pt);
+        }
+    }
+
+    // SIMD tree reduction (5 levels for 32 lanes)
+    for (uint off = 16; off > 0; off >>= 1) {
+        PointProjective other = simd_shuffle_down_point(acc, off);
+        if (lid < off) {
+            if (point_is_identity(acc)) {
+                acc = other;
+            } else if (!point_is_identity(other)) {
+                acc = point_add(acc, other);
+            }
+        }
+    }
+
+    if (lid == 0) {
+        buckets[orig_pos] = acc;
+    }
 }
 
 // Phase 2: Direct weighted bucket sum per segment.
@@ -406,7 +626,7 @@ kernel void msm_bucket_sum_direct(
     uint window_idx = tid / n_segments;
     uint seg_idx = tid % n_segments;
 
-    uint n_buckets = 1u << params.window_bits;
+    uint n_buckets = params.n_buckets;
     uint seg_size = (n_buckets + n_segments - 1) / n_segments;
     uint bucket_base = window_idx * n_buckets;
 
@@ -420,23 +640,27 @@ kernel void msm_bucket_sum_direct(
         return;
     }
 
-    PointProjective running = point_identity();
-    PointProjective sum = point_identity();
+    PointProjective running;
+    PointProjective sum;
+    bool running_set = false;
+    bool sum_set = false;
 
     uint hi = uint(hi_s);
     uint lo = uint(lo_s);
     for (uint i = hi - 1; i >= lo; i--) {
         PointProjective bucket = buckets[bucket_base + i];
         if (!point_is_identity(bucket)) {
-            if (point_is_identity(running)) {
+            if (!running_set) {
                 running = bucket;
+                running_set = true;
             } else {
                 running = point_add(running, bucket);
             }
         }
-        if (!point_is_identity(running)) {
-            if (point_is_identity(sum)) {
+        if (running_set) {
+            if (!sum_set) {
                 sum = running;
+                sum_set = true;
             } else {
                 sum = point_add(sum, running);
             }
@@ -444,19 +668,17 @@ kernel void msm_bucket_sum_direct(
         if (i == lo) break;
     }
 
-    // Adjust sum to get exact weighted contribution:
-    // We computed sum = Σ (i - lo + 1) × bucket[i]
-    // We want: Σ i × bucket[i] = sum + (lo - 1) × running
     uint weight = lo - 1;
-    if (weight > 0 && !point_is_identity(running)) {
-        // Scalar multiply: weight × running using double-and-add
-        PointProjective weighted = point_identity();
+    if (weight > 0 && running_set) {
+        bool weighted_set = false;
+        PointProjective weighted;
         PointProjective base = running;
         uint k = weight;
         while (k > 0) {
             if (k & 1u) {
-                if (point_is_identity(weighted)) {
+                if (!weighted_set) {
                     weighted = base;
+                    weighted_set = true;
                 } else {
                     weighted = point_add(weighted, base);
                 }
@@ -464,16 +686,26 @@ kernel void msm_bucket_sum_direct(
             base = point_double(base);
             k >>= 1;
         }
-        if (point_is_identity(sum)) {
-            sum = weighted;
-        } else {
-            sum = point_add(sum, weighted);
+        if (weighted_set) {
+            if (!sum_set) {
+                sum = weighted;
+                sum_set = true;
+            } else {
+                sum = point_add(sum, weighted);
+            }
         }
     }
 
-    segment_results[tid] = sum;
+    if (!sum_set) {
+        segment_results[tid] = point_identity();
+    } else {
+        segment_results[tid] = sum;
+    }
 }
 
+// Phase 3: Parallel reduction of segment results per window.
+// Each threadgroup handles one window, reducing n_segments results to a single sum.
+// Uses threadgroup shared memory for tree reduction.
 // Phase 3: Parallel reduction of segment results per window.
 // Each threadgroup handles one window, reducing n_segments results to a single sum.
 // Uses threadgroup shared memory for tree reduction.
@@ -485,26 +717,23 @@ kernel void msm_combine_segments(
     uint lid                                      [[thread_index_in_threadgroup]],
     uint tg_size                                  [[threads_per_threadgroup]]
 ) {
-    // Each threadgroup = one window. Supports up to 2*tg_size segments.
-    // Each thread loads 2 segment results, adds them, then tree reduce on tg_size entries.
+    // Each threadgroup = one window. Supports arbitrary n_segments.
+    // Each thread pre-reduces a contiguous chunk, then tree reduce in shared memory.
     threadgroup PointProjective shared_buf[256]; // max tg_size entries
 
     uint base = tgid * n_segments;
-    uint idx0 = lid * 2;
-    uint idx1 = lid * 2 + 1;
+    uint chunk = (n_segments + tg_size - 1) / tg_size;
+    uint start = lid * chunk;
+    uint end = min(start + chunk, n_segments);
 
-    // Load pair and pre-reduce
-    PointProjective v;
-    if (idx0 >= n_segments) {
-        v = point_identity();
-    } else if (idx1 >= n_segments) {
-        v = segment_results[base + idx0];
-    } else {
-        PointProjective a = segment_results[base + idx0];
-        PointProjective b = segment_results[base + idx1];
-        if (point_is_identity(a)) { v = b; }
-        else if (point_is_identity(b)) { v = a; }
-        else { v = point_add(a, b); }
+    // Pre-reduce chunk
+    PointProjective v = point_identity();
+    for (uint i = start; i < end; i++) {
+        PointProjective s = segment_results[base + i];
+        if (!point_is_identity(s)) {
+            if (point_is_identity(v)) { v = s; }
+            else { v = point_add(v, s); }
+        }
     }
     shared_buf[lid] = v;
     threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -526,6 +755,38 @@ kernel void msm_combine_segments(
     if (lid == 0) {
         window_results[tgid] = shared_buf[0];
     }
+}
+
+// Phase 4: Horner combination of window results.
+// Computes: result = w[n-1] * 2^((n-1)*wb) + ... + w[1] * 2^wb + w[0]
+// Using Horner's method: result = ((w[n-1] * 2^wb + w[n-2]) * 2^wb + ...) + w[0]
+// Single thread, chained after combine_segments.
+kernel void msm_horner_combine(
+    device const PointProjective* window_results [[buffer(0)]],
+    device PointProjective* final_result         [[buffer(1)]],
+    constant uint& n_windows                     [[buffer(2)]],
+    constant uint& window_bits                   [[buffer(3)]],
+    uint tid                                     [[thread_position_in_grid]]
+) {
+    if (tid != 0) return;
+
+    PointProjective result = window_results[n_windows - 1];
+    for (int w = int(n_windows) - 2; w >= 0; w--) {
+        // Multiply by 2^window_bits
+        for (uint b = 0; b < window_bits; b++) {
+            result = point_double(result);
+        }
+        // Add next window result
+        PointProjective wr = window_results[w];
+        if (!point_is_identity(wr)) {
+            if (point_is_identity(result)) {
+                result = wr;
+            } else {
+                result = point_add(result, wr);
+            }
+        }
+    }
+    final_result[0] = result;
 }
 
 // --- GLV Scalar Decomposition Kernel ---
@@ -835,4 +1096,48 @@ kernel void glv_endomorphism(
     }
 
     points[n + gid] = endo;
+}
+
+// GPU signed-digit extraction: reads decomposed scalars, writes per-window bucket indices
+// with sign bit encoding. Replaces CPU precomp phase.
+kernel void signed_digit_extract(
+    device const uint* scalars          [[buffer(0)]],
+    device uint* digits                 [[buffer(1)]],
+    constant uint& n_points             [[buffer(2)]],
+    constant uint& window_bits          [[buffer(3)]],
+    constant uint& n_windows            [[buffer(4)]],
+    uint gid                            [[thread_position_in_grid]]
+) {
+    if (gid >= n_points) return;
+
+    const device uint* sp = scalars + gid * 8;
+    uint mask = (1u << window_bits) - 1u;
+    uint half_bk = 1u << (window_bits - 1u);
+    uint full_bk = 1u << window_bits;
+    uint carry = 0;
+
+    for (uint w = 0; w < n_windows; w++) {
+        uint bit_off = w * window_bits;
+        uint limb_idx = bit_off / 32u;
+        uint bit_pos = bit_off % 32u;
+
+        uint idx = 0;
+        if (limb_idx < 8u) {
+            idx = sp[limb_idx] >> bit_pos;
+            if (bit_pos + window_bits > 32u && limb_idx + 1u < 8u) {
+                idx |= sp[limb_idx + 1u] << (32u - bit_pos);
+            }
+            idx &= mask;
+        }
+
+        uint digit = idx + carry;
+        carry = 0;
+        if (digit > half_bk) {
+            digit = full_bk - digit;
+            carry = 1;
+            digits[w * n_points + gid] = digit | 0x80000000u;
+        } else {
+            digits[w * n_points + gid] = digit;
+        }
+    }
 }

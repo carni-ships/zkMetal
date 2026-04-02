@@ -343,8 +343,8 @@ kernel void debug_read(
 kernel void gemini_fold(
     device const Fr* A_in      [[buffer(0)]],
     device Fr*       A_out     [[buffer(1)]],
-    device const Fr* u_buf     [[buffer(2)]],
-    device const uint* params  [[buffer(3)]],
+    constant Fr* u_buf         [[buffer(2)]],
+    constant uint* params      [[buffer(3)]],
     uint tid [[thread_position_in_grid]])
 {
     uint n_fold = params[0];
@@ -392,8 +392,8 @@ kernel void poly_sub(
 kernel void poly_scalar_mul(
     device const Fr* a       [[buffer(0)]],
     device Fr*       out     [[buffer(1)]],
-    device const Fr* scalar  [[buffer(2)]],
-    device const uint* params [[buffer(3)]],
+    constant Fr* scalar      [[buffer(2)]],
+    constant uint* params    [[buffer(3)]],
     uint tid [[thread_position_in_grid]])
 {
     uint n = params[0];
@@ -457,8 +457,8 @@ kernel void batch_fold(
 kernel void poly_add_scaled(
     device Fr*       acc     [[buffer(0)]],
     device const Fr* poly    [[buffer(1)]],
-    device const Fr* scalar  [[buffer(2)]],
-    device const uint* params [[buffer(3)]],
+    constant Fr* scalar      [[buffer(2)]],
+    constant uint* params    [[buffer(3)]],
     uint tid [[thread_position_in_grid]])
 {
     uint n = params[0];

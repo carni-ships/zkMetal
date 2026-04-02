@@ -1,0 +1,675 @@
+// Metal MSM Engine — Pippenger's bucket method with GPU acceleration
+// Uses GLV endomorphism, count-sorted bucket reduce, and pipelined sort/reduce.
+
+import Foundation
+import Metal
+
+public enum MSMError: Error {
+    case noGPU
+    case noCommandQueue
+    case noCommandBuffer
+    case missingKernel
+    case invalidInput
+    case gpuError(String)
+}
+
+public class MetalMSM {
+    public let device: MTLDevice
+    public let commandQueue: MTLCommandQueue
+    public let reduceSortedFunction: MTLComputePipelineState
+    public let reduceCooperativeFunction: MTLComputePipelineState
+    public let bucketSumDirectFunction: MTLComputePipelineState
+    public let combineSegmentsFunction: MTLComputePipelineState
+    public let hornerCombineFunction: MTLComputePipelineState
+    public let endomorphismFunction: MTLComputePipelineState
+    public let glvDecomposeFunction: MTLComputePipelineState
+    public let signedDigitFunction: MTLComputePipelineState
+
+    // Pre-allocated buffers (lazily sized, reused across calls)
+    private var maxAllocatedPoints = 0
+    private var maxAllocatedBuckets = 0
+    private var pointsBuffer: MTLBuffer?
+    private var sortedIndicesBuffer: MTLBuffer?
+    private var allOffsetsBuffer: MTLBuffer?
+    private var allCountsBuffer: MTLBuffer?
+    private var bucketsBuffer: MTLBuffer?
+    private var segmentResultsBuffer: MTLBuffer?
+    private var windowResultsBuffer: MTLBuffer?
+    private var finalResultBuffer: MTLBuffer?
+    private var countSortedMapBuffer: MTLBuffer?
+    private var cpuCountsPtr: UnsafeMutablePointer<Int>?
+    private var cpuPositionsPtr: UnsafeMutablePointer<Int>?
+    private var cpuScratchCapacity = 0
+    private var signedDigitPtr: UnsafeMutablePointer<UInt32>?
+    private var signedDigitCapacity = 0
+    private var signedDigitBuffer: MTLBuffer?
+    public var windowBitsOverride: UInt32?
+
+    public static let cacheDir = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".zkmsm").appendingPathComponent("cache")
+
+    public init() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw MSMError.noGPU
+        }
+        self.device = device
+
+        guard let queue = device.makeCommandQueue() else {
+            throw MSMError.noCommandQueue
+        }
+        self.commandQueue = queue
+
+        let library: MTLLibrary
+        let cacheFile = MetalMSM.cacheDir.appendingPathComponent("bn254.metallib")
+
+        let requiredKernels = ["msm_reduce_sorted_buckets", "msm_bucket_sum_direct", "msm_combine_segments", "glv_endomorphism", "glv_decompose", "signed_digit_extract"]
+        if FileManager.default.fileExists(atPath: cacheFile.path) {
+            do {
+                let cached = try device.makeLibrary(URL: cacheFile)
+                if requiredKernels.allSatisfy({ cached.makeFunction(name: $0) != nil }) {
+                    library = cached
+                } else {
+                    library = try MetalMSM.compileAndCache(device: device, cacheFile: cacheFile)
+                }
+            } catch {
+                library = try MetalMSM.compileAndCache(device: device, cacheFile: cacheFile)
+            }
+        } else {
+            library = try MetalMSM.compileAndCache(device: device, cacheFile: cacheFile)
+        }
+
+        guard let reduceSortedFn = library.makeFunction(name: "msm_reduce_sorted_buckets"),
+              let reduceCoopFn = library.makeFunction(name: "msm_reduce_cooperative"),
+              let sumDirectFn = library.makeFunction(name: "msm_bucket_sum_direct"),
+              let combineFn = library.makeFunction(name: "msm_combine_segments"),
+              let hornerFn = library.makeFunction(name: "msm_horner_combine"),
+              let endoFn = library.makeFunction(name: "glv_endomorphism"),
+              let glvDecomposeFn = library.makeFunction(name: "glv_decompose"),
+              let signedDigitFn = library.makeFunction(name: "signed_digit_extract") else {
+            throw MSMError.missingKernel
+        }
+
+        self.reduceSortedFunction = try device.makeComputePipelineState(function: reduceSortedFn)
+        self.reduceCooperativeFunction = try device.makeComputePipelineState(function: reduceCoopFn)
+        self.bucketSumDirectFunction = try device.makeComputePipelineState(function: sumDirectFn)
+        self.combineSegmentsFunction = try device.makeComputePipelineState(function: combineFn)
+        self.hornerCombineFunction = try device.makeComputePipelineState(function: hornerFn)
+        self.endomorphismFunction = try device.makeComputePipelineState(function: endoFn)
+        self.glvDecomposeFunction = try device.makeComputePipelineState(function: glvDecomposeFn)
+        self.signedDigitFunction = try device.makeComputePipelineState(function: signedDigitFn)
+    }
+
+    /// Compile shader from source and cache the library for next time.
+    private static func compileAndCache(device: MTLDevice, cacheFile: URL) throws -> MTLLibrary {
+        let shaderPath = findShaderPath()
+        let shaderSource = try String(contentsOfFile: shaderPath, encoding: .utf8)
+        let options = MTLCompileOptions()
+        options.fastMathEnabled = true
+        let library = try device.makeLibrary(source: shaderSource, options: options)
+
+        try? FileManager.default.createDirectory(
+            at: MetalMSM.cacheDir, withIntermediateDirectories: true)
+
+        if #available(macOS 11.0, *) {
+            let archiveDesc = MTLBinaryArchiveDescriptor()
+            if let archive = try? device.makeBinaryArchive(descriptor: archiveDesc) {
+                for name in ["msm_reduce_sorted_buckets", "msm_bucket_sum_direct"] {
+                    let desc = MTLComputePipelineDescriptor()
+                    desc.computeFunction = library.makeFunction(name: name)
+                    try? archive.addComputePipelineFunctions(descriptor: desc)
+                }
+                try? archive.serialize(to: cacheFile)
+            }
+        }
+
+        return library
+    }
+
+    @inline(__always)
+    private func extractBucketIndex(_ scalarPtr: UnsafePointer<UInt32>, windowBits: UInt32, windowIndex: Int) -> Int {
+        let bitOffset = windowIndex * Int(windowBits)
+        let limbIdx = bitOffset / 32
+        let bitPos = bitOffset % 32
+        guard limbIdx < 8 else { return 0 }
+        var idx = Int(scalarPtr[limbIdx] >> bitPos)
+        if bitPos + Int(windowBits) > 32 && limbIdx + 1 < 8 {
+            idx |= Int(scalarPtr[limbIdx + 1]) << (32 - bitPos)
+        }
+        idx &= (1 << windowBits) - 1
+        return idx
+    }
+
+    private func extractBucketIndex(_ scalar: [UInt32], windowBits: UInt32, windowIndex: Int) -> Int {
+        let bitOffset = windowIndex * Int(windowBits)
+        let limbIdx = bitOffset / 32
+        let bitPos = bitOffset % 32
+        guard limbIdx < 8 else { return 0 }
+        var idx = Int(scalar[limbIdx] >> bitPos)
+        if bitPos + Int(windowBits) > 32 && limbIdx + 1 < 8 {
+            idx |= Int(scalar[limbIdx + 1]) << (32 - bitPos)
+        }
+        idx &= (1 << windowBits) - 1
+        return idx
+    }
+
+    private var maxAllocatedWindows = 0
+    private var maxAllocatedSegments = 0
+
+    private func ensureBuffers(n: Int, nBuckets: Int, nSegments: Int, nWindows: Int) {
+        let needRealloc = n > maxAllocatedPoints || nBuckets > maxAllocatedBuckets || nWindows > maxAllocatedWindows || nSegments > maxAllocatedSegments
+        if needRealloc {
+            let np = max(n, maxAllocatedPoints)
+            let nb = max(nBuckets, maxAllocatedBuckets)
+            let nw = max(nWindows, maxAllocatedWindows)
+            let ns = nSegments
+            pointsBuffer = device.makeBuffer(
+                length: MemoryLayout<PointAffine>.stride * np, options: .storageModeShared)
+            sortedIndicesBuffer = device.makeBuffer(
+                length: MemoryLayout<UInt32>.stride * np * nw, options: .storageModeShared)
+            allOffsetsBuffer = device.makeBuffer(
+                length: MemoryLayout<UInt32>.stride * nb * nw, options: .storageModeShared)
+            allCountsBuffer = device.makeBuffer(
+                length: MemoryLayout<UInt32>.stride * nb * nw, options: .storageModeShared)
+            bucketsBuffer = device.makeBuffer(
+                length: MemoryLayout<PointProjective>.stride * nb * nw, options: .storageModeShared)
+            segmentResultsBuffer = device.makeBuffer(
+                length: MemoryLayout<PointProjective>.stride * ns * nw, options: .storageModeShared)
+            windowResultsBuffer = device.makeBuffer(
+                length: MemoryLayout<PointProjective>.stride * nw, options: .storageModeShared)
+            finalResultBuffer = device.makeBuffer(
+                length: MemoryLayout<PointProjective>.stride, options: .storageModeShared)
+            countSortedMapBuffer = device.makeBuffer(
+                length: MemoryLayout<UInt32>.stride * nb * nw, options: .storageModeShared)
+            signedDigitBuffer = device.makeBuffer(
+                length: MemoryLayout<UInt32>.stride * np * nw, options: .storageModeShared)
+            maxAllocatedPoints = np
+            maxAllocatedBuckets = nb
+            maxAllocatedWindows = nw
+            maxAllocatedSegments = nSegments
+            let scratchSize = nw * nb
+            if scratchSize > cpuScratchCapacity {
+                cpuCountsPtr?.deallocate()
+                cpuPositionsPtr?.deallocate()
+                cpuCountsPtr = .allocate(capacity: scratchSize)
+                cpuPositionsPtr = .allocate(capacity: scratchSize)
+                cpuScratchCapacity = scratchSize
+            }
+        }
+    }
+
+    deinit {
+        cpuCountsPtr?.deallocate()
+        cpuPositionsPtr?.deallocate()
+    }
+
+    public var useGLV = true
+
+    public func msm(points: [PointAffine], scalars: [[UInt32]]) throws -> PointProjective {
+        let n = points.count
+        guard n == scalars.count, n > 0 else {
+            throw MSMError.invalidInput
+        }
+
+        var msmPoints = points
+        var msmScalars = scalars
+        var scalarBits = 256
+
+        var flatScalarBuf: UnsafeMutablePointer<UInt32>? = nil
+        var scalarOutMetalBuf: MTLBuffer? = nil
+
+        var neg1Buf: MTLBuffer? = nil
+        var neg2Buf: MTLBuffer? = nil
+        var glvN: Int = 0
+
+        // GLV: allocate buffers and copy scalars (CPU work only, no GPU wait)
+        var glvScalarInBuf: MTLBuffer? = nil
+        var glvK1MetalBuf: MTLBuffer? = nil
+        var glvK2Offset: Int = 0
+
+        if useGLV && n >= 256 {
+            let scalarByteCount = n * 8 * MemoryLayout<UInt32>.stride
+            guard let scalarInBuf = device.makeBuffer(length: scalarByteCount, options: .storageModeShared),
+                  let k1MetalBuf = device.makeBuffer(length: 2 * scalarByteCount, options: .storageModeShared),
+                  let neg1MetalBuf = device.makeBuffer(length: n, options: .storageModeShared),
+                  let neg2MetalBuf = device.makeBuffer(length: n, options: .storageModeShared) else {
+                throw MSMError.gpuError("Failed to allocate GLV buffers")
+            }
+
+            let scalarDst = scalarInBuf.contents().assumingMemoryBound(to: UInt8.self)
+            for i in 0..<n {
+                scalars[i].withUnsafeBufferPointer { sp in
+                    memcpy(scalarDst + i * 32, sp.baseAddress!, 32)
+                }
+            }
+
+            glvScalarInBuf = scalarInBuf
+            glvK1MetalBuf = k1MetalBuf
+            glvK2Offset = scalarByteCount
+            scalarOutMetalBuf = k1MetalBuf
+            flatScalarBuf = k1MetalBuf.contents().bindMemory(to: UInt32.self, capacity: 2 * n * 8)
+            neg1Buf = neg1MetalBuf
+            neg2Buf = neg2MetalBuf
+
+            glvN = n
+            scalarBits = 128
+        }
+
+        let effectiveN = glvN > 0 ? 2 * glvN : msmPoints.count
+
+        var windowBits: UInt32
+        if effectiveN <= 256 {
+            windowBits = 8
+        } else if effectiveN <= 4096 {
+            windowBits = 10
+        } else if effectiveN <= 32768 {
+            windowBits = 12
+        } else {
+            windowBits = 16
+        }
+        if let wbOverride = windowBitsOverride {
+            windowBits = wbOverride
+        }
+        let nWindows = (scalarBits + Int(windowBits) - 1) / Int(windowBits)
+        let fullBuckets = 1 << Int(windowBits)
+        let halfBuckets = fullBuckets >> 1
+        let nBuckets = halfBuckets + 1  // signed-digit: bucket indices in [0, halfBuckets]
+        let nSegments = min(512, max(1, nBuckets / 2))
+
+        ensureBuffers(n: effectiveN, nBuckets: nBuckets, nSegments: nSegments, nWindows: nWindows)
+        guard let pointsBuffer = pointsBuffer,
+              let sortedIndicesBuffer = sortedIndicesBuffer,
+              let allOffsetsBuffer = allOffsetsBuffer,
+              let allCountsBuffer = allCountsBuffer,
+              let bucketsBuffer = bucketsBuffer,
+              let segmentResultsBuffer = segmentResultsBuffer,
+              let windowResultsBuffer = windowResultsBuffer,
+              let finalResultBuffer = finalResultBuffer,
+              let countSortedMapBuffer = countSortedMapBuffer else {
+            throw MSMError.gpuError("Failed to allocate Metal buffers")
+        }
+
+        let bucketStride = MemoryLayout<PointProjective>.stride
+        var sortTime: Double = 0
+        var reduceTime: Double = 0
+
+        let ts = CFAbsoluteTimeGetCurrent()
+
+        let gpuPtsPtr = pointsBuffer.contents().bindMemory(to: PointAffine.self, capacity: effectiveN)
+        var endoCmdBuf: MTLCommandBuffer? = nil
+        if glvN > 0 {
+            // Copy points to GPU buffer before dispatching (shared mode = CPU writes visible to GPU)
+            msmPoints.withUnsafeBufferPointer { src in
+                gpuPtsPtr.update(from: src.baseAddress!, count: glvN)
+            }
+            guard let cmdBuf = commandQueue.makeCommandBuffer() else {
+                throw MSMError.gpuError("Failed to create preprocessing command buffer")
+            }
+
+            let enc = cmdBuf.makeComputeCommandEncoder()!
+
+            // Step 1: GLV decompose (scalars → k1/k2 + neg flags)
+            enc.setComputePipelineState(glvDecomposeFunction)
+            enc.setBuffer(glvScalarInBuf, offset: 0, index: 0)
+            enc.setBuffer(glvK1MetalBuf, offset: 0, index: 1)
+            enc.setBuffer(glvK1MetalBuf, offset: glvK2Offset, index: 2)
+            enc.setBuffer(neg1Buf, offset: 0, index: 3)
+            enc.setBuffer(neg2Buf, offset: 0, index: 4)
+            var nVal0 = UInt32(glvN)
+            enc.setBytes(&nVal0, length: 4, index: 5)
+            let tg0 = min(glvDecomposeFunction.maxTotalThreadsPerThreadgroup, 256)
+            enc.dispatchThreads(MTLSize(width: glvN, height: 1, depth: 1),
+                              threadsPerThreadgroup: MTLSize(width: tg0, height: 1, depth: 1))
+            enc.memoryBarrier(scope: .buffers)
+
+            // Step 2: Endomorphism (apply neg flags, compute beta*x for second half)
+            enc.setComputePipelineState(endomorphismFunction)
+            enc.setBuffer(pointsBuffer, offset: 0, index: 0)
+            enc.setBuffer(neg1Buf, offset: 0, index: 1)
+            enc.setBuffer(neg2Buf, offset: 0, index: 2)
+            var nVal1 = UInt32(glvN)
+            enc.setBytes(&nVal1, length: 4, index: 3)
+            let tg1 = min(endomorphismFunction.maxTotalThreadsPerThreadgroup, 256)
+            enc.dispatchThreads(MTLSize(width: glvN, height: 1, depth: 1),
+                              threadsPerThreadgroup: MTLSize(width: tg1, height: 1, depth: 1))
+
+            // Step 3: GPU signed-digit extraction (reads decomposed scalars)
+            if let sdBuf = signedDigitBuffer {
+                enc.memoryBarrier(scope: .buffers)
+                enc.setComputePipelineState(signedDigitFunction)
+                enc.setBuffer(scalarOutMetalBuf, offset: 0, index: 0)
+                enc.setBuffer(sdBuf, offset: 0, index: 1)
+                var enVal = UInt32(effectiveN)
+                enc.setBytes(&enVal, length: 4, index: 2)
+                var wbVal = windowBits
+                enc.setBytes(&wbVal, length: 4, index: 3)
+                var nwVal = UInt32(nWindows)
+                enc.setBytes(&nwVal, length: 4, index: 4)
+                let tg2 = min(signedDigitFunction.maxTotalThreadsPerThreadgroup, 256)
+                enc.dispatchThreads(MTLSize(width: effectiveN, height: 1, depth: 1),
+                                    threadsPerThreadgroup: MTLSize(width: tg2, height: 1, depth: 1))
+            }
+            enc.endEncoding()
+
+            cmdBuf.commit()
+            endoCmdBuf = cmdBuf
+        } else {
+            msmPoints.withUnsafeBufferPointer { src in
+                gpuPtsPtr.update(from: src.baseAddress!, count: effectiveN)
+            }
+        }
+
+        let allOffsets = allOffsetsBuffer.contents().bindMemory(to: UInt32.self, capacity: nBuckets * nWindows)
+        let allCounts = allCountsBuffer.contents().bindMemory(to: UInt32.self, capacity: nBuckets * nWindows)
+        let sortedIdxPtr = sortedIndicesBuffer.contents().bindMemory(to: UInt32.self, capacity: effectiveN * nWindows)
+        let countSortedMap = countSortedMapBuffer.contents().bindMemory(to: UInt32.self, capacity: nBuckets * nWindows)
+
+        var params = MsmParams(
+            n_points: UInt32(effectiveN),
+            window_bits: windowBits,
+            n_buckets: UInt32(nBuckets)
+        )
+        let totalSegments = nSegments * nWindows
+        var nSegs = UInt32(nSegments)
+
+        // Capture flat pointers for thread-safe concurrent access (no Swift Array CoW races)
+        let countsBase = cpuCountsPtr!
+        let positionsBase = cpuPositionsPtr!
+
+        // Phase 0: Signed-digit extraction.
+        // If GPU path available (GLV mode with Metal buffer), GPU already computed them.
+        // Otherwise, fall back to CPU extraction.
+        let signedDigitBuf: UnsafeMutablePointer<UInt32>
+        let useGpuSignedDigits = (glvN > 0 && signedDigitBuffer != nil)
+        if useGpuSignedDigits {
+            // GPU signed_digit_extract was chained into the endo command buffer.
+            // Just point to the shared Metal buffer output.
+            signedDigitBuf = signedDigitBuffer!.contents().bindMemory(to: UInt32.self, capacity: effectiveN * nWindows)
+        } else {
+            // CPU fallback for non-GLV or when Metal buffer unavailable
+            let sdNeeded = effectiveN * nWindows
+            if sdNeeded > signedDigitCapacity {
+                signedDigitPtr?.deallocate()
+                signedDigitPtr = .allocate(capacity: sdNeeded)
+                signedDigitCapacity = sdNeeded
+            }
+            signedDigitBuf = signedDigitPtr!
+            let halfBk = UInt32(halfBuckets)
+            let fullBk = UInt32(fullBuckets)
+            let chunkSize = 4096
+            let nChunks = (effectiveN + chunkSize - 1) / chunkSize
+            let wbLocal = windowBits
+            let nWLocal = nWindows
+            let eN = effectiveN
+            let mask = UInt32((1 << windowBits) - 1)
+            DispatchQueue.concurrentPerform(iterations: nChunks) { chunk in
+                let start = chunk * chunkSize
+                let end = min(start + chunkSize, eN)
+                for i in start..<end {
+                    var carry: UInt32 = 0
+                    if let buf = flatScalarBuf {
+                        let sp = buf + (i * 8)
+                        if wbLocal == 16 {
+                            let s0 = sp[0]; let s1 = sp[1]; let s2 = sp[2]; let s3 = sp[3]
+                            var d: UInt32
+                            d = (s0 & 0xFFFF) &+ carry; carry = 0
+                            if d > halfBk { d = fullBk &- d; carry = 1; signedDigitBuf[i] = d | 0x80000000 } else { signedDigitBuf[i] = d }
+                            d = (s0 >> 16) &+ carry; carry = 0
+                            if d > halfBk { d = fullBk &- d; carry = 1; signedDigitBuf[eN + i] = d | 0x80000000 } else { signedDigitBuf[eN + i] = d }
+                            d = (s1 & 0xFFFF) &+ carry; carry = 0
+                            if d > halfBk { d = fullBk &- d; carry = 1; signedDigitBuf[2*eN + i] = d | 0x80000000 } else { signedDigitBuf[2*eN + i] = d }
+                            d = (s1 >> 16) &+ carry; carry = 0
+                            if d > halfBk { d = fullBk &- d; carry = 1; signedDigitBuf[3*eN + i] = d | 0x80000000 } else { signedDigitBuf[3*eN + i] = d }
+                            d = (s2 & 0xFFFF) &+ carry; carry = 0
+                            if d > halfBk { d = fullBk &- d; carry = 1; signedDigitBuf[4*eN + i] = d | 0x80000000 } else { signedDigitBuf[4*eN + i] = d }
+                            d = (s2 >> 16) &+ carry; carry = 0
+                            if d > halfBk { d = fullBk &- d; carry = 1; signedDigitBuf[5*eN + i] = d | 0x80000000 } else { signedDigitBuf[5*eN + i] = d }
+                            d = (s3 & 0xFFFF) &+ carry; carry = 0
+                            if d > halfBk { d = fullBk &- d; carry = 1; signedDigitBuf[6*eN + i] = d | 0x80000000 } else { signedDigitBuf[6*eN + i] = d }
+                            d = (s3 >> 16) &+ carry; carry = 0
+                            if d > halfBk { d = fullBk &- d; carry = 1; signedDigitBuf[7*eN + i] = d | 0x80000000 } else { signedDigitBuf[7*eN + i] = d }
+                        } else {
+                            for w in 0..<nWLocal {
+                                let bitOff = w * Int(wbLocal)
+                                let limbIdx = bitOff / 32
+                                let bitPos = bitOff % 32
+                                var idx: UInt32 = 0
+                                if limbIdx < 8 {
+                                    idx = sp[limbIdx] >> bitPos
+                                    if bitPos + Int(wbLocal) > 32 && limbIdx + 1 < 8 {
+                                        idx |= sp[limbIdx + 1] << (32 - bitPos)
+                                    }
+                                    idx &= mask
+                                }
+                                var digit = idx &+ carry
+                                carry = 0
+                                if digit > halfBk {
+                                    digit = fullBk &- digit
+                                    carry = 1
+                                    signedDigitBuf[w * eN + i] = digit | 0x80000000
+                                } else {
+                                    signedDigitBuf[w * eN + i] = digit
+                                }
+                            }
+                        }
+                    } else {
+                        for w in 0..<nWLocal {
+                            var digit = UInt32(self.extractBucketIndex(msmScalars[i], windowBits: wbLocal, windowIndex: w)) &+ carry
+                            carry = 0
+                            if digit > halfBk {
+                                digit = fullBk &- digit
+                                carry = 1
+                                signedDigitBuf[w * eN + i] = digit | 0x80000000
+                            } else {
+                                signedDigitBuf[w * eN + i] = digit
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        func sortWindows(_ windowRange: Range<Int>) {
+            DispatchQueue.concurrentPerform(iterations: windowRange.count) { i in
+                let w = windowRange.lowerBound + i
+                let wOff = w * nBuckets
+                let idxBase = w * effectiveN
+                let counts = countsBase + w * nBuckets
+                let positions = positionsBase + w * nBuckets
+                let sdBuf = signedDigitBuf + w * effectiveN
+
+                // Count buckets using pre-computed signed digits
+                for i in 0..<nBuckets { counts[i] = 0 }
+                for i in 0..<effectiveN {
+                    counts[Int(sdBuf[i] & 0x7FFFFFFF)] += 1
+                }
+
+                // Prefix sum
+                var runningOffset = 0
+                for i in 0..<nBuckets {
+                    allOffsets[wOff + i] = UInt32(runningOffset)
+                    allCounts[wOff + i] = UInt32(counts[i])
+                    positions[i] = runningOffset
+                    runningOffset += counts[i]
+                }
+
+                // Scatter into sorted array, encoding sign bit in upper bit of index
+                for i in 0..<effectiveN {
+                    let raw = sdBuf[i]
+                    let digit = Int(raw & 0x7FFFFFFF)
+                    if digit == 0 { continue }
+                    var idx = UInt32(i)
+                    if (raw & 0x80000000) != 0 { idx |= 0x80000000 }
+                    sortedIdxPtr[idxBase + positions[digit]] = idx
+                    positions[digit] += 1
+                }
+
+                // Build count-sorted map (buckets ordered by descending count for SIMD coherence)
+                var maxCount: Int = 0
+                for i in 0..<nBuckets {
+                    let c = Int(allCounts[wOff + i])
+                    if c > maxCount { maxCount = c }
+                }
+                for i in 0...maxCount { counts[i] = 0 }
+                for i in 0..<nBuckets {
+                    counts[Int(allCounts[wOff + i])] += 1
+                }
+                var running = 0
+                for c in stride(from: maxCount, through: 0, by: -1) {
+                    positions[c] = running
+                    running += counts[c]
+                }
+                for i in 0..<nBuckets {
+                    let c = Int(allCounts[wOff + i])
+                    let dest = positions[c]
+                    positions[c] = dest + 1
+                    // Pack: upper 16 bits = window, lower 16 bits = bucket index
+                    countSortedMap[wOff + dest] = UInt32(w << 16) | UInt32(i)
+                }
+            }
+        }
+
+        func dispatchReduce(cb: MTLCommandBuffer, windowStart: Int, windowCount: Int) {
+            let enc = cb.makeComputeCommandEncoder()!
+            enc.setComputePipelineState(reduceSortedFunction)
+            enc.setBuffer(pointsBuffer, offset: 0, index: 0)
+            enc.setBuffer(bucketsBuffer, offset: 0, index: 1)
+            enc.setBuffer(allOffsetsBuffer, offset: 0, index: 2)
+            enc.setBuffer(allCountsBuffer, offset: 0, index: 3)
+            enc.setBytes(&params, length: MemoryLayout<MsmParams>.stride, index: 4)
+            var nw = UInt32(windowCount)
+            enc.setBytes(&nw, length: MemoryLayout<UInt32>.stride, index: 5)
+            enc.setBuffer(sortedIndicesBuffer, offset: 0, index: 6)
+            enc.setBuffer(countSortedMapBuffer, offset: windowStart * nBuckets * MemoryLayout<UInt32>.stride, index: 7)
+            let numBucketsTotal = windowCount * nBuckets
+            let tg = min(256, Int(reduceSortedFunction.maxTotalThreadsPerThreadgroup))
+            enc.dispatchThreads(
+                MTLSize(width: numBucketsTotal, height: 1, depth: 1),
+                threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+            enc.endEncoding()
+        }
+
+        let tPrecompDone = CFAbsoluteTimeGetCurrent()
+        let t0r = tPrecompDone
+
+        let batchSize = max(1, nWindows / 2)  // 2 batches + chained bucket_sum
+
+        // Wait for endo + GPU signed-digit extraction before sort reads the data
+        let tBeforeEndoWait = CFAbsoluteTimeGetCurrent()
+        endoCmdBuf?.waitUntilCompleted()
+        let tAfterEndoWait = CFAbsoluteTimeGetCurrent()
+
+        var reduceCBs: [MTLCommandBuffer] = []
+        var wStart = 0
+        var lastCB: MTLCommandBuffer!
+        while wStart < nWindows {
+            let wEnd = min(wStart + batchSize, nWindows)
+            sortWindows(wStart..<wEnd)
+
+            guard let cb = commandQueue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
+            dispatchReduce(cb: cb, windowStart: wStart, windowCount: wEnd - wStart)
+
+            // Chain bucket_sum + combine into the last reduce CB
+            if wEnd >= nWindows {
+                var nWinsBatch = UInt32(nWindows)
+                let encFinal = cb.makeComputeCommandEncoder()!
+                encFinal.setComputePipelineState(bucketSumDirectFunction)
+                encFinal.setBuffer(bucketsBuffer, offset: 0, index: 0)
+                encFinal.setBuffer(segmentResultsBuffer, offset: 0, index: 1)
+                encFinal.setBytes(&params, length: MemoryLayout<MsmParams>.stride, index: 2)
+                encFinal.setBytes(&nSegs, length: MemoryLayout<UInt32>.stride, index: 3)
+                encFinal.setBytes(&nWinsBatch, length: MemoryLayout<UInt32>.stride, index: 4)
+                encFinal.dispatchThreads(
+                    MTLSize(width: totalSegments, height: 1, depth: 1),
+                    threadsPerThreadgroup: MTLSize(width: min(256, totalSegments), height: 1, depth: 1))
+                encFinal.memoryBarrier(scope: .buffers)
+
+                encFinal.setComputePipelineState(combineSegmentsFunction)
+                encFinal.setBuffer(segmentResultsBuffer, offset: 0, index: 0)
+                encFinal.setBuffer(windowResultsBuffer, offset: 0, index: 1)
+                encFinal.setBytes(&nSegs, length: MemoryLayout<UInt32>.stride, index: 2)
+                let combineThreads = min(256, nSegments)
+                encFinal.dispatchThreadgroups(
+                    MTLSize(width: nWindows, height: 1, depth: 1),
+                    threadsPerThreadgroup: MTLSize(width: combineThreads, height: 1, depth: 1))
+                encFinal.endEncoding()
+            }
+
+            cb.commit()
+            reduceCBs.append(cb)
+            lastCB = cb
+            wStart = wEnd
+        }
+
+        let tSortDone = CFAbsoluteTimeGetCurrent()
+        sortTime = tSortDone - ts
+
+        lastCB.waitUntilCompleted()
+        let gpuDone = CFAbsoluteTimeGetCurrent()
+        reduceTime = gpuDone - t0r
+        if let error = lastCB.error { throw MSMError.gpuError(error.localizedDescription) }
+        if let error = lastCB.error { throw MSMError.gpuError(error.localizedDescription) }
+
+        let winResultsPtr = windowResultsBuffer.contents().bindMemory(to: PointProjective.self, capacity: nWindows)
+        var windowResults = [PointProjective](repeating: pointIdentity(), count: nWindows)
+        for w in 0..<nWindows {
+            windowResults[w] = winResultsPtr[w]
+        }
+
+        let t2 = CFAbsoluteTimeGetCurrent()
+        var result = windowResults.last!
+        for w in stride(from: nWindows - 2, through: 0, by: -1) {
+            for _ in 0..<windowBits {
+                result = pointDouble(result)
+            }
+            result = pointAdd(result, windowResults[w])
+        }
+        let hornerTime = CFAbsoluteTimeGetCurrent() - t2
+
+        let precompTime = tPrecompDone - ts
+        let endoWaitTime = tAfterEndoWait - tBeforeEndoWait
+        let actualSortTime = tSortDone - tAfterEndoWait
+        let gpuTotalWait = gpuDone - tSortDone
+        fputs("  prep: \(String(format: "%.1f", precompTime * 1000))ms, " +
+              "endo: \(String(format: "%.1f", endoWaitTime * 1000))ms, " +
+              "sort: \(String(format: "%.1f", actualSortTime * 1000))ms, " +
+              "gpu: \(String(format: "%.1f", gpuTotalWait * 1000))ms, " +
+              "horner: \(String(format: "%.1f", hornerTime * 1000))ms\n", stderr)
+
+        if scalarOutMetalBuf == nil { flatScalarBuf?.deallocate() }
+        _ = scalarOutMetalBuf
+        return result
+    }
+}
+
+/// Find the Metal shader source path (checks multiple locations).
+public func findShaderPath() -> String {
+    let execPath = CommandLine.arguments[0]
+    let execDir = (execPath as NSString).deletingLastPathComponent
+
+    // Check Bundle resources first (for library target with SPM resources)
+    if let bundlePath = Bundle.main.path(forResource: "bn254", ofType: "metal", inDirectory: "Shaders/msm") {
+        return bundlePath
+    }
+
+    // Check SPM resource bundle (zkMetal_zkMetal.bundle)
+    for bundle in Bundle.allBundles {
+        if let url = bundle.url(forResource: "Shaders", withExtension: nil) {
+            let shaderPath = url.appendingPathComponent("msm/msm_kernels.metal").path
+            if FileManager.default.fileExists(atPath: shaderPath) {
+                // Monolithic shader still needed for Metal compiler (no #include support at runtime)
+                // Fall through to find the monolithic bn254.metal
+            }
+        }
+    }
+
+    let candidates = [
+        "\(execDir)/shaders/bn254.metal",
+        "\(execDir)/../Sources/zkmsm/shaders/bn254.metal",
+        "./metal/Sources/zkmsm/shaders/bn254.metal",
+        "./Sources/zkmsm/shaders/bn254.metal",
+    ]
+    for path in candidates {
+        if FileManager.default.fileExists(atPath: path) { return path }
+    }
+    return "metal/Sources/zkmsm/shaders/bn254.metal"
+}

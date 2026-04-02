@@ -1674,6 +1674,55 @@ func main() throws {
         return
     }
 
+    if args.contains("--msm-test") {
+        fputs("=== MSM Correctness Test ===\n", stderr)
+        let engine = try MetalMSM()
+        let gx = fpFromInt(1); let gy = fpFromInt(2)
+        let g = PointAffine(x: gx, y: gy)
+
+        // Test 1: MSM([1], [G]) = G
+        let s1: [[UInt32]] = [[1,0,0,0,0,0,0,0]]
+        let r1 = try engine.msm(points: [g], scalars: s1)
+        if let a1 = pointToAffine(r1) {
+            fputs("  1*G.x = \(fpToInt(a1.x))\n", stderr)
+            fputs("  G.x   = \(fpToInt(g.x))\n", stderr)
+            fputs("  \(fpToInt(a1.x) == fpToInt(g.x) ? "[pass]" : "[FAIL]") 1*G == G\n", stderr)
+        } else { fputs("  [FAIL] 1*G = infinity\n", stderr) }
+
+        // Test 2: MSM([2], [G]) = 2G
+        let s2: [[UInt32]] = [[2,0,0,0,0,0,0,0]]
+        let r2 = try engine.msm(points: [g], scalars: s2)
+        let expected2G = pointToAffine(pointDouble(pointFromAffine(g)))!
+        if let a2 = pointToAffine(r2) {
+            fputs("  \(fpToInt(a2.x) == fpToInt(expected2G.x) ? "[pass]" : "[FAIL]") 2*G == 2G\n", stderr)
+        } else { fputs("  [FAIL] 2*G = infinity\n", stderr) }
+
+        // Test 3: MSM([1,1], [G, G]) = 2G
+        let s3: [[UInt32]] = [[1,0,0,0,0,0,0,0], [1,0,0,0,0,0,0,0]]
+        let r3 = try engine.msm(points: [g, g], scalars: s3)
+        if let a3 = pointToAffine(r3) {
+            fputs("  \(fpToInt(a3.x) == fpToInt(expected2G.x) ? "[pass]" : "[FAIL]") 1*G + 1*G == 2G\n", stderr)
+        } else { fputs("  [FAIL] 1*G + 1*G = infinity\n", stderr) }
+
+        // Test 4: MSM([42], [G]) vs scalar mul
+        let s42: [[UInt32]] = [[42,0,0,0,0,0,0,0]]
+        let r42 = try engine.msm(points: [g], scalars: s42)
+        var expected42G = pointIdentity()
+        var base42 = pointFromAffine(g)
+        for bit in 0..<8 {
+            if (42 >> bit) & 1 == 1 {
+                expected42G = pointIsIdentity(expected42G) ? base42 : pointAdd(expected42G, base42)
+            }
+            base42 = pointDouble(base42)
+        }
+        if let a42 = pointToAffine(r42), let e42 = pointToAffine(expected42G) {
+            fputs("  \(fpToInt(a42.x) == fpToInt(e42.x) ? "[pass]" : "[FAIL]") 42*G == [42]G\n", stderr)
+        } else { fputs("  [FAIL] 42*G or [42]G = infinity\n", stderr) }
+
+        fputs("=== MSM Test Done ===\n", stderr)
+        return
+    }
+
     if args.count >= 3 && args[1] == "--bench" {
         let n = Int(args[2]) ?? 1024
         if args.contains("--sweep") {
