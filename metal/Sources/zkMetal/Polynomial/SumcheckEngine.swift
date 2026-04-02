@@ -28,6 +28,9 @@ public class SumcheckEngine {
     // Cached fused batch partial buffer
     private var scFusedPartialBuf: MTLBuffer?
     private var scFusedPartialBufSize: Int = 0
+    // Cached input buffer for fullSumcheck
+    private var scInputBuf: MTLBuffer?
+    private var scInputBufElements: Int = 0
 
     public init() throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
@@ -331,7 +334,20 @@ public class SumcheckEngine {
             throw MSMError.noCommandBuffer
         }
 
-        var inputBuf = createFrBuffer(evals)!
+        // Reuse cached input buffer
+        let evalsN = evals.count
+        if evalsN > scInputBufElements {
+            guard let buf = device.makeBuffer(length: evalsN * stride, options: .storageModeShared) else {
+                throw MSMError.gpuError("Failed to create input buffer")
+            }
+            scInputBuf = buf
+            scInputBufElements = evalsN
+        }
+        let inputBufInit = scInputBuf!
+        evals.withUnsafeBytes { src in
+            memcpy(inputBufInit.contents(), src.baseAddress!, evalsN * stride)
+        }
+        var inputBuf = inputBufInit
         var useA = true
         let enc = cmdBuf.makeComputeCommandEncoder()!
 
