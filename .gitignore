@@ -1,27 +1,6 @@
-node_modules/
-
 # Swift build artifacts
 .build/
 .swiftpm/
-
-# Noir prover artifacts
-noir-prover/prover/node_modules/
-noir-prover/prover/proofs/
-noir-prover/prover/proof.json
-noir-prover/target/persistia_state_proof.gz
-noir-prover/target/light/
-noir-prover/target/vk/
-noir-prover/target/vk_evm/
-noir-prover/target/bb_vk/
-noir-prover/target/bb_vk_evm/
-noir-prover/target/proof/
-noir-prover/target/proof_evm/
-noir-prover/target/proof2/
-
-# Foundry
-noir-prover/test/out/
-noir-prover/test/cache/
-noir-prover/test/lib/forge-std/
 
 # OS
 .DS_Store
