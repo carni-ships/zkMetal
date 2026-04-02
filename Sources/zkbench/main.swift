@@ -76,8 +76,6 @@ if cmd == "ntt" {
     runPolyBench()
 } else if cmd == "fields" {
     runFieldBench()
-} else if cmd == "sort" || cmd == "radix" {
-    runSortBench()
 } else if cmd == "fri" {
     runFRIBench()
 } else if cmd == "sumcheck" || cmd == "sc" {
@@ -88,7 +86,6 @@ if cmd == "ntt" {
     runKeccakBench()
     runMerkleBench()
     runPolyBench()
-    runSortBench()
     runFRIBench()
     runSumcheckBench()
 } else {

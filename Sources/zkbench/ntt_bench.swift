@@ -64,7 +64,7 @@ public func runNTTBench() {
 
             // CPU NTT for comparison (skip > 2^16 — too slow)
             var cpuMs: Double = 0
-            if logN <= 16 {
+            if logN <= 18 {
                 let cpuT0 = CFAbsoluteTimeGetCurrent()
                 let _ = NTTEngine.cpuNTT(data, logN: logN)
                 cpuMs = (CFAbsoluteTimeGetCurrent() - cpuT0) * 1000

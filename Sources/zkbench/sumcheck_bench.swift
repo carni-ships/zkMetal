@@ -120,7 +120,7 @@ public func runSumcheckBench() {
 
             // CPU sumcheck for comparison (skip > 2^16 — too slow)
             var cpuMs: Double = 0
-            if numVars <= 16 {
+            if numVars <= 20 {
                 var cpuEvals = evals
                 let cpuT0 = CFAbsoluteTimeGetCurrent()
                 for i in 0..<numVars {

@@ -14,7 +14,6 @@ GPU-accelerated zero-knowledge cryptography primitives for Apple Silicon, writte
 | **FRI** | Fast Reed-Solomon IOP folding (fused 2/4-round kernels) |
 | **Sumcheck** | Interactive sumcheck protocol (fused round+reduce with SIMD shuffles) |
 | **Polynomial Ops** | Evaluation, interpolation, subproduct trees |
-| **Radix Sort** | LSD radix-256 GPU sort |
 
 ## Performance (Apple M3 Pro)
 
@@ -37,7 +36,7 @@ No single-threaded CPU comparison is provided -- a naive CPU MSM at 65K points t
 | 2^12 | 10ms | 24ms | 2x |
 | 2^14 | 8.4ms | 99ms | **12x** |
 | 2^16 | 6.2ms | 508ms | **82x** |
-| 2^18 | 32ms | - | |
+| 2^18 | 35ms | 2.2s | **63x** |
 | 2^20 | 85ms | - | |
 | 2^22 | 800ms | - | |
 
@@ -66,10 +65,10 @@ NTT is also available for Goldilocks (116ms at 2^24) and BabyBear (285ms at 2^24
 
 | Size | GPU | CPU | Speedup |
 |------|-----|-----|---------|
-| 2^14 | 2.3ms | 14ms | **6x** |
-| 2^16 | 1.0ms | 56ms | **54x** |
-| 2^18 | 8.1ms | - | |
-| 2^20 | 20ms | - | |
+| 2^14 | 1.3ms | 15ms | **11x** |
+| 2^16 | 2.2ms | 68ms | **31x** |
+| 2^18 | 5.2ms | 205ms | **39x** |
+| 2^20 | 39ms | 639ms | **17x** |
 
 Full fold-to-constant: 2^20 in 17ms (20 rounds, fused 4-round kernels).
 
@@ -77,23 +76,10 @@ Full fold-to-constant: 2^20 in 17ms (20 rounds, fused 4-round kernels).
 
 | Variables | GPU | CPU | Speedup |
 |-----------|-----|-----|---------|
-| 2^14 | 16ms | 28ms | **2x** |
-| 2^16 | 12ms | 116ms | **10x** |
-| 2^18 | 12ms | - | |
-| 2^20 | 36ms | - | |
-
-### Radix Sort
-
-| Elements | GPU | CPU | Ratio |
-|----------|-----|-----|-------|
-| 65,536 | 19ms | 0.6ms | 0.03x |
-| 262,144 | 48ms | 2.1ms | 0.04x |
-| 1,048,576 | 144ms | 8.3ms | 0.06x |
-| 4,194,304 | 535ms | 35ms | 0.07x |
-| 16,777,216 | 2.2s | 148ms | 0.07x |
-| 67,108,864 | 7.2s | 665ms | 0.09x |
-
-GPU radix sort is currently slower than single-threaded CPU at all tested sizes (up to 64M keys). The bottleneck is random scatter writes during the ranking phase, which cause poor memory coalescing on the GPU. The sort is included primarily for cases where data is already resident on GPU and copying back to CPU would be more expensive than sorting in place.
+| 2^14 | 6ms | 21ms | **3x** |
+| 2^16 | 13ms | 82ms | **6x** |
+| 2^18 | 23ms | 408ms | **18x** |
+| 2^20 | 42ms | 2.4s | **57x** |
 
 ## Supported Fields
 
@@ -117,7 +103,6 @@ Sources/
     fri/           # FRI folding kernels
     sumcheck/      # Sumcheck round kernels
     poly/          # Polynomial evaluation/interpolation
-    sort/          # GPU radix sort
   zkMetal/         # Swift engine layer
     Fields/        # CPU-side field arithmetic
     MSM/           # MSM engine (Pippenger, GLV, signed-digit)
@@ -125,7 +110,6 @@ Sources/
     Hash/          # Poseidon2, Keccak, Merkle tree engines
     Polynomial/    # FRI, Sumcheck engines
     Poly/          # Polynomial operations engine
-    Sort/          # Radix sort engine
   zkbench/         # Benchmark harness
   zkmsm-cli/       # Standalone MSM CLI tool
 Tests/
@@ -168,9 +152,6 @@ let folded = try fri.multiFold(evals: evaluations, betas: challenges)
 let sc = try SumcheckEngine()
 let (rounds, finalEval) = try sc.fullSumcheck(evals: evals, challenges: challenges)
 
-// Radix sort
-let sort = try RadixSortEngine()
-let sorted = try sort.sort(keys)
 ```
 
 ### Benchmarks
@@ -183,7 +164,6 @@ swift run -c release zkbench keccak    # Keccak-256
 swift run -c release zkbench merkle    # Merkle trees
 swift run -c release zkbench fri       # FRI folding
 swift run -c release zkbench sumcheck  # Sumcheck
-swift run -c release zkbench sort      # Radix sort
 swift run -c release zkbench all       # Everything
 ```
 

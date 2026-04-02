@@ -9,7 +9,7 @@
 // - FRI folding (fused multi-round)
 // - Sumcheck protocol
 // - Polynomial operations (evaluation, interpolation, subproduct trees)
-// - GPU radix sort
+
 
 import Foundation
 import Metal
