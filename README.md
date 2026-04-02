@@ -14,6 +14,7 @@ GPU-accelerated zero-knowledge cryptography primitives for Apple Silicon, writte
 | **FRI** | Fast Reed-Solomon IOP folding (fused 2/4-round kernels) |
 | **Sumcheck** | Interactive sumcheck protocol (fused round+reduce with SIMD shuffles) |
 | **Polynomial Ops** | Evaluation, interpolation, subproduct trees |
+| **KZG** | Polynomial commitment scheme (commit + open, composes MSM + poly eval) |
 
 ## Performance
 
@@ -37,10 +38,8 @@ No single-threaded CPU comparison is provided -- a naive CPU MSM at 65K points t
 | 2^14 | 6.8ms | 88ms | **13x** |
 | 2^16 | 15ms | 679ms | **47x** |
 | 2^18 | 22ms | 1.7s | **79x** |
-| 2^20 | 74ms | — | |
-| 2^22 | 285ms | — | |
-
-CPU omitted at 2^20+ because single-threaded Cooley-Tukey exceeds 10 seconds.
+| 2^20 | 74ms | 7.3s | **99x** |
+| 2^22 | 285ms | 31s | **109x** |
 
 NTT is also available for Goldilocks (249ms at 2^24) and BabyBear (262ms at 2^24).
 
@@ -58,15 +57,13 @@ NTT is also available for Goldilocks (249ms at 2^24) and BabyBear (262ms at 2^24
 
 | Backend | Leaves | GPU | CPU | Speedup |
 |---------|--------|-----|-----|---------|
-| Poseidon2 | 2^10 | 45ms | 122ms | **3x** |
-| Poseidon2 | 2^12 | 53ms | 476ms | **9x** |
-| Poseidon2 | 2^14 | 70ms | 2.2s | **31x** |
-| Poseidon2 | 2^16 | 84ms | — | |
-| Keccak-256 | 2^12 | 13ms | 32ms | **2x** |
-| Keccak-256 | 2^14 | 25ms | 111ms | **4x** |
-| Keccak-256 | 2^16 | 52ms | 434ms | **8x** |
-
-CPU omitted for Poseidon2 Merkle at 2^16 because single-threaded tree construction exceeds 30 seconds (~113 µs/hash × 65K nodes).
+| Poseidon2 | 2^10 | 30ms | 126ms | **4x** |
+| Poseidon2 | 2^12 | 41ms | 487ms | **12x** |
+| Poseidon2 | 2^14 | 75ms | 1.9s | **26x** |
+| Poseidon2 | 2^16 | 122ms | 7.9s | **65x** |
+| Keccak-256 | 2^12 | 8ms | 25ms | **3x** |
+| Keccak-256 | 2^14 | 16ms | 101ms | **6x** |
+| Keccak-256 | 2^16 | 17ms | 390ms | **23x** |
 
 ### FRI Folding (BN254 Fr)
 
@@ -87,6 +84,12 @@ Full fold-to-constant: 2^20 in 32ms (20 rounds, fused 4-round kernels).
 | 2^16 | 14ms | 85ms | **6x** |
 | 2^18 | 27ms | 328ms | **12x** |
 | 2^20 | 46ms | 1.3s | **29x** |
+
+### Polynomial Ops (BN254 Fr)
+
+Polynomial multiplication uses NTT under the hood, so performance scales with the NTT table above. Multi-point evaluation uses GPU Horner's method (one thread per evaluation point) or subproduct-tree evaluation for large batches.
+
+Run `swift run -c release zkbench poly` for detailed benchmarks.
 
 ## Supported Fields
 
@@ -117,6 +120,7 @@ Sources/
     Hash/          # Poseidon2, Keccak, Merkle tree engines
     Polynomial/    # FRI, Sumcheck engines
     Poly/          # Polynomial operations engine
+    KZG/           # KZG polynomial commitment engine
   zkbench/         # Benchmark harness
   zkmsm-cli/       # Standalone MSM CLI tool
 Tests/
@@ -159,6 +163,11 @@ let folded = try fri.multiFold(evals: evaluations, betas: challenges)
 let sc = try SumcheckEngine()
 let (rounds, finalEval) = try sc.fullSumcheck(evals: evals, challenges: challenges)
 
+// KZG polynomial commitment
+let kzg = try KZGEngine(srs: srsPoints)
+let commitment = try kzg.commit(polyCoeffs)
+let proof = try kzg.open(polyCoeffs, at: challengePoint)
+
 ```
 
 ### Benchmarks
@@ -171,6 +180,7 @@ swift run -c release zkbench keccak    # Keccak-256
 swift run -c release zkbench merkle    # Merkle trees
 swift run -c release zkbench fri       # FRI folding
 swift run -c release zkbench sumcheck  # Sumcheck
+swift run -c release zkbench kzg       # KZG commitment
 swift run -c release zkbench all       # Everything
 swift run -c release zkbench calibrate # Re-calibrate GPU parameters
 ```
@@ -228,6 +238,7 @@ All GPU kernels are verified against CPU reference implementations. The CPU impl
 | **Sumcheck** | Standard interactive protocol | Protocol-level verification (S(0)+S(1) = sum at each round) |
 | **Goldilocks** | p = 2^64 - 2^32 + 1 (standard) | NTT round-trip + CPU cross-check |
 | **BabyBear** | p = 2^31 - 2^27 + 1 (standard) | NTT round-trip + CPU cross-check |
+| **KZG** | Standard polynomial commitment scheme | Determinism + evaluation correctness |
 
 Every benchmark run includes correctness checks (printed as PASS/FAIL). The test suite (`swift test`) covers field arithmetic, curve operations, and NTT correctness.
 
