@@ -10,6 +10,11 @@ public class Poseidon2Engine {
     let merkleFusedFunction: MTLComputePipelineState
     let rcBuffer: MTLBuffer  // round constants in Montgomery form
 
+    // Cached buffers for hashPairs to avoid per-call allocation
+    private var cachedInputBuf: MTLBuffer?
+    private var cachedOutputBuf: MTLBuffer?
+    private var cachedBufPairs: Int = 0
+
     public init() throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw MSMError.noGPU
@@ -105,13 +110,22 @@ public class Poseidon2Engine {
     public func hashPairs(_ input: [Fr]) throws -> [Fr] {
         precondition(input.count % 2 == 0, "Input must have even number of elements")
         let n = input.count / 2
+        let stride = MemoryLayout<Fr>.stride
 
-        let inputBytes = input.count * MemoryLayout<Fr>.stride
-        guard let inputBuf = device.makeBuffer(length: inputBytes, options: .storageModeShared),
-              let outputBuf = device.makeBuffer(length: n * MemoryLayout<Fr>.stride, options: .storageModeShared) else {
-            throw MSMError.gpuError("Failed to allocate buffers")
+        // Reuse cached buffers when possible
+        if n > cachedBufPairs {
+            guard let inBuf = device.makeBuffer(length: input.count * stride, options: .storageModeShared),
+                  let outBuf = device.makeBuffer(length: n * stride, options: .storageModeShared) else {
+                throw MSMError.gpuError("Failed to allocate buffers")
+            }
+            cachedInputBuf = inBuf
+            cachedOutputBuf = outBuf
+            cachedBufPairs = n
         }
 
+        let inputBuf = cachedInputBuf!
+        let outputBuf = cachedOutputBuf!
+        let inputBytes = input.count * stride
         input.withUnsafeBytes { src in
             memcpy(inputBuf.contents(), src.baseAddress!, inputBytes)
         }

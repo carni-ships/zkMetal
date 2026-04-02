@@ -9,6 +9,11 @@ public class Keccak256Engine {
     let hash32Function: MTLComputePipelineState   // hash 32-byte inputs
     let merkleFusedFunction: MTLComputePipelineState  // fused 1024-leaf subtree
 
+    // Cached buffers for hash64 array API
+    private var cachedH64InputBuf: MTLBuffer?
+    private var cachedH64OutputBuf: MTLBuffer?
+    private var cachedH64Count: Int = 0
+
     public static let merkleSubtreeSize = 1024
 
     public init() throws {
@@ -66,9 +71,21 @@ public class Keccak256Engine {
         precondition(input.count % 64 == 0)
         let n = input.count / 64
 
-        guard let inputBuf = device.makeBuffer(bytes: input, length: input.count, options: .storageModeShared),
-              let outputBuf = device.makeBuffer(length: n * 32, options: .storageModeShared) else {
-            throw MSMError.gpuError("Failed to allocate buffers")
+        // Reuse cached buffers when possible
+        if n > cachedH64Count {
+            guard let inBuf = device.makeBuffer(length: n * 64, options: .storageModeShared),
+                  let outBuf = device.makeBuffer(length: n * 32, options: .storageModeShared) else {
+                throw MSMError.gpuError("Failed to allocate buffers")
+            }
+            cachedH64InputBuf = inBuf
+            cachedH64OutputBuf = outBuf
+            cachedH64Count = n
+        }
+
+        let inputBuf = cachedH64InputBuf!
+        let outputBuf = cachedH64OutputBuf!
+        input.withUnsafeBytes { src in
+            memcpy(inputBuf.contents(), src.baseAddress!, input.count)
         }
 
         guard let cmdBuf = commandQueue.makeCommandBuffer() else {

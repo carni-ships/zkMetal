@@ -25,6 +25,11 @@ public class FRIEngine {
     private var foldBufB: MTLBuffer?
     private var foldBufSize: Int = 0
 
+    // Cached buffers for single-fold to avoid per-call allocation
+    private var singleFoldInputBuf: MTLBuffer?
+    private var singleFoldOutputBuf: MTLBuffer?
+    private var singleFoldBufElements: Int = 0
+
     public init() throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw MSMError.noGPU
@@ -134,16 +139,29 @@ public class FRIEngine {
     }
 
     /// High-level FRI fold: array in, array out.
+    /// Uses cached buffers to avoid per-call Metal allocation overhead.
     public func fold(evals: [Fr], beta: Fr) throws -> [Fr] {
         let n = evals.count
         precondition(n > 1 && (n & (n - 1)) == 0, "Domain size must be power of 2")
         let logN = Int(log2(Double(n)))
         let half = n / 2
+        let stride = MemoryLayout<Fr>.stride
 
-        guard let evalsBuf = createFrBuffer(evals),
-              let foldedBuf = device.makeBuffer(length: half * MemoryLayout<Fr>.stride,
-                                                 options: .storageModeShared) else {
-            throw MSMError.gpuError("Failed to create buffers")
+        // Reuse cached buffers when possible
+        if n > singleFoldBufElements {
+            guard let inBuf = device.makeBuffer(length: n * stride, options: .storageModeShared),
+                  let outBuf = device.makeBuffer(length: n * stride, options: .storageModeShared) else {
+                throw MSMError.gpuError("Failed to create buffers")
+            }
+            singleFoldInputBuf = inBuf
+            singleFoldOutputBuf = outBuf
+            singleFoldBufElements = n
+        }
+
+        let evalsBuf = singleFoldInputBuf!
+        let foldedBuf = singleFoldOutputBuf!
+        evals.withUnsafeBytes { src in
+            memcpy(evalsBuf.contents(), src.baseAddress!, n * stride)
         }
 
         try fold(evals: evalsBuf, folded: foldedBuf, beta: beta, logN: logN)
