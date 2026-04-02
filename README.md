@@ -37,8 +37,10 @@ No single-threaded CPU comparison is provided -- a naive CPU MSM at 65K points t
 | 2^14 | 6.8ms | 88ms | **13x** |
 | 2^16 | 15ms | 679ms | **47x** |
 | 2^18 | 22ms | 1.7s | **79x** |
-| 2^20 | 74ms | - | |
-| 2^22 | 285ms | - | |
+| 2^20 | 74ms | — | |
+| 2^22 | 285ms | — | |
+
+CPU omitted at 2^20+ because single-threaded Cooley-Tukey exceeds 10 seconds.
 
 NTT is also available for Goldilocks (249ms at 2^24) and BabyBear (262ms at 2^24).
 
@@ -59,10 +61,12 @@ NTT is also available for Goldilocks (249ms at 2^24) and BabyBear (262ms at 2^24
 | Poseidon2 | 2^10 | 45ms | 122ms | **3x** |
 | Poseidon2 | 2^12 | 53ms | 476ms | **9x** |
 | Poseidon2 | 2^14 | 70ms | 2.2s | **31x** |
-| Poseidon2 | 2^16 | 84ms | - | |
+| Poseidon2 | 2^16 | 84ms | — | |
 | Keccak-256 | 2^12 | 13ms | 32ms | **2x** |
 | Keccak-256 | 2^14 | 25ms | 111ms | **4x** |
 | Keccak-256 | 2^16 | 52ms | 434ms | **8x** |
+
+CPU omitted for Poseidon2 Merkle at 2^16 because single-threaded tree construction exceeds 30 seconds (~113 µs/hash × 65K nodes).
 
 ### FRI Folding (BN254 Fr)
 

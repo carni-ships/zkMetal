@@ -43,6 +43,12 @@ public class MetalMSM {
     private var signedDigitPtr: UnsafeMutablePointer<UInt32>?
     private var signedDigitCapacity = 0
     private var signedDigitBuffer: MTLBuffer?
+    // Cached GLV buffers (reused across MSM calls)
+    private var glvScalarInBufCached: MTLBuffer?
+    private var glvK1MetalBufCached: MTLBuffer?
+    private var glvNeg1BufCached: MTLBuffer?
+    private var glvNeg2BufCached: MTLBuffer?
+    private var glvCachedN: Int = 0
     public var windowBitsOverride: UInt32?
     private let tuning: TuningConfig
 
@@ -276,12 +282,22 @@ public class MetalMSM {
 
         if useGLV && n >= 256 {
             let scalarByteCount = n * 8 * MemoryLayout<UInt32>.stride
-            guard let scalarInBuf = device.makeBuffer(length: scalarByteCount, options: .storageModeShared),
-                  let k1MetalBuf = device.makeBuffer(length: 2 * scalarByteCount, options: .storageModeShared),
-                  let neg1MetalBuf = device.makeBuffer(length: n, options: .storageModeShared),
-                  let neg2MetalBuf = device.makeBuffer(length: n, options: .storageModeShared) else {
-                throw MSMError.gpuError("Failed to allocate GLV buffers")
+            // Reuse cached GLV buffers when possible
+            if n > glvCachedN {
+                guard let sib = device.makeBuffer(length: scalarByteCount, options: .storageModeShared),
+                      let k1b = device.makeBuffer(length: 2 * scalarByteCount, options: .storageModeShared),
+                      let n1b = device.makeBuffer(length: n, options: .storageModeShared),
+                      let n2b = device.makeBuffer(length: n, options: .storageModeShared) else {
+                    throw MSMError.gpuError("Failed to allocate GLV buffers")
+                }
+                glvScalarInBufCached = sib
+                glvK1MetalBufCached = k1b
+                glvNeg1BufCached = n1b
+                glvNeg2BufCached = n2b
+                glvCachedN = n
             }
+            let scalarInBuf = glvScalarInBufCached!
+            let k1MetalBuf = glvK1MetalBufCached!
 
             let scalarDst = scalarInBuf.contents().assumingMemoryBound(to: UInt8.self)
             for i in 0..<n {
@@ -295,8 +311,8 @@ public class MetalMSM {
             glvK2Offset = scalarByteCount
             scalarOutMetalBuf = k1MetalBuf
             flatScalarBuf = k1MetalBuf.contents().bindMemory(to: UInt32.self, capacity: 2 * n * 8)
-            neg1Buf = neg1MetalBuf
-            neg2Buf = neg2MetalBuf
+            neg1Buf = glvNeg1BufCached
+            neg2Buf = glvNeg2BufCached
 
             glvN = n
             scalarBits = 128
