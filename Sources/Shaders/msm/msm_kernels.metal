@@ -214,52 +214,27 @@ kernel void msm_bucket_sum_direct(
     segment_results[tid] = sum;
 }
 
-// Phase 3: Tree reduction of segment results per window
+// Phase 3: Serial reduction of segment results per window (one thread per window)
+// Avoids threadgroup memory patterns that trigger Metal compiler miscompilation
 kernel void msm_combine_segments(
     device const PointProjective* segment_results [[buffer(0)]],
     device PointProjective* window_results        [[buffer(1)]],
     constant uint& n_segments                     [[buffer(2)]],
-    uint tgid                                     [[threadgroup_position_in_grid]],
-    uint lid                                      [[thread_index_in_threadgroup]],
-    uint tg_size                                  [[threads_per_threadgroup]]
+    uint tid                                      [[thread_position_in_grid]]
 ) {
-    threadgroup PointProjective shared_buf[256];
-
-    uint base = tgid * n_segments;
-    uint idx0 = lid * 2;
-    uint idx1 = lid * 2 + 1;
-
-    PointProjective v;
-    if (idx0 >= n_segments) {
-        v = point_identity();
-    } else if (idx1 >= n_segments) {
-        v = segment_results[base + idx0];
-    } else {
-        PointProjective a = segment_results[base + idx0];
-        PointProjective b = segment_results[base + idx1];
-        if (point_is_identity(a)) { v = b; }
-        else if (point_is_identity(b)) { v = a; }
-        else { v = point_add(a, b); }
-    }
-    shared_buf[lid] = v;
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-
-    for (uint stride = tg_size / 2; stride > 0; stride >>= 1) {
-        if (lid < stride) {
-            PointProjective a = shared_buf[lid];
-            PointProjective b = shared_buf[lid + stride];
-            if (point_is_identity(a)) {
-                shared_buf[lid] = b;
-            } else if (!point_is_identity(b)) {
-                shared_buf[lid] = point_add(a, b);
+    uint base = tid * n_segments;
+    PointProjective sum = point_identity();
+    for (uint s = 0; s < n_segments; s++) {
+        PointProjective seg = segment_results[base + s];
+        if (!point_is_identity(seg)) {
+            if (point_is_identity(sum)) {
+                sum = seg;
+            } else {
+                sum = point_add(sum, seg);
             }
         }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
     }
-
-    if (lid == 0) {
-        window_results[tgid] = shared_buf[0];
-    }
+    window_results[tid] = sum;
 }
 
 // Horner's method to combine window results into final MSM result

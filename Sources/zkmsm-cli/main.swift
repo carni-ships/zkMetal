@@ -451,6 +451,48 @@ func main() throws {
             fputs("  \(match ? "[pass]" : "[FAIL]") MSM(1*G + 1*2G) == 3G\n", stderr)
         } else { fputs("  [FAIL] 1*G + 1*2G = infinity\n", stderr) }
 
+        // Test 4: Multi-point random scalar MSM vs CPU double-and-add
+        let nTest = 8
+        var testPts = [PointAffine]()
+        testPts.reserveCapacity(nTest)
+        var acc = pointFromAffine(g)
+        for _ in 0..<nTest {
+            testPts.append(pointToAffine(acc)!)
+            acc = pointAdd(acc, pointFromAffine(g))
+        }
+        var rng: UInt64 = 0xDEAD_BEEF_CAFE_BABE
+        var testScalars = [[UInt32]]()
+        for _ in 0..<nTest {
+            var limbs = [UInt32](repeating: 0, count: 8)
+            for j in 0..<8 {
+                rng = rng &* 6364136223846793005 &+ 1442695040888963407
+                limbs[j] = UInt32(truncatingIfNeeded: rng >> 32)
+            }
+            testScalars.append(limbs)
+        }
+        let gpuResult = try engine.msm(points: testPts, scalars: testScalars)
+        var cpuRef = pointIdentity()
+        for i in 0..<nTest {
+            var a = pointIdentity()
+            let p = pointFromAffine(testPts[i])
+            for bit in stride(from: 255, through: 0, by: -1) {
+                a = pointDouble(a)
+                let li = bit / 32; let bp = bit % 32
+                if (testScalars[i][li] >> bp) & 1 == 1 {
+                    a = pointIsIdentity(a) ? p : pointAdd(a, p)
+                }
+            }
+            cpuRef = pointIsIdentity(cpuRef) ? a : pointAdd(cpuRef, a)
+        }
+        if let aG = pointToAffine(gpuResult), let aC = pointToAffine(cpuRef) {
+            let match = fpToInt(aG.x) == fpToInt(aC.x)
+            fputs("  \(match ? "[pass]" : "[FAIL]") MSM(\(nTest) pts, random 256-bit scalars) GPU vs CPU\n", stderr)
+            if !match {
+                fputs("    gpu.x = \(fpToInt(aG.x))\n", stderr)
+                fputs("    cpu.x = \(fpToInt(aC.x))\n", stderr)
+            }
+        } else { fputs("  [FAIL] \(nTest)-pt random MSM: infinity\n", stderr) }
+
         fputs("=== MSM Test Done ===\n", stderr)
         engine.useGLV = true
         return

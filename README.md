@@ -24,7 +24,11 @@ Run `swift run -c release zkbench all` to reproduce.
 
 | Points | GPU |
 |--------|-----|
-| 65,536 | ~12ms |
+| 256 | 73ms |
+| 1,024 | 74ms |
+| 4,096 | 104ms |
+| 16,384 | 169ms |
+| 65,536 | 270ms |
 
 No single-threaded CPU comparison is provided -- a naive CPU MSM at 65K points takes minutes. For reference, Barretenberg's multithreaded Pippenger on the same hardware takes ~200ms for 200K points.
 
@@ -64,14 +68,12 @@ NTT is also available for Goldilocks (249ms at 2^24) and BabyBear (262ms at 2^24
 | Poseidon2 | 2^14 | 75ms | 1.9s | **26x** |
 | Poseidon2 | 2^16 | 122ms | 7.9s | **65x** |
 | Poseidon2 | 2^18 | 394ms | 30s | **77x** |
-| Poseidon2 | 2^20 | 1.5s | — | |
+| Poseidon2 | 2^20 | 1.5s | 2.3min | **90x** |
 | Keccak-256 | 2^12 | 8ms | 25ms | **3x** |
 | Keccak-256 | 2^14 | 16ms | 101ms | **6x** |
 | Keccak-256 | 2^16 | 17ms | 390ms | **23x** |
 | Keccak-256 | 2^18 | 39ms | 1.5s | **40x** |
-| Keccak-256 | 2^20 | 155ms | — | |
-
-CPU omitted at 2^20 because single-threaded Merkle construction exceeds practical limits (~2 minutes for Poseidon2, ~6s for Keccak).
+| Keccak-256 | 2^20 | 155ms | 6.2s | **42x** |
 
 ### FRI Folding (BN254 Fr)
 

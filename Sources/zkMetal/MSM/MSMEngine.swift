@@ -180,6 +180,33 @@ public class MetalMSM {
         return "./Sources/Shaders"
     }
 
+    // BN254 scalar field order r as 8x32-bit limbs (little-endian)
+    private static let R_LIMBS: [UInt32] = [
+        0xf0000001, 0x43e1f593, 0x79b97091, 0x2833e848,
+        0x8181585d, 0xb85045b6, 0xe131a029, 0x30644e72
+    ]
+
+    /// Reduce a 256-bit scalar mod r (BN254 scalar field order)
+    static func reduceModR(_ scalar: [UInt32]) -> [UInt32] {
+        var current = scalar
+        while true {
+            var gte = true
+            for i in stride(from: 7, through: 0, by: -1) {
+                if current[i] > R_LIMBS[i] { break }
+                if current[i] < R_LIMBS[i] { gte = false; break }
+            }
+            if !gte { return current }
+            var result = [UInt32](repeating: 0, count: 8)
+            var borrow: Int64 = 0
+            for i in 0..<8 {
+                borrow += Int64(current[i]) - Int64(R_LIMBS[i])
+                result[i] = UInt32(truncatingIfNeeded: borrow & 0xFFFFFFFF)
+                borrow >>= 32
+            }
+            current = result
+        }
+    }
+
     @inline(__always)
     private func extractBucketIndex(_ scalarPtr: UnsafePointer<UInt32>, windowBits: UInt32, windowIndex: Int) -> Int {
         let bitOffset = windowIndex * Int(windowBits)
@@ -266,7 +293,8 @@ public class MetalMSM {
         }
 
         var msmPoints = points
-        var msmScalars = scalars
+        // Reduce scalars mod r to prevent signed-digit carry overflow
+        var msmScalars = scalars.map { Self.reduceModR($0) }
         var scalarBits = 256
 
         var flatScalarBuf: UnsafeMutablePointer<UInt32>? = nil
@@ -652,10 +680,9 @@ public class MetalMSM {
                 encFinal.setBuffer(segmentResultsBuffer, offset: 0, index: 0)
                 encFinal.setBuffer(windowResultsBuffer, offset: 0, index: 1)
                 encFinal.setBytes(&nSegs, length: MemoryLayout<UInt32>.stride, index: 2)
-                let combineThreads = min(tuning.msmThreadgroupSize, nSegments)
-                encFinal.dispatchThreadgroups(
+                encFinal.dispatchThreads(
                     MTLSize(width: nWindows, height: 1, depth: 1),
-                    threadsPerThreadgroup: MTLSize(width: combineThreads, height: 1, depth: 1))
+                    threadsPerThreadgroup: MTLSize(width: min(tuning.msmThreadgroupSize, nWindows), height: 1, depth: 1))
                 encFinal.endEncoding()
             }
 
@@ -705,5 +732,6 @@ public class MetalMSM {
         _ = scalarOutMetalBuf
         return result
     }
+
 }
 
