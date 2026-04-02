@@ -51,15 +51,17 @@ public func runPoseidon2Bench() {
     print("  [pass] 2-to-1 hash computed")
 
     // CPU benchmark
-    let warmup = 500
-    for _ in 0..<warmup { let _ = poseidon2Hash(a, b) }
+    if !skipCPU {
+        let warmup = 500
+        for _ in 0..<warmup { let _ = poseidon2Hash(a, b) }
 
-    let iters = 5000
-    let start = CFAbsoluteTimeGetCurrent()
-    for _ in 0..<iters { let _ = poseidon2Hash(a, b) }
-    let elapsed = (CFAbsoluteTimeGetCurrent() - start) * 1000
-    let perHash = elapsed / Double(iters) * 1000
-    print(String(format: "\n  CPU: %.1f µs/hash (%.0f hash/s)", perHash, Double(iters) / (elapsed / 1000)))
+        let iters = 5000
+        let start = CFAbsoluteTimeGetCurrent()
+        for _ in 0..<iters { let _ = poseidon2Hash(a, b) }
+        let elapsed = (CFAbsoluteTimeGetCurrent() - start) * 1000
+        let perHash = elapsed / Double(iters) * 1000
+        print(String(format: "\n  CPU: %.1f µs/hash (%.0f hash/s)", perHash, Double(iters) / (elapsed / 1000)))
+    }
 
     // GPU benchmark
     do {

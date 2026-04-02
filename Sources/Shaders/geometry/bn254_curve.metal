@@ -31,7 +31,9 @@ PointProjective point_double(PointProjective p) {
     if (point_is_identity(p)) return p;
 
     Fp a = fp_sqr(p.x);
-    Fp b = fp_sqr(p.y);
+    // fp_mul instead of fp_sqr: works around Metal compiler inlining bug
+    // that miscompiles fp_sqr(p.y) when point_double is inlined
+    Fp b = fp_mul(p.y, p.y);
     Fp c = fp_sqr(b);
 
     Fp d = fp_sub(fp_sqr(fp_add(p.x, b)), fp_add(a, c));

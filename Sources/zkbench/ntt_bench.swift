@@ -64,7 +64,7 @@ public func runNTTBench() {
 
             // CPU NTT for comparison
             var cpuMs: Double = 0
-            do {
+            if !skipCPU {
                 let cpuT0 = CFAbsoluteTimeGetCurrent()
                 let _ = NTTEngine.cpuNTT(data, logN: logN)
                 cpuMs = (CFAbsoluteTimeGetCurrent() - cpuT0) * 1000

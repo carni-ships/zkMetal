@@ -63,15 +63,15 @@ NTT is also available for Goldilocks (249ms at 2^24) and BabyBear (262ms at 2^24
 | Poseidon2 | 2^12 | 41ms | 487ms | **12x** |
 | Poseidon2 | 2^14 | 75ms | 1.9s | **26x** |
 | Poseidon2 | 2^16 | 122ms | 7.9s | **65x** |
-| Poseidon2 | 2^18 | 350ms | — | |
-| Poseidon2 | 2^20 | 1.2s | — | |
+| Poseidon2 | 2^18 | 394ms | 30s | **77x** |
+| Poseidon2 | 2^20 | 1.5s | — | |
 | Keccak-256 | 2^12 | 8ms | 25ms | **3x** |
 | Keccak-256 | 2^14 | 16ms | 101ms | **6x** |
 | Keccak-256 | 2^16 | 17ms | 390ms | **23x** |
-| Keccak-256 | 2^18 | 45ms | — | |
-| Keccak-256 | 2^20 | 154ms | — | |
+| Keccak-256 | 2^18 | 39ms | 1.5s | **40x** |
+| Keccak-256 | 2^20 | 155ms | — | |
 
-CPU omitted at 2^18+ because single-threaded Merkle construction exceeds practical limits.
+CPU omitted at 2^20 because single-threaded Merkle construction exceeds practical limits (~2 minutes for Poseidon2, ~6s for Keccak).
 
 ### FRI Folding (BN254 Fr)
 
@@ -81,7 +81,7 @@ CPU omitted at 2^18+ because single-threaded Merkle construction exceeds practic
 | 2^16 | 2.9ms | 37ms | **13x** |
 | 2^18 | 7.4ms | 137ms | **18x** |
 | 2^20 | 22ms | 578ms | **26x** |
-| 2^22 | 32ms | — | |
+| 2^22 | 36ms | 2.2s | **61x** |
 
 Full fold-to-constant: 2^20 in 32ms (20 rounds, fused 4-round kernels).
 
@@ -93,7 +93,7 @@ Full fold-to-constant: 2^20 in 32ms (20 rounds, fused 4-round kernels).
 | 2^16 | 14ms | 85ms | **6x** |
 | 2^18 | 27ms | 328ms | **12x** |
 | 2^20 | 46ms | 1.3s | **29x** |
-| 2^22 | 69ms | — | |
+| 2^22 | 84ms | 5.1s | **61x** |
 
 ### Polynomial Ops (BN254 Fr)
 
@@ -186,6 +186,7 @@ swift run -c release zkbench fri       # FRI folding
 swift run -c release zkbench sumcheck  # Sumcheck
 swift run -c release zkbench all       # Everything
 swift run -c release zkbench calibrate # Re-calibrate GPU parameters
+swift run -c release zkbench all --no-cpu  # GPU-only (skip slow CPU baselines)
 ```
 
 ### MSM CLI

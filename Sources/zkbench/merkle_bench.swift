@@ -28,7 +28,7 @@ public func runMerkleBench() {
 
             // CPU Merkle tree
             var cpuMs: Double = 0
-            if logN <= 16 {
+            if logN <= 18 && !skipCPU {
                 let cpuT0 = CFAbsoluteTimeGetCurrent()
                 var level = leaves
                 while level.count > 1 {
@@ -90,7 +90,7 @@ public func runMerkleBench() {
 
             // CPU Keccak Merkle tree
             var cpuMs: Double = 0
-            if logN <= 16 {
+            if logN <= 18 && !skipCPU {
                 let cpuT0 = CFAbsoluteTimeGetCurrent()
                 var level = leaves
                 while level.count > 1 {

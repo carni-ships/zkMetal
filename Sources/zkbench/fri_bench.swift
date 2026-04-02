@@ -87,7 +87,7 @@ public func runFRIBench() {
 
             // CPU fold for comparison (skip > 2^16 — too slow)
             var cpuMs: Double = 0
-            if logN <= 20 {
+            if logN <= 22 && !skipCPU {
                 let cpuT0 = CFAbsoluteTimeGetCurrent()
                 let _ = FRIEngine.cpuFold(evals: evals, beta: beta, logN: logN)
                 cpuMs = (CFAbsoluteTimeGetCurrent() - cpuT0) * 1000

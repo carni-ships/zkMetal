@@ -24,32 +24,39 @@ kernel void msm_reduce_sorted_buckets(
     device const uint* count_sorted_map        [[buffer(7)]],
     uint tid                                   [[thread_position_in_grid]]
 ) {
-    uint nb = 1u << params.window_bits;
     uint total = params.n_buckets * n_windows;
     if (tid >= total) return;
 
     uint orig_pos = count_sorted_map[tid];
-    uint orig_bucket = orig_pos & (nb - 1u);
+    // count_sorted_map packs window in upper 16 bits, bucket in lower 16 bits
+    uint orig_bucket = orig_pos & 0xFFFFu;
+    uint orig_window = orig_pos >> 16u;
+    uint flat_idx = orig_window * params.n_buckets + orig_bucket;
 
     if (orig_bucket == 0) {
-        buckets[orig_pos] = point_identity();
+        buckets[flat_idx] = point_identity();
         return;
     }
 
-    uint count = bucket_counts[orig_pos];
+    uint count = bucket_counts[flat_idx];
     if (count == 0) {
-        buckets[orig_pos] = point_identity();
+        buckets[flat_idx] = point_identity();
         return;
     }
 
-    uint orig_window = orig_pos >> params.window_bits;
     uint base = orig_window * params.n_points;
-    uint offset = bucket_offsets[orig_pos];
-    PointProjective acc = point_from_affine(points[sorted_indices[base + offset]]);
+    uint offset = bucket_offsets[flat_idx];
+    uint raw_idx0 = sorted_indices[base + offset];
+    PointAffine pt0 = points[raw_idx0 & 0x7FFFFFFFu];
+    if (raw_idx0 & 0x80000000u) pt0.y = fp_neg(pt0.y);
+    PointProjective acc = point_from_affine(pt0);
     for (uint i = 1; i < count; i++) {
-        acc = point_add_mixed(acc, points[sorted_indices[base + offset + i]]);
+        uint raw_idx = sorted_indices[base + offset + i];
+        PointAffine pt = points[raw_idx & 0x7FFFFFFFu];
+        if (raw_idx & 0x80000000u) pt.y = fp_neg(pt.y);
+        acc = point_add_mixed(acc, pt);
     }
-    buckets[orig_pos] = acc;
+    buckets[flat_idx] = acc;
 }
 
 // SIMD shuffle helper for PointProjective
@@ -79,30 +86,33 @@ kernel void msm_reduce_cooperative(
     uint tgid                                  [[threadgroup_position_in_grid]],
     uint lid                                   [[thread_index_in_threadgroup]]
 ) {
-    uint nb = 1u << params.window_bits;
     uint total = params.n_buckets * n_windows;
     if (tgid >= total) return;
 
     uint orig_pos = count_sorted_map[tgid];
-    uint orig_bucket = orig_pos & (nb - 1u);
+    // count_sorted_map packs window in upper 16 bits, bucket in lower 16 bits
+    uint orig_bucket = orig_pos & 0xFFFFu;
+    uint orig_window = orig_pos >> 16u;
+    uint flat_idx = orig_window * params.n_buckets + orig_bucket;
 
     // Identity for bucket 0 or empty buckets
-    if (orig_bucket == 0 || bucket_counts[orig_pos] == 0) {
+    if (orig_bucket == 0 || bucket_counts[flat_idx] == 0) {
         if (lid == 0) {
-            buckets[orig_pos] = point_identity();
+            buckets[flat_idx] = point_identity();
         }
         return;
     }
 
-    uint count = bucket_counts[orig_pos];
-    uint orig_window = orig_pos >> params.window_bits;
+    uint count = bucket_counts[flat_idx];
     uint base = orig_window * params.n_points;
-    uint offset = bucket_offsets[orig_pos];
+    uint offset = bucket_offsets[flat_idx];
 
     // Each thread accumulates points at stride 32
     PointProjective acc = point_identity();
     for (uint i = lid; i < count; i += 32) {
-        PointAffine pt = points[sorted_indices[base + offset + i]];
+        uint raw_idx = sorted_indices[base + offset + i];
+        PointAffine pt = points[raw_idx & 0x7FFFFFFFu];
+        if (raw_idx & 0x80000000u) pt.y = fp_neg(pt.y);
         if (point_is_identity(acc)) {
             acc = point_from_affine(pt);
         } else {
@@ -123,7 +133,7 @@ kernel void msm_reduce_cooperative(
     }
 
     if (lid == 0) {
-        buckets[orig_pos] = acc;
+        buckets[flat_idx] = acc;
     }
 }
 
@@ -141,7 +151,7 @@ kernel void msm_bucket_sum_direct(
     uint window_idx = tid / n_segments;
     uint seg_idx = tid % n_segments;
 
-    uint n_buckets = 1u << params.window_bits;
+    uint n_buckets = params.n_buckets;
     uint seg_size = (n_buckets + n_segments - 1) / n_segments;
     uint bucket_base = window_idx * n_buckets;
 

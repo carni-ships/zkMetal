@@ -105,6 +105,7 @@ public class MetalMSM {
         self.glvDecomposeFunction = try device.makeComputePipelineState(function: glvDecomposeFn)
         self.signedDigitFunction = try device.makeComputePipelineState(function: signedDigitFn)
         self.tuning = TuningManager.shared.config(device: device)
+
     }
 
     /// Compile shader from source and cache the library for next time.
@@ -678,6 +679,7 @@ public class MetalMSM {
         for w in 0..<nWindows {
             windowResults[w] = winResultsPtr[w]
         }
+
 
         let t2 = CFAbsoluteTimeGetCurrent()
         var result = windowResults.last!

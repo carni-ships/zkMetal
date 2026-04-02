@@ -109,6 +109,11 @@ bool fp_is_zero(Fp a) {
     return true;
 }
 
+Fp fp_neg(Fp a) {
+    if (fp_is_zero(a)) return a;
+    return fp_sub(fp_modulus(), a);
+}
+
 Fp fp_zero() {
     Fp r;
     for (int i = 0; i < 8; i++) r.v[i] = 0;

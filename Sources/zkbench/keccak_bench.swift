@@ -32,16 +32,17 @@ public func runKeccakBench() {
     }
 
     // CPU benchmark: hash 64-byte inputs
-    let cpuInput = [UInt8](repeating: 0x42, count: 64)
-    let cpuHash = keccak256(cpuInput)
-    let warmup = 5000
-    for _ in 0..<warmup { let _ = keccak256(cpuInput) }
-    let cpuIters = 10000
-    let cpuStart = CFAbsoluteTimeGetCurrent()
-    for _ in 0..<cpuIters { let _ = keccak256(cpuInput) }
-    let cpuElapsed = (CFAbsoluteTimeGetCurrent() - cpuStart) * 1000
-    let cpuPerHash = cpuElapsed / Double(cpuIters) * 1000
-    print(String(format: "\n  CPU: %.2f µs/hash (%.0f hash/s)", cpuPerHash, Double(cpuIters) / (cpuElapsed / 1000)))
+    if !skipCPU {
+        let cpuInput = [UInt8](repeating: 0x42, count: 64)
+        let warmup = 5000
+        for _ in 0..<warmup { let _ = keccak256(cpuInput) }
+        let cpuIters = 10000
+        let cpuStart = CFAbsoluteTimeGetCurrent()
+        for _ in 0..<cpuIters { let _ = keccak256(cpuInput) }
+        let cpuElapsed = (CFAbsoluteTimeGetCurrent() - cpuStart) * 1000
+        let cpuPerHash = cpuElapsed / Double(cpuIters) * 1000
+        print(String(format: "\n  CPU: %.2f µs/hash (%.0f hash/s)", cpuPerHash, Double(cpuIters) / (cpuElapsed / 1000)))
+    }
 
     // GPU tests
     do {

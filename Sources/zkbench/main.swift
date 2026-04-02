@@ -63,7 +63,11 @@ func runMSMBench() throws {
     fputs("MSM(\(n)): median \(String(format: "%.1f", median))ms, best \(String(format: "%.1f", best))ms\n", stderr)
 }
 
-let cmd = CommandLine.arguments.count >= 2 ? CommandLine.arguments[1] : "msm"
+/// Global flag: skip CPU benchmarks when --no-cpu is passed
+public var skipCPU = CommandLine.arguments.contains("--no-cpu")
+
+let args = CommandLine.arguments.filter { !$0.hasPrefix("--") }
+let cmd = args.count >= 2 ? args[1] : "msm"
 if cmd == "calibrate" {
     guard let device = MTLCreateSystemDefaultDevice() else {
         fputs("Error: No Metal GPU available\n", stderr)
