@@ -27,6 +27,8 @@ Run `swift run -c release zkbench all` to reproduce.
 |--------|-----|
 | 65,536 | ~12ms |
 
+No single-threaded CPU comparison is provided -- a naive CPU MSM at 65K points takes minutes. For reference, Barretenberg's multithreaded Pippenger on the same hardware takes ~200ms for 200K points.
+
 ### NTT (BN254 Fr)
 
 | Size | GPU | CPU | Speedup |
@@ -82,13 +84,16 @@ Full fold-to-constant: 2^20 in 17ms (20 rounds, fused 4-round kernels).
 
 ### Radix Sort
 
-| Elements | GPU | CPU | Speedup |
-|----------|-----|-----|---------|
-| 65,536 | 12ms | 0.5ms | 0.04x |
-| 262,144 | 40ms | 1.9ms | 0.05x |
-| 1,048,576 | 116ms | 8.3ms | 0.07x |
+| Elements | GPU | CPU | Ratio |
+|----------|-----|-----|-------|
+| 65,536 | 19ms | 0.6ms | 0.03x |
+| 262,144 | 48ms | 2.1ms | 0.04x |
+| 1,048,576 | 144ms | 8.3ms | 0.06x |
+| 4,194,304 | 535ms | 35ms | 0.07x |
+| 16,777,216 | 2.2s | 148ms | 0.07x |
+| 67,108,864 | 7.2s | 665ms | 0.09x |
 
-Note: GPU radix sort is slower than CPU at these sizes due to Metal dispatch overhead and random scatter writes. GPU sort becomes competitive at larger batch sizes or when data is already on GPU.
+GPU radix sort is currently slower than single-threaded CPU at all tested sizes (up to 64M keys). The bottleneck is random scatter writes during the ranking phase, which cause poor memory coalescing on the GPU. The sort is included primarily for cases where data is already resident on GPU and copying back to CPU would be more expensive than sorting in place.
 
 ## Supported Fields
 
