@@ -84,7 +84,7 @@ public func runPoseidon2Bench() {
         }
 
         // GPU batch benchmarks
-        for logN in [10, 12, 14, 16] {
+        for logN in [10, 12, 14, 16, 18, 20] {
             let n = 1 << logN
             var input = [Fr](repeating: Fr.zero, count: n * 2)
             var rng: UInt64 = 0xDEAD_BEEF

@@ -61,7 +61,7 @@ public func runFRIBench() {
 
         // Performance benchmark: single fold at various sizes
         print("\n--- Fold performance ---")
-        let sizes = [14, 16, 18, 20]
+        let sizes = [14, 16, 18, 20, 22]
 
         for logN in sizes {
             let n = 1 << logN
