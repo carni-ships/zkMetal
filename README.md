@@ -15,9 +15,9 @@ GPU-accelerated zero-knowledge cryptography primitives for Apple Silicon, writte
 | **Sumcheck** | Interactive sumcheck protocol (fused round+reduce with SIMD shuffles) |
 | **Polynomial Ops** | Evaluation, interpolation, subproduct trees |
 
-## Performance (Apple M3 Pro)
+## Performance
 
-All benchmarks compare GPU (Metal) vs single-threaded CPU (Swift) on the same machine.
+All benchmarks measured on Apple M3 Pro, comparing GPU (Metal) vs single-threaded CPU (Swift).
 Run `swift run -c release zkbench all` to reproduce.
 
 ### MSM (BN254 G1)
