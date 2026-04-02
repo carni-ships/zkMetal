@@ -62,11 +62,24 @@ public func runNTTBench() {
             let nttMedian = nttTimes[5]
             let inttMedian = inttTimes[5]
 
+            // CPU NTT for comparison (skip > 2^16 — too slow)
+            var cpuMs: Double = 0
+            if logN <= 16 {
+                let cpuT0 = CFAbsoluteTimeGetCurrent()
+                let _ = NTTEngine.cpuNTT(data, logN: logN)
+                cpuMs = (CFAbsoluteTimeGetCurrent() - cpuT0) * 1000
+            }
+
             // Throughput: elements per second
             let elemPerSec = Double(n) / (nttMedian / 1000)
 
-            print(String(format: "  2^%-2d = %7d | NTT: %7.2fms | iNTT: %7.2fms | %.1fM elem/s",
-                        logN, n, nttMedian, inttMedian, elemPerSec / 1e6))
+            if cpuMs > 0 {
+                print(String(format: "  2^%-2d = %7d | GPU: %7.2fms | CPU: %7.1fms | %.0fx | %.1fM elem/s",
+                            logN, n, nttMedian, cpuMs, cpuMs / nttMedian, elemPerSec / 1e6))
+            } else {
+                print(String(format: "  2^%-2d = %7d | GPU: %7.2fms | %.1fM elem/s",
+                            logN, n, nttMedian, elemPerSec / 1e6))
+            }
         }
 
         // Correctness check at n=1024

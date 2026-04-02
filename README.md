@@ -18,37 +18,43 @@ GPU-accelerated zero-knowledge cryptography primitives for Apple Silicon, writte
 
 ## Performance (Apple M3 Pro)
 
+All benchmarks compare GPU (Metal) vs single-threaded CPU (Swift) on the same machine.
+Run `swift run -c release zkbench all` to reproduce.
+
 ### MSM (BN254 G1)
 
-| Points | Time |
-|--------|------|
+| Points | GPU |
+|--------|-----|
 | 65,536 | ~12ms |
 
-### NTT
+### NTT (BN254 Fr)
 
-| Size | BN254 Fr | Goldilocks | BabyBear |
-|------|----------|------------|----------|
-| 2^14 | 11ms | 7ms | 2ms |
-| 2^16 | 26ms | 9ms | 1ms |
-| 2^18 | 56ms | 16ms | 16ms |
-| 2^20 | 134ms | 54ms | 101ms |
-| 2^22 | 405ms | 221ms | 260ms |
-| 2^24 | - | 116ms | 285ms |
+| Size | GPU | CPU | Speedup |
+|------|-----|-----|---------|
+| 2^10 | 3.2ms | 4.6ms | 1.4x |
+| 2^12 | 10ms | 24ms | 2x |
+| 2^14 | 8.4ms | 99ms | **12x** |
+| 2^16 | 6.2ms | 508ms | **82x** |
+| 2^18 | 32ms | - | |
+| 2^20 | 85ms | - | |
+| 2^22 | 800ms | - | |
+
+NTT is also available for Goldilocks (116ms at 2^24) and BabyBear (285ms at 2^24).
 
 ### Hashing
 
-| Primitive | Batch Size | Time | Throughput |
-|-----------|-----------|------|------------|
-| Poseidon2 | 2^14 | 5.1ms | 3.2M hash/s |
-| Poseidon2 | 2^16 | 21ms | 3.1M hash/s |
-| Keccak-256 | 2^14 | 2.3ms | 7.1M hash/s |
-| Keccak-256 | 2^16 | 5.7ms | 11.5M hash/s |
-| Keccak-256 | 2^18 | 13ms | 19.7M hash/s |
+| Primitive | Batch Size | GPU | CPU (single-core) | Speedup |
+|-----------|-----------|-----|-------|---------|
+| Poseidon2 | 2^14 | 0.5 µs/hash | 140 µs/hash | **280x** |
+| Poseidon2 | 2^16 | 0.2 µs/hash | 140 µs/hash | **730x** |
+| Keccak-256 | 2^14 | 0.06 µs/hash | 9.7 µs/hash | **170x** |
+| Keccak-256 | 2^16 | 0.09 µs/hash | 9.7 µs/hash | **108x** |
+| Keccak-256 | 2^18 | 0.07 µs/hash | 9.7 µs/hash | **140x** |
 
 ### Merkle Trees
 
-| Backend | Leaves | Time |
-|---------|--------|------|
+| Backend | Leaves | GPU |
+|---------|--------|-----|
 | Poseidon2 | 2^14 | 49ms |
 | Poseidon2 | 2^16 | 68ms |
 | Keccak-256 | 2^14 | 19ms |
@@ -56,28 +62,33 @@ GPU-accelerated zero-knowledge cryptography primitives for Apple Silicon, writte
 
 ### FRI Folding (BN254 Fr)
 
-| Size | Single Fold | Full Protocol (fold to 1) |
-|------|-------------|--------------------------|
-| 2^16 | 2.0ms | 8.0ms |
-| 2^18 | 9.7ms | 10.5ms |
-| 2^20 | 24ms | 19ms |
+| Size | GPU | CPU | Speedup |
+|------|-----|-----|---------|
+| 2^14 | 2.3ms | 14ms | **6x** |
+| 2^16 | 1.0ms | 56ms | **54x** |
+| 2^18 | 8.1ms | - | |
+| 2^20 | 20ms | - | |
+
+Full fold-to-constant: 2^20 in 17ms (20 rounds, fused 4-round kernels).
 
 ### Sumcheck (BN254 Fr)
 
-| Variables | Time |
-|-----------|------|
-| 2^14 | 4.7ms |
-| 2^16 | 9.9ms |
-| 2^18 | 17ms |
-| 2^20 | 32ms |
+| Variables | GPU | CPU | Speedup |
+|-----------|-----|-----|---------|
+| 2^14 | 16ms | 28ms | **2x** |
+| 2^16 | 12ms | 116ms | **10x** |
+| 2^18 | 12ms | - | |
+| 2^20 | 36ms | - | |
 
 ### Radix Sort
 
-| Elements | Time | Throughput |
-|----------|------|------------|
-| 65,536 | 12ms | 5M keys/s |
-| 262,144 | 40ms | 7M keys/s |
-| 1,048,576 | 116ms | 9M keys/s |
+| Elements | GPU | CPU | Speedup |
+|----------|-----|-----|---------|
+| 65,536 | 12ms | 0.5ms | 0.04x |
+| 262,144 | 40ms | 1.9ms | 0.05x |
+| 1,048,576 | 116ms | 8.3ms | 0.07x |
+
+Note: GPU radix sort is slower than CPU at these sizes due to Metal dispatch overhead and random scatter writes. GPU sort becomes competitive at larger batch sizes or when data is already on GPU.
 
 ## Supported Fields
 

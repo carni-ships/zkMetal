@@ -85,8 +85,21 @@ public func runFRIBench() {
             let median = times[5]
             let elemPerSec = Double(n) / (median / 1000)
 
-            print(String(format: "  2^%-2d = %7d | Fold: %7.2fms | %.1fM elem/s",
-                        logN, n, median, elemPerSec / 1e6))
+            // CPU fold for comparison (skip > 2^16 — too slow)
+            var cpuMs: Double = 0
+            if logN <= 16 {
+                let cpuT0 = CFAbsoluteTimeGetCurrent()
+                let _ = FRIEngine.cpuFold(evals: evals, beta: beta, logN: logN)
+                cpuMs = (CFAbsoluteTimeGetCurrent() - cpuT0) * 1000
+            }
+
+            if cpuMs > 0 {
+                print(String(format: "  2^%-2d = %7d | GPU: %7.2fms | CPU: %7.1fms | %.0fx | %.1fM elem/s",
+                            logN, n, median, cpuMs, cpuMs / median, elemPerSec / 1e6))
+            } else {
+                print(String(format: "  2^%-2d = %7d | GPU: %7.2fms | %.1fM elem/s",
+                            logN, n, median, elemPerSec / 1e6))
+            }
         }
 
         // Multi-fold benchmark: full FRI protocol

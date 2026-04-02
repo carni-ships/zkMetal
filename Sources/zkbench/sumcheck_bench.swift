@@ -117,8 +117,26 @@ public func runSumcheckBench() {
             }
             times.sort()
             let median = times[2]
-            print(String(format: "  %d vars (2^%d evals): %7.2fms",
-                        numVars, numVars, median))
+
+            // CPU sumcheck for comparison (skip > 2^16 — too slow)
+            var cpuMs: Double = 0
+            if numVars <= 16 {
+                var cpuEvals = evals
+                let cpuT0 = CFAbsoluteTimeGetCurrent()
+                for i in 0..<numVars {
+                    let _ = SumcheckEngine.cpuRoundPoly(evals: cpuEvals)
+                    cpuEvals = SumcheckEngine.cpuReduce(evals: cpuEvals, challenge: chals[i])
+                }
+                cpuMs = (CFAbsoluteTimeGetCurrent() - cpuT0) * 1000
+            }
+
+            if cpuMs > 0 {
+                print(String(format: "  %d vars (2^%d evals): GPU %7.2fms | CPU %7.1fms | %.0fx",
+                            numVars, numVars, median, cpuMs, cpuMs / median))
+            } else {
+                print(String(format: "  %d vars (2^%d evals): GPU %7.2fms",
+                            numVars, numVars, median))
+            }
         }
 
     } catch {
