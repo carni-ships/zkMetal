@@ -24,6 +24,26 @@ public func runPoseidon2Bench() {
     }
     print("  [pass] Deterministic")
 
+    // HorizenLabs reference test vector: permutation([0, 1, 2])
+    // Source: https://github.com/HorizenLabs/poseidon2 (poseidon2_instance_bn256.rs)
+    let refInput = [frFromInt(0), frFromInt(1), frFromInt(2)]
+    let refOutput = poseidon2Permutation(refInput)
+    let expected0: [UInt64] = [0x47f760054f4a3033, 0x8134334da98ea4f8, 0xbcb1929a82650f32, 0x0bb61d24daca55ee]
+    let expected1: [UInt64] = [0x92defe7ff8d03570, 0x77a15d3f74ca6549, 0xcbcc80214f26a302, 0x303b6f7c86d043bf]
+    let expected2: [UInt64] = [0x86296242cf766ec8, 0xe660b145994427cc, 0xf8617361c3ba7c52, 0x1ed25194542b12ee]
+    let got0 = frToInt(refOutput[0]), got1 = frToInt(refOutput[1]), got2 = frToInt(refOutput[2])
+    if got0 == expected0 && got1 == expected1 && got2 == expected2 {
+        print("  [pass] Poseidon2 permutation matches HorizenLabs reference vector")
+    } else {
+        print("  [FAIL] Poseidon2 permutation does NOT match HorizenLabs reference!")
+        print("    expected[0]: \(expected0.reversed().map{String(format:"%016llx",$0)}.joined())")
+        print("    got[0]:      \(got0.reversed().map{String(format:"%016llx",$0)}.joined())")
+        print("    expected[1]: \(expected1.reversed().map{String(format:"%016llx",$0)}.joined())")
+        print("    got[1]:      \(got1.reversed().map{String(format:"%016llx",$0)}.joined())")
+        print("    expected[2]: \(expected2.reversed().map{String(format:"%016llx",$0)}.joined())")
+        print("    got[2]:      \(got2.reversed().map{String(format:"%016llx",$0)}.joined())")
+    }
+
     // 2-to-1 hash
     let a = frFromInt(1), b = frFromInt(2)
     let h = poseidon2Hash(a, b)
