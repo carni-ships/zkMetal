@@ -82,6 +82,23 @@ Fr fr_add(Fr a, Fr b) {
     return r;
 }
 
+// Lazy addition: no modular reduction. Result may be in [0, 2^256).
+// Safe as input to fr_mul (CIOS handles inputs up to 2^256 - 1).
+// Caller must ensure no overflow: a + b < 2^256.
+Fr fr_add_lazy(Fr a, Fr b) {
+    uint carry;
+    return fr_add_raw(a, b, carry);
+}
+
+// Reduce value to [0, p). Use after lazy additions when reduction needed.
+Fr fr_reduce(Fr a) {
+    if (fr_gte(a, fr_modulus())) {
+        uint borrow;
+        a = fr_sub_raw(a, fr_modulus(), borrow);
+    }
+    return a;
+}
+
 Fr fr_sub(Fr a, Fr b) {
     uint borrow;
     Fr r = fr_sub_raw(a, b, borrow);

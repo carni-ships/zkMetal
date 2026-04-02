@@ -970,6 +970,59 @@ kernel void ntt_column_butterfly(
     data[addr_j] = fr_sub(a, wb);
 }
 
+// Radix-4 DIT column butterfly: processes 2 stages at once (halves memory passes).
+// For stages s and s+1 within the column FFT.
+kernel void ntt_column_butterfly_radix4(
+    device Fr* data                [[buffer(0)]],
+    device const Fr* twiddles      [[buffer(1)]],
+    constant uint& n1              [[buffer(2)]],    // column size (N1)
+    constant uint& n2              [[buffer(3)]],    // stride (N2)
+    constant uint& stage           [[buffer(4)]],    // lower stage index (processes stage and stage+1)
+    uint gid                       [[thread_position_in_grid]]
+) {
+    uint quads_per_col = n1 >> 2;
+    uint col = gid % n2;
+    uint quad_id = gid / n2;
+    if (quad_id >= quads_per_col) return;
+
+    uint h = 1u << stage;
+    uint block4 = h << 2;
+
+    uint block_idx = quad_id / h;
+    uint local_idx = quad_id % h;
+    uint base_row = block_idx * block4 + local_idx;
+
+    uint addr0 = col + base_row * n2;
+    uint addr1 = col + (base_row + h) * n2;
+    uint addr2 = col + (base_row + 2 * h) * n2;
+    uint addr3 = col + (base_row + 3 * h) * n2;
+
+    Fr a0 = data[addr0];
+    Fr a1 = data[addr1];
+    Fr a2 = data[addr2];
+    Fr a3 = data[addr3];
+
+    // Stage s twiddle: applied to pairs (a0,a1) and (a2,a3)
+    Fr ws = twiddles[local_idx * (n1 / (2 * h)) * n2];
+    Fr ws_a1 = fr_mul(ws, a1);
+    Fr ws_a3 = fr_mul(ws, a3);
+    Fr b0 = fr_add(a0, ws_a1);
+    Fr b1 = fr_sub(a0, ws_a1);
+    Fr b2 = fr_add(a2, ws_a3);
+    Fr b3 = fr_sub(a2, ws_a3);
+
+    // Stage s+1 twiddles: cross-combine
+    Fr w_lo = twiddles[local_idx * (n1 / block4) * n2];
+    Fr w_hi = twiddles[(local_idx + h) * (n1 / block4) * n2];
+    Fr wb2 = fr_mul(w_lo, b2);
+    Fr wb3 = fr_mul(w_hi, b3);
+
+    data[addr0] = fr_add(b0, wb2);
+    data[addr2] = fr_sub(b0, wb2);
+    data[addr1] = fr_add(b1, wb3);
+    data[addr3] = fr_sub(b1, wb3);
+}
+
 // Out-of-place rectangular transpose: input[r*cols+c] → output[c*rows+r]
 kernel void ntt_transpose_rect(
     device const Fr* input         [[buffer(0)]],
@@ -1025,6 +1078,68 @@ kernel void intt_column_butterfly(
 
     data[addr_i] = sum;
     data[addr_j] = fr_mul(diff, w);
+}
+
+// Radix-4 DIF column butterfly for iNTT: processes 2 stages at once.
+// stage is the higher (first) DIF stage index (counting from top).
+kernel void intt_column_butterfly_radix4(
+    device Fr* data                [[buffer(0)]],
+    device const Fr* twiddles_inv  [[buffer(1)]],
+    constant uint& n1              [[buffer(2)]],    // column size (N1)
+    constant uint& n2              [[buffer(3)]],    // stride (N2)
+    constant uint& stage           [[buffer(4)]],    // higher DIF stage index (from top)
+    constant uint& log_n1          [[buffer(5)]],    // log2(N1)
+    uint gid                       [[thread_position_in_grid]]
+) {
+    uint quads_per_col = n1 >> 2;
+    uint col = gid % n2;
+    uint quad_id = gid / n2;
+    if (quad_id >= quads_per_col) return;
+
+    // DIF stage s (high): half_block_hi = 2^(logN1 - 1 - stage)
+    uint h_hi = 1u << (log_n1 - 1 - stage);
+    // DIF stage s+1 (low): half_block_lo = h_hi >> 1
+    uint h_lo = h_hi >> 1;
+    uint block4 = h_hi << 1;  // = 4 * h_lo
+
+    uint block_idx = quad_id / h_lo;
+    uint local_idx = quad_id % h_lo;
+    uint base_row = block_idx * block4 + local_idx;
+
+    uint addr0 = col + base_row * n2;
+    uint addr1 = col + (base_row + h_lo) * n2;
+    uint addr2 = col + (base_row + 2 * h_lo) * n2;
+    uint addr3 = col + (base_row + 3 * h_lo) * n2;
+
+    Fr a0 = data[addr0];
+    Fr a1 = data[addr1];
+    Fr a2 = data[addr2];
+    Fr a3 = data[addr3];
+
+    // DIF high stage: butterflies (a0,a2) and (a1,a3) with stride h_hi
+    Fr sum02 = fr_add(a0, a2);
+    Fr diff02 = fr_sub(a0, a2);
+    Fr sum13 = fr_add(a1, a3);
+    Fr diff13 = fr_sub(a1, a3);
+
+    // Twiddle for high stage
+    Fr w_hi = twiddles_inv[local_idx * (n1 / block4) * n2];
+    diff02 = fr_mul(diff02, w_hi);
+    Fr w_hi2 = twiddles_inv[(local_idx + h_lo) * (n1 / block4) * n2];
+    diff13 = fr_mul(diff13, w_hi2);
+
+    // DIF low stage: butterflies (sum02,sum13) and (diff02,diff13)
+    Fr w_lo = twiddles_inv[local_idx * (n1 / (2 * h_lo)) * n2];
+
+    Fr out0 = fr_add(sum02, sum13);
+    Fr d1 = fr_sub(sum02, sum13);
+    data[addr0] = out0;
+    data[addr1] = fr_mul(d1, w_lo);
+
+    Fr out2 = fr_add(diff02, diff13);
+    Fr d3 = fr_sub(diff02, diff13);
+    data[addr2] = out2;
+    data[addr3] = fr_mul(d3, w_lo);
 }
 
 // DIF sub-block column iFFT with 1/N scale on store.

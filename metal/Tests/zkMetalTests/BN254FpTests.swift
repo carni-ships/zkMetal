@@ -1,7 +1,7 @@
 // Lightweight test runner — no XCTest dependency required
 // Run with: swift test or swift build --target zkMetalTests && .build/debug/zkMetalTests
 
-@testable import zkMetal
+import zkMetal
 
 func assertEqual<T: Equatable>(_ a: T, _ b: T, _ msg: String = "", file: String = #file, line: Int = #line) {
     if a != b {

@@ -30,6 +30,10 @@ public class FRIEngine {
     private var singleFoldOutputBuf: MTLBuffer?
     private var singleFoldBufElements: Int = 0
 
+    // Cached input buffer for multiFold to avoid per-call allocation
+    private var multiFoldInputBuf: MTLBuffer?
+    private var multiFoldInputBufElements: Int = 0
+
     public init() throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw MSMError.noGPU
@@ -199,8 +203,19 @@ public class FRIEngine {
             throw MSMError.noCommandBuffer
         }
 
-        var currentBuf = createFrBuffer(evals)!
-        let inputBuf = currentBuf  // keep reference
+        // Reuse cached input buffer when possible
+        let stride = MemoryLayout<Fr>.stride
+        if n > multiFoldInputBufElements {
+            guard let buf = device.makeBuffer(length: n * stride, options: .storageModeShared) else {
+                throw MSMError.gpuError("Failed to create multiFold input buffer")
+            }
+            multiFoldInputBuf = buf
+            multiFoldInputBufElements = n
+        }
+        evals.withUnsafeBytes { src in
+            memcpy(multiFoldInputBuf!.contents(), src.baseAddress!, n * stride)
+        }
+        var currentBuf = multiFoldInputBuf!
         var useA = true  // toggle between foldBufA and foldBufB
 
         let enc = cmdBuf.makeComputeCommandEncoder()!

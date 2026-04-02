@@ -6,7 +6,7 @@ let package = Package(
     platforms: [.macOS(.v13), .iOS(.v16)],
     products: [
         .library(name: "zkMetal", targets: ["zkMetal"]),
-        .executable(name: "zkmsm-cli", targets: ["zkmsm-cli"]),
+        .executable(name: "zkmsm", targets: ["zkmsm-cli"]),
         .executable(name: "zkbench", targets: ["zkbench"]),
     ],
     targets: [
@@ -35,16 +35,6 @@ let package = Package(
             name: "zkMetalTests",
             dependencies: ["zkMetal"],
             path: "Tests/zkMetalTests"
-        ),
-        // Keep the old target working during migration
-        .executableTarget(
-            name: "zkmsm",
-            path: "Sources/zkmsm",
-            exclude: ["shaders"],
-            linkerSettings: [
-                .linkedFramework("Metal"),
-                .linkedFramework("Foundation"),
-            ]
         ),
     ]
 )

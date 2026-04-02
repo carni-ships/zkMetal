@@ -29,8 +29,10 @@ public class NTTEngine {
     let invRowFusedFunction: MTLComputePipelineState
     let columnFusedSubblockFunction: MTLComputePipelineState
     let columnButterflyFunction: MTLComputePipelineState
+    let columnButterflyRadix4Function: MTLComputePipelineState
     let transposeRectFunction: MTLComputePipelineState
     let invColumnButterflyFunction: MTLComputePipelineState
+    let invColumnButterflyRadix4Function: MTLComputePipelineState
     let invColumnFusedSubblockFunction: MTLComputePipelineState
     let invRowFusedTwiddleFunction: MTLComputePipelineState
 
@@ -79,8 +81,10 @@ public class NTTEngine {
               let butterflyFusedBitrevFn = library.makeFunction(name: "ntt_butterfly_fused_bitrev"),
               let columnFusedSubblockFn = library.makeFunction(name: "ntt_column_fused_subblock"),
               let columnButterflyFn = library.makeFunction(name: "ntt_column_butterfly"),
+              let columnButterflyRadix4Fn = library.makeFunction(name: "ntt_column_butterfly_radix4"),
               let transposeRectFn = library.makeFunction(name: "ntt_transpose_rect"),
               let invColumnButterflyFn = library.makeFunction(name: "intt_column_butterfly"),
+              let invColumnButterflyRadix4Fn = library.makeFunction(name: "intt_column_butterfly_radix4"),
               let invColumnFusedSubblockTwiddleFn = library.makeFunction(name: "intt_column_fused_subblock"),
               let invRowFusedTwiddleFn = library.makeFunction(name: "intt_row_fused_twiddle") else {
             throw MSMError.missingKernel
@@ -107,8 +111,10 @@ public class NTTEngine {
         self.butterflyFusedBitrevFunction = try device.makeComputePipelineState(function: butterflyFusedBitrevFn)
         self.columnFusedSubblockFunction = try device.makeComputePipelineState(function: columnFusedSubblockFn)
         self.columnButterflyFunction = try device.makeComputePipelineState(function: columnButterflyFn)
+        self.columnButterflyRadix4Function = try device.makeComputePipelineState(function: columnButterflyRadix4Fn)
         self.transposeRectFunction = try device.makeComputePipelineState(function: transposeRectFn)
         self.invColumnButterflyFunction = try device.makeComputePipelineState(function: invColumnButterflyFn)
+        self.invColumnButterflyRadix4Function = try device.makeComputePipelineState(function: invColumnButterflyRadix4Fn)
         self.invColumnFusedSubblockFunction = try device.makeComputePipelineState(function: invColumnFusedSubblockTwiddleFn)
         self.invRowFusedTwiddleFunction = try device.makeComputePipelineState(function: invRowFusedTwiddleFn)
     }
@@ -500,8 +506,25 @@ public class NTTEngine {
             enc.dispatchThreadgroups(MTLSize(width: numGroups, height: 1, depth: 1),
                                      threadsPerThreadgroup: MTLSize(width: subThreads, height: 1, depth: 1))
 
-            // Step 1b: Global butterfly stages within columns
-            for s in colFusedStages..<logN1 {
+            // Step 1b: Global butterfly stages within columns (radix-4 when possible)
+            var s = colFusedStages
+            while s + 1 < logN1 {
+                enc.memoryBarrier(scope: .buffers)
+                enc.setComputePipelineState(columnButterflyRadix4Function)
+                enc.setBuffer(data, offset: 0, index: 0)
+                enc.setBuffer(twiddles, offset: 0, index: 1)
+                enc.setBytes(&n1Val, length: 4, index: 2)
+                enc.setBytes(&n2Val, length: 4, index: 3)
+                var stageVal = UInt32(s)
+                enc.setBytes(&stageVal, length: 4, index: 4)
+                let totalQuads = Int(n2) * Int(n1) / 4
+                let tg = min(256, Int(columnButterflyRadix4Function.maxTotalThreadsPerThreadgroup))
+                enc.dispatchThreads(MTLSize(width: totalQuads, height: 1, depth: 1),
+                                    threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+                s += 2
+            }
+            // Handle remaining odd stage with radix-2
+            if s < logN1 {
                 enc.memoryBarrier(scope: .buffers)
                 enc.setComputePipelineState(columnButterflyFunction)
                 enc.setBuffer(data, offset: 0, index: 0)
@@ -650,8 +673,27 @@ public class NTTEngine {
                                      threadsPerThreadgroup: MTLSize(width: rowThreads, height: 1, depth: 1))
             enc2.memoryBarrier(scope: .buffers)
 
-            // Step 4: Column DIF global stages (top stages, high to low)
-            for s in 0..<colGlobalStages {
+            // Step 4: Column DIF global stages (top stages, high to low, radix-4 when possible)
+            var s = 0
+            while s + 1 < colGlobalStages {
+                enc2.setComputePipelineState(invColumnButterflyRadix4Function)
+                enc2.setBuffer(data, offset: 0, index: 0)
+                enc2.setBuffer(invTwiddles, offset: 0, index: 1)
+                enc2.setBytes(&n1Val, length: 4, index: 2)
+                enc2.setBytes(&n2Val, length: 4, index: 3)
+                var stageVal = UInt32(s)
+                enc2.setBytes(&stageVal, length: 4, index: 4)
+                var logN1Val = UInt32(logN1)
+                enc2.setBytes(&logN1Val, length: 4, index: 5)
+                let totalQuads = Int(n2) * Int(n1) / 4
+                let tg = min(256, Int(invColumnButterflyRadix4Function.maxTotalThreadsPerThreadgroup))
+                enc2.dispatchThreads(MTLSize(width: totalQuads, height: 1, depth: 1),
+                                     threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+                enc2.memoryBarrier(scope: .buffers)
+                s += 2
+            }
+            // Handle remaining odd stage with radix-2
+            if s < colGlobalStages {
                 enc2.setComputePipelineState(invColumnButterflyFunction)
                 enc2.setBuffer(data, offset: 0, index: 0)
                 enc2.setBuffer(invTwiddles, offset: 0, index: 1)
