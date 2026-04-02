@@ -47,6 +47,9 @@ public class NTTEngine {
     private var cachedDataBuf: MTLBuffer?
     private var cachedDataBufElements: Int = 0
 
+    // Tuning
+    private let tuning: TuningConfig
+
     public init() throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw MSMError.noGPU
@@ -117,6 +120,7 @@ public class NTTEngine {
         self.invColumnButterflyRadix4Function = try device.makeComputePipelineState(function: invColumnButterflyRadix4Fn)
         self.invColumnFusedSubblockFunction = try device.makeComputePipelineState(function: invColumnFusedSubblockTwiddleFn)
         self.invRowFusedTwiddleFunction = try device.makeComputePipelineState(function: invRowFusedTwiddleFn)
+        self.tuning = TuningManager.shared.config(device: device)
     }
 
     /// Compile NTT shaders by resolving #include directives.
@@ -223,15 +227,15 @@ public class NTTEngine {
     private static let maxFusedElements = 1024
     private static let maxFusedLogN = 10  // log2(1024)
 
-    // Use four-step when global stages > this threshold (enough to justify overhead)
+    // Use four-step when global stages > threshold (tuned per device)
     // Also requires logN <= 2*maxFusedLogN so both sub-FFTs fit in shared memory
-    private static let fourStepMinGlobalStages = 10
+    private var fourStepMinGlobalStages: Int { tuning.nttFourStepThreshold }
 
     /// Forward NTT (in-place on GPU buffer).
     /// Uses four-step FFT for large transforms, standard fused+global otherwise.
     public func ntt(data: MTLBuffer, logN: Int) throws {
         let globalStages = logN - NTTEngine.maxFusedLogN
-        if globalStages >= NTTEngine.fourStepMinGlobalStages {
+        if globalStages >= fourStepMinGlobalStages {
             try nttFourStep(data: data, logN: logN)
             return
         }
@@ -279,7 +283,7 @@ public class NTTEngine {
             enc.setBuffer(data, offset: 0, index: 0)
             enc.setBytes(&nVal, length: 4, index: 1)
             enc.setBytes(&logNVal, length: 4, index: 2)
-            let tg0 = min(Int(bitrevInplaceFunction.maxTotalThreadsPerThreadgroup), 256)
+            let tg0 = min(Int(bitrevInplaceFunction.maxTotalThreadsPerThreadgroup), tuning.nttThreadgroupSize)
             enc.dispatchThreads(MTLSize(width: nInt, height: 1, depth: 1),
                                 threadsPerThreadgroup: MTLSize(width: tg0, height: 1, depth: 1))
         }
@@ -298,7 +302,7 @@ public class NTTEngine {
                 var stageVal = stage
                 enc.setBytes(&stageVal, length: 4, index: 3)
                 let numQuads = nInt / 4
-                let tg4 = min(Int(butterflyRadix4Function.maxTotalThreadsPerThreadgroup), 256)
+                let tg4 = min(Int(butterflyRadix4Function.maxTotalThreadsPerThreadgroup), tuning.nttThreadgroupSize)
                 enc.dispatchThreads(MTLSize(width: numQuads, height: 1, depth: 1),
                                   threadsPerThreadgroup: MTLSize(width: tg4, height: 1, depth: 1))
                 stage += 2
@@ -313,7 +317,7 @@ public class NTTEngine {
                 var stageVal = stage
                 enc.setBytes(&stageVal, length: 4, index: 3)
                 let numButterflies = nInt / 2
-                let tg = min(Int(butterflyFunction.maxTotalThreadsPerThreadgroup), 256)
+                let tg = min(Int(butterflyFunction.maxTotalThreadsPerThreadgroup), tuning.nttThreadgroupSize)
                 enc.dispatchThreads(MTLSize(width: numButterflies, height: 1, depth: 1),
                                   threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
             }
@@ -338,7 +342,7 @@ public class NTTEngine {
     /// Uses four-step inverse FFT for large transforms, standard fused+global otherwise.
     public func intt(data: MTLBuffer, logN: Int) throws {
         let globalStages = logN - NTTEngine.maxFusedLogN
-        if globalStages >= NTTEngine.fourStepMinGlobalStages {
+        if globalStages >= fourStepMinGlobalStages {
             try inttFourStep(data: data, logN: logN)
             return
         }
@@ -377,7 +381,7 @@ public class NTTEngine {
                 var stageVal = stage
                 enc.setBytes(&stageVal, length: 4, index: 3)
                 let numQuads = Int(n) / 4
-                let tg4 = min(Int(invButterflyRadix4Function.maxTotalThreadsPerThreadgroup), 256)
+                let tg4 = min(Int(invButterflyRadix4Function.maxTotalThreadsPerThreadgroup), tuning.nttThreadgroupSize)
                 enc.dispatchThreads(MTLSize(width: numQuads, height: 1, depth: 1),
                                   threadsPerThreadgroup: MTLSize(width: tg4, height: 1, depth: 1))
                 s += 2
@@ -394,7 +398,7 @@ public class NTTEngine {
                 var stageVal = stage
                 enc.setBytes(&stageVal, length: 4, index: 3)
                 let numButterflies = Int(n) / 2
-                let tg = min(Int(invButterflyFunction.maxTotalThreadsPerThreadgroup), 256)
+                let tg = min(Int(invButterflyFunction.maxTotalThreadsPerThreadgroup), tuning.nttThreadgroupSize)
                 enc.dispatchThreads(MTLSize(width: numButterflies, height: 1, depth: 1),
                                   threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
             }
@@ -425,7 +429,7 @@ public class NTTEngine {
         enc.setBuffer(data, offset: 0, index: 0)
         enc.setBytes(&nVal, length: 4, index: 1)
         enc.setBytes(&logNVal, length: 4, index: 2)
-        let tg0 = min(256, Int(bitrevInplaceFunction.maxTotalThreadsPerThreadgroup))
+        let tg0 = min(tuning.nttThreadgroupSize, Int(bitrevInplaceFunction.maxTotalThreadsPerThreadgroup))
         enc.dispatchThreads(MTLSize(width: Int(n), height: 1, depth: 1),
                             threadsPerThreadgroup: MTLSize(width: tg0, height: 1, depth: 1))
 
@@ -435,7 +439,7 @@ public class NTTEngine {
         enc.setBuffer(data, offset: 0, index: 0)
         enc.setBuffer(invN, offset: 0, index: 1)
         enc.setBytes(&nVal, length: 4, index: 2)
-        let tgScale = min(256, Int(scaleFunction.maxTotalThreadsPerThreadgroup))
+        let tgScale = min(tuning.nttThreadgroupSize, Int(scaleFunction.maxTotalThreadsPerThreadgroup))
         enc.dispatchThreads(MTLSize(width: Int(n), height: 1, depth: 1),
                             threadsPerThreadgroup: MTLSize(width: tgScale, height: 1, depth: 1))
         enc.endEncoding()
@@ -517,7 +521,7 @@ public class NTTEngine {
                 var stageVal = UInt32(s)
                 enc.setBytes(&stageVal, length: 4, index: 4)
                 let totalQuads = Int(n2) * Int(n1) / 4
-                let tg = min(256, Int(columnButterflyRadix4Function.maxTotalThreadsPerThreadgroup))
+                let tg = min(tuning.nttThreadgroupSize, Int(columnButterflyRadix4Function.maxTotalThreadsPerThreadgroup))
                 enc.dispatchThreads(MTLSize(width: totalQuads, height: 1, depth: 1),
                                     threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
                 s += 2
@@ -533,7 +537,7 @@ public class NTTEngine {
                 var stageVal = UInt32(s)
                 enc.setBytes(&stageVal, length: 4, index: 4)
                 let totalPairs = Int(n2) * Int(n1) / 2
-                let tg = min(256, Int(columnButterflyFunction.maxTotalThreadsPerThreadgroup))
+                let tg = min(tuning.nttThreadgroupSize, Int(columnButterflyFunction.maxTotalThreadsPerThreadgroup))
                 enc.dispatchThreads(MTLSize(width: totalPairs, height: 1, depth: 1),
                                     threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
             }
@@ -590,7 +594,7 @@ public class NTTEngine {
             enc.setComputePipelineState(transposeFunction)
             enc.setBuffer(data, offset: 0, index: 0)
             enc.setBytes(&n1Val, length: 4, index: 1)
-            let tg4 = min(256, Int(transposeFunction.maxTotalThreadsPerThreadgroup))
+            let tg4 = min(tuning.nttThreadgroupSize, Int(transposeFunction.maxTotalThreadsPerThreadgroup))
             enc.dispatchThreads(MTLSize(width: nInt, height: 1, depth: 1),
                                 threadsPerThreadgroup: MTLSize(width: tg4, height: 1, depth: 1))
             enc.endEncoding()
@@ -648,7 +652,7 @@ public class NTTEngine {
             enc.setBuffer(scratch, offset: 0, index: 1)
             enc.setBytes(&n2Val, length: 4, index: 2)  // rows of input = N2
             enc.setBytes(&n1Val, length: 4, index: 3)  // cols of input = N1
-            let tg1 = min(256, Int(transposeRectFunction.maxTotalThreadsPerThreadgroup))
+            let tg1 = min(tuning.nttThreadgroupSize, Int(transposeRectFunction.maxTotalThreadsPerThreadgroup))
             enc.dispatchThreads(MTLSize(width: nInt, height: 1, depth: 1),
                                 threadsPerThreadgroup: MTLSize(width: tg1, height: 1, depth: 1))
             enc.endEncoding()
@@ -685,7 +689,7 @@ public class NTTEngine {
                 var logN1Val = UInt32(logN1)
                 enc2.setBytes(&logN1Val, length: 4, index: 5)
                 let totalQuads = Int(n2) * Int(n1) / 4
-                let tg = min(256, Int(invColumnButterflyRadix4Function.maxTotalThreadsPerThreadgroup))
+                let tg = min(tuning.nttThreadgroupSize, Int(invColumnButterflyRadix4Function.maxTotalThreadsPerThreadgroup))
                 enc2.dispatchThreads(MTLSize(width: totalQuads, height: 1, depth: 1),
                                      threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
                 enc2.memoryBarrier(scope: .buffers)
@@ -703,7 +707,7 @@ public class NTTEngine {
                 var logN1Val = UInt32(logN1)
                 enc2.setBytes(&logN1Val, length: 4, index: 5)
                 let totalPairs = Int(n2) * Int(n1) / 2
-                let tg = min(256, Int(invColumnButterflyFunction.maxTotalThreadsPerThreadgroup))
+                let tg = min(tuning.nttThreadgroupSize, Int(invColumnButterflyFunction.maxTotalThreadsPerThreadgroup))
                 enc2.dispatchThreads(MTLSize(width: totalPairs, height: 1, depth: 1),
                                      threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
                 enc2.memoryBarrier(scope: .buffers)
@@ -734,7 +738,7 @@ public class NTTEngine {
             enc.setComputePipelineState(transposeFunction)
             enc.setBuffer(data, offset: 0, index: 0)
             enc.setBytes(&n1Val, length: 4, index: 1)
-            let tg1 = min(256, Int(transposeFunction.maxTotalThreadsPerThreadgroup))
+            let tg1 = min(tuning.nttThreadgroupSize, Int(transposeFunction.maxTotalThreadsPerThreadgroup))
             enc.dispatchThreads(MTLSize(width: nInt, height: 1, depth: 1),
                                 threadsPerThreadgroup: MTLSize(width: tg1, height: 1, depth: 1))
             enc.memoryBarrier(scope: .buffers)
@@ -778,7 +782,7 @@ public class NTTEngine {
     /// The four-step path creates its own encoders within the command buffer.
     public func encodeNTT(data: MTLBuffer, logN: Int, cmdBuf: MTLCommandBuffer) {
         let globalStages = logN - NTTEngine.maxFusedLogN
-        if globalStages >= NTTEngine.fourStepMinGlobalStages {
+        if globalStages >= fourStepMinGlobalStages {
             // Four-step uses separate encoders which is fine within cmdBuf
             encodeNTTFourStep(data: data, logN: logN, cmdBuf: cmdBuf)
             return
@@ -814,7 +818,7 @@ public class NTTEngine {
             enc.setBuffer(data, offset: 0, index: 0)
             enc.setBytes(&nVal, length: 4, index: 1)
             enc.setBytes(&logNVal, length: 4, index: 2)
-            let tg0 = min(Int(bitrevInplaceFunction.maxTotalThreadsPerThreadgroup), 256)
+            let tg0 = min(Int(bitrevInplaceFunction.maxTotalThreadsPerThreadgroup), tuning.nttThreadgroupSize)
             enc.dispatchThreads(MTLSize(width: nInt, height: 1, depth: 1),
                                 threadsPerThreadgroup: MTLSize(width: tg0, height: 1, depth: 1))
         }
@@ -831,7 +835,7 @@ public class NTTEngine {
                 var stageVal = stage
                 enc.setBytes(&stageVal, length: 4, index: 3)
                 let numQuads = nInt / 4
-                let tg4 = min(Int(butterflyRadix4Function.maxTotalThreadsPerThreadgroup), 256)
+                let tg4 = min(Int(butterflyRadix4Function.maxTotalThreadsPerThreadgroup), tuning.nttThreadgroupSize)
                 enc.dispatchThreads(MTLSize(width: numQuads, height: 1, depth: 1),
                                   threadsPerThreadgroup: MTLSize(width: tg4, height: 1, depth: 1))
                 stage += 2
@@ -845,7 +849,7 @@ public class NTTEngine {
                 var stageVal = stage
                 enc.setBytes(&stageVal, length: 4, index: 3)
                 let numButterflies = nInt / 2
-                let tg = min(Int(butterflyFunction.maxTotalThreadsPerThreadgroup), 256)
+                let tg = min(Int(butterflyFunction.maxTotalThreadsPerThreadgroup), tuning.nttThreadgroupSize)
                 enc.dispatchThreads(MTLSize(width: numButterflies, height: 1, depth: 1),
                                   threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
             }
@@ -862,7 +866,7 @@ public class NTTEngine {
     /// Encode iNTT into an existing command buffer (standard path only).
     public func encodeINTT(data: MTLBuffer, logN: Int, cmdBuf: MTLCommandBuffer) {
         let globalStages = logN - NTTEngine.maxFusedLogN
-        if globalStages >= NTTEngine.fourStepMinGlobalStages {
+        if globalStages >= fourStepMinGlobalStages {
             encodeINTTFourStep(data: data, logN: logN, cmdBuf: cmdBuf)
             return
         }
@@ -888,7 +892,7 @@ public class NTTEngine {
                 var stageVal = stage
                 enc.setBytes(&stageVal, length: 4, index: 3)
                 let numQuads = Int(n) / 4
-                let tg4 = min(Int(invButterflyRadix4Function.maxTotalThreadsPerThreadgroup), 256)
+                let tg4 = min(Int(invButterflyRadix4Function.maxTotalThreadsPerThreadgroup), tuning.nttThreadgroupSize)
                 enc.dispatchThreads(MTLSize(width: numQuads, height: 1, depth: 1),
                                   threadsPerThreadgroup: MTLSize(width: tg4, height: 1, depth: 1))
                 s += 2
@@ -903,7 +907,7 @@ public class NTTEngine {
                 var stageVal = stage
                 enc.setBytes(&stageVal, length: 4, index: 3)
                 let numButterflies = Int(n) / 2
-                let tg = min(Int(invButterflyFunction.maxTotalThreadsPerThreadgroup), 256)
+                let tg = min(Int(invButterflyFunction.maxTotalThreadsPerThreadgroup), tuning.nttThreadgroupSize)
                 enc.dispatchThreads(MTLSize(width: numButterflies, height: 1, depth: 1),
                                   threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
             }
@@ -932,7 +936,7 @@ public class NTTEngine {
         enc.setBuffer(data, offset: 0, index: 0)
         enc.setBytes(&nVal, length: 4, index: 1)
         enc.setBytes(&logNVal, length: 4, index: 2)
-        let tgBR = min(256, Int(bitrevInplaceFunction.maxTotalThreadsPerThreadgroup))
+        let tgBR = min(tuning.nttThreadgroupSize, Int(bitrevInplaceFunction.maxTotalThreadsPerThreadgroup))
         enc.dispatchThreads(MTLSize(width: Int(n), height: 1, depth: 1),
                            threadsPerThreadgroup: MTLSize(width: tgBR, height: 1, depth: 1))
 
@@ -942,7 +946,7 @@ public class NTTEngine {
         enc.setBuffer(data, offset: 0, index: 0)
         enc.setBuffer(invN, offset: 0, index: 1)
         enc.setBytes(&nVal, length: 4, index: 2)
-        let tgScale = min(256, Int(scaleFunction.maxTotalThreadsPerThreadgroup))
+        let tgScale = min(tuning.nttThreadgroupSize, Int(scaleFunction.maxTotalThreadsPerThreadgroup))
         enc.dispatchThreads(MTLSize(width: Int(n), height: 1, depth: 1),
                            threadsPerThreadgroup: MTLSize(width: tgScale, height: 1, depth: 1))
         enc.endEncoding()
@@ -961,7 +965,7 @@ public class NTTEngine {
         enc.setBuffer(data, offset: offset, index: 0)
         enc.setBytes(&nVal, length: 4, index: 1)
         enc.setBytes(&logNVal, length: 4, index: 2)
-        let tg0 = min(Int(bitrevInplaceFunction.maxTotalThreadsPerThreadgroup), 256)
+        let tg0 = min(Int(bitrevInplaceFunction.maxTotalThreadsPerThreadgroup), tuning.nttThreadgroupSize)
         enc.dispatchThreads(MTLSize(width: Int(n), height: 1, depth: 1),
                             threadsPerThreadgroup: MTLSize(width: tg0, height: 1, depth: 1))
 
@@ -993,7 +997,7 @@ public class NTTEngine {
                 var stageVal = stage
                 enc.setBytes(&stageVal, length: 4, index: 3)
                 let numQuads = Int(n) / 4
-                let tg4 = min(Int(butterflyRadix4Function.maxTotalThreadsPerThreadgroup), 256)
+                let tg4 = min(Int(butterflyRadix4Function.maxTotalThreadsPerThreadgroup), tuning.nttThreadgroupSize)
                 enc.dispatchThreads(MTLSize(width: numQuads, height: 1, depth: 1),
                                   threadsPerThreadgroup: MTLSize(width: tg4, height: 1, depth: 1))
                 stage += 2
@@ -1007,7 +1011,7 @@ public class NTTEngine {
                 var stageVal = stage
                 enc.setBytes(&stageVal, length: 4, index: 3)
                 let numButterflies = Int(n) / 2
-                let tg = min(Int(butterflyFunction.maxTotalThreadsPerThreadgroup), 256)
+                let tg = min(Int(butterflyFunction.maxTotalThreadsPerThreadgroup), tuning.nttThreadgroupSize)
                 enc.dispatchThreads(MTLSize(width: numButterflies, height: 1, depth: 1),
                                   threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
             }
@@ -1039,7 +1043,7 @@ public class NTTEngine {
                 var stageVal = stage
                 enc.setBytes(&stageVal, length: 4, index: 3)
                 let numQuads = Int(n) / 4
-                let tg4 = min(Int(invButterflyRadix4Function.maxTotalThreadsPerThreadgroup), 256)
+                let tg4 = min(Int(invButterflyRadix4Function.maxTotalThreadsPerThreadgroup), tuning.nttThreadgroupSize)
                 enc.dispatchThreads(MTLSize(width: numQuads, height: 1, depth: 1),
                                   threadsPerThreadgroup: MTLSize(width: tg4, height: 1, depth: 1))
                 s += 2
@@ -1054,7 +1058,7 @@ public class NTTEngine {
                 var stageVal = stage
                 enc.setBytes(&stageVal, length: 4, index: 3)
                 let numButterflies = Int(n) / 2
-                let tgB = min(Int(invButterflyFunction.maxTotalThreadsPerThreadgroup), 256)
+                let tgB = min(Int(invButterflyFunction.maxTotalThreadsPerThreadgroup), tuning.nttThreadgroupSize)
                 enc.dispatchThreads(MTLSize(width: numButterflies, height: 1, depth: 1),
                                   threadsPerThreadgroup: MTLSize(width: tgB, height: 1, depth: 1))
             }
@@ -1082,7 +1086,7 @@ public class NTTEngine {
         enc.setBuffer(data, offset: offset, index: 0)
         enc.setBytes(&nVal, length: 4, index: 1)
         enc.setBytes(&logNVal, length: 4, index: 2)
-        let tgBR = min(256, Int(bitrevInplaceFunction.maxTotalThreadsPerThreadgroup))
+        let tgBR = min(tuning.nttThreadgroupSize, Int(bitrevInplaceFunction.maxTotalThreadsPerThreadgroup))
         enc.dispatchThreads(MTLSize(width: Int(n), height: 1, depth: 1),
                            threadsPerThreadgroup: MTLSize(width: tgBR, height: 1, depth: 1))
 
@@ -1091,7 +1095,7 @@ public class NTTEngine {
         enc.setBuffer(data, offset: offset, index: 0)
         enc.setBuffer(invN, offset: 0, index: 1)
         enc.setBytes(&nVal, length: 4, index: 2)
-        let tgScale = min(256, Int(scaleFunction.maxTotalThreadsPerThreadgroup))
+        let tgScale = min(tuning.nttThreadgroupSize, Int(scaleFunction.maxTotalThreadsPerThreadgroup))
         enc.dispatchThreads(MTLSize(width: Int(n), height: 1, depth: 1),
                            threadsPerThreadgroup: MTLSize(width: tgScale, height: 1, depth: 1))
         enc.endEncoding()
@@ -1133,7 +1137,7 @@ public class NTTEngine {
         enc.setComputePipelineState(transposeFunction)
         enc.setBuffer(data, offset: 0, index: 0)
         enc.setBytes(&n1Val, length: 4, index: 1)
-        let tg4e = min(256, Int(transposeFunction.maxTotalThreadsPerThreadgroup))
+        let tg4e = min(tuning.nttThreadgroupSize, Int(transposeFunction.maxTotalThreadsPerThreadgroup))
         enc.dispatchThreads(MTLSize(width: Int(n), height: 1, depth: 1),
                             threadsPerThreadgroup: MTLSize(width: tg4e, height: 1, depth: 1))
         enc.endEncoding()
@@ -1154,7 +1158,7 @@ public class NTTEngine {
         enc.setComputePipelineState(transposeFunction)
         enc.setBuffer(data, offset: 0, index: 0)
         enc.setBytes(&n1Val, length: 4, index: 1)
-        let tg1e = min(256, Int(transposeFunction.maxTotalThreadsPerThreadgroup))
+        let tg1e = min(tuning.nttThreadgroupSize, Int(transposeFunction.maxTotalThreadsPerThreadgroup))
         enc.dispatchThreads(MTLSize(width: Int(n), height: 1, depth: 1),
                             threadsPerThreadgroup: MTLSize(width: tg1e, height: 1, depth: 1))
         enc.memoryBarrier(scope: .buffers)

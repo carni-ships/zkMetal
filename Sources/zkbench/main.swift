@@ -64,7 +64,23 @@ func runMSMBench() throws {
 }
 
 let cmd = CommandLine.arguments.count >= 2 ? CommandLine.arguments[1] : "msm"
-if cmd == "ntt" {
+if cmd == "calibrate" {
+    guard let device = MTLCreateSystemDefaultDevice() else {
+        fputs("Error: No Metal GPU available\n", stderr)
+        exit(1)
+    }
+    let config = TuningManager.shared.recalibrate(device: device)
+    print("Tuning config for \(config.deviceName):")
+    print("  NTT threadgroup size:      \(config.nttThreadgroupSize)")
+    print("  NTT four-step threshold:   \(config.nttFourStepThreshold)")
+    print("  MSM threadgroup size:      \(config.msmThreadgroupSize)")
+    print("  MSM window bits (large):   \(config.msmWindowBitsLarge)")
+    print("  Hash threadgroup size:     \(config.hashThreadgroupSize)")
+    print("  FRI threadgroup size:      \(config.friThreadgroupSize)")
+    print("  Sumcheck fused TG size:    \(config.sumcheckFusedTGSize)")
+    print("  Sumcheck per-round TG:     \(config.sumcheckPerRoundTGSize)")
+    print("\nSaved to ~/.zkmetal/tuning.json")
+} else if cmd == "ntt" {
     runNTTBench()
 } else if cmd == "poseidon2" || cmd == "p2" {
     runPoseidon2Bench()

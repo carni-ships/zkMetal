@@ -39,7 +39,9 @@ public class GoldilocksNTTEngine {
     // 4096 Gl elements * 8 bytes = 32KB threadgroup memory
     public static let maxFusedElements = 4096
     public static let maxFusedLogN = 12  // log2(4096)
-    private static let fourStepMinGlobalStages = 10  // enable four-step for logN >= 22 (8-byte elements need large n for strided access to pay off)
+    private var fourStepMinGlobalStages: Int { tuning.nttFourStepThreshold }
+
+    private let tuning: TuningConfig
 
     public init() throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
@@ -93,6 +95,7 @@ public class GoldilocksNTTEngine {
         self.rowFusedTwiddleFunction = try device.makeComputePipelineState(function: rowFusedTwiddleFn)
         self.invRowFusedTwiddleFunction = try device.makeComputePipelineState(function: invRowFusedTwiddleFn)
         self.invColumnFusedScaleFunction = try device.makeComputePipelineState(function: invColumnFusedScaleFn)
+        self.tuning = TuningManager.shared.config(device: device)
     }
 
     private func getScratchBuffer(n: Int) -> MTLBuffer {
@@ -185,7 +188,7 @@ public class GoldilocksNTTEngine {
 
     public func ntt(data: MTLBuffer, logN: Int) throws {
         let globalStages = logN - GoldilocksNTTEngine.maxFusedLogN
-        if globalStages >= GoldilocksNTTEngine.fourStepMinGlobalStages {
+        if globalStages >= fourStepMinGlobalStages {
             try nttFourStep(data: data, logN: logN)
             return
         }
@@ -227,7 +230,7 @@ public class GoldilocksNTTEngine {
             enc.setBuffer(data, offset: 0, index: 0)
             enc.setBytes(&nVal, length: 4, index: 1)
             enc.setBytes(&logNVal, length: 4, index: 2)
-            let tg0 = min(Int(bitrevInplaceFunction.maxTotalThreadsPerThreadgroup), 256)
+            let tg0 = min(Int(bitrevInplaceFunction.maxTotalThreadsPerThreadgroup), tuning.nttThreadgroupSize)
             enc.dispatchThreads(MTLSize(width: nInt, height: 1, depth: 1),
                                 threadsPerThreadgroup: MTLSize(width: tg0, height: 1, depth: 1))
         }
@@ -245,7 +248,7 @@ public class GoldilocksNTTEngine {
                 var stageVal = stage
                 enc.setBytes(&stageVal, length: 4, index: 3)
                 let numQuads = nInt / 4
-                let tg4 = min(Int(butterflyRadix4Function.maxTotalThreadsPerThreadgroup), 256)
+                let tg4 = min(Int(butterflyRadix4Function.maxTotalThreadsPerThreadgroup), tuning.nttThreadgroupSize)
                 enc.dispatchThreads(MTLSize(width: numQuads, height: 1, depth: 1),
                                   threadsPerThreadgroup: MTLSize(width: tg4, height: 1, depth: 1))
                 stage += 2
@@ -260,7 +263,7 @@ public class GoldilocksNTTEngine {
                 var stageVal = stage
                 enc.setBytes(&stageVal, length: 4, index: 3)
                 let numButterflies = nInt / 2
-                let tg = min(Int(butterflyFunction.maxTotalThreadsPerThreadgroup), 256)
+                let tg = min(Int(butterflyFunction.maxTotalThreadsPerThreadgroup), tuning.nttThreadgroupSize)
                 enc.dispatchThreads(MTLSize(width: numButterflies, height: 1, depth: 1),
                                   threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
             }
@@ -284,7 +287,7 @@ public class GoldilocksNTTEngine {
 
     public func intt(data: MTLBuffer, logN: Int) throws {
         let globalStages = logN - GoldilocksNTTEngine.maxFusedLogN
-        if globalStages >= GoldilocksNTTEngine.fourStepMinGlobalStages {
+        if globalStages >= fourStepMinGlobalStages {
             try inttFourStep(data: data, logN: logN)
             return
         }
@@ -319,7 +322,7 @@ public class GoldilocksNTTEngine {
                 var stageVal = stage
                 enc.setBytes(&stageVal, length: 4, index: 3)
                 let numQuads = Int(n) / 4
-                let tg4 = min(Int(invButterflyRadix4Function.maxTotalThreadsPerThreadgroup), 256)
+                let tg4 = min(Int(invButterflyRadix4Function.maxTotalThreadsPerThreadgroup), tuning.nttThreadgroupSize)
                 enc.dispatchThreads(MTLSize(width: numQuads, height: 1, depth: 1),
                                   threadsPerThreadgroup: MTLSize(width: tg4, height: 1, depth: 1))
                 s += 2
@@ -336,7 +339,7 @@ public class GoldilocksNTTEngine {
                 var stageVal = stage
                 enc.setBytes(&stageVal, length: 4, index: 3)
                 let numButterflies = Int(n) / 2
-                let tg = min(Int(invButterflyFunction.maxTotalThreadsPerThreadgroup), 256)
+                let tg = min(Int(invButterflyFunction.maxTotalThreadsPerThreadgroup), tuning.nttThreadgroupSize)
                 enc.dispatchThreads(MTLSize(width: numButterflies, height: 1, depth: 1),
                                   threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
             }
@@ -367,7 +370,7 @@ public class GoldilocksNTTEngine {
         enc.setBuffer(data, offset: 0, index: 0)
         enc.setBytes(&nVal, length: 4, index: 1)
         enc.setBytes(&logNVal, length: 4, index: 2)
-        let tgBR = min(256, Int(bitrevInplaceFunction.maxTotalThreadsPerThreadgroup))
+        let tgBR = min(tuning.nttThreadgroupSize, Int(bitrevInplaceFunction.maxTotalThreadsPerThreadgroup))
         enc.dispatchThreads(MTLSize(width: Int(n), height: 1, depth: 1),
                              threadsPerThreadgroup: MTLSize(width: tgBR, height: 1, depth: 1))
 
@@ -377,7 +380,7 @@ public class GoldilocksNTTEngine {
         enc.setBuffer(data, offset: 0, index: 0)
         enc.setBuffer(invN, offset: 0, index: 1)
         enc.setBytes(&nVal, length: 4, index: 2)
-        let tgScale = min(256, Int(scaleFunction.maxTotalThreadsPerThreadgroup))
+        let tgScale = min(tuning.nttThreadgroupSize, Int(scaleFunction.maxTotalThreadsPerThreadgroup))
         enc.dispatchThreads(MTLSize(width: Int(n), height: 1, depth: 1),
                                 threadsPerThreadgroup: MTLSize(width: tgScale, height: 1, depth: 1))
         enc.endEncoding()
@@ -435,7 +438,7 @@ public class GoldilocksNTTEngine {
         enc.setComputePipelineState(transposeFunction)
         enc.setBuffer(data, offset: 0, index: 0)
         enc.setBytes(&n1Val, length: 4, index: 1)
-        let tg4 = min(256, Int(transposeFunction.maxTotalThreadsPerThreadgroup))
+        let tg4 = min(tuning.nttThreadgroupSize, Int(transposeFunction.maxTotalThreadsPerThreadgroup))
         enc.dispatchThreads(MTLSize(width: Int(n), height: 1, depth: 1),
                             threadsPerThreadgroup: MTLSize(width: tg4, height: 1, depth: 1))
         enc.endEncoding()
@@ -468,7 +471,7 @@ public class GoldilocksNTTEngine {
         enc.setComputePipelineState(transposeFunction)
         enc.setBuffer(data, offset: 0, index: 0)
         enc.setBytes(&n1Val, length: 4, index: 1)
-        let tg1 = min(256, Int(transposeFunction.maxTotalThreadsPerThreadgroup))
+        let tg1 = min(tuning.nttThreadgroupSize, Int(transposeFunction.maxTotalThreadsPerThreadgroup))
         enc.dispatchThreads(MTLSize(width: Int(n), height: 1, depth: 1),
                             threadsPerThreadgroup: MTLSize(width: tg1, height: 1, depth: 1))
         enc.memoryBarrier(scope: .buffers)

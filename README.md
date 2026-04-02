@@ -32,54 +32,54 @@ No single-threaded CPU comparison is provided -- a naive CPU MSM at 65K points t
 
 | Size | GPU | CPU | Speedup |
 |------|-----|-----|---------|
-| 2^10 | 3.2ms | 4.6ms | 1.4x |
-| 2^12 | 10ms | 24ms | 2x |
-| 2^14 | 8.4ms | 99ms | **12x** |
-| 2^16 | 6.2ms | 508ms | **82x** |
-| 2^18 | 35ms | 2.2s | **63x** |
-| 2^20 | 85ms | - | |
-| 2^22 | 800ms | - | |
+| 2^10 | 2.9ms | 3.7ms | 1.3x |
+| 2^12 | 3.2ms | 19ms | **6x** |
+| 2^14 | 6.8ms | 88ms | **13x** |
+| 2^16 | 15ms | 679ms | **47x** |
+| 2^18 | 22ms | 1.7s | **79x** |
+| 2^20 | 74ms | - | |
+| 2^22 | 285ms | - | |
 
-NTT is also available for Goldilocks (116ms at 2^24) and BabyBear (285ms at 2^24).
+NTT is also available for Goldilocks (249ms at 2^24) and BabyBear (262ms at 2^24).
 
 ### Hashing
 
 | Primitive | Batch Size | GPU | CPU (single-core) | Speedup |
 |-----------|-----------|-----|-------|---------|
-| Poseidon2 | 2^14 | 0.5 µs/hash | 140 µs/hash | **280x** |
-| Poseidon2 | 2^16 | 0.2 µs/hash | 140 µs/hash | **730x** |
-| Keccak-256 | 2^14 | 0.06 µs/hash | 9.7 µs/hash | **170x** |
-| Keccak-256 | 2^16 | 0.09 µs/hash | 9.7 µs/hash | **108x** |
-| Keccak-256 | 2^18 | 0.07 µs/hash | 9.7 µs/hash | **140x** |
+| Poseidon2 | 2^14 | 0.5 µs/hash | 113 µs/hash | **240x** |
+| Poseidon2 | 2^16 | 0.3 µs/hash | 113 µs/hash | **340x** |
+| Keccak-256 | 2^14 | 0.18 µs/hash | 6.4 µs/hash | **35x** |
+| Keccak-256 | 2^16 | 0.05 µs/hash | 6.4 µs/hash | **140x** |
+| Keccak-256 | 2^18 | 0.04 µs/hash | 6.4 µs/hash | **180x** |
 
 ### Merkle Trees
 
 | Backend | Leaves | GPU |
 |---------|--------|-----|
-| Poseidon2 | 2^14 | 49ms |
-| Poseidon2 | 2^16 | 68ms |
-| Keccak-256 | 2^14 | 19ms |
-| Keccak-256 | 2^16 | 21ms |
+| Poseidon2 | 2^14 | 44ms |
+| Poseidon2 | 2^16 | 59ms |
+| Keccak-256 | 2^14 | 4.3ms |
+| Keccak-256 | 2^16 | 18ms |
 
 ### FRI Folding (BN254 Fr)
 
 | Size | GPU | CPU | Speedup |
 |------|-----|-----|---------|
-| 2^14 | 1.3ms | 15ms | **11x** |
-| 2^16 | 2.2ms | 68ms | **31x** |
-| 2^18 | 5.2ms | 205ms | **39x** |
-| 2^20 | 39ms | 639ms | **17x** |
+| 2^14 | 3.8ms | 10ms | **3x** |
+| 2^16 | 2.9ms | 37ms | **13x** |
+| 2^18 | 7.4ms | 137ms | **18x** |
+| 2^20 | 22ms | 578ms | **26x** |
 
-Full fold-to-constant: 2^20 in 17ms (20 rounds, fused 4-round kernels).
+Full fold-to-constant: 2^20 in 32ms (20 rounds, fused 4-round kernels).
 
 ### Sumcheck (BN254 Fr)
 
 | Variables | GPU | CPU | Speedup |
 |-----------|-----|-----|---------|
-| 2^14 | 6ms | 21ms | **3x** |
-| 2^16 | 13ms | 82ms | **6x** |
-| 2^18 | 23ms | 408ms | **18x** |
-| 2^20 | 42ms | 2.4s | **57x** |
+| 2^14 | 5.2ms | 21ms | **4x** |
+| 2^16 | 14ms | 85ms | **6x** |
+| 2^18 | 27ms | 328ms | **12x** |
+| 2^20 | 46ms | 1.3s | **29x** |
 
 ## Supported Fields
 
@@ -165,6 +165,7 @@ swift run -c release zkbench merkle    # Merkle trees
 swift run -c release zkbench fri       # FRI folding
 swift run -c release zkbench sumcheck  # Sumcheck
 swift run -c release zkbench all       # Everything
+swift run -c release zkbench calibrate # Re-calibrate GPU parameters
 ```
 
 ### MSM CLI
@@ -176,6 +177,18 @@ swift run -c release zkmsm --bench 65536
 # Compute from JSON
 echo '{"points": [["0x1","0x2"]], "scalars": ["0x2a"]}' | swift run -c release zkmsm
 ```
+
+## Auto-Tuning
+
+zkMetal automatically calibrates GPU parameters (threadgroup sizes, FFT thresholds, MSM window sizes) on first use. Results are cached to `~/.zkmetal/tuning.json` and reused across runs. Calibration re-triggers automatically when the GPU changes.
+
+To force re-calibration:
+
+```bash
+swift run -c release zkbench calibrate
+```
+
+This takes ~500ms and prints the discovered parameters. Different Apple Silicon chips (M1, M2, M3, M4) have different optimal settings — auto-tuning ensures peak performance on any hardware.
 
 ## Building
 

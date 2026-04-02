@@ -33,6 +33,7 @@ public class FRIEngine {
     // Cached input buffer for multiFold to avoid per-call allocation
     private var multiFoldInputBuf: MTLBuffer?
     private var multiFoldInputBufElements: Int = 0
+    private let tuning: TuningConfig
 
     public init() throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
@@ -64,6 +65,7 @@ public class FRIEngine {
         self.cosetUnshiftFunction = try device.makeComputePipelineState(function: unshiftFn)
 
         self.nttEngine = try NTTEngine()
+        self.tuning = TuningManager.shared.config(device: device)
     }
 
     private static func compileShaders(device: MTLDevice) throws -> MTLLibrary {
@@ -129,7 +131,7 @@ public class FRIEngine {
         enc.setBuffer(invTwiddles, offset: 0, index: 2)
         enc.setBuffer(betaBuf, offset: 0, index: 3)
         enc.setBytes(&nVal, length: 4, index: 4)
-        let tg = min(256, Int(foldFunction.maxTotalThreadsPerThreadgroup))
+        let tg = min(tuning.friThreadgroupSize, Int(foldFunction.maxTotalThreadsPerThreadgroup))
         enc.dispatchThreads(MTLSize(width: half, height: 1, depth: 1),
                            threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
         enc.endEncoding()
@@ -237,7 +239,7 @@ public class FRIEngine {
                 enc.setBuffer(invTwiddles, offset: 0, index: 2)
                 enc.setBytes(&betaArr, length: 4 * MemoryLayout<Fr>.stride, index: 3)
                 enc.setBytes(&nVal, length: 4, index: 4)
-                let tg = min(256, Int(foldFused4Function.maxTotalThreadsPerThreadgroup))
+                let tg = min(tuning.friThreadgroupSize, Int(foldFused4Function.maxTotalThreadsPerThreadgroup))
                 enc.dispatchThreads(MTLSize(width: sixteenthN, height: 1, depth: 1),
                                    threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
 
@@ -260,7 +262,7 @@ public class FRIEngine {
                 enc.setBytes(&beta0, length: MemoryLayout<Fr>.stride, index: 3)
                 enc.setBytes(&beta1, length: MemoryLayout<Fr>.stride, index: 4)
                 enc.setBytes(&nVal, length: 4, index: 5)
-                let tg = min(256, Int(foldFused2Function.maxTotalThreadsPerThreadgroup))
+                let tg = min(tuning.friThreadgroupSize, Int(foldFused2Function.maxTotalThreadsPerThreadgroup))
                 enc.dispatchThreads(MTLSize(width: quarterN, height: 1, depth: 1),
                                    threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
 
@@ -281,7 +283,7 @@ public class FRIEngine {
                 enc.setBuffer(invTwiddles, offset: 0, index: 2)
                 enc.setBytes(&beta, length: MemoryLayout<Fr>.stride, index: 3)
                 enc.setBytes(&nVal, length: 4, index: 4)
-                let tg = min(256, Int(foldFunction.maxTotalThreadsPerThreadgroup))
+                let tg = min(tuning.friThreadgroupSize, Int(foldFunction.maxTotalThreadsPerThreadgroup))
                 enc.dispatchThreads(MTLSize(width: halfN, height: 1, depth: 1),
                                    threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
 

@@ -44,6 +44,7 @@ public class MetalMSM {
     private var signedDigitCapacity = 0
     private var signedDigitBuffer: MTLBuffer?
     public var windowBitsOverride: UInt32?
+    private let tuning: TuningConfig
 
     public static let cacheDir = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".zkmsm").appendingPathComponent("cache")
@@ -97,6 +98,7 @@ public class MetalMSM {
         self.endomorphismFunction = try device.makeComputePipelineState(function: endoFn)
         self.glvDecomposeFunction = try device.makeComputePipelineState(function: glvDecomposeFn)
         self.signedDigitFunction = try device.makeComputePipelineState(function: signedDigitFn)
+        self.tuning = TuningManager.shared.config(device: device)
     }
 
     /// Compile shader from source and cache the library for next time.
@@ -310,7 +312,7 @@ public class MetalMSM {
         } else if effectiveN <= 32768 {
             windowBits = 12
         } else {
-            windowBits = 16
+            windowBits = UInt32(tuning.msmWindowBitsLarge)
         }
         if let wbOverride = windowBitsOverride {
             windowBits = wbOverride
@@ -362,7 +364,7 @@ public class MetalMSM {
             enc.setBuffer(neg2Buf, offset: 0, index: 4)
             var nVal0 = UInt32(glvN)
             enc.setBytes(&nVal0, length: 4, index: 5)
-            let tg0 = min(glvDecomposeFunction.maxTotalThreadsPerThreadgroup, 256)
+            let tg0 = min(glvDecomposeFunction.maxTotalThreadsPerThreadgroup, tuning.msmThreadgroupSize)
             enc.dispatchThreads(MTLSize(width: glvN, height: 1, depth: 1),
                               threadsPerThreadgroup: MTLSize(width: tg0, height: 1, depth: 1))
             enc.memoryBarrier(scope: .buffers)
@@ -374,7 +376,7 @@ public class MetalMSM {
             enc.setBuffer(neg2Buf, offset: 0, index: 2)
             var nVal1 = UInt32(glvN)
             enc.setBytes(&nVal1, length: 4, index: 3)
-            let tg1 = min(endomorphismFunction.maxTotalThreadsPerThreadgroup, 256)
+            let tg1 = min(endomorphismFunction.maxTotalThreadsPerThreadgroup, tuning.msmThreadgroupSize)
             enc.dispatchThreads(MTLSize(width: glvN, height: 1, depth: 1),
                               threadsPerThreadgroup: MTLSize(width: tg1, height: 1, depth: 1))
 
@@ -390,7 +392,7 @@ public class MetalMSM {
                 enc.setBytes(&wbVal, length: 4, index: 3)
                 var nwVal = UInt32(nWindows)
                 enc.setBytes(&nwVal, length: 4, index: 4)
-                let tg2 = min(signedDigitFunction.maxTotalThreadsPerThreadgroup, 256)
+                let tg2 = min(signedDigitFunction.maxTotalThreadsPerThreadgroup, tuning.msmThreadgroupSize)
                 enc.dispatchThreads(MTLSize(width: effectiveN, height: 1, depth: 1),
                                     threadsPerThreadgroup: MTLSize(width: tg2, height: 1, depth: 1))
             }
@@ -587,7 +589,7 @@ public class MetalMSM {
             enc.setBuffer(sortedIndicesBuffer, offset: 0, index: 6)
             enc.setBuffer(countSortedMapBuffer, offset: windowStart * nBuckets * MemoryLayout<UInt32>.stride, index: 7)
             let numBucketsTotal = windowCount * nBuckets
-            let tg = min(256, Int(reduceSortedFunction.maxTotalThreadsPerThreadgroup))
+            let tg = min(tuning.msmThreadgroupSize, Int(reduceSortedFunction.maxTotalThreadsPerThreadgroup))
             enc.dispatchThreads(
                 MTLSize(width: numBucketsTotal, height: 1, depth: 1),
                 threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
@@ -626,14 +628,14 @@ public class MetalMSM {
                 encFinal.setBytes(&nWinsBatch, length: MemoryLayout<UInt32>.stride, index: 4)
                 encFinal.dispatchThreads(
                     MTLSize(width: totalSegments, height: 1, depth: 1),
-                    threadsPerThreadgroup: MTLSize(width: min(256, totalSegments), height: 1, depth: 1))
+                    threadsPerThreadgroup: MTLSize(width: min(tuning.msmThreadgroupSize, totalSegments), height: 1, depth: 1))
                 encFinal.memoryBarrier(scope: .buffers)
 
                 encFinal.setComputePipelineState(combineSegmentsFunction)
                 encFinal.setBuffer(segmentResultsBuffer, offset: 0, index: 0)
                 encFinal.setBuffer(windowResultsBuffer, offset: 0, index: 1)
                 encFinal.setBytes(&nSegs, length: MemoryLayout<UInt32>.stride, index: 2)
-                let combineThreads = min(256, nSegments)
+                let combineThreads = min(tuning.msmThreadgroupSize, nSegments)
                 encFinal.dispatchThreadgroups(
                     MTLSize(width: nWindows, height: 1, depth: 1),
                     threadsPerThreadgroup: MTLSize(width: combineThreads, height: 1, depth: 1))

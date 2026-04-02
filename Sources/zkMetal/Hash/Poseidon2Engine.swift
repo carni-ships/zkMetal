@@ -14,6 +14,7 @@ public class Poseidon2Engine {
     private var cachedInputBuf: MTLBuffer?
     private var cachedOutputBuf: MTLBuffer?
     private var cachedBufPairs: Int = 0
+    private let tuning: TuningConfig
 
     public init() throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
@@ -55,6 +56,7 @@ public class Poseidon2Engine {
             memcpy(buf.contents(), src.baseAddress!, byteCount)
         }
         self.rcBuffer = buf
+        self.tuning = TuningManager.shared.config(device: device)
     }
 
     private static func compileShaders(device: MTLDevice) throws -> MTLLibrary {
@@ -140,7 +142,7 @@ public class Poseidon2Engine {
         enc.setBuffer(rcBuffer, offset: 0, index: 2)
         var count = UInt32(n)
         enc.setBytes(&count, length: 4, index: 3)
-        let tg = min(256, Int(hashPairsFunction.maxTotalThreadsPerThreadgroup))
+        let tg = min(tuning.hashThreadgroupSize, Int(hashPairsFunction.maxTotalThreadsPerThreadgroup))
         enc.dispatchThreads(MTLSize(width: n, height: 1, depth: 1),
                            threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
         enc.endEncoding()
@@ -168,7 +170,7 @@ public class Poseidon2Engine {
         enc.setBuffer(rcBuffer, offset: 0, index: 2)
         var n = UInt32(count)
         enc.setBytes(&n, length: 4, index: 3)
-        let tg = min(256, Int(hashPairsFunction.maxTotalThreadsPerThreadgroup))
+        let tg = min(tuning.hashThreadgroupSize, Int(hashPairsFunction.maxTotalThreadsPerThreadgroup))
         enc.dispatchThreads(MTLSize(width: count, height: 1, depth: 1),
                            threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
         enc.endEncoding()
@@ -191,7 +193,7 @@ public class Poseidon2Engine {
         encoder.setBuffer(rcBuffer, offset: 0, index: 2)
         var n = UInt32(count)
         encoder.setBytes(&n, length: 4, index: 3)
-        let tg = min(256, Int(hashPairsFunction.maxTotalThreadsPerThreadgroup))
+        let tg = min(tuning.hashThreadgroupSize, Int(hashPairsFunction.maxTotalThreadsPerThreadgroup))
         encoder.dispatchThreads(MTLSize(width: count, height: 1, depth: 1),
                                threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
     }

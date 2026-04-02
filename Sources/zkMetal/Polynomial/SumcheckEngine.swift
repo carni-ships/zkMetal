@@ -31,6 +31,7 @@ public class SumcheckEngine {
     // Cached input buffer for fullSumcheck
     private var scInputBuf: MTLBuffer?
     private var scInputBufElements: Int = 0
+    private let tuning: TuningConfig
 
     public init() throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
@@ -66,6 +67,7 @@ public class SumcheckEngine {
         self.fused4CoalescedFunction = try device.makeComputePipelineState(function: fused4Fn)
         self.fused2CoalescedFunction = try device.makeComputePipelineState(function: fused2Fn)
         self.fused2StridedFunction = try device.makeComputePipelineState(function: fused2StridedFn)
+        self.tuning = TuningManager.shared.config(device: device)
     }
 
     private static func compileShaders(device: MTLDevice) throws -> MTLLibrary {
@@ -126,7 +128,7 @@ public class SumcheckEngine {
         enc.setBuffer(output, offset: 0, index: 1)
         enc.setBuffer(challengeBuf, offset: 0, index: 2)
         enc.setBytes(&halfNVal, length: 4, index: 3)
-        let tg = min(256, Int(reduceFunction.maxTotalThreadsPerThreadgroup))
+        let tg = min(tuning.sumcheckPerRoundTGSize, Int(reduceFunction.maxTotalThreadsPerThreadgroup))
         enc.dispatchThreads(MTLSize(width: Int(halfN), height: 1, depth: 1),
                            threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
         enc.endEncoding()
@@ -210,10 +212,10 @@ public class SumcheckEngine {
         precondition(evals.count == (1 << numVars))
 
         let stride = MemoryLayout<Fr>.stride
-        let fusedChunkSize = 256   // elements per threadgroup in fused kernel
-        let fusedTGSize = 128      // threads per threadgroup in fused kernel
+        let fusedChunkSize = tuning.sumcheckPerRoundTGSize
+        let fusedTGSize = tuning.sumcheckFusedTGSize
         let maxFusedRounds = 8     // max rounds per fused dispatch
-        let perRoundTGSize = 256   // threads per threadgroup in per-round kernel
+        let perRoundTGSize = tuning.sumcheckPerRoundTGSize
 
         // Ensure cached eval ping-pong buffers are large enough
         let halfMax = evals.count / 2

@@ -59,7 +59,7 @@ extension PolyEngine {
         enc.setBuffer(aBuf, offset: 0, index: 2)
         var nVal = UInt32(nttN)
         enc.setBytes(&nVal, length: 4, index: 3)
-        let tg = min(256, Int(hadamardFunction.maxTotalThreadsPerThreadgroup))
+        let tg = min(tuning.nttThreadgroupSize, Int(hadamardFunction.maxTotalThreadsPerThreadgroup))
         enc.dispatchThreads(MTLSize(width: nttN, height: 1, depth: 1),
                            threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
         enc.endEncoding()
@@ -333,7 +333,7 @@ extension PolyEngine {
         enc.setBuffer(aBuf, offset: 0, index: 2)
         var totalN = UInt32(numPolys * nttN)
         enc.setBytes(&totalN, length: 4, index: 3)
-        let tg = min(256, Int(hadamardFunction.maxTotalThreadsPerThreadgroup))
+        let tg = min(tuning.nttThreadgroupSize, Int(hadamardFunction.maxTotalThreadsPerThreadgroup))
         enc.dispatchThreads(MTLSize(width: Int(totalN), height: 1, depth: 1),
                            threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
         enc.endEncoding()
@@ -433,7 +433,7 @@ extension PolyEngine {
         enc.setBytes(&gSizeVal, length: 4, index: 4)
         enc.setBytes(&outSizeVal, length: 4, index: 5)
         enc.setBytes(&countVal, length: 4, index: 6)
-        let tg = min(256, Int(treeRemainderSchoolbookFunction!.maxTotalThreadsPerThreadgroup))
+        let tg = min(tuning.nttThreadgroupSize, Int(treeRemainderSchoolbookFunction!.maxTotalThreadsPerThreadgroup))
         enc.dispatchThreads(MTLSize(width: numChildren, height: 1, depth: 1),
                            threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
         enc.endEncoding()
@@ -713,7 +713,7 @@ extension PolyEngine {
         enc.setBuffer(output, offset: 0, index: 1)
         var nVal = UInt32(n)
         enc.setBytes(&nVal, length: 4, index: 2)
-        let tg = min(256, Int(fn.maxTotalThreadsPerThreadgroup))
+        let tg = min(tuning.nttThreadgroupSize, Int(fn.maxTotalThreadsPerThreadgroup))
         enc.dispatchThreads(MTLSize(width: n / 2, height: 1, depth: 1),
                            threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
         enc.endEncoding()
@@ -736,7 +736,7 @@ extension PolyEngine {
         enc.setBytes(&os, length: 4, index: 4)
         enc.setBytes(&cnt, length: 4, index: 5)
         let totalThreads = Int(count) * Int(outSize)
-        let tg = min(256, Int(fn.maxTotalThreadsPerThreadgroup))
+        let tg = min(tuning.nttThreadgroupSize, Int(fn.maxTotalThreadsPerThreadgroup))
         enc.dispatchThreads(MTLSize(width: totalThreads, height: 1, depth: 1),
                            threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
         enc.endEncoding()

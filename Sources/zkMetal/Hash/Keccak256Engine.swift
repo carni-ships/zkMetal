@@ -13,6 +13,7 @@ public class Keccak256Engine {
     private var cachedH64InputBuf: MTLBuffer?
     private var cachedH64OutputBuf: MTLBuffer?
     private var cachedH64Count: Int = 0
+    private let tuning: TuningConfig
 
     public static let merkleSubtreeSize = 1024
 
@@ -35,6 +36,7 @@ public class Keccak256Engine {
         self.hash64Function = try device.makeComputePipelineState(function: hash64Fn)
         self.hash32Function = try device.makeComputePipelineState(function: hash32Fn)
         self.merkleFusedFunction = try device.makeComputePipelineState(function: merkleFusedFn)
+        self.tuning = TuningManager.shared.config(device: device)
     }
 
     private static func compileShaders(device: MTLDevice) throws -> MTLLibrary {
@@ -97,7 +99,7 @@ public class Keccak256Engine {
         enc.setBuffer(outputBuf, offset: 0, index: 1)
         var count = UInt32(n)
         enc.setBytes(&count, length: 4, index: 2)
-        let tg = min(256, Int(hash64Function.maxTotalThreadsPerThreadgroup))
+        let tg = min(tuning.hashThreadgroupSize, Int(hash64Function.maxTotalThreadsPerThreadgroup))
         enc.dispatchThreads(MTLSize(width: n, height: 1, depth: 1),
                            threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
         enc.endEncoding()
@@ -123,7 +125,7 @@ public class Keccak256Engine {
         enc.setBuffer(output, offset: 0, index: 1)
         var n = UInt32(count)
         enc.setBytes(&n, length: 4, index: 2)
-        let tg = min(256, Int(hash64Function.maxTotalThreadsPerThreadgroup))
+        let tg = min(tuning.hashThreadgroupSize, Int(hash64Function.maxTotalThreadsPerThreadgroup))
         enc.dispatchThreads(MTLSize(width: count, height: 1, depth: 1),
                            threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
         enc.endEncoding()
@@ -162,7 +164,7 @@ public class Keccak256Engine {
         encoder.setBuffer(buffer, offset: outputOffset, index: 1)
         var n = UInt32(count)
         encoder.setBytes(&n, length: 4, index: 2)
-        let tg = min(256, Int(hash64Function.maxTotalThreadsPerThreadgroup))
+        let tg = min(tuning.hashThreadgroupSize, Int(hash64Function.maxTotalThreadsPerThreadgroup))
         encoder.dispatchThreads(MTLSize(width: count, height: 1, depth: 1),
                                threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
     }

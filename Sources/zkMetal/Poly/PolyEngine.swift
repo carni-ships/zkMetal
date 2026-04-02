@@ -19,6 +19,7 @@ public class PolyEngine {
     let treeBuildSchoolbookFunction: MTLComputePipelineState?
     let treeRemainderSchoolbookFunction: MTLComputePipelineState?
     let twoMinusFunction: MTLComputePipelineState?
+    let tuning: TuningConfig
 
     public init() throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
@@ -64,6 +65,7 @@ public class PolyEngine {
             self.treeRemainderSchoolbookFunction = nil
             self.twoMinusFunction = nil
         }
+        self.tuning = TuningManager.shared.config(device: device)
     }
 
     private static func compileShaders(device: MTLDevice) throws -> MTLLibrary {
@@ -139,7 +141,7 @@ public class PolyEngine {
         enc.setBuffer(buf2, offset: 0, index: 2)
         var nVal = UInt32(n)
         enc.setBytes(&nVal, length: 4, index: 3)
-        let tg = min(256, Int(function.maxTotalThreadsPerThreadgroup))
+        let tg = min(tuning.nttThreadgroupSize, Int(function.maxTotalThreadsPerThreadgroup))
         enc.dispatchThreads(MTLSize(width: n, height: 1, depth: 1),
                            threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
         enc.endEncoding()
@@ -223,7 +225,7 @@ public class PolyEngine {
         encH.setBuffer(aBuf, offset: 0, index: 2)
         var nVal = UInt32(n)
         encH.setBytes(&nVal, length: 4, index: 3)
-        let tg = min(256, Int(hadamardFunction.maxTotalThreadsPerThreadgroup))
+        let tg = min(tuning.nttThreadgroupSize, Int(hadamardFunction.maxTotalThreadsPerThreadgroup))
         encH.dispatchThreads(MTLSize(width: n, height: 1, depth: 1),
                             threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
         encH.endEncoding()
@@ -265,7 +267,7 @@ public class PolyEngine {
             enc.setBytes(&numPoints, length: 4, index: 4)
             let totalThreads = n * polyChunks
             // Threadgroup size must be multiple of polyChunks
-            let tg = min(256, Int(evalHornerChunkedFunction.maxTotalThreadsPerThreadgroup))
+            let tg = min(tuning.nttThreadgroupSize, Int(evalHornerChunkedFunction.maxTotalThreadsPerThreadgroup))
             enc.dispatchThreads(MTLSize(width: totalThreads, height: 1, depth: 1),
                                threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
         } else {
@@ -275,7 +277,7 @@ public class PolyEngine {
             enc.setBuffer(resultsBuf, offset: 0, index: 2)
             enc.setBytes(&degree, length: 4, index: 3)
             enc.setBytes(&numPoints, length: 4, index: 4)
-            let tg = min(256, Int(evalHornerFunction.maxTotalThreadsPerThreadgroup))
+            let tg = min(tuning.nttThreadgroupSize, Int(evalHornerFunction.maxTotalThreadsPerThreadgroup))
             enc.dispatchThreads(MTLSize(width: n, height: 1, depth: 1),
                                threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
         }
