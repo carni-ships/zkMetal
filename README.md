@@ -54,12 +54,15 @@ NTT is also available for Goldilocks (249ms at 2^24) and BabyBear (262ms at 2^24
 
 ### Merkle Trees
 
-| Backend | Leaves | GPU |
-|---------|--------|-----|
-| Poseidon2 | 2^14 | 44ms |
-| Poseidon2 | 2^16 | 59ms |
-| Keccak-256 | 2^14 | 4.3ms |
-| Keccak-256 | 2^16 | 18ms |
+| Backend | Leaves | GPU | CPU | Speedup |
+|---------|--------|-----|-----|---------|
+| Poseidon2 | 2^10 | 45ms | 122ms | **3x** |
+| Poseidon2 | 2^12 | 53ms | 476ms | **9x** |
+| Poseidon2 | 2^14 | 70ms | 2.2s | **31x** |
+| Poseidon2 | 2^16 | 84ms | - | |
+| Keccak-256 | 2^12 | 13ms | 32ms | **2x** |
+| Keccak-256 | 2^14 | 25ms | 111ms | **4x** |
+| Keccak-256 | 2^16 | 52ms | 434ms | **8x** |
 
 ### FRI Folding (BN254 Fr)
 
@@ -206,6 +209,23 @@ swift build -c release
 - **Fused kernels**: Multi-round FRI folding and Poseidon2 full permutations avoid intermediate buffer round-trips.
 - **Signed-digit MSM**: Scalar recoding halves bucket count, reducing bucket accumulation work.
 - **GLV endomorphism**: BN254's efficient endomorphism splits 256-bit scalar muls into two 128-bit half-width muls.
+
+## Correctness & Provenance
+
+All GPU kernels are verified against CPU reference implementations. The CPU implementations use standard, well-known algorithms and externally-sourced parameters:
+
+| Component | Source | Verification |
+|-----------|--------|-------------|
+| **BN254 curve** | Standard parameters (same as Ethereum/bn256) | Field arithmetic unit tests |
+| **Poseidon2 constants** | [HorizenLabs reference](https://github.com/HorizenLabs/poseidon2/blob/main/plain_implementations/src/poseidon2/poseidon2_instance_bn256.rs) | Constants copied from official repo |
+| **Keccak-256** | FIPS 202 (SHA-3) | Validated against NIST test vectors |
+| **NTT** | Cooley-Tukey (DIT) / Gentleman-Sande (DIF) | Round-trip tests + root of unity verification |
+| **FRI folding** | Standard FRI protocol | GPU vs CPU cross-check + multi-fold to constant |
+| **Sumcheck** | Standard interactive protocol | Protocol-level verification (S(0)+S(1) = sum at each round) |
+| **Goldilocks** | p = 2^64 - 2^32 + 1 (standard) | NTT round-trip + CPU cross-check |
+| **BabyBear** | p = 2^31 - 2^27 + 1 (standard) | NTT round-trip + CPU cross-check |
+
+Every benchmark run includes correctness checks (printed as PASS/FAIL). The test suite (`swift test`) covers field arithmetic, curve operations, and NTT correctness.
 
 ## Optimization
 

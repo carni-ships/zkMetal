@@ -24,8 +24,31 @@ public func runMerkleBench() {
                 times.append((CFAbsoluteTimeGetCurrent() - t0) * 1000)
             }
             times.sort()
-            let median = times[2]
-            print(String(format: "  Poseidon2 Merkle 2^%-2d = %6d leaves: %7.2f ms", logN, n, median))
+            let gpuMedian = times[2]
+
+            // CPU Merkle tree
+            var cpuMs: Double = 0
+            if logN <= 14 {
+                let cpuT0 = CFAbsoluteTimeGetCurrent()
+                var level = leaves
+                while level.count > 1 {
+                    var next = [Fr]()
+                    next.reserveCapacity(level.count / 2)
+                    for i in stride(from: 0, to: level.count, by: 2) {
+                        next.append(poseidon2Hash(level[i], level[i+1]))
+                    }
+                    level = next
+                }
+                cpuMs = (CFAbsoluteTimeGetCurrent() - cpuT0) * 1000
+            }
+
+            if cpuMs > 0 {
+                print(String(format: "  Poseidon2 Merkle 2^%-2d = %6d leaves: GPU %7.2f ms | CPU %7.0f ms | %.0fx",
+                            logN, n, gpuMedian, cpuMs, cpuMs / gpuMedian))
+            } else {
+                print(String(format: "  Poseidon2 Merkle 2^%-2d = %6d leaves: GPU %7.2f ms",
+                            logN, n, gpuMedian))
+            }
         }
 
         // Correctness: tree[2n-2] should be deterministic
@@ -63,8 +86,31 @@ public func runMerkleBench() {
                 times.append((CFAbsoluteTimeGetCurrent() - t0) * 1000)
             }
             times.sort()
-            let median = times[2]
-            print(String(format: "  Keccak Merkle   2^%-2d = %6d leaves: %7.2f ms", logN, n, median))
+            let gpuMedian = times[2]
+
+            // CPU Keccak Merkle tree
+            var cpuMs: Double = 0
+            if logN <= 16 {
+                let cpuT0 = CFAbsoluteTimeGetCurrent()
+                var level = leaves
+                while level.count > 1 {
+                    var next = [[UInt8]]()
+                    next.reserveCapacity(level.count / 2)
+                    for i in stride(from: 0, to: level.count, by: 2) {
+                        next.append(keccak256(level[i] + level[i+1]))
+                    }
+                    level = next
+                }
+                cpuMs = (CFAbsoluteTimeGetCurrent() - cpuT0) * 1000
+            }
+
+            if cpuMs > 0 {
+                print(String(format: "  Keccak Merkle   2^%-2d = %6d leaves: GPU %7.2f ms | CPU %7.0f ms | %.0fx",
+                            logN, n, gpuMedian, cpuMs, cpuMs / gpuMedian))
+            } else {
+                print(String(format: "  Keccak Merkle   2^%-2d = %6d leaves: GPU %7.2f ms",
+                            logN, n, gpuMedian))
+            }
         }
         // Correctness: verify GPU Merkle root matches CPU level-by-level
         let testN = 1024
