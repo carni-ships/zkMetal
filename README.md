@@ -34,24 +34,31 @@ Run `swift run -c release zkbench all` to reproduce.
 | 2^17 | 240ms |
 | 2^18 | 412ms |
 
-**Comparison to other Metal GPU implementations (BN254, M3 Pro, measured locally):**
+**Measured locally (BN254, Apple M3 Pro):**
 
-| Points | zkMetal | [ICICLE-Metal v3.8](https://github.com/ingonyama-zk/icicle) | ICICLE CPU | [MoPro v2](https://github.com/zkmopro/gpu-acceleration)* |
-|--------|---------|-------------|-----------|-----------|
-| 2^16 | **155ms** | 1,083ms | 114ms | 253ms |
-| 2^18 | **412ms** | 1,475ms | 556ms | 678ms |
-| 2^20 | — | 2,590ms | 2,349ms | 1,702ms |
+| Points | zkMetal | [ICICLE-Metal v3.8](https://github.com/ingonyama-zk/icicle) | ICICLE CPU |
+|--------|---------|-------------|-----------|
+| 2^16 | **155ms** | 1,083ms | 114ms |
+| 2^18 | **412ms** | 1,475ms | 556ms |
+| 2^20 | — | 2,590ms | 2,349ms |
 
-*MoPro numbers from [their blog](https://zkmopro.org/blog/metal-msm-v2/) on M3 MacBook Air; others measured locally on M3 Pro.*
+ICICLE-Metal v3.8.0 has ~600ms constant overhead per call (license server). Their Metal backend never beats their own CPU on M3 Pro.
 
-ICICLE-Metal v3.8.0 has ~600ms constant overhead per call (license server). Their Metal backend never beats their own CPU on M3 Pro. The ICICLE CPU backend (multithreaded Rust) is competitive with Arkworks.
+**Reported by others (BN254, Apple Silicon):**
 
-**Comparison to CUDA:**
+| Points | [ICICLE-Metal](https://zkmopro.org/blog/metal-msm-v2/) (M3 Air) | [MoPro v2](https://zkmopro.org/blog/metal-msm-v2/) (M3 Air) | [Arkworks](https://zkmopro.org/blog/metal-msm-v2/) CPU (M3 Air) |
+|--------|-------------|-----------|-----------|
+| 2^16 | — | 253ms | 69ms |
+| 2^18 | 149ms | 678ms | 266ms |
+| 2^20 | 421ms | 1,702ms | 592ms |
+
+*Source: [MoPro blog](https://zkmopro.org/blog/metal-msm-v2/). Different hardware and measurement methodology — numbers may not be directly comparable to our local measurements.*
+
+**CUDA reference:**
 
 | Implementation | Hardware | 2^16 |
 |----------------|----------|------|
 | Ingonyama ICICLE (CUDA) | RTX 3090 Ti | ~9ms |
-| zkMetal (this) | M3 Pro Metal GPU | 155ms |
 
 Metal GPU MSM is currently **slower than optimized multithreaded CPU** for BN254. The fundamental bottleneck is that 256-bit field arithmetic requires 8x32-bit limbs on Metal (no native 64-bit integer multiply), while CPU implementations use 4x64-bit limbs with hand-tuned assembly, out-of-order execution, and deep pipelines. CUDA GPUs (like those targeted by [Ingonyama's ICICLE](https://github.com/ingonyama-zk/icicle)) have native 64-bit integer multiply. The GPU advantage is clear for smaller fields: BabyBear NTT achieves **690M elements/sec** (29ms at 2^24) and Goldilocks **455M elements/sec** (37ms at 2^24) — both dramatically faster than BN254 on the same GPU (see NTT table below).
 
