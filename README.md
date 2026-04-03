@@ -57,15 +57,15 @@ Run `swift run -c release zkbench all` to reproduce, or `swift run -c release zk
 
 ### MSM (BN254 G1)
 
-| Points | Vanilla CPU | Optimized CPU (Pippenger) | GPU (Metal) | Opt CPU vs Vanilla | GPU vs Vanilla |
-|--------|-------------|--------------------------|-------------|-------------------|----------------|
-| 2^8 | 519ms | 16ms | 8ms | **32x** | **65x** |
-| 2^10 | 1.8s | 47ms | 9ms | **38x** | **200x** |
-| 2^12 | 7.6s | 114ms | 14ms | **67x** | **543x** |
-| 2^14 | 51s | 440ms | 24ms | **116x** | **2125x** |
-| 2^16 | ~3.4min* | ~1.7s* | 37ms | **~116x** | **~5500x** |
-| 2^18 | — | — | 102ms | — | — |
-| 2^20 | — | — | 294ms | — | — |
+| Points | Vanilla CPU | Opt CPU (Pippenger) | Opt CPU vs Vanilla | GPU (Metal) | GPU vs Vanilla |
+|--------|-------------|--------------------|--------------------|-------------|----------------|
+| 2^8 | 519ms | 16ms | **32x** | 8ms | **65x** |
+| 2^10 | 1.8s | 47ms | **38x** | 9ms | **200x** |
+| 2^12 | 7.6s | 114ms | **67x** | 14ms | **543x** |
+| 2^14 | 51s | 440ms | **116x** | 24ms | **2125x** |
+| 2^16 | ~3.4min* | ~1.7s* | **~116x** | 37ms | **~5500x** |
+| 2^18 | — | — | — | 102ms | — |
+| 2^20 | — | — | — | 294ms | — |
 
 \* Extrapolated. Optimized CPU uses Pippenger with window-parallel bucket accumulation (33-116x over vanilla double-and-add).
 
@@ -89,13 +89,13 @@ GPU scaling is strongly sublinear: 1024x more points (2^8 to 2^18) costs only ~9
 
 **BN254 Fr (256-bit, 8x32-bit limbs):**
 
-| Size | Vanilla CPU | Optimized C | GPU (Metal) | C vs Vanilla | GPU vs Vanilla |
-|------|-------------|------------|-------------|--------------|----------------|
-| 2^14 | 103ms | 2.7ms | 0.49ms | **38x** | **210x** |
-| 2^16 | 743ms | 24ms | 0.95ms | **31x** | **782x** |
-| 2^18 | 3.0s | 104ms | 1.9ms | **29x** | **1579x** |
-| 2^20 | 7.6s | ~420ms* | 6.1ms | **~18x** | **1246x** |
-| 2^22 | 31s | ~1.7s* | 26ms | **~18x** | **1192x** |
+| Size | Vanilla CPU | Opt C | Opt C vs Vanilla | GPU (Metal) | GPU vs Vanilla |
+|------|-------------|-------|------------------|-------------|----------------|
+| 2^14 | 103ms | 2.7ms | **38x** | 0.49ms | **210x** |
+| 2^16 | 743ms | 24ms | **31x** | 0.95ms | **782x** |
+| 2^18 | 3.0s | 104ms | **29x** | 1.9ms | **1579x** |
+| 2^20 | 7.6s | ~420ms* | **~18x** | 6.1ms | **1246x** |
+| 2^22 | 31s | ~1.7s* | **~18x** | 26ms | **1192x** |
 
 \* Extrapolated. Optimized C uses fully unrolled 4-limb CIOS Montgomery multiplication with `__uint128_t` (compiled with `-O3`). Also available: parallel CPU (GCD, 12 cores) at 5.4x over vanilla.
 
@@ -135,14 +135,14 @@ GPU scales sublinearly: 2^10 to 2^22 is 4096x more data for ~100x more time. CPU
 
 ### Hashing
 
-| Primitive | Batch Size | Vanilla CPU | Parallel CPU (12 cores) | GPU (Metal) | Parallel vs Vanilla | GPU vs Vanilla |
-|-----------|-----------|-------------|------------------------|-------------|--------------------|--------------------|
-| Poseidon2 | 2^12 | 119 µs/hash | 21 µs/hash | 0.61 µs/hash | **6x** | **195x** |
-| Poseidon2 | 2^14 | 128 µs/hash | 20 µs/hash | 0.17 µs/hash | **6x** | **753x** |
-| Poseidon2 | 2^16 | 150 µs/hash | 19 µs/hash | 0.14 µs/hash | **8x** | **1071x** |
-| Keccak-256 | 2^14 | 6 µs/hash | 1.5 µs/hash | 0.035 µs/hash | **4x** | **171x** |
-| Keccak-256 | 2^16 | 6 µs/hash | 1.4 µs/hash | 0.027 µs/hash | **4x** | **222x** |
-| Keccak-256 | 2^18 | 6.2 µs/hash | 1.5 µs/hash | 0.012 µs/hash | **4x** | **517x** |
+| Primitive | Batch Size | Vanilla CPU | Parallel CPU (12 cores) | Parallel vs Vanilla | GPU (Metal) | GPU vs Vanilla |
+|-----------|-----------|-------------|------------------------|--------------------|--------------------|----------------|
+| Poseidon2 | 2^12 | 119 µs/hash | 21 µs/hash | **6x** | 0.61 µs/hash | **195x** |
+| Poseidon2 | 2^14 | 128 µs/hash | 20 µs/hash | **6x** | 0.17 µs/hash | **753x** |
+| Poseidon2 | 2^16 | 150 µs/hash | 19 µs/hash | **8x** | 0.14 µs/hash | **1071x** |
+| Keccak-256 | 2^14 | 6 µs/hash | 1.5 µs/hash | **4x** | 0.035 µs/hash | **171x** |
+| Keccak-256 | 2^16 | 6 µs/hash | 1.4 µs/hash | **4x** | 0.027 µs/hash | **222x** |
+| Keccak-256 | 2^18 | 6.2 µs/hash | 1.5 µs/hash | **4x** | 0.012 µs/hash | **517x** |
 
 Parallel CPU achieves 4-8x over vanilla (embarrassingly parallel — each hash independent). GPU achieves 195-1071x over vanilla. No other Metal implementations of Poseidon2 or Keccak-256 batch hashing are known.
 
