@@ -370,4 +370,212 @@ public class FRIEngine {
         }
         return buf
     }
+
+    // MARK: - FRI Proof Protocol
+
+    /// Commit phase: fold iteratively, returning commitments (Poseidon2 Merkle roots)
+    /// at each layer plus the final constant value.
+    public func commitPhase(evals: [Fr], betas: [Fr]) throws -> FRICommitment {
+        let n = evals.count
+        precondition(n > 1 && (n & (n - 1)) == 0)
+        let logN = Int(log2(Double(n)))
+        precondition(betas.count <= logN)
+
+        let merkle = try Poseidon2MerkleEngine()
+
+        // Store each layer's evaluations and Merkle root
+        var layers: [[Fr]] = [evals]
+        var roots: [Fr] = []
+
+        // Commit to initial evaluations
+        let root0 = try merkle.merkleRoot(evals)
+        roots.append(root0)
+
+        // Iterative folding
+        var current = evals
+        for i in 0..<betas.count {
+            let folded = try fold(evals: current, beta: betas[i])
+            let root = try merkle.merkleRoot(folded)
+            roots.append(root)
+            layers.append(folded)
+            current = folded
+        }
+
+        let finalValue = current.count == 1 ? current[0] : current[0]
+
+        return FRICommitment(
+            layers: layers,
+            roots: roots,
+            betas: betas,
+            finalValue: finalValue
+        )
+    }
+
+    /// Query phase: given query indices, extract evaluation pairs and Merkle paths
+    /// at each layer of the FRI commitment.
+    public func queryPhase(commitment: FRICommitment, queryIndices: [UInt32]) throws -> [FRIQueryProof] {
+        let merkle = try Poseidon2MerkleEngine()
+        let numQueries = queryIndices.count
+
+        var proofs = [FRIQueryProof]()
+        proofs.reserveCapacity(numQueries)
+
+        for qi in 0..<numQueries {
+            var layerEvals: [(Fr, Fr)] = []
+            var merklePaths: [[[Fr]]] = []
+            var idx = queryIndices[qi]
+
+            for layer in 0..<commitment.layers.count - 1 {
+                let evals = commitment.layers[layer]
+                let n = evals.count
+                let halfN = UInt32(n / 2)
+
+                // Extract paired evaluations in canonical order (lower, upper)
+                let lowerIdx = idx < halfN ? idx : idx - halfN
+                let upperIdx = lowerIdx + halfN
+                let evalA = evals[Int(lowerIdx)]
+                let evalB = evals[Int(upperIdx)]
+                layerEvals.append((evalA, evalB))
+
+                // Get Merkle path for this index
+                let tree = try merkle.buildTree(evals)
+                let path = extractMerklePath(tree: tree, leafCount: n, index: Int(idx))
+                merklePaths.append([path])
+
+                // Derive next layer's index: fold maps to lower half
+                idx = lowerIdx
+            }
+
+            proofs.append(FRIQueryProof(
+                initialIndex: queryIndices[qi],
+                layerEvals: layerEvals,
+                merklePaths: merklePaths
+            ))
+        }
+
+        return proofs
+    }
+
+    /// Verify a FRI proof: check consistency of query responses with commitments.
+    /// Returns true if all queries pass.
+    public func verify(commitment: FRICommitment, queries: [FRIQueryProof]) -> Bool {
+        for query in queries {
+            var idx = query.initialIndex
+
+            for layer in 0..<commitment.layers.count - 1 {
+                let (evalA, evalB) = query.layerEvals[layer]
+                let n = commitment.layers[layer].count
+                let halfN = UInt32(n / 2)
+                let logN = Int(log2(Double(n)))
+                let beta = commitment.betas[layer]
+
+                // Verify fold consistency:
+                // folded[lowerIdx] = (evalA + evalB) + beta * omega^(-lowerIdx) * (evalA - evalB)
+                let omega = frRootOfUnity(logN: logN)
+                let omegaInv = frInverse(omega)
+                let lowerIdx = idx < halfN ? idx : idx - halfN
+                let w_inv = frPow(omegaInv, UInt64(lowerIdx))
+
+                let sum = frAdd(evalA, evalB)
+                let diff = frSub(evalA, evalB)
+                let term = frMul(frMul(beta, w_inv), diff)
+                let expected = frAdd(sum, term)
+
+                // Check against next layer's evaluation
+                let nextIdx = lowerIdx
+                if layer + 1 < commitment.layers.count {
+                    let nextEval = commitment.layers[layer + 1][Int(nextIdx)]
+                    let expectedLimbs = frToInt(expected)
+                    let actualLimbs = frToInt(nextEval)
+                    if expectedLimbs != actualLimbs {
+                        return false
+                    }
+                }
+
+                idx = nextIdx
+            }
+        }
+        return true
+    }
+
+    /// Batch query extraction on GPU: extract evaluation pairs for multiple query indices.
+    public func batchQueryExtract(evals: [Fr], queryIndices: [UInt32]) throws -> [(Fr, Fr)] {
+        let n = evals.count
+        let numQueries = queryIndices.count
+
+        guard let evalsBuf = createFrBuffer(evals),
+              let idxBuf = device.makeBuffer(bytes: queryIndices, length: numQueries * 4, options: .storageModeShared),
+              let outBuf = device.makeBuffer(length: numQueries * 2 * MemoryLayout<Fr>.stride, options: .storageModeShared),
+              let cmdBuf = commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
+        }
+
+        var nVal = UInt32(n)
+        var qVal = UInt32(numQueries)
+        let enc = cmdBuf.makeComputeCommandEncoder()!
+        enc.setComputePipelineState(queryExtractFunction)
+        enc.setBuffer(evalsBuf, offset: 0, index: 0)
+        enc.setBuffer(idxBuf, offset: 0, index: 1)
+        enc.setBuffer(outBuf, offset: 0, index: 2)
+        enc.setBytes(&nVal, length: 4, index: 3)
+        enc.setBytes(&qVal, length: 4, index: 4)
+        let tg = min(tuning.friThreadgroupSize, Int(queryExtractFunction.maxTotalThreadsPerThreadgroup))
+        enc.dispatchThreads(MTLSize(width: numQueries, height: 1, depth: 1),
+                           threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+        enc.endEncoding()
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+
+        let ptr = outBuf.contents().bindMemory(to: Fr.self, capacity: numQueries * 2)
+        var pairs = [(Fr, Fr)]()
+        pairs.reserveCapacity(numQueries)
+        for i in 0..<numQueries {
+            pairs.append((ptr[i * 2], ptr[i * 2 + 1]))
+        }
+        return pairs
+    }
+
+    /// Extract a Merkle authentication path for a given leaf index.
+    private func extractMerklePath(tree: [Fr], leafCount: Int, index: Int) -> [Fr] {
+        let treeSize = 2 * leafCount - 1
+        var path = [Fr]()
+        var idx = index
+        var levelStart = 0
+        var levelSize = leafCount
+
+        while levelSize > 1 {
+            let siblingIdx = idx ^ 1  // flip last bit to get sibling
+            if levelStart + siblingIdx < treeSize {
+                path.append(tree[levelStart + siblingIdx])
+            }
+            idx /= 2
+            levelStart += levelSize
+            levelSize /= 2
+        }
+        return path
+    }
+}
+
+// MARK: - FRI Proof Data Structures
+
+/// Commitment produced during FRI commit phase.
+public struct FRICommitment {
+    /// Evaluations at each fold layer (layer 0 = original, layer k = after k folds)
+    public let layers: [[Fr]]
+    /// Poseidon2 Merkle root of each layer's evaluations
+    public let roots: [Fr]
+    /// Random challenges used at each fold round
+    public let betas: [Fr]
+    /// Final constant value after all folds
+    public let finalValue: Fr
+}
+
+/// Query proof for a single query index across all FRI layers.
+public struct FRIQueryProof {
+    /// The initial query index in the original domain
+    public let initialIndex: UInt32
+    /// Evaluation pairs (eval[idx], eval[paired_idx]) at each layer
+    public let layerEvals: [(Fr, Fr)]
+    /// Merkle authentication paths at each layer
+    public let merklePaths: [[[Fr]]]
 }

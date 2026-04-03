@@ -102,6 +102,43 @@ public func runFRIBench() {
             }
         }
 
+        // FRI commit → query → verify round-trip
+        print("\n--- FRI Proof Protocol (commit → query → verify) ---")
+        do {
+            let protoLogN = 14
+            let protoN = 1 << protoLogN
+            var protoEvals = [Fr](repeating: Fr.zero, count: protoN)
+            for i in 0..<protoN {
+                rng = rng &* 6364136223846793005 &+ 1442695040888963407
+                protoEvals[i] = frFromInt(rng >> 32)
+            }
+            var protoBetas = [Fr]()
+            for i in 0..<protoLogN {
+                protoBetas.append(frFromInt(UInt64(i + 1) * 17))
+            }
+
+            let commitment = try engine.commitPhase(evals: protoEvals, betas: protoBetas)
+            print("  Commit: \(commitment.layers.count) layers, \(commitment.roots.count) roots")
+
+            let queryIndices: [UInt32] = [0, 42, 1000, UInt32(protoN / 2 - 1)]
+            let queries = try engine.queryPhase(commitment: commitment, queryIndices: queryIndices)
+            print("  Query: \(queries.count) proofs extracted")
+
+            let verified = engine.verify(commitment: commitment, queries: queries)
+            print("  Verify: \(verified ? "PASS" : "FAIL")")
+
+            // Benchmark commit phase
+            let _ = try engine.commitPhase(evals: protoEvals, betas: protoBetas)  // warmup
+            var commitTimes = [Double]()
+            for _ in 0..<5 {
+                let t0 = CFAbsoluteTimeGetCurrent()
+                let _ = try engine.commitPhase(evals: protoEvals, betas: protoBetas)
+                commitTimes.append((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+            }
+            commitTimes.sort()
+            print(String(format: "  Commit 2^%d: %.1fms (fold + Merkle)", protoLogN, commitTimes[2]))
+        }
+
         // Multi-fold benchmark: full FRI protocol
         print("\n--- Full FRI protocol (fold to constant) ---")
         for startLogN in [16, 18, 20] {
