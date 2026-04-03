@@ -11,56 +11,62 @@ func runMSMBench() throws {
     }
     fputs("zkbench — \(device.name)\n", stderr)
 
-    let args = CommandLine.arguments
-    let n = args.count >= 3 ? (Int(args[2]) ?? 65536) : 65536
-
-    // MSM benchmark
-    fputs("\n--- MSM Benchmark ---\n", stderr)
+    fputs("\n--- MSM Benchmark (BN254 G1) ---\n", stderr)
     let engine = try MetalMSM()
 
     let gx = fpFromInt(1)
     let gy = fpFromInt(2)
-    let g = PointAffine(x: gx, y: gy)
+    let gProj = pointFromAffine(PointAffine(x: gx, y: gy))
 
-    fputs("Generating \(n) distinct points...\n", stderr)
+    // Generate max points once, slice for smaller sizes
+    let sizes = [256, 1024, 4096, 16384, 65536, 131072, 262144]
+    let maxN = sizes.last!
+
+    fputs("Generating \(maxN) distinct points...\n", stderr)
+    let genT0 = CFAbsoluteTimeGetCurrent()
     var projPoints = [PointProjective]()
-    projPoints.reserveCapacity(n)
-    let gProj = pointFromAffine(g)
+    projPoints.reserveCapacity(maxN)
     var acc = gProj
-    for _ in 0..<n {
+    for _ in 0..<maxN {
         projPoints.append(acc)
         acc = pointAdd(acc, gProj)
     }
-    let points = batchToAffine(projPoints)
+    let allPoints = batchToAffine(projPoints)
+    projPoints = []  // free memory
+    fputs("Point generation: \(String(format: "%.1f", (CFAbsoluteTimeGetCurrent() - genT0) * 1000))ms\n", stderr)
 
-    var scalars: [[UInt32]] = []
     var rng: UInt64 = 0xDEAD_BEEF_CAFE_BABE
-    for _ in 0..<n {
-        var limbs: [UInt32] = Array(repeating: 0, count: 8)
+    var allScalars = [[UInt32]]()
+    allScalars.reserveCapacity(maxN)
+    for _ in 0..<maxN {
+        var limbs = [UInt32](repeating: 0, count: 8)
         for j in 0..<8 {
             rng = rng &* 6364136223846793005 &+ 1442695040888963407
             limbs[j] = UInt32(truncatingIfNeeded: rng >> 32)
         }
-        scalars.append(limbs)
+        allScalars.append(limbs)
     }
 
-    // Warmup
-    let _ = try engine.msm(points: points, scalars: scalars)
+    for n in sizes {
+        let points = Array(allPoints.prefix(n))
+        let scalars = Array(allScalars.prefix(n))
 
-    // Timed runs
-    let runs = 5
-    var times = [Double]()
-    for i in 0..<runs {
-        let start = CFAbsoluteTimeGetCurrent()
+        // Warmup
         let _ = try engine.msm(points: points, scalars: scalars)
-        let elapsed = (CFAbsoluteTimeGetCurrent() - start) * 1000
-        times.append(elapsed)
-        fputs("  run \(i+1): \(String(format: "%.1f", elapsed))ms\n", stderr)
+
+        // Timed runs
+        let runs = 5
+        var times = [Double]()
+        for _ in 0..<runs {
+            let start = CFAbsoluteTimeGetCurrent()
+            let _ = try engine.msm(points: points, scalars: scalars)
+            let elapsed = (CFAbsoluteTimeGetCurrent() - start) * 1000
+            times.append(elapsed)
+        }
+        times.sort()
+        let median = times[runs / 2]
+        fputs(String(format: "  MSM %7d pts: %7.1f ms\n", n, median), stderr)
     }
-    times.sort()
-    let median = times[runs / 2]
-    let best = times[0]
-    fputs("MSM(\(n)): median \(String(format: "%.1f", median))ms, best \(String(format: "%.1f", best))ms\n", stderr)
 }
 
 /// Global flag: skip CPU benchmarks when --no-cpu is passed
