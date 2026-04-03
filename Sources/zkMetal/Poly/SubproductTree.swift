@@ -34,7 +34,6 @@ extension PolyEngine {
     /// Returns result buffer of size nttN. Single command buffer submit.
     private func multiplyGPU(_ a: [Fr], _ b: [Fr], nttLogN: Int) throws -> [Fr] {
         let nttN = 1 << nttLogN
-        let stride = MemoryLayout<Fr>.stride
 
         // Pad to NTT size
         var aPad = a
@@ -42,8 +41,12 @@ extension PolyEngine {
         var bPad = b
         while bPad.count < nttN { bPad.append(Fr.zero) }
 
-        let aBuf = createBuffer(aPad)
-        let bBuf = createBuffer(bPad)
+        let stride = MemoryLayout<Fr>.stride
+        let bufSize = nttN * stride
+        let aBuf = getCachedBuffer(slot: "mulA", minBytes: bufSize)
+        let bBuf = getCachedBuffer(slot: "mulB", minBytes: bufSize)
+        aPad.withUnsafeBytes { src in memcpy(aBuf.contents(), src.baseAddress!, bufSize) }
+        bPad.withUnsafeBytes { src in memcpy(bBuf.contents(), src.baseAddress!, bufSize) }
 
         guard let cmdBuf = nttEngine.commandQueue.makeCommandBuffer() else {
             throw MSMError.noCommandBuffer
@@ -103,11 +106,12 @@ extension PolyEngine {
         hInit[0] = frInverse(f[0])
         let hBuf = createBuffer(hInit)
 
-        // Working buffers
-        let hCopyBuf = device.makeBuffer(length: nttN * stride, options: .storageModeShared)!
-        let fNTTBuf = device.makeBuffer(length: nttN * stride, options: .storageModeShared)!
-        let prodBuf = device.makeBuffer(length: nttN * stride, options: .storageModeShared)!
-        let tmfhBuf = device.makeBuffer(length: nttN * stride, options: .storageModeShared)!
+        // Working buffers (cached, grow-only)
+        let bufBytes = nttN * stride
+        let hCopyBuf = getCachedBuffer(slot: "invHCopy", minBytes: bufBytes)
+        let fNTTBuf = getCachedBuffer(slot: "invFNTT", minBytes: bufBytes)
+        let prodBuf = getCachedBuffer(slot: "invProd", minBytes: bufBytes)
+        let tmfhBuf = getCachedBuffer(slot: "invTmfh", minBytes: bufBytes)
 
         guard let cmdBuf = nttEngine.commandQueue.makeCommandBuffer() else {
             throw MSMError.noCommandBuffer
@@ -209,8 +213,6 @@ extension PolyEngine {
         // Use a single NTT size for both multiplies (quotient and q*g)
         let maxSize = max(quotientSize + invRevG.count - 1, quotientSize + g.count - 1)
         let nttLogN = ceilLog2(maxSize)
-        let nttN = 1 << nttLogN
-        let stride = MemoryLayout<Fr>.stride
 
         // Multiply 1: revF * invRevG → quotient (reversed)
         let qRevProd = try multiplyGPU(revFTrunc, invRevG, nttLogN: nttLogN)
@@ -258,12 +260,11 @@ extension PolyEngine {
             let outSize = outDeg + 1
 
             if outDeg <= schoolbookMaxDeg {
+                // outBuf persists in tree — can't cache. leftBuf/rightBuf are temporaries — cache them.
                 let outBuf = device.makeBuffer(length: numPolys * outSize * MemoryLayout<Fr>.stride,
                                                options: .storageModeShared)!
-                let leftBuf = device.makeBuffer(length: numPolys * inSize * MemoryLayout<Fr>.stride,
-                                                options: .storageModeShared)!
-                let rightBuf = device.makeBuffer(length: numPolys * inSize * MemoryLayout<Fr>.stride,
-                                                 options: .storageModeShared)!
+                let leftBuf = getCachedBuffer(slot: "sbLeft", minBytes: numPolys * inSize * MemoryLayout<Fr>.stride)
+                let rightBuf = getCachedBuffer(slot: "sbRight", minBytes: numPolys * inSize * MemoryLayout<Fr>.stride)
                 splitLR(prev: tree[k - 1], left: leftBuf, right: rightBuf,
                         numPolys: numPolys, polySize: inSize)
                 try dispatchSchoolbookMultiply(left: leftBuf, right: rightBuf, output: outBuf,
@@ -303,10 +304,11 @@ extension PolyEngine {
         let stride = MemoryLayout<Fr>.stride
         let prevPtr = prev.contents().bindMemory(to: Fr.self, capacity: numPolys * 2 * inSize)
 
-        let aBuf = device.makeBuffer(length: numPolys * nttN * stride, options: .storageModeShared)!
-        let bBuf = device.makeBuffer(length: numPolys * nttN * stride, options: .storageModeShared)!
-        memset(aBuf.contents(), 0, numPolys * nttN * stride)
-        memset(bBuf.contents(), 0, numPolys * nttN * stride)
+        let totalBytes = numPolys * nttN * stride
+        let aBuf = getCachedBuffer(slot: "nttLvlA", minBytes: totalBytes)
+        let bBuf = getCachedBuffer(slot: "nttLvlB", minBytes: totalBytes)
+        memset(aBuf.contents(), 0, totalBytes)
+        memset(bBuf.contents(), 0, totalBytes)
 
         let aPtr = aBuf.contents().bindMemory(to: Fr.self, capacity: numPolys * nttN)
         let bPtr = bBuf.contents().bindMemory(to: Fr.self, capacity: numPolys * nttN)
@@ -346,7 +348,9 @@ extension PolyEngine {
         cmdBuf.waitUntilCompleted()
         if let error = cmdBuf.error { throw MSMError.gpuError(error.localizedDescription) }
 
-        let outBuf = device.makeBuffer(length: numPolys * outSize * stride, options: .storageModeShared)!
+        // Output buffer can't be cached — it's stored in the tree array and must persist
+        let outBytes = numPolys * outSize * stride
+        let outBuf = device.makeBuffer(length: outBytes, options: .storageModeShared)!
         let outPtr = outBuf.contents().bindMemory(to: Fr.self, capacity: numPolys * outSize)
         let resPtr = aBuf.contents().bindMemory(to: Fr.self, capacity: numPolys * nttN)
         for i in 0..<numPolys {
@@ -412,7 +416,7 @@ extension PolyEngine {
         let numChildren = numParents * 2
         let fSize = parentSize
 
-        let fBuf = device.makeBuffer(length: numChildren * fSize * stride, options: .storageModeShared)!
+        let fBuf = getCachedBuffer(slot: "remSbF", minBytes: numChildren * fSize * stride)
         let fPtr = fBuf.contents().bindMemory(to: Fr.self, capacity: numChildren * fSize)
         let pPtr = parents.contents().bindMemory(to: Fr.self, capacity: numParents * parentSize)
 
@@ -549,11 +553,12 @@ extension PolyEngine {
         }
         let hBuf = createBuffer(hInit)
 
-        // Working buffers
-        let fNTTBuf = device.makeBuffer(length: count * nttN * stride, options: .storageModeShared)!
-        let hCopyBuf = device.makeBuffer(length: count * nttN * stride, options: .storageModeShared)!
-        let prodBuf = device.makeBuffer(length: count * nttN * stride, options: .storageModeShared)!
-        let tmfhBuf = device.makeBuffer(length: count * nttN * stride, options: .storageModeShared)!
+        // Working buffers (cached, grow-only)
+        let batchBufBytes = count * nttN * stride
+        let fNTTBuf = getCachedBuffer(slot: "bInvFNTT", minBytes: batchBufBytes)
+        let hCopyBuf = getCachedBuffer(slot: "bInvHCopy", minBytes: batchBufBytes)
+        let prodBuf = getCachedBuffer(slot: "bInvProd", minBytes: batchBufBytes)
+        let tmfhBuf = getCachedBuffer(slot: "bInvTmfh", minBytes: batchBufBytes)
 
         guard let cmdBuf = nttEngine.commandQueue.makeCommandBuffer() else {
             throw MSMError.noCommandBuffer
@@ -659,8 +664,11 @@ extension PolyEngine {
         let stride = MemoryLayout<Fr>.stride
         let tg = 256
 
-        let aBuf = createBuffer(a)
-        let bBuf = createBuffer(b)
+        let totalBytes = a.count * stride
+        let aBuf = getCachedBuffer(slot: "bMulA", minBytes: totalBytes)
+        let bBuf = getCachedBuffer(slot: "bMulB", minBytes: totalBytes)
+        a.withUnsafeBytes { src in memcpy(aBuf.contents(), src.baseAddress!, totalBytes) }
+        b.withUnsafeBytes { src in memcpy(bBuf.contents(), src.baseAddress!, totalBytes) }
 
         guard let cmdBuf = nttEngine.commandQueue.makeCommandBuffer() else {
             throw MSMError.noCommandBuffer

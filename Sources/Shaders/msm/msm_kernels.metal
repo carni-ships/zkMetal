@@ -265,6 +265,107 @@ kernel void msm_horner_combine(
 }
 
 // Signed-digit scalar recoding: extract window digits with carry propagation
+// GPU counting sort: histogram phase
+// Each thread processes one element per window, atomically counts bucket occurrences
+kernel void gpu_sort_histogram(
+    device const uint* digits          [[buffer(0)]],   // signed digits [nWindows × effectiveN]
+    device atomic_uint* counts         [[buffer(1)]],   // output: histogram [nWindows × nBuckets]
+    constant uint& n_points            [[buffer(2)]],
+    constant uint& n_buckets           [[buffer(3)]],
+    constant uint& n_windows           [[buffer(4)]],
+    uint gid                           [[thread_position_in_grid]]
+) {
+    if (gid >= n_points * n_windows) return;
+    uint w = gid / n_points;
+    uint i = gid % n_points;
+    uint digit = digits[w * n_points + i] & 0x7FFFFFFFu;
+    atomic_fetch_add_explicit(&counts[w * n_buckets + digit], 1u, memory_order_relaxed);
+}
+
+// GPU counting sort: scatter phase
+// Each thread atomically claims a position and writes its index to sorted output
+kernel void gpu_sort_scatter(
+    device const uint* digits          [[buffer(0)]],   // signed digits
+    device uint* sorted_indices        [[buffer(1)]],   // output: sorted point indices
+    device atomic_uint* positions      [[buffer(2)]],   // running position per bucket (initialized from prefix sum)
+    constant uint& n_points            [[buffer(3)]],
+    constant uint& n_buckets           [[buffer(4)]],
+    constant uint& n_windows           [[buffer(5)]],
+    uint gid                           [[thread_position_in_grid]]
+) {
+    if (gid >= n_points * n_windows) return;
+    uint w = gid / n_points;
+    uint i = gid % n_points;
+    uint raw = digits[w * n_points + i];
+    uint digit = raw & 0x7FFFFFFFu;
+    if (digit == 0) return;
+    uint pos = atomic_fetch_add_explicit(&positions[w * n_buckets + digit], 1u, memory_order_relaxed);
+    uint idx = i;
+    if (raw & 0x80000000u) idx |= 0x80000000u;
+    sorted_indices[w * n_points + pos] = idx;
+}
+
+// GPU counting sort: build count-sorted map
+// One threadgroup per window. Sorts buckets by descending count for SIMD coherence.
+// Uses simple insertion into position counters (same as CPU version).
+kernel void gpu_build_csm(
+    device const uint* counts          [[buffer(0)]],   // histogram [nWindows × nBuckets]
+    device uint* csm                   [[buffer(1)]],   // output: count-sorted map [nWindows × nBuckets]
+    device uint* offsets               [[buffer(2)]],   // bucket offsets (from prefix sum)
+    constant uint& n_buckets           [[buffer(3)]],
+    constant uint& n_windows           [[buffer(4)]],
+    uint gid                           [[thread_position_in_grid]]
+) {
+    // Each thread handles one window
+    if (gid >= n_windows) return;
+    uint w = gid;
+    uint wOff = w * n_buckets;
+
+    // Find max count
+    uint max_count = 0;
+    for (uint i = 0; i < n_buckets; i++) {
+        uint c = counts[wOff + i];
+        if (c > max_count) max_count = c;
+    }
+
+    // Build CSM: reuse offsets buffer as scratch for position tracking
+    // We use a local approach: scan from highest count down
+    // Temporarily store count-of-counts in csm buffer, then build positions
+    // Clear csm as scratch for count-of-counts
+    for (uint i = 0; i <= max_count && i < n_buckets; i++) {
+        csm[wOff + i] = 0;
+    }
+    for (uint i = 0; i < n_buckets; i++) {
+        uint c = counts[wOff + i];
+        csm[wOff + c]++;
+    }
+    // Prefix sum (descending) to get positions
+    // Store positions in offsets buffer temporarily
+    uint running = 0;
+    for (uint c = max_count; ; c--) {
+        uint cnt = csm[wOff + c];
+        csm[wOff + c] = running;  // reuse as position
+        running += cnt;
+        if (c == 0) break;
+    }
+    // Now csm[wOff + count] = start position for buckets with that count
+    // Re-scan buckets and place them
+    // We need a second pass, but csm is being used as positions.
+    // Use a different approach: build directly
+    // Reset positions from csm values
+    // We stored prefix sums in csm[count] — need to scatter buckets there
+    // Make a copy of positions (use offsets scratch)
+    for (uint i = 0; i <= max_count && i < n_buckets; i++) {
+        offsets[wOff + i] = csm[wOff + i];
+    }
+    for (uint i = 0; i < n_buckets; i++) {
+        uint c = counts[wOff + i];
+        uint dest = offsets[wOff + c];
+        offsets[wOff + c] = dest + 1;
+        csm[wOff + dest] = (w << 16u) | i;
+    }
+}
+
 kernel void signed_digit_extract(
     device const uint* scalars          [[buffer(0)]],
     device uint* digits                 [[buffer(1)]],

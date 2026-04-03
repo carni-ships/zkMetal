@@ -133,6 +133,24 @@ public func fr377Sub(_ a: Fr377, _ b: Fr377) -> Fr377 {
 
 public func fr377Sqr(_ a: Fr377) -> Fr377 { fr377Mul(a, a) }
 
+public func fr377Neg(_ a: Fr377) -> Fr377 {
+    if a.isZero { return a }
+    let (r, _) = sub256Fr(Fr377.P.map { $0 }, a.to64())
+    return Fr377.from64(r)
+}
+
+private func sub256Fr(_ a: [UInt64], _ b: [UInt64]) -> ([UInt64], Bool) {
+    var r = [UInt64](repeating: 0, count: 4)
+    var borrow: Bool = false
+    for i in 0..<4 {
+        let (s1, b1) = a[i].subtractingReportingOverflow(b[i])
+        let (s2, b2) = s1.subtractingReportingOverflow(borrow ? 1 : 0)
+        r[i] = s2
+        borrow = b1 || b2
+    }
+    return (r, borrow)
+}
+
 public func fr377FromInt(_ val: UInt64) -> Fr377 {
     let limbs: [UInt64] = [val, 0, 0, 0]
     let raw = Fr377.from64(limbs)

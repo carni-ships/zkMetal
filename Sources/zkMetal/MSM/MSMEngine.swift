@@ -24,6 +24,9 @@ public class MetalMSM {
     public let endomorphismFunction: MTLComputePipelineState
     public let glvDecomposeFunction: MTLComputePipelineState
     public let signedDigitFunction: MTLComputePipelineState
+    public let gpuSortHistogramFunction: MTLComputePipelineState
+    public let gpuSortScatterFunction: MTLComputePipelineState
+    public let gpuBuildCsmFunction: MTLComputePipelineState
 
     // Pre-allocated buffers (lazily sized, reused across calls)
     private var maxAllocatedPoints = 0
@@ -43,6 +46,7 @@ public class MetalMSM {
     private var signedDigitPtr: UnsafeMutablePointer<UInt32>?
     private var signedDigitCapacity = 0
     private var signedDigitBuffer: MTLBuffer?
+    private var gpuSortPositionsBuffer: MTLBuffer?
     // Cached GLV buffers (reused across MSM calls)
     private var glvScalarInBufCached: MTLBuffer?
     private var glvK1MetalBufCached: MTLBuffer?
@@ -92,7 +96,10 @@ public class MetalMSM {
               let hornerFn = library.makeFunction(name: "msm_horner_combine"),
               let endoFn = library.makeFunction(name: "glv_endomorphism"),
               let glvDecomposeFn = library.makeFunction(name: "glv_decompose"),
-              let signedDigitFn = library.makeFunction(name: "signed_digit_extract") else {
+              let signedDigitFn = library.makeFunction(name: "signed_digit_extract"),
+              let gpuSortHistFn = library.makeFunction(name: "gpu_sort_histogram"),
+              let gpuSortScatFn = library.makeFunction(name: "gpu_sort_scatter"),
+              let gpuBuildCsmFn = library.makeFunction(name: "gpu_build_csm") else {
             throw MSMError.missingKernel
         }
 
@@ -104,6 +111,9 @@ public class MetalMSM {
         self.endomorphismFunction = try device.makeComputePipelineState(function: endoFn)
         self.glvDecomposeFunction = try device.makeComputePipelineState(function: glvDecomposeFn)
         self.signedDigitFunction = try device.makeComputePipelineState(function: signedDigitFn)
+        self.gpuSortHistogramFunction = try device.makeComputePipelineState(function: gpuSortHistFn)
+        self.gpuSortScatterFunction = try device.makeComputePipelineState(function: gpuSortScatFn)
+        self.gpuBuildCsmFunction = try device.makeComputePipelineState(function: gpuBuildCsmFn)
         self.tuning = TuningManager.shared.config(device: device)
 
     }
@@ -382,9 +392,8 @@ public class MetalMSM {
         }
 
 
-        let ts = CFAbsoluteTimeGetCurrent()
-
         let gpuPtsPtr = pointsBuffer.contents().bindMemory(to: PointAffine.self, capacity: effectiveN)
+        let useGpuSort = glvN > 0 && signedDigitBuffer != nil && effectiveN >= 262144
         var endoCmdBuf: MTLCommandBuffer? = nil
         if glvN > 0 {
             // Copy points to GPU buffer before dispatching (shared mode = CPU writes visible to GPU)
@@ -437,6 +446,7 @@ public class MetalMSM {
                 let tg2 = min(signedDigitFunction.maxTotalThreadsPerThreadgroup, tuning.msmThreadgroupSize)
                 enc.dispatchThreads(MTLSize(width: effectiveN, height: 1, depth: 1),
                                     threadsPerThreadgroup: MTLSize(width: tg2, height: 1, depth: 1))
+
             }
             enc.endEncoding()
 
@@ -638,17 +648,95 @@ public class MetalMSM {
             enc.endEncoding()
         }
 
-        let tPrecompDone = CFAbsoluteTimeGetCurrent()
-
         // Wait for endo + GPU signed-digit extraction before sort reads the data
-        let tBeforeEndoWait = CFAbsoluteTimeGetCurrent()
         endoCmdBuf?.waitUntilCompleted()
-        let tAfterEndoWait = CFAbsoluteTimeGetCurrent()
 
-        // Sort ALL windows upfront
-        sortWindows(0..<nWindows)
+        if useGpuSort {
+            // Ensure positions buffer is large enough
+            let posNeeded = nBuckets * nWindows
+            if gpuSortPositionsBuffer == nil || gpuSortPositionsBuffer!.length < posNeeded * MemoryLayout<UInt32>.stride {
+                gpuSortPositionsBuffer = device.makeBuffer(length: posNeeded * MemoryLayout<UInt32>.stride, options: .storageModeShared)
+            }
 
-        let tSortDone = CFAbsoluteTimeGetCurrent()
+            // Step 1: GPU histogram
+            memset(allCountsBuffer.contents(), 0, nBuckets * nWindows * MemoryLayout<UInt32>.stride)
+            do {
+                guard let histCB = commandQueue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
+                let enc = histCB.makeComputeCommandEncoder()!
+                enc.setComputePipelineState(gpuSortHistogramFunction)
+                enc.setBuffer(signedDigitBuffer, offset: 0, index: 0)
+                enc.setBuffer(allCountsBuffer, offset: 0, index: 1)
+                var npVal = UInt32(effectiveN)
+                var nbVal = UInt32(nBuckets)
+                var nwVal = UInt32(nWindows)
+                enc.setBytes(&npVal, length: 4, index: 2)
+                enc.setBytes(&nbVal, length: 4, index: 3)
+                enc.setBytes(&nwVal, length: 4, index: 4)
+                let totalThreads = effectiveN * nWindows
+                let tg = min(256, Int(gpuSortHistogramFunction.maxTotalThreadsPerThreadgroup))
+                enc.dispatchThreads(MTLSize(width: totalThreads, height: 1, depth: 1),
+                                   threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+                enc.endEncoding()
+                histCB.commit()
+                histCB.waitUntilCompleted()
+            }
+
+            // Step 2: CPU prefix sum
+            let countsPtr = allCountsBuffer.contents().bindMemory(to: UInt32.self, capacity: nBuckets * nWindows)
+            let offsetsPtr = allOffsetsBuffer.contents().bindMemory(to: UInt32.self, capacity: nBuckets * nWindows)
+            let positionsPtr = gpuSortPositionsBuffer!.contents().bindMemory(to: UInt32.self, capacity: nBuckets * nWindows)
+            for w in 0..<nWindows {
+                let wOff = w * nBuckets
+                var running: UInt32 = 0
+                for i in 0..<nBuckets {
+                    offsetsPtr[wOff + i] = running
+                    positionsPtr[wOff + i] = running
+                    running += countsPtr[wOff + i]
+                }
+            }
+
+            // Step 3: GPU scatter + CSM build
+            do {
+                guard let sortCB = commandQueue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
+                let scatterEnc = sortCB.makeComputeCommandEncoder()!
+                scatterEnc.setComputePipelineState(gpuSortScatterFunction)
+                scatterEnc.setBuffer(signedDigitBuffer, offset: 0, index: 0)
+                scatterEnc.setBuffer(sortedIndicesBuffer, offset: 0, index: 1)
+                scatterEnc.setBuffer(gpuSortPositionsBuffer, offset: 0, index: 2)
+                var npVal = UInt32(effectiveN)
+                var nbVal = UInt32(nBuckets)
+                var nwVal = UInt32(nWindows)
+                scatterEnc.setBytes(&npVal, length: 4, index: 3)
+                scatterEnc.setBytes(&nbVal, length: 4, index: 4)
+                scatterEnc.setBytes(&nwVal, length: 4, index: 5)
+                let totalThreads = effectiveN * nWindows
+                let tg = min(256, Int(gpuSortScatterFunction.maxTotalThreadsPerThreadgroup))
+                scatterEnc.dispatchThreads(MTLSize(width: totalThreads, height: 1, depth: 1),
+                                          threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+                scatterEnc.endEncoding()
+
+                let csmEnc = sortCB.makeComputeCommandEncoder()!
+                csmEnc.setComputePipelineState(gpuBuildCsmFunction)
+                csmEnc.setBuffer(allCountsBuffer, offset: 0, index: 0)
+                csmEnc.setBuffer(countSortedMapBuffer, offset: 0, index: 1)
+                csmEnc.setBuffer(gpuSortPositionsBuffer, offset: 0, index: 2)
+                var nbVal2 = UInt32(nBuckets)
+                var nwVal2 = UInt32(nWindows)
+                csmEnc.setBytes(&nbVal2, length: 4, index: 3)
+                csmEnc.setBytes(&nwVal2, length: 4, index: 4)
+                csmEnc.dispatchThreads(MTLSize(width: nWindows, height: 1, depth: 1),
+                                      threadsPerThreadgroup: MTLSize(width: nWindows, height: 1, depth: 1))
+                csmEnc.endEncoding()
+
+                sortCB.commit()
+                sortCB.waitUntilCompleted()
+            }
+        } else {
+            // CPU fallback sort
+            sortWindows(0..<nWindows)
+        }
+
+
 
         // Single command buffer: reduce + bucket_sum + combine
         guard let cb = commandQueue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
@@ -679,7 +767,7 @@ public class MetalMSM {
         }
         cb.commit()
         cb.waitUntilCompleted()
-        let gpuDone = CFAbsoluteTimeGetCurrent()
+
 
         if let error = cb.error { throw MSMError.gpuError(error.localizedDescription) }
 
@@ -690,7 +778,6 @@ public class MetalMSM {
         }
 
 
-        let t2 = CFAbsoluteTimeGetCurrent()
         var result = windowResults.last!
         for w in stride(from: nWindows - 2, through: 0, by: -1) {
             for _ in 0..<windowBits {
@@ -698,18 +785,6 @@ public class MetalMSM {
             }
             result = pointAdd(result, windowResults[w])
         }
-        let hornerTime = CFAbsoluteTimeGetCurrent() - t2
-
-        let precompTime = tPrecompDone - ts
-        let endoWaitTime = tAfterEndoWait - tBeforeEndoWait
-        let actualSortTime = tSortDone - tAfterEndoWait
-        let gpuTotalWait = gpuDone - tSortDone
-        fputs("  prep: \(String(format: "%.1f", precompTime * 1000))ms, " +
-              "endo: \(String(format: "%.1f", endoWaitTime * 1000))ms, " +
-              "sort: \(String(format: "%.1f", actualSortTime * 1000))ms, " +
-              "gpu: \(String(format: "%.1f", gpuTotalWait * 1000))ms, " +
-              "horner: \(String(format: "%.1f", hornerTime * 1000))ms\n", stderr)
-
         if scalarOutMetalBuf == nil { flatScalarBuf?.deallocate() }
         _ = scalarOutMetalBuf
         return result

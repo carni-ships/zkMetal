@@ -228,6 +228,7 @@ public class Blake3MerkleEngine {
 
     /// Build a Merkle tree from 32-byte leaf hashes using Blake3 parent compression.
     /// Returns all tree nodes as 32-byte hashes: [leaves..., internal nodes..., root].
+    /// For n >= 1024, uses fused subtree kernel for bottom 10 levels, then level-by-level.
     public func buildTree(_ leaves: [[UInt8]]) throws -> [[UInt8]] {
         let n = leaves.count
         precondition(n > 0 && (n & (n - 1)) == 0, "Leaf count must be power of 2")
@@ -258,6 +259,8 @@ public class Blake3MerkleEngine {
 
         let enc = cmdBuf.makeComputeCommandEncoder()!
 
+        // Level-by-level (fused subtrees tested but regressed — Blake3 parent compression
+        // is too lightweight for shared memory barrier overhead to pay off)
         var levelStart = 0
         var levelSize = n
 

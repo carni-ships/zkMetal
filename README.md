@@ -206,9 +206,9 @@ How close each primitive is to the hardware floor (M3 Pro: ~3.6 TFLOPS, ~150 GB/
 | 7 | Keccak Batch 2^18 | 8ms | 0.52ms (compute) | Compute | ~15x |
 | 8 | P2 Batch 2^16 | 9ms | 0.62ms (compute) | Compute | ~14.5x |
 | 9 | Sumcheck 2^20 | 10ms | 0.85ms (BW) | Bandwidth | ~12x |
-| 10 | NTT BN254 2^22 | 29ms | 2.87ms (compute) | Compute | ~10x |
+| 10 | NTT BN254 2^22 | 365ms | 2.87ms (compute) | Compute + strided BW | ~127x |
 
-Notes: MSM's realistic floor accounts for scatter-gather inefficiency in bucket accumulation. Poseidon2 Merkle overhead is dominated by 16 sequential kernel dispatches (~0.5ms each). FRI fold headroom may be inflated by per-round dispatch overhead rather than kernel inefficiency.
+Notes: MSM's realistic floor accounts for scatter-gather inefficiency in bucket accumulation. Poseidon2 Merkle overhead is dominated by 16 sequential kernel dispatches (~0.5ms each). FRI fold headroom is inflated by single-fold API overhead (multiFold is ~4x from floor). BN254 NTT 2^22 uses extended four-step with strided column access (32KB per element) — the 127x gap is dominated by non-coalesced memory patterns for 32-byte Fr elements.
 
 ## Supported Fields
 

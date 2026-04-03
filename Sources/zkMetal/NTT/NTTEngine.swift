@@ -35,6 +35,13 @@ public class NTTEngine {
     let invColumnButterflyRadix4Function: MTLComputePipelineState
     let invColumnFusedSubblockFunction: MTLComputePipelineState
     let invRowFusedTwiddleFunction: MTLComputePipelineState
+    // Row-layout kernels for transposed column FFTs (coalesced access)
+    let rowSubblockFusedFunction: MTLComputePipelineState
+    let rowButterflyFunction: MTLComputePipelineState
+    let rowButterflyRadix4Function: MTLComputePipelineState
+    let invRowSubblockFusedFunction: MTLComputePipelineState
+    let invRowButterflyFunction: MTLComputePipelineState
+    let invRowButterflyRadix4Function: MTLComputePipelineState
 
     // Cached twiddle buffers per logN
     private var twiddleCache: [Int: MTLBuffer] = [:]
@@ -89,7 +96,13 @@ public class NTTEngine {
               let invColumnButterflyFn = library.makeFunction(name: "intt_column_butterfly"),
               let invColumnButterflyRadix4Fn = library.makeFunction(name: "intt_column_butterfly_radix4"),
               let invColumnFusedSubblockTwiddleFn = library.makeFunction(name: "intt_column_fused_subblock"),
-              let invRowFusedTwiddleFn = library.makeFunction(name: "intt_row_fused_twiddle") else {
+              let invRowFusedTwiddleFn = library.makeFunction(name: "intt_row_fused_twiddle"),
+              let rowSubblockFusedFn = library.makeFunction(name: "ntt_row_subblock_fused"),
+              let rowButterflyFn = library.makeFunction(name: "ntt_row_butterfly"),
+              let rowButterflyRadix4Fn = library.makeFunction(name: "ntt_row_butterfly_radix4"),
+              let invRowSubblockFusedFn = library.makeFunction(name: "intt_row_subblock_fused"),
+              let invRowButterflyFn = library.makeFunction(name: "intt_row_butterfly"),
+              let invRowButterflyRadix4Fn = library.makeFunction(name: "intt_row_butterfly_radix4") else {
             throw MSMError.missingKernel
         }
 
@@ -120,6 +133,12 @@ public class NTTEngine {
         self.invColumnButterflyRadix4Function = try device.makeComputePipelineState(function: invColumnButterflyRadix4Fn)
         self.invColumnFusedSubblockFunction = try device.makeComputePipelineState(function: invColumnFusedSubblockTwiddleFn)
         self.invRowFusedTwiddleFunction = try device.makeComputePipelineState(function: invRowFusedTwiddleFn)
+        self.rowSubblockFusedFunction = try device.makeComputePipelineState(function: rowSubblockFusedFn)
+        self.rowButterflyFunction = try device.makeComputePipelineState(function: rowButterflyFn)
+        self.rowButterflyRadix4Function = try device.makeComputePipelineState(function: rowButterflyRadix4Fn)
+        self.invRowSubblockFusedFunction = try device.makeComputePipelineState(function: invRowSubblockFusedFn)
+        self.invRowButterflyFunction = try device.makeComputePipelineState(function: invRowButterflyFn)
+        self.invRowButterflyRadix4Function = try device.makeComputePipelineState(function: invRowButterflyRadix4Fn)
         self.tuning = TuningManager.shared.config(device: device)
     }
 
@@ -490,12 +509,11 @@ public class NTTEngine {
         // Step 1: Column FFTs of size N1
         if needsExtended {
             // Extended: sub-block fused FFTs + global butterfly stages
-            let subSize = UInt32(1 << colFusedStages)  // 1024
+            let subSize = UInt32(1 << colFusedStages)
             let numSubblocks = UInt32(n1 / subSize)
             var subSizeStages = UInt32(colFusedStages)
             var numSubblocksVal = numSubblocks
 
-            // Step 1a: Sub-block fused column FFTs
             enc.setComputePipelineState(columnFusedSubblockFunction)
             enc.setBuffer(data, offset: 0, index: 0)
             enc.setBuffer(twiddles, offset: 0, index: 1)
@@ -509,7 +527,6 @@ public class NTTEngine {
             enc.dispatchThreadgroups(MTLSize(width: numGroups, height: 1, depth: 1),
                                      threadsPerThreadgroup: MTLSize(width: subThreads, height: 1, depth: 1))
 
-            // Step 1b: Global butterfly stages within columns (radix-4 when possible)
             var s = colFusedStages
             while s + 1 < logN1 {
                 enc.memoryBarrier(scope: .buffers)
@@ -526,7 +543,6 @@ public class NTTEngine {
                                     threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
                 s += 2
             }
-            // Handle remaining odd stage with radix-2
             if s < logN1 {
                 enc.memoryBarrier(scope: .buffers)
                 enc.setComputePipelineState(columnButterflyFunction)
@@ -542,7 +558,7 @@ public class NTTEngine {
                                     threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
             }
         } else {
-            // Standard: entire column fits in shared memory
+            // Standard column: entire column fits in shared memory
             enc.setComputePipelineState(columnFusedFunction)
             enc.setBuffer(data, offset: 0, index: 0)
             enc.setBuffer(twiddles, offset: 0, index: 1)
@@ -565,15 +581,14 @@ public class NTTEngine {
             enc.setBuffer(scratch, offset: 0, index: 1)
             enc.setBuffer(twiddles, offset: 0, index: 2)
             enc.setBytes(&nVal, length: 4, index: 3)
-            var logN2Val = UInt32(logN2)
-            enc.setBytes(&logN2Val, length: 4, index: 4)
+            var logN2ValExt = UInt32(logN2)
+            enc.setBytes(&logN2ValExt, length: 4, index: 4)
             enc.setBytes(&n1Val, length: 4, index: 5)
-            let rowThreads = Int(n2) / 2
+            let rowThreadsExt = Int(n2) / 2
             enc.dispatchThreadgroups(MTLSize(width: Int(n1), height: 1, depth: 1),
-                                      threadsPerThreadgroup: MTLSize(width: rowThreads, height: 1, depth: 1))
+                                      threadsPerThreadgroup: MTLSize(width: rowThreadsExt, height: 1, depth: 1))
             enc.endEncoding()
 
-            // Blit scratch → data
             let blit = cmdBuf.makeBlitCommandEncoder()!
             blit.copy(from: scratch, sourceOffset: 0, to: data, destinationOffset: 0, size: nInt * MemoryLayout<Fr>.stride)
             blit.endEncoding()
@@ -590,7 +605,7 @@ public class NTTEngine {
                                       threadsPerThreadgroup: MTLSize(width: rowThreads, height: 1, depth: 1))
             enc.memoryBarrier(scope: .buffers)
 
-            // Step 4: In-place square transpose
+            // In-place square transpose (N1 = N2 for balanced split)
             enc.setComputePipelineState(transposeFunction)
             enc.setBuffer(data, offset: 0, index: 0)
             enc.setBytes(&n1Val, length: 4, index: 1)
@@ -695,7 +710,6 @@ public class NTTEngine {
                 enc2.memoryBarrier(scope: .buffers)
                 s += 2
             }
-            // Handle remaining odd stage with radix-2
             if s < colGlobalStages {
                 enc2.setComputePipelineState(invColumnButterflyFunction)
                 enc2.setBuffer(data, offset: 0, index: 0)

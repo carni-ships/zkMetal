@@ -147,7 +147,6 @@ public func runNTTBench() {
         }
         print("  Standard path round-trip (2^22): \(mismatches4 == 0 ? "PASS" : "FAIL") (\(mismatches4) mismatches)")
 
-
     } catch {
         print("Error: \(error)")
     }

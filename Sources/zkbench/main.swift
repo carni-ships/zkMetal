@@ -112,8 +112,30 @@ if cmd == "calibrate" {
     runKZGBench()
 } else if cmd == "bls377" || cmd == "bls12377" {
     runBLS12377NTTBench()
+} else if cmd == "bls377msm" || cmd == "bls12377msm" {
+    runBLS12377MSMBench()
+} else if cmd == "bls377glv" {
+    runBLS12377GLVTest()
 } else if cmd == "blake3" || cmd == "b3" {
     runBlake3Bench()
+} else if cmd == "secp256k1" || cmd == "secp" {
+    runSecp256k1Test()
+} else if cmd == "secpglv" {
+    runSecp256k1GLVTest()
+} else if cmd == "secpmsm" {
+    runSecp256k1MSMBench()
+} else if cmd == "ecdsa" {
+    runECDSABench()
+} else if cmd == "ipa" {
+    runIPABench()
+} else if cmd == "verkle" {
+    runVerkleBench()
+} else if cmd == "lookup" || cmd == "logup" {
+    runLookupBench()
+} else if cmd == "sparse" || cmd == "sparse-sumcheck" {
+    runSparseSumcheckBench()
+} else if cmd == "sort" || cmd == "radix" {
+    runSortBench()
 } else if cmd == "all" {
     runNTTBench()
     runBLS12377NTTBench()

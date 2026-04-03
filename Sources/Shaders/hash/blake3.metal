@@ -169,58 +169,63 @@ kernel void blake3_hash_32(
     }
 }
 
-// Fused Merkle tree: build subtree of depth D from 2^D leaf hashes
-// Each thread builds one complete subtree
-// Input: leaf hashes (32 bytes each), Output: root hashes (32 bytes each)
+// Fused Merkle tree: one threadgroup per subtree of 1024 leaves
+// Shared memory: 1024 nodes * 8 uints = 32KB
+// 512 threads per threadgroup, each loads 2 leaves, then cooperative reduction
+#define BLAKE3_SUBTREE_SIZE 1024
+
 kernel void blake3_merkle_fused(
-    device const uchar* input  [[buffer(0)]],
-    device uchar* output       [[buffer(1)]],
-    constant uint& leaves_per_tree [[buffer(2)]],
-    constant uint& count       [[buffer(3)]],
-    uint gid                   [[thread_position_in_grid]]
+    device const uchar* leaves  [[buffer(0)]],
+    device uchar* roots         [[buffer(1)]],
+    constant uint& num_levels   [[buffer(2)]],
+    uint tid                    [[thread_index_in_threadgroup]],
+    uint tgid                   [[threadgroup_position_in_grid]],
+    uint tg_size                [[threads_per_threadgroup]]
 ) {
-    if (gid >= count) return;
+    // Each node is 8 uints = 32 bytes
+    threadgroup uint shared_data[BLAKE3_SUBTREE_SIZE * 8];
 
-    // Work with up to 1024 leaves per subtree (10 levels)
-    // Use local storage for the tree
-    uint tree[1024][8];  // max 1024 nodes, 8 words each
+    // Load leaves: each thread loads 2 leaves (tid and tid + tg_size)
+    uint leaf_base = tgid * BLAKE3_SUBTREE_SIZE;
+    device const uint* leaves32 = (device const uint*)leaves;
 
-    uint n = leaves_per_tree;
-    uint base = gid * n;
+    uint src_lo = (leaf_base + tid) * 8;
+    uint src_hi = (leaf_base + tid + tg_size) * 8;
+    uint dst_lo = tid * 8;
+    uint dst_hi = (tid + tg_size) * 8;
+    for (uint i = 0; i < 8; i++) shared_data[dst_lo + i] = leaves32[src_lo + i];
+    for (uint i = 0; i < 8; i++) shared_data[dst_hi + i] = leaves32[src_hi + i];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    // Load leaves
-    for (uint i = 0; i < n; i++) {
-        device const uint* leaf = (device const uint*)(input + (base + i) * 32);
-        for (int w = 0; w < 8; w++) {
-            tree[i][w] = leaf[w];
-        }
-    }
-
-    // Copy IV to thread storage
+    // Copy IV to thread registers
     uint iv[8];
-    for (int i = 0; i < 8; i++) iv[i] = BLAKE3_IV[i];
+    for (uint i = 0; i < 8; i++) iv[i] = BLAKE3_IV[i];
 
-    // Build tree bottom-up
-    while (n > 1) {
-        uint half_n = n >> 1;
-        for (uint i = 0; i < half_n; i++) {
+    uint active = BLAKE3_SUBTREE_SIZE;
+    for (uint level = 0; level < num_levels; level++) {
+        uint pairs = active >> 1;
+        if (tid < pairs) {
+            // Read left and right children into msg
             uint msg[16];
-            for (int w = 0; w < 8; w++) {
-                msg[w] = tree[2 * i][w];
-                msg[w + 8] = tree[2 * i + 1][w];
-            }
+            uint left_base = tid * 2 * 8;
+            uint right_base = (tid * 2 + 1) * 8;
+            for (uint i = 0; i < 8; i++) msg[i] = shared_data[left_base + i];
+            for (uint i = 0; i < 8; i++) msg[i + 8] = shared_data[right_base + i];
+
             uint state[16];
             blake3_compress(iv, msg, 0, 0, 64, 4, state); // PARENT flag
-            for (int w = 0; w < 8; w++) {
-                tree[i][w] = state[w];
-            }
+
+            // Write result to left child position (compact in-place)
+            uint out_base = tid * 8;
+            for (uint i = 0; i < 8; i++) shared_data[out_base + i] = state[i];
         }
-        n = half_n;
+        active = pairs;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
-    // Write root
-    device uint* out_words = (device uint*)(output + gid * 32);
-    for (int w = 0; w < 8; w++) {
-        out_words[w] = tree[0][w];
+    // Thread 0 writes the subtree root
+    if (tid == 0) {
+        device uint* out32 = (device uint*)(roots + tgid * 32);
+        for (uint i = 0; i < 8; i++) out32[i] = shared_data[i];
     }
 }

@@ -14,12 +14,27 @@ public class PolyEngine {
     let scalarMulFunction: MTLComputePipelineState
     let evalHornerFunction: MTLComputePipelineState
     let evalHornerChunkedFunction: MTLComputePipelineState
+    let batchInverseFunction: MTLComputePipelineState
     // Subproduct tree kernels
     let treeBuildLinearPairsFunction: MTLComputePipelineState?
     let treeBuildSchoolbookFunction: MTLComputePipelineState?
     let treeRemainderSchoolbookFunction: MTLComputePipelineState?
     let twoMinusFunction: MTLComputePipelineState?
     let tuning: TuningConfig
+
+    // Grow-only buffer cache for SubproductTree working buffers
+    // Keyed by slot name → (buffer, capacity in bytes)
+    private var bufferCache: [String: (MTLBuffer, Int)] = [:]
+
+    /// Get or grow a cached buffer for the given slot. Reuses existing buffer if large enough.
+    func getCachedBuffer(slot: String, minBytes: Int) -> MTLBuffer {
+        if let (buf, cap) = bufferCache[slot], cap >= minBytes {
+            return buf
+        }
+        let buf = device.makeBuffer(length: minBytes, options: .storageModeShared)!
+        bufferCache[slot] = (buf, minBytes)
+        return buf
+    }
 
     public init() throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
@@ -38,7 +53,8 @@ public class PolyEngine {
               let hadamardFn = library.makeFunction(name: "poly_hadamard"),
               let scalarMulFn = library.makeFunction(name: "poly_scalar_mul"),
               let evalHornerFn = library.makeFunction(name: "poly_eval_horner"),
-              let evalHornerChunkedFn = library.makeFunction(name: "poly_eval_horner_chunked") else {
+              let evalHornerChunkedFn = library.makeFunction(name: "poly_eval_horner_chunked"),
+              let batchInvFn = library.makeFunction(name: "batch_inverse") else {
             throw MSMError.missingKernel
         }
         self.addFunction = try device.makeComputePipelineState(function: addFn)
@@ -47,6 +63,7 @@ public class PolyEngine {
         self.scalarMulFunction = try device.makeComputePipelineState(function: scalarMulFn)
         self.evalHornerFunction = try device.makeComputePipelineState(function: evalHornerFn)
         self.evalHornerChunkedFunction = try device.makeComputePipelineState(function: evalHornerChunkedFn)
+        self.batchInverseFunction = try device.makeComputePipelineState(function: batchInvFn)
 
         // Load tree kernels (optional — may not exist in all builds)
         let treeLib = try? PolyEngine.compileTreeShaders(device: device)
@@ -190,6 +207,34 @@ public class PolyEngine {
         let sBuf = createBuffer([scalar])
         try dispatchEW(scalarMulFunction, aBuf, bBuf, sBuf, n: n)
         return readBuffer(bBuf, count: n)
+    }
+
+    // MARK: - Batch inversion
+
+    /// Compute element-wise inverse: out[i] = a[i]^(-1) mod r
+    /// Uses Montgomery's trick on GPU (1 Fermat inverse per 512-element chunk).
+    public func batchInverse(_ a: [Fr]) throws -> [Fr] {
+        let n = a.count
+        let aBuf = createBuffer(a)
+        let outBuf = device.makeBuffer(length: n * MemoryLayout<Fr>.stride, options: .storageModeShared)!
+        guard let cmdBuf = commandQueue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
+        let enc = cmdBuf.makeComputeCommandEncoder()!
+        enc.setComputePipelineState(batchInverseFunction)
+        enc.setBuffer(aBuf, offset: 0, index: 0)
+        enc.setBuffer(outBuf, offset: 0, index: 1)
+        var nVal = UInt32(n)
+        enc.setBytes(&nVal, length: 4, index: 2)
+        // One threadgroup per 512-element chunk, only thread 0 does work
+        let chunkSize = 512
+        let numGroups = (n + chunkSize - 1) / chunkSize
+        let tg = min(64, Int(batchInverseFunction.maxTotalThreadsPerThreadgroup))
+        enc.dispatchThreadgroups(MTLSize(width: numGroups, height: 1, depth: 1),
+                                threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+        enc.endEncoding()
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+        if let error = cmdBuf.error { throw MSMError.gpuError(error.localizedDescription) }
+        return readBuffer(outBuf, count: n)
     }
 
     // MARK: - Polynomial multiplication via NTT

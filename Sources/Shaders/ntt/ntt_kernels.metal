@@ -1295,3 +1295,275 @@ kernel void ntt_transpose(
     data[i] = data[j];
     data[j] = tmp;
 }
+
+// ===== Row-layout kernels for transposed column FFTs =====
+// After transposing N1×N2 → N2×N1, column FFTs become row FFTs (coalesced access).
+// Data layout: N2 rows of N1 contiguous elements each.
+// Element (row, pos) = data[row * n1 + pos].
+
+// DIT sub-block fused row FFT: processes one sub-block within one row.
+// Each threadgroup = one (row, sub-block) pair with contiguous memory access.
+kernel void ntt_row_subblock_fused(
+    device Fr* data                [[buffer(0)]],
+    device const Fr* twiddles      [[buffer(1)]],
+    constant uint& n               [[buffer(2)]],    // total size N = N1*N2
+    constant uint& n1              [[buffer(3)]],    // row size (column FFT length)
+    constant uint& n2              [[buffer(4)]],    // number of rows / twiddle stride
+    constant uint& local_stages    [[buffer(5)]],    // log2(sub_size)
+    constant uint& num_subblocks   [[buffer(6)]],    // N1 / sub_size
+    uint tid                       [[thread_index_in_threadgroup]],
+    uint tgid                      [[threadgroup_position_in_grid]],
+    uint tg_size                   [[threads_per_threadgroup]]
+) {
+    uint row = tgid / num_subblocks;
+    uint sub_id = tgid % num_subblocks;
+    uint sub_size = 1u << local_stages;
+    uint sub_base = sub_id * sub_size;
+    uint row_base = row * n1;
+    threadgroup Fr shared[1024];
+
+    uint idx_lo = tid;
+    uint idx_hi = tid + tg_size;
+    uint rev_lo = bitrev(idx_lo, local_stages);
+    uint rev_hi = bitrev(idx_hi, local_stages);
+
+    if (idx_lo < sub_size)
+        shared[rev_lo] = data[row_base + sub_base + idx_lo];
+    if (idx_hi < sub_size)
+        shared[rev_hi] = data[row_base + sub_base + idx_hi];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint s = 0; s < local_stages; s++) {
+        uint half_block = 1u << s;
+        uint local_block_size = half_block << 1;
+        uint block_idx = tid / half_block;
+        uint local_idx = tid % half_block;
+        uint i = block_idx * local_block_size + local_idx;
+        uint j = i + half_block;
+        uint twiddle_idx = local_idx * (n1 / local_block_size) * n2;
+        Fr a = shared[i];
+        Fr b = shared[j];
+        Fr w = twiddles[twiddle_idx];
+        Fr wb = fr_mul(w, b);
+        shared[i] = fr_add(a, wb);
+        shared[j] = fr_sub(a, wb);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    if (tid < sub_size)
+        data[row_base + sub_base + tid] = shared[tid];
+    if (tid + tg_size < sub_size)
+        data[row_base + sub_base + tid + tg_size] = shared[tid + tg_size];
+}
+
+// DIT global butterfly within rows (transposed layout).
+// Adjacent threads access adjacent positions within rows (coalesced).
+kernel void ntt_row_butterfly(
+    device Fr* data                [[buffer(0)]],
+    device const Fr* twiddles      [[buffer(1)]],
+    constant uint& n1              [[buffer(2)]],    // row size (N1)
+    constant uint& n2              [[buffer(3)]],    // number of rows (N2) / twiddle stride
+    constant uint& stage           [[buffer(4)]],
+    uint gid                       [[thread_position_in_grid]]
+) {
+    uint pairs_per_row = n1 >> 1;
+    uint row = gid / pairs_per_row;
+    uint pair_id = gid % pairs_per_row;
+    if (row >= n2) return;
+
+    uint half_block = 1u << stage;
+    uint block_size = half_block << 1;
+    uint block_idx = pair_id / half_block;
+    uint local_idx = pair_id % half_block;
+    uint pos_i = block_idx * block_size + local_idx;
+    uint pos_j = pos_i + half_block;
+
+    uint twiddle_idx = local_idx * (n1 / block_size) * n2;
+    uint row_base = row * n1;
+
+    Fr a = data[row_base + pos_i];
+    Fr b = data[row_base + pos_j];
+    Fr w = twiddles[twiddle_idx];
+    Fr wb = fr_mul(w, b);
+    data[row_base + pos_i] = fr_add(a, wb);
+    data[row_base + pos_j] = fr_sub(a, wb);
+}
+
+// Radix-4 DIT butterfly within rows (transposed layout).
+kernel void ntt_row_butterfly_radix4(
+    device Fr* data                [[buffer(0)]],
+    device const Fr* twiddles      [[buffer(1)]],
+    constant uint& n1              [[buffer(2)]],
+    constant uint& n2              [[buffer(3)]],
+    constant uint& stage           [[buffer(4)]],
+    uint gid                       [[thread_position_in_grid]]
+) {
+    uint quads_per_row = n1 >> 2;
+    uint row = gid / quads_per_row;
+    uint quad_id = gid % quads_per_row;
+    if (row >= n2) return;
+
+    uint h = 1u << stage;
+    uint block4 = h << 2;
+    uint block_idx = quad_id / h;
+    uint local_idx = quad_id % h;
+    uint base_pos = block_idx * block4 + local_idx;
+    uint row_base = row * n1;
+
+    Fr a0 = data[row_base + base_pos];
+    Fr a1 = data[row_base + base_pos + h];
+    Fr a2 = data[row_base + base_pos + 2 * h];
+    Fr a3 = data[row_base + base_pos + 3 * h];
+
+    Fr ws = twiddles[local_idx * (n1 / (2 * h)) * n2];
+    Fr ws_a1 = fr_mul(ws, a1);
+    Fr ws_a3 = fr_mul(ws, a3);
+    Fr b0 = fr_add(a0, ws_a1);
+    Fr b1 = fr_sub(a0, ws_a1);
+    Fr b2 = fr_add(a2, ws_a3);
+    Fr b3 = fr_sub(a2, ws_a3);
+
+    Fr w_lo = twiddles[local_idx * (n1 / block4) * n2];
+    Fr w_hi = twiddles[(local_idx + h) * (n1 / block4) * n2];
+
+    data[row_base + base_pos] = fr_add(b0, fr_mul(w_lo, b2));
+    data[row_base + base_pos + 2 * h] = fr_sub(b0, fr_mul(w_lo, b2));
+    data[row_base + base_pos + h] = fr_add(b1, fr_mul(w_hi, b3));
+    data[row_base + base_pos + 3 * h] = fr_sub(b1, fr_mul(w_hi, b3));
+}
+
+// DIF global butterfly within rows (for iNTT transposed layout).
+kernel void intt_row_butterfly(
+    device Fr* data                [[buffer(0)]],
+    device const Fr* twiddles_inv  [[buffer(1)]],
+    constant uint& n1              [[buffer(2)]],
+    constant uint& n2              [[buffer(3)]],
+    constant uint& stage           [[buffer(4)]],
+    constant uint& log_n1          [[buffer(5)]],
+    uint gid                       [[thread_position_in_grid]]
+) {
+    uint pairs_per_row = n1 >> 1;
+    uint row = gid / pairs_per_row;
+    uint pair_id = gid % pairs_per_row;
+    if (row >= n2) return;
+
+    uint half_block = 1u << (log_n1 - 1 - stage);
+    uint block_size = half_block << 1;
+    uint block_idx = pair_id / half_block;
+    uint local_idx = pair_id % half_block;
+    uint pos_i = block_idx * block_size + local_idx;
+    uint pos_j = pos_i + half_block;
+
+    uint twiddle_idx = local_idx * (n1 / block_size) * n2;
+    uint row_base = row * n1;
+
+    Fr a = data[row_base + pos_i];
+    Fr b = data[row_base + pos_j];
+    Fr sum = fr_add(a, b);
+    Fr diff = fr_sub(a, b);
+    Fr w = twiddles_inv[twiddle_idx];
+    data[row_base + pos_i] = sum;
+    data[row_base + pos_j] = fr_mul(diff, w);
+}
+
+// Radix-4 DIF butterfly within rows (for iNTT transposed layout).
+kernel void intt_row_butterfly_radix4(
+    device Fr* data                [[buffer(0)]],
+    device const Fr* twiddles_inv  [[buffer(1)]],
+    constant uint& n1              [[buffer(2)]],
+    constant uint& n2              [[buffer(3)]],
+    constant uint& stage           [[buffer(4)]],
+    constant uint& log_n1          [[buffer(5)]],
+    uint gid                       [[thread_position_in_grid]]
+) {
+    uint quads_per_row = n1 >> 2;
+    uint row = gid / quads_per_row;
+    uint quad_id = gid % quads_per_row;
+    if (row >= n2) return;
+
+    uint h_hi = 1u << (log_n1 - 1 - stage);
+    uint h_lo = h_hi >> 1;
+    uint block4 = h_hi << 1;
+    uint block_idx = quad_id / h_lo;
+    uint local_idx = quad_id % h_lo;
+    uint base_pos = block_idx * block4 + local_idx;
+    uint row_base = row * n1;
+
+    Fr a0 = data[row_base + base_pos];
+    Fr a1 = data[row_base + base_pos + h_lo];
+    Fr a2 = data[row_base + base_pos + 2 * h_lo];
+    Fr a3 = data[row_base + base_pos + 3 * h_lo];
+
+    Fr sum02 = fr_add(a0, a2);
+    Fr diff02 = fr_sub(a0, a2);
+    Fr sum13 = fr_add(a1, a3);
+    Fr diff13 = fr_sub(a1, a3);
+
+    Fr w_hi = twiddles_inv[local_idx * (n1 / block4) * n2];
+    diff02 = fr_mul(diff02, w_hi);
+    Fr w_hi2 = twiddles_inv[(local_idx + h_lo) * (n1 / block4) * n2];
+    diff13 = fr_mul(diff13, w_hi2);
+
+    Fr w_lo = twiddles_inv[local_idx * (n1 / (2 * h_lo)) * n2];
+
+    data[row_base + base_pos] = fr_add(sum02, sum13);
+    data[row_base + base_pos + h_lo] = fr_mul(fr_sub(sum02, sum13), w_lo);
+    data[row_base + base_pos + 2 * h_lo] = fr_add(diff02, diff13);
+    data[row_base + base_pos + 3 * h_lo] = fr_mul(fr_sub(diff02, diff13), w_lo);
+}
+
+// DIF sub-block fused row iFFT with 1/N scale (transposed layout).
+kernel void intt_row_subblock_fused(
+    device Fr* data                [[buffer(0)]],
+    device const Fr* twiddles_inv  [[buffer(1)]],
+    constant uint& n               [[buffer(2)]],
+    constant uint& n1              [[buffer(3)]],
+    constant uint& n2              [[buffer(4)]],
+    constant uint& local_stages    [[buffer(5)]],
+    constant uint& num_subblocks   [[buffer(6)]],
+    device const Fr* inv_n         [[buffer(7)]],
+    uint tid                       [[thread_index_in_threadgroup]],
+    uint tgid                      [[threadgroup_position_in_grid]],
+    uint tg_size                   [[threads_per_threadgroup]]
+) {
+    uint row = tgid / num_subblocks;
+    uint sub_id = tgid % num_subblocks;
+    uint sub_size = 1u << local_stages;
+    uint sub_base = sub_id * sub_size;
+    uint row_base = row * n1;
+    Fr scale = inv_n[0];
+    threadgroup Fr shared[1024];
+
+    uint idx_lo = tid;
+    uint idx_hi = tid + tg_size;
+    if (idx_lo < sub_size)
+        shared[idx_lo] = data[row_base + sub_base + idx_lo];
+    if (idx_hi < sub_size)
+        shared[idx_hi] = data[row_base + sub_base + idx_hi];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint s = 0; s < local_stages; s++) {
+        uint half_block = 1u << (local_stages - 1 - s);
+        uint local_block_size = half_block << 1;
+        uint block_idx = tid / half_block;
+        uint local_idx = tid % half_block;
+        uint i = block_idx * local_block_size + local_idx;
+        uint j = i + half_block;
+        uint twiddle_idx = local_idx * (n1 / local_block_size) * n2;
+        Fr a = shared[i];
+        Fr b = shared[j];
+        Fr sum = fr_add(a, b);
+        Fr diff = fr_sub(a, b);
+        Fr w = twiddles_inv[twiddle_idx];
+        shared[i] = sum;
+        shared[j] = fr_mul(diff, w);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    uint rev_lo = bitrev(tid, local_stages);
+    uint rev_hi = bitrev(tid + tg_size, local_stages);
+    if (tid < sub_size)
+        data[row_base + sub_base + tid] = fr_mul(shared[rev_lo], scale);
+    if (tid + tg_size < sub_size)
+        data[row_base + sub_base + tid + tg_size] = fr_mul(shared[rev_hi], scale);
+}
