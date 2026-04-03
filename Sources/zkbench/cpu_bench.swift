@@ -138,6 +138,76 @@ public func runCPUBench() {
         print("BabyBear NTT Error: \(error)")
     }
 
+    // --- NTT BabyBear NEON ---
+    print("\n--- NTT BabyBear: NEON C vs Vanilla CPU vs GPU ---")
+    do {
+        let engine = try BabyBearNTTEngine()
+        let sizes = [16, 18, 20, 22]
+        var rng: UInt32 = 0xDEAD_BEEF
+
+        for logN in sizes {
+            let n = 1 << logN
+            var data = [Bb](repeating: Bb.zero, count: n)
+            for i in 0..<n {
+                rng = rng &* 1664525 &+ 1013904223
+                data[i] = Bb(v: rng % Bb.P)
+            }
+
+            // Vanilla CPU
+            let cpuT0 = CFAbsoluteTimeGetCurrent()
+            let cpuResult = BabyBearNTTEngine.cpuNTT(data, logN: logN)
+            let cpuTime = (CFAbsoluteTimeGetCurrent() - cpuT0) * 1000
+
+            // NEON C (warmup + timed)
+            let _ = neonNTT_Bb(data, logN: logN)
+            var neonTimes = [Double]()
+            for _ in 0..<5 {
+                let t0 = CFAbsoluteTimeGetCurrent()
+                let _ = neonNTT_Bb(data, logN: logN)
+                neonTimes.append((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+            }
+            neonTimes.sort()
+            let neonTime = neonTimes[2]
+
+            // Verify NEON matches vanilla
+            let neonResult = neonNTT_Bb(data, logN: logN)
+            var match = true
+            for i in 0..<n { if cpuResult[i].v != neonResult[i].v { match = false; break } }
+
+            // NEON round-trip correctness
+            let neonRoundtrip = neonINTT_Bb(neonResult, logN: logN)
+            var rtMatch = true
+            for i in 0..<n { if data[i].v != neonRoundtrip[i].v { rtMatch = false; break } }
+
+            // GPU
+            let dataBuf = engine.device.makeBuffer(
+                length: n * MemoryLayout<Bb>.stride, options: .storageModeShared)!
+            data.withUnsafeBytes { src in
+                memcpy(dataBuf.contents(), src.baseAddress!, n * MemoryLayout<Bb>.stride)
+            }
+            for _ in 0..<3 { try engine.ntt(data: dataBuf, logN: logN) }
+            var gpuTimes = [Double]()
+            for _ in 0..<5 {
+                data.withUnsafeBytes { src in
+                    memcpy(dataBuf.contents(), src.baseAddress!, n * MemoryLayout<Bb>.stride)
+                }
+                let t0 = CFAbsoluteTimeGetCurrent()
+                try engine.ntt(data: dataBuf, logN: logN)
+                gpuTimes.append((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+            }
+            gpuTimes.sort()
+            let gpuTime = gpuTimes[2]
+
+            let neonSpeedup = cpuTime / neonTime
+            let gpuSpeedup = cpuTime / gpuTime
+            let correct = (match && rtMatch) ? "ok" : (match ? "rt-FAIL" : "MISMATCH")
+            print(String(format: "  2^%-2d | Vanilla: %7.1fms | NEON: %6.1fms (%.1fx) | GPU: %5.2fms (%.0fx) [%@]",
+                        logN, cpuTime, neonTime, neonSpeedup, gpuTime, gpuSpeedup, correct))
+        }
+    } catch {
+        print("BabyBear NEON NTT Error: \(error)")
+    }
+
     // --- NTT Goldilocks ---
     print("\n--- NTT Goldilocks: Vanilla vs Parallel CPU vs GPU ---")
     do {

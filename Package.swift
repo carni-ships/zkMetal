@@ -11,7 +11,16 @@ let package = Package(
     ],
     targets: [
         .target(
+            name: "NeonFieldOps",
+            path: "Sources/NeonFieldOps",
+            publicHeadersPath: "include",
+            cSettings: [
+                .unsafeFlags(["-O3"]),
+            ]
+        ),
+        .target(
             name: "zkMetal",
+            dependencies: ["NeonFieldOps"],
             path: "Sources/zkMetal",
             resources: [
                 .copy("../../Sources/Shaders"),

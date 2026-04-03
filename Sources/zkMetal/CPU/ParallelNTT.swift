@@ -3,6 +3,7 @@
 // Does NOT replace vanilla cpuNTT (which remains as the correctness reference).
 
 import Foundation
+import NeonFieldOps
 
 // MARK: - Bit-reversal permutation (shared)
 
@@ -312,6 +313,33 @@ public func parallelNTT_Gl(_ input: [Gl], logN: Int) -> [Gl] {
                 }
             }
         }
+    }
+    return data
+}
+
+// MARK: - BabyBear NEON NTT (C/ARM NEON intrinsics)
+
+/// Forward NTT on BabyBear using ARM NEON intrinsics (4-wide SIMD).
+/// Significantly faster than scalar Swift due to NEON Barrett multiplication.
+public func neonNTT_Bb(_ input: [Bb], logN: Int) -> [Bb] {
+    let n = input.count
+    precondition(n == 1 << logN, "Input size must be 2^logN")
+    var data = input
+    data.withUnsafeMutableBytes { buf in
+        let ptr = buf.baseAddress!.assumingMemoryBound(to: UInt32.self)
+        babybear_ntt_neon(ptr, Int32(logN))
+    }
+    return data
+}
+
+/// Inverse NTT on BabyBear using ARM NEON intrinsics (4-wide SIMD).
+public func neonINTT_Bb(_ input: [Bb], logN: Int) -> [Bb] {
+    let n = input.count
+    precondition(n == 1 << logN, "Input size must be 2^logN")
+    var data = input
+    data.withUnsafeMutableBytes { buf in
+        let ptr = buf.baseAddress!.assumingMemoryBound(to: UInt32.self)
+        babybear_intt_neon(ptr, Int32(logN))
     }
     return data
 }

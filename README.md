@@ -2,6 +2,32 @@
 
 GPU-accelerated zero-knowledge cryptography primitives for Apple Silicon, written in Metal and Swift.
 
+## Contents
+
+- [Primitives](#primitives)
+- [Performance](#performance)
+  - [MSM (BN254 G1)](#msm-bn254-g1)
+  - [NTT](#ntt)
+  - [Hashing](#hashing)
+  - [Merkle Trees](#merkle-trees)
+  - [FRI Folding](#fri-folding-bn254-fr)
+  - [Sumcheck](#sumcheck-bn254-fr)
+  - [Polynomial Ops](#polynomial-ops-bn254-fr)
+  - [KZG Commitments](#kzg-commitments-bn254-g1)
+  - [Blake3 Hashing](#blake3-hashing)
+  - [Theoretical Performance Analysis](#theoretical-performance-analysis)
+- [Supported Fields](#supported-fields)
+- [Architecture](#architecture)
+- [Usage](#usage)
+  - [As a library](#as-a-library)
+  - [Benchmarks](#benchmarks)
+  - [MSM CLI](#msm-cli)
+- [Auto-Tuning](#auto-tuning)
+- [Building](#building)
+- [Design Decisions](#design-decisions)
+- [Correctness & Testing](#correctness--testing)
+- [Optimization](#optimization)
+
 ## Primitives
 
 | Primitive | Description |
@@ -406,6 +432,7 @@ Run the full correctness suite with `swift run -c release zkbench test`. All GPU
 | **Goldilocks** | p = 2^64 - 2^32 + 1 (standard) | NTT round-trip + CPU cross-check |
 | **BabyBear** | p = 2^31 - 2^27 + 1 (standard) | NTT round-trip + CPU cross-check |
 | **Parallel CPU** | GCD multithreaded implementations | Cross-checked against vanilla CPU for NTT (Fr, Bb, Gl), MSM, batch hash, Merkle |
+| **NEON BabyBear** | C/ARM NEON Barrett NTT (4-wide SIMD) | Cross-checked against vanilla cpuNTT + round-trip verification |
 
 Every benchmark run includes correctness checks (printed as PASS/FAIL). The test suite (`swift test`) covers field arithmetic, curve operations, and NTT correctness.
 
