@@ -142,5 +142,84 @@ public func runMerkleBench() {
         print("  [FAIL] Keccak Merkle: \(error)")
     }
 
+    // Blake3 Merkle
+    do {
+        let engine = try Blake3MerkleEngine()
+
+        for logN in [10, 12, 14, 16, 18, 20] {
+            let n = 1 << logN
+            var leaves = [[UInt8]]()
+            for i in 0..<n {
+                var leaf = [UInt8](repeating: 0, count: 32)
+                let val = UInt64(i)
+                for b in 0..<8 { leaf[b] = UInt8((val >> (b * 8)) & 0xFF) }
+                leaves.append(leaf)
+            }
+
+            let _ = try engine.buildTree(leaves)
+
+            var times = [Double]()
+            for _ in 0..<5 {
+                let t0 = CFAbsoluteTimeGetCurrent()
+                let _ = try engine.buildTree(leaves)
+                times.append((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+            }
+            times.sort()
+            let gpuMedian = times[2]
+
+            var cpuMs: Double = 0
+            if logN <= 18 && !skipCPU {
+                let cpuT0 = CFAbsoluteTimeGetCurrent()
+                var level = leaves
+                while level.count > 1 {
+                    var next = [[UInt8]]()
+                    next.reserveCapacity(level.count / 2)
+                    for i in stride(from: 0, to: level.count, by: 2) {
+                        next.append(blake3Parent(level[i] + level[i+1]))
+                    }
+                    level = next
+                }
+                cpuMs = (CFAbsoluteTimeGetCurrent() - cpuT0) * 1000
+            }
+
+            if cpuMs > 0 {
+                print(String(format: "  Blake3 Merkle   2^%-2d = %6d leaves: GPU %7.2f ms | CPU %7.0f ms | %.0fx",
+                            logN, n, gpuMedian, cpuMs, cpuMs / gpuMedian))
+            } else {
+                print(String(format: "  Blake3 Merkle   2^%-2d = %6d leaves: GPU %7.2f ms",
+                            logN, n, gpuMedian))
+            }
+        }
+
+        // Correctness: verify GPU Merkle root matches CPU level-by-level
+        let testN = 1024
+        var testLeaves = [[UInt8]]()
+        for i in 0..<testN {
+            var leaf = [UInt8](repeating: 0, count: 32)
+            let v = UInt32(i)
+            for b in 0..<4 { leaf[b] = UInt8((v >> (b * 8)) & 0xFF) }
+            testLeaves.append(leaf)
+        }
+        let gpuTree = try engine.buildTree(testLeaves)
+        var cpuNodes = testLeaves
+        while cpuNodes.count > 1 {
+            var next = [[UInt8]]()
+            for i in stride(from: 0, to: cpuNodes.count, by: 2) {
+                next.append(blake3Parent(cpuNodes[i] + cpuNodes[i+1]))
+            }
+            cpuNodes = next
+        }
+        if cpuNodes[0] == gpuTree.last! {
+            print("  [pass] Blake3 Merkle root matches CPU (\(testN) leaves)")
+        } else {
+            print("  [FAIL] Blake3 root mismatch!")
+            print("    CPU: \(cpuNodes[0].map{String(format:"%02x",$0)}.joined())")
+            print("    GPU: \(gpuTree.last!.map{String(format:"%02x",$0)}.joined())")
+        }
+
+    } catch {
+        print("  [FAIL] Blake3 Merkle: \(error)")
+    }
+
     print("\nMerkle benchmark complete.")
 }

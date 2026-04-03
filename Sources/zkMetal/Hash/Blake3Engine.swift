@@ -130,6 +130,20 @@ public class Blake3Engine {
         }
     }
 
+    /// Encode hash-pairs into an existing compute encoder (for Merkle tree construction).
+    /// Hashes `count` pairs from buffer at inputOffset, writes to outputOffset.
+    public func encodeHashPairs(encoder: MTLComputeCommandEncoder, buffer: MTLBuffer,
+                                inputOffset: Int, outputOffset: Int, count: Int) {
+        encoder.setComputePipelineState(hash32Function)
+        encoder.setBuffer(buffer, offset: inputOffset, index: 0)
+        encoder.setBuffer(buffer, offset: outputOffset, index: 1)
+        var n = UInt32(count)
+        encoder.setBytes(&n, length: 4, index: 2)
+        let tg = min(tuning.hashThreadgroupSize, Int(hash32Function.maxTotalThreadsPerThreadgroup))
+        encoder.dispatchThreads(MTLSize(width: count, height: 1, depth: 1),
+                               threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+    }
+
     /// Hash parent nodes for Merkle tree: input is pairs of 32-byte child hashes.
     /// Input: n * 64 bytes (n pairs), Output: n * 32 bytes
     public func hashParents(_ input: [UInt8]) throws -> [UInt8] {
@@ -272,6 +286,80 @@ public func blake3(_ input: [UInt8]) -> [UInt8] {
         output[i * 4 + 1] = UInt8((result[i] >> 8) & 0xFF)
         output[i * 4 + 2] = UInt8((result[i] >> 16) & 0xFF)
         output[i * 4 + 3] = UInt8((result[i] >> 24) & 0xFF)
+    }
+    return output
+}
+
+/// CPU Blake3 parent compression (for Merkle tree nodes)
+/// Input: 64 bytes (left || right child hashes), Output: 32-byte parent hash
+public func blake3Parent(_ input: [UInt8]) -> [UInt8] {
+    // Use blake3 compress with PARENT flag (4)
+    let iv: [UInt32] = [
+        0x6A09E667, 0xBB67AE85, 0x3C6EF372, 0xA54FF53A,
+        0x510E527F, 0x9B05688C, 0x1F83D9AB, 0x5BE0CD19
+    ]
+
+    let msgPerm: [Int] = [2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8]
+
+    func g(_ state: inout [UInt32], _ a: Int, _ b: Int, _ c: Int, _ d: Int, _ mx: UInt32, _ my: UInt32) {
+        state[a] = state[a] &+ state[b] &+ mx
+        state[d] = (state[d] ^ state[a]).rotateRight(by: 16)
+        state[c] = state[c] &+ state[d]
+        state[b] = (state[b] ^ state[c]).rotateRight(by: 12)
+        state[a] = state[a] &+ state[b] &+ my
+        state[d] = (state[d] ^ state[a]).rotateRight(by: 8)
+        state[c] = state[c] &+ state[d]
+        state[b] = (state[b] ^ state[c]).rotateRight(by: 7)
+    }
+
+    func round(_ state: inout [UInt32], _ msg: [UInt32]) {
+        g(&state, 0, 4,  8, 12, msg[0],  msg[1])
+        g(&state, 1, 5,  9, 13, msg[2],  msg[3])
+        g(&state, 2, 6, 10, 14, msg[4],  msg[5])
+        g(&state, 3, 7, 11, 15, msg[6],  msg[7])
+        g(&state, 0, 5, 10, 15, msg[8],  msg[9])
+        g(&state, 1, 6, 11, 12, msg[10], msg[11])
+        g(&state, 2, 7,  8, 13, msg[12], msg[13])
+        g(&state, 3, 4,  9, 14, msg[14], msg[15])
+    }
+
+    func permute(_ msg: [UInt32]) -> [UInt32] {
+        var out = [UInt32](repeating: 0, count: 16)
+        for i in 0..<16 { out[i] = msg[msgPerm[i]] }
+        return out
+    }
+
+    var msg = [UInt32](repeating: 0, count: 16)
+    for i in 0..<16 {
+        let offset = i * 4
+        msg[i] = UInt32(input[offset]) |
+                 (UInt32(input[offset + 1]) << 8) |
+                 (UInt32(input[offset + 2]) << 16) |
+                 (UInt32(input[offset + 3]) << 24)
+    }
+
+    var state: [UInt32] = [
+        iv[0], iv[1], iv[2], iv[3], iv[4], iv[5], iv[6], iv[7],
+        iv[0], iv[1], iv[2], iv[3],
+        0, 0, 64, 4  // counter=0, blockLen=64, flags=PARENT
+    ]
+
+    var m = msg
+    for r in 0..<7 {
+        round(&state, m)
+        if r < 6 { m = permute(m) }
+    }
+
+    for i in 0..<8 {
+        state[i] ^= state[i + 8]
+    }
+
+    var output = [UInt8](repeating: 0, count: 32)
+    for i in 0..<8 {
+        output[i * 4] = UInt8(state[i] & 0xFF)
+        output[i * 4 + 1] = UInt8((state[i] >> 8) & 0xFF)
+        output[i * 4 + 2] = UInt8((state[i] >> 16) & 0xFF)
+        output[i * 4 + 3] = UInt8((state[i] >> 24) & 0xFF)
     }
     return output
 }
