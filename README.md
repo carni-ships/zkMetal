@@ -187,6 +187,25 @@ KZG performance is MSM-dominated. Commit and open are thin wrappers around MSM +
 
 Blake3 is much simpler than Keccak (7 rounds of 32-bit ARX ops vs 24 rounds of 64-bit Keccak-f). GPU speedup scales with batch size as fixed dispatch overhead amortizes. CPU Blake3 is very fast (0.6µs) so GPU only wins at large batch sizes.
 
+### Theoretical Performance Analysis
+
+How close each primitive is to the hardware floor (M3 Pro: ~3.6 TFLOPS, ~150 GB/s bandwidth), ranked by optimization opportunity:
+
+| Rank | Primitive | Current | Theoretical Floor | Bottleneck | Headroom |
+|------|-----------|---------|-------------------|------------|----------|
+| 1 | MSM BN254 2^18 | 173ms | ~5ms (scatter BW) | Random-access BW | ~35x |
+| 2 | FRI Fold 2^20 | 16ms | 0.32ms (BW) | Bandwidth | ~50x |
+| 3 | Blake3 Batch 2^20 | 21ms | 0.64ms (BW) | Bandwidth | ~33x |
+| 4 | P2 Merkle 2^16 | 17ms | 0.62ms (compute) | Dispatch latency | ~27x |
+| 5 | NTT BabyBear 2^24 | 37ms | 1.71ms (BW) | Bandwidth | ~22x |
+| 6 | NTT Goldilocks 2^24 | 37ms | 1.79ms (compute) | Compute ≈ BW | ~21x |
+| 7 | Keccak Batch 2^18 | 8ms | 0.52ms (compute) | Compute | ~15x |
+| 8 | P2 Batch 2^16 | 9ms | 0.62ms (compute) | Compute | ~14.5x |
+| 9 | Sumcheck 2^20 | 10ms | 0.85ms (BW) | Bandwidth | ~12x |
+| 10 | NTT BN254 2^22 | 29ms | 2.87ms (compute) | Compute | ~10x |
+
+Notes: MSM's realistic floor accounts for scatter-gather inefficiency in bucket accumulation. Poseidon2 Merkle overhead is dominated by 16 sequential kernel dispatches (~0.5ms each). FRI fold headroom may be inflated by per-round dispatch overhead rather than kernel inefficiency.
+
 ## Supported Fields
 
 - **BN254 Fr** (scalar field) -- Montgomery CIOS, 8x32-bit limbs
