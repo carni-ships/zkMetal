@@ -366,7 +366,7 @@ public class MetalMSM {
         let fullBuckets = 1 << Int(windowBits)
         let halfBuckets = fullBuckets >> 1
         let nBuckets = halfBuckets + 1  // signed-digit: bucket indices in [0, halfBuckets]
-        let nSegments = min(512, max(1, nBuckets / 2))
+        let nSegments = min(256, max(1, nBuckets / 2))
 
         ensureBuffers(n: effectiveN, nBuckets: nBuckets, nSegments: nSegments, nWindows: nWindows)
         guard let pointsBuffer = pointsBuffer,
@@ -376,14 +376,11 @@ public class MetalMSM {
               let bucketsBuffer = bucketsBuffer,
               let segmentResultsBuffer = segmentResultsBuffer,
               let windowResultsBuffer = windowResultsBuffer,
-              let finalResultBuffer = finalResultBuffer,
+              let _ = finalResultBuffer,
               let countSortedMapBuffer = countSortedMapBuffer else {
             throw MSMError.gpuError("Failed to allocate Metal buffers")
         }
 
-        let bucketStride = MemoryLayout<PointProjective>.stride
-        var sortTime: Double = 0
-        var reduceTime: Double = 0
 
         let ts = CFAbsoluteTimeGetCurrent()
 
@@ -642,64 +639,49 @@ public class MetalMSM {
         }
 
         let tPrecompDone = CFAbsoluteTimeGetCurrent()
-        let t0r = tPrecompDone
-
-        let batchSize = max(1, nWindows / 2)  // 2 batches + chained bucket_sum
 
         // Wait for endo + GPU signed-digit extraction before sort reads the data
         let tBeforeEndoWait = CFAbsoluteTimeGetCurrent()
         endoCmdBuf?.waitUntilCompleted()
         let tAfterEndoWait = CFAbsoluteTimeGetCurrent()
 
-        var reduceCBs: [MTLCommandBuffer] = []
-        var wStart = 0
-        var lastCB: MTLCommandBuffer!
-        while wStart < nWindows {
-            let wEnd = min(wStart + batchSize, nWindows)
-            sortWindows(wStart..<wEnd)
-
-            guard let cb = commandQueue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
-            dispatchReduce(cb: cb, windowStart: wStart, windowCount: wEnd - wStart)
-
-            // Chain bucket_sum + combine into the last reduce CB
-            if wEnd >= nWindows {
-                var nWinsBatch = UInt32(nWindows)
-                let encFinal = cb.makeComputeCommandEncoder()!
-                encFinal.setComputePipelineState(bucketSumDirectFunction)
-                encFinal.setBuffer(bucketsBuffer, offset: 0, index: 0)
-                encFinal.setBuffer(segmentResultsBuffer, offset: 0, index: 1)
-                encFinal.setBytes(&params, length: MemoryLayout<MsmParams>.stride, index: 2)
-                encFinal.setBytes(&nSegs, length: MemoryLayout<UInt32>.stride, index: 3)
-                encFinal.setBytes(&nWinsBatch, length: MemoryLayout<UInt32>.stride, index: 4)
-                encFinal.dispatchThreads(
-                    MTLSize(width: totalSegments, height: 1, depth: 1),
-                    threadsPerThreadgroup: MTLSize(width: min(tuning.msmThreadgroupSize, totalSegments), height: 1, depth: 1))
-                encFinal.memoryBarrier(scope: .buffers)
-
-                encFinal.setComputePipelineState(combineSegmentsFunction)
-                encFinal.setBuffer(segmentResultsBuffer, offset: 0, index: 0)
-                encFinal.setBuffer(windowResultsBuffer, offset: 0, index: 1)
-                encFinal.setBytes(&nSegs, length: MemoryLayout<UInt32>.stride, index: 2)
-                encFinal.dispatchThreads(
-                    MTLSize(width: nWindows, height: 1, depth: 1),
-                    threadsPerThreadgroup: MTLSize(width: min(tuning.msmThreadgroupSize, nWindows), height: 1, depth: 1))
-                encFinal.endEncoding()
-            }
-
-            cb.commit()
-            reduceCBs.append(cb)
-            lastCB = cb
-            wStart = wEnd
-        }
+        // Sort ALL windows upfront
+        sortWindows(0..<nWindows)
 
         let tSortDone = CFAbsoluteTimeGetCurrent()
-        sortTime = tSortDone - ts
 
-        lastCB.waitUntilCompleted()
+        // Single command buffer: reduce + bucket_sum + combine
+        guard let cb = commandQueue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
+        dispatchReduce(cb: cb, windowStart: 0, windowCount: nWindows)
+
+        do {
+            var nWinsBatch = UInt32(nWindows)
+            let enc = cb.makeComputeCommandEncoder()!
+            enc.setComputePipelineState(bucketSumDirectFunction)
+            enc.setBuffer(bucketsBuffer, offset: 0, index: 0)
+            enc.setBuffer(segmentResultsBuffer, offset: 0, index: 1)
+            enc.setBytes(&params, length: MemoryLayout<MsmParams>.stride, index: 2)
+            enc.setBytes(&nSegs, length: MemoryLayout<UInt32>.stride, index: 3)
+            enc.setBytes(&nWinsBatch, length: MemoryLayout<UInt32>.stride, index: 4)
+            enc.dispatchThreads(
+                MTLSize(width: totalSegments, height: 1, depth: 1),
+                threadsPerThreadgroup: MTLSize(width: min(tuning.msmThreadgroupSize, totalSegments), height: 1, depth: 1))
+            enc.memoryBarrier(scope: .buffers)
+
+            enc.setComputePipelineState(combineSegmentsFunction)
+            enc.setBuffer(segmentResultsBuffer, offset: 0, index: 0)
+            enc.setBuffer(windowResultsBuffer, offset: 0, index: 1)
+            enc.setBytes(&nSegs, length: MemoryLayout<UInt32>.stride, index: 2)
+            enc.dispatchThreads(
+                MTLSize(width: nWindows, height: 1, depth: 1),
+                threadsPerThreadgroup: MTLSize(width: min(tuning.msmThreadgroupSize, nWindows), height: 1, depth: 1))
+            enc.endEncoding()
+        }
+        cb.commit()
+        cb.waitUntilCompleted()
         let gpuDone = CFAbsoluteTimeGetCurrent()
-        reduceTime = gpuDone - t0r
-        if let error = lastCB.error { throw MSMError.gpuError(error.localizedDescription) }
-        if let error = lastCB.error { throw MSMError.gpuError(error.localizedDescription) }
+
+        if let error = cb.error { throw MSMError.gpuError(error.localizedDescription) }
 
         let winResultsPtr = windowResultsBuffer.contents().bindMemory(to: PointProjective.self, capacity: nWindows)
         var windowResults = [PointProjective](repeating: pointIdentity(), count: nWindows)

@@ -28,20 +28,20 @@ Run `swift run -c release zkbench all` to reproduce.
 | 1,024 | 74ms |
 | 4,096 | 104ms |
 | 16,384 | 169ms |
-| 65,536 | 270ms |
+| 65,536 | 173ms |
 
 **Comparison to other implementations (BN254, 2^16 points):**
 
 | Implementation | Hardware | Time |
 |----------------|----------|------|
-| zkMetal (this) | M3 Pro Metal GPU | 270ms |
+| zkMetal (this) | M3 Pro Metal GPU | 173ms |
 | Arkworks (Rust, multithreaded) | M3 CPU | 69ms |
-| zkmopro Metal MSM v2 | M3 Metal GPU | 253ms |
-| ICICLE (CUDA) | RTX 3090 Ti | ~9ms |
+| [MoPro](https://github.com/zkmopro/gpu-acceleration) Metal MSM v2 | M3 Metal GPU | 253ms |
+| Ingonyama ICICLE (CUDA) | RTX 3090 Ti | ~9ms |
 
-Metal GPU MSM is currently **slower than optimized multithreaded CPU** for BN254. The fundamental bottleneck is that 256-bit field arithmetic requires 8x32-bit limbs on Metal (no native 64-bit integer multiply), while CPU implementations use 4x64-bit limbs with hand-tuned assembly, out-of-order execution, and deep pipelines. CUDA GPUs have native 64-bit integer multiply, giving them a ~30-50x advantage over CPU. GPU MSM on Metal would become competitive for smaller fields (Goldilocks, BabyBear) where the arithmetic fits native GPU word sizes.
+Metal GPU MSM is currently **slower than optimized multithreaded CPU** for BN254. The fundamental bottleneck is that 256-bit field arithmetic requires 8x32-bit limbs on Metal (no native 64-bit integer multiply), while CPU implementations use 4x64-bit limbs with hand-tuned assembly, out-of-order execution, and deep pipelines. CUDA GPUs (like those targeted by [Ingonyama's ICICLE](https://github.com/ingonyama-zk/icicle)) have native 64-bit integer multiply, giving them a ~20x advantage over Metal. GPU MSM on Metal would become competitive for smaller fields (Goldilocks, BabyBear) where the arithmetic fits native GPU word sizes.
 
-GPU scaling is strongly sublinear: 256x more points (256 to 65K) costs only 3.7x more time, as fixed GPU overhead dominates at small sizes.
+GPU scaling is strongly sublinear: 256x more points (256 to 65K) costs only 2.4x more time, as fixed GPU overhead dominates at small sizes.
 
 ### NTT (BN254 Fr)
 

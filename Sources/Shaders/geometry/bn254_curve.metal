@@ -27,33 +27,34 @@ PointProjective point_from_affine(PointAffine a) {
 }
 
 // Point doubling: 4M + 6S + 7add (a=0 for BN254)
+// Uses fp_mul(a,a) instead of fp_sqr to reduce register pressure (CIOS 10 temps vs SOS 17)
 PointProjective point_double(PointProjective p) {
     if (point_is_identity(p)) return p;
 
-    Fp a = fp_sqr(p.x);
-    // fp_mul instead of fp_sqr: works around Metal compiler inlining bug
-    // that miscompiles fp_sqr(p.y) when point_double is inlined
+    Fp a = fp_mul(p.x, p.x);
     Fp b = fp_mul(p.y, p.y);
-    Fp c = fp_sqr(b);
+    Fp c = fp_mul(b, b);
 
-    Fp d = fp_sub(fp_sqr(fp_add(p.x, b)), fp_add(a, c));
+    Fp d = fp_sub(fp_mul(fp_add(p.x, b), fp_add(p.x, b)), fp_add(a, c));
     d = fp_double(d);
 
     Fp e = fp_add(fp_double(a), a); // 3*X^2
-    Fp f = fp_sqr(e);
+    Fp f = fp_mul(e, e);
 
     PointProjective r;
     r.x = fp_sub(f, fp_double(d));
     r.y = fp_sub(fp_mul(e, fp_sub(d, r.x)), fp_double(fp_double(fp_double(c))));
-    r.z = fp_sub(fp_sqr(fp_add(p.y, p.z)), fp_add(b, fp_sqr(p.z)));
+    Fp yz = fp_add(p.y, p.z);
+    r.z = fp_sub(fp_mul(yz, yz), fp_add(b, fp_mul(p.z, p.z)));
     return r;
 }
 
 // Mixed addition: projective + affine
+// Uses fp_mul(a,a) instead of fp_sqr to reduce register pressure
 PointProjective point_add_mixed(PointProjective p, PointAffine q) {
     if (point_is_identity(p)) return point_from_affine(q);
 
-    Fp z1z1 = fp_sqr(p.z);
+    Fp z1z1 = fp_mul(p.z, p.z);
     Fp u2 = fp_mul(q.x, z1z1);
     Fp h = fp_sub(u2, p.x);
 
@@ -67,24 +68,25 @@ PointProjective point_add_mixed(PointProjective p, PointAffine q) {
     Fp s2 = fp_mul(q.y, fp_mul(p.z, z1z1));
     PointProjective result;
     result.z = fp_double(fp_mul(p.z, h));
-    Fp hh = fp_sqr(h);
+    Fp hh = fp_mul(h, h);
     Fp i = fp_double(fp_double(hh));
     Fp v = fp_mul(p.x, i);
     Fp j = fp_mul(h, i);
     Fp rr = fp_double(fp_sub(s2, p.y));
-    result.x = fp_sub(fp_sub(fp_sqr(rr), j), fp_double(v));
+    result.x = fp_sub(fp_sub(fp_mul(rr, rr), j), fp_double(v));
     result.y = fp_sub(fp_mul(rr, fp_sub(v, result.x)),
                       fp_double(fp_mul(p.y, j)));
     return result;
 }
 
 // Full addition: projective + projective
+// Uses fp_mul(a,a) instead of fp_sqr to reduce register pressure
 PointProjective point_add(PointProjective p, PointProjective q) {
     if (point_is_identity(p)) return q;
     if (point_is_identity(q)) return p;
 
-    Fp z1z1 = fp_sqr(p.z);
-    Fp z2z2 = fp_sqr(q.z);
+    Fp z1z1 = fp_mul(p.z, p.z);
+    Fp z2z2 = fp_mul(q.z, q.z);
     Fp u1 = fp_mul(p.x, z2z2);
     Fp u2 = fp_mul(q.x, z1z1);
     Fp s1 = fp_mul(p.y, fp_mul(q.z, z2z2));
@@ -101,11 +103,12 @@ PointProjective point_add(PointProjective p, PointProjective q) {
     PointProjective result;
     result.z = fp_mul(fp_double(fp_mul(p.z, q.z)), h);
 
-    Fp i = fp_sqr(fp_double(h));
+    Fp dh = fp_double(h);
+    Fp i = fp_mul(dh, dh);
     Fp v = fp_mul(u1, i);
     Fp j = fp_mul(h, i);
 
-    result.x = fp_sub(fp_sub(fp_sqr(rr), j), fp_double(v));
+    result.x = fp_sub(fp_sub(fp_mul(rr, rr), j), fp_double(v));
     result.y = fp_sub(fp_mul(rr, fp_sub(v, result.x)),
                       fp_double(fp_mul(s1, j)));
     return result;
