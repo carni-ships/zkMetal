@@ -77,4 +77,33 @@ void bn254_fr_vector_fold(const uint64_t *a, const uint64_t *b,
                            const uint64_t *x, const uint64_t *xInv,
                            int n, uint64_t *out);
 
+/// Fr synthetic division: quotient = (p(x) - p(z)) / (x - z).
+/// @param coeffs Polynomial coefficients (n elements, 4 uint64_t each, Montgomery form).
+/// @param z      Evaluation point (4 uint64_t, Montgomery form).
+/// @param n      Number of coefficients.
+/// @param quotient Output n-1 elements (4 uint64_t each).
+void bn254_fr_synthetic_div(const uint64_t *coeffs, const uint64_t *z,
+                             int n, uint64_t *quotient);
+
+/// secp256k1 point scalar multiplication using C CIOS field arithmetic.
+/// @param p       Projective point (12 uint64_t: x[4], y[4], z[4], Montgomery form).
+/// @param scalar  4 × uint64_t scalar (non-Montgomery integer form, little-endian).
+/// @param r       Output projective point (12 uint64_t).
+void secp256k1_point_scalar_mul(const uint64_t *p, const uint64_t *scalar, uint64_t *r);
+
+/// secp256k1 full projective point addition.
+void secp256k1_point_add(const uint64_t *p, const uint64_t *q, uint64_t *r);
+
+/// secp256k1 projective to affine conversion.
+void secp256k1_point_to_affine(const uint64_t *p, uint64_t *ax, uint64_t *ay);
+
+/// secp256k1 G1 Pippenger MSM using optimized C field arithmetic.
+/// Multi-threaded windows, mixed affine addition, batch-to-affine via Montgomery's trick.
+/// @param points  n affine points as n×8 uint64_t (x[4], y[4] per point, Montgomery form).
+/// @param scalars n scalars as n×8 uint32_t (little-endian limbs).
+/// @param n       Number of points.
+/// @param result  Output projective point: 12 uint64_t (x[4], y[4], z[4]).
+void secp256k1_pippenger_msm(const uint64_t *points, const uint32_t *scalars,
+                              int n, uint64_t *result);
+
 #endif // NEON_FIELD_OPS_H

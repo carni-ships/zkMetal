@@ -4,6 +4,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 public struct KZGProof {
     public let evaluation: Fr      // p(z)
@@ -35,21 +36,7 @@ public class KZGEngine {
         let sFr = frFromLimbs(secret)
 
         for _ in 0..<size {
-            // Compute s^i * G via scalar multiplication
-            let scalar = frToLimbs(sPow)
-            var acc = pointIdentity()
-            var base = gProj
-            for limb in scalar {
-                var word = limb
-                for _ in 0..<32 {
-                    if word & 1 == 1 {
-                        acc = pointAdd(acc, base)
-                    }
-                    base = pointDouble(base)
-                    word >>= 1
-                }
-            }
-            points.append(acc)
+            points.append(cPointScalarMul(gProj, sPow))
             sPow = frMul(sPow, sFr)
         }
         return batchToAffine(points)
@@ -85,9 +72,17 @@ public class KZGEngine {
         }
 
         var quotient = [Fr](repeating: Fr.zero, count: n - 1)
-        quotient[n - 2] = coeffs[n - 1]
-        for i in stride(from: n - 3, through: 0, by: -1) {
-            quotient[i] = frAdd(coeffs[i + 1], frMul(z, quotient[i + 1]))
+        coeffs.withUnsafeBytes { cBuf in
+            withUnsafeBytes(of: z) { zBuf in
+                quotient.withUnsafeMutableBytes { qBuf in
+                    bn254_fr_synthetic_div(
+                        cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        zBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n),
+                        qBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    )
+                }
+            }
         }
 
         // Witness = MSM(SRS[0..n-1], quotient)

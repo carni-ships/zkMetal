@@ -3,6 +3,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 public enum MSMError: Error {
     case noGPU
@@ -300,6 +301,11 @@ public class MetalMSM {
         let n = points.count
         guard n == scalars.count, n > 0 else {
             throw MSMError.invalidInput
+        }
+
+        // For small inputs, C Pippenger MSM is faster than GPU (avoids dispatch overhead)
+        if n <= 2048 {
+            return cPippengerMSM(points: points, scalars: scalars)
         }
 
         var msmPoints = points

@@ -417,7 +417,7 @@ public func runSecp256k1MSMBench() {
         let gen = secp256k1Generator()
         let gProj = secpPointFromAffine(gen)
 
-        let logSizes = [8, 10, 12, 14, 16, 17, 18]
+        let logSizes = [8, 10, 12, 14, 16, 18]
         let maxN = 1 << logSizes.last!
 
         fputs("Generating \(maxN) distinct points...\n", stderr)
@@ -446,26 +446,55 @@ public func runSecp256k1MSMBench() {
             allScalars.append(limbs)
         }
 
+        // C Pippenger correctness test
+        do {
+            let testN = 256
+            let testPts = Array(allPoints.prefix(testN))
+            let testScls = Array(allScalars.prefix(testN))
+            let cResult = cSecpPippengerMSM(points: testPts, scalars: testScls)
+            let gpuResult = try engine.msm(points: testPts, scalars: testScls)
+            let cAff = secpPointToAffine(cResult)
+            let gpuAff = secpPointToAffine(gpuResult)
+            let match = secpToInt(cAff.x) == secpToInt(gpuAff.x) &&
+                        secpToInt(cAff.y) == secpToInt(gpuAff.y)
+            print("  C Pippenger correctness: \(match ? "PASS" : "FAIL")")
+        }
+
         // Performance
         engine.useGLV = false
-        print("\n--- secp256k1 MSM Performance ---")
+        print("\n--- secp256k1 MSM Performance (GPU vs C Pippenger) ---")
         for logN in logSizes {
             let n = 1 << logN
             let pts = Array(allPoints.prefix(n))
             let scls = Array(allScalars.prefix(n))
-
+            // GPU MSM
             let _ = try engine.msm(points: pts, scalars: scls) // warmup
             let runs = 5
-            var times = [Double]()
+            var gpuTimes = [Double]()
             for _ in 0..<runs {
                 let start = CFAbsoluteTimeGetCurrent()
                 let _ = try engine.msm(points: pts, scalars: scls)
                 let elapsed = (CFAbsoluteTimeGetCurrent() - start) * 1000
-                times.append(elapsed)
+                gpuTimes.append(elapsed)
             }
-            times.sort()
-            let median = times[runs / 2]
-            fputs(String(format: "  MSM 2^%-2d = %7d pts: %7.1f ms\n", logN, n, median), stderr)
+            gpuTimes.sort()
+            let gpuMedian = gpuTimes[runs / 2]
+
+            // C Pippenger MSM
+            let _ = cSecpPippengerMSM(points: pts, scalars: scls) // warmup
+            var cTimes = [Double]()
+            for _ in 0..<runs {
+                let start = CFAbsoluteTimeGetCurrent()
+                let _ = cSecpPippengerMSM(points: pts, scalars: scls)
+                let elapsed = (CFAbsoluteTimeGetCurrent() - start) * 1000
+                cTimes.append(elapsed)
+            }
+            cTimes.sort()
+            let cMedian = cTimes[runs / 2]
+
+            let speedup = cMedian > 0 ? gpuMedian / cMedian : 0
+            fputs(String(format: "  2^%-2d: GPU %7.1fms | C Pip %7.1fms (%.1fx)\n",
+                         logN, gpuMedian, cMedian, speedup), stderr)
         }
     } catch {
         print("  ERROR: \(error)")

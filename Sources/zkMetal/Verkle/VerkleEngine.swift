@@ -11,6 +11,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 /// A Verkle tree node commitment (a curve point)
 public typealias VerkleCommitment = PointProjective
@@ -87,7 +88,7 @@ public class VerkleEngine {
         b[proof.index] = Fr.one
 
         // Reconstruct bound commitment: C_bound = C + v*Q
-        let vQ = pointScalarMul(pointFromAffine(Q), proof.value)
+        let vQ = cPointScalarMul(pointFromAffine(Q), proof.value)
         let Cbound = pointAdd(proof.commitment, vQ)
 
         return ipaEngine.verify(

@@ -815,3 +815,19 @@ void bn254_fr_vector_fold(const uint64_t *a, const uint64_t *b,
         fr_add(ax, bxi, out + i * 4);
     }
 }
+
+void bn254_fr_synthetic_div(const uint64_t *coeffs, const uint64_t z[4],
+                             int n, uint64_t *quotient) {
+    // coeffs: polynomial coefficients, n elements (4 uint64 each, Montgomery form)
+    // z: evaluation point (4 uint64, Montgomery form)
+    // quotient: output n-1 elements
+    // q[n-2] = coeffs[n-1]
+    // q[i] = coeffs[i+1] + z * q[i+1]  for i = n-3..0
+    if (n < 2) return;
+    memcpy(quotient + (n - 2) * 4, coeffs + (n - 1) * 4, 32);
+    for (int i = n - 3; i >= 0; i--) {
+        uint64_t tmp[4];
+        fr_mul(z, quotient + (i + 1) * 4, tmp);
+        fr_add(coeffs + (i + 1) * 4, tmp, quotient + i * 4);
+    }
+}

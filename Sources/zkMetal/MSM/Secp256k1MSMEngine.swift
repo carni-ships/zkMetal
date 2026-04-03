@@ -3,6 +3,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 public class Secp256k1MSM {
     public let device: MTLDevice
@@ -294,6 +295,11 @@ public class Secp256k1MSM {
         let n = points.count
         guard n == scalars.count, n > 0 else {
             throw MSMError.invalidInput
+        }
+
+        // For small inputs, C Pippenger MSM is faster than GPU
+        if n <= 1024 {
+            return cSecpPippengerMSM(points: points, scalars: scalars)
         }
 
         let msmScalars = scalars.map { Self.reduceModN($0) }
