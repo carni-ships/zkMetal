@@ -145,7 +145,7 @@ public class NTTEngine {
     /// Compile NTT shaders by resolving #include directives.
     private static func compileShaders(device: MTLDevice) throws -> MTLLibrary {
         // Find shader source directory
-        let shaderDir = findNTTShaderDir()
+        let shaderDir = findShaderDir()
 
         // Read and concatenate shader files (resolving includes)
         let frSource = try String(contentsOfFile: shaderDir + "/fields/bn254_fr.metal", encoding: .utf8)
@@ -165,34 +165,6 @@ public class NTTEngine {
         let options = MTLCompileOptions()
         options.fastMathEnabled = true
         return try device.makeLibrary(source: combined, options: options)
-    }
-
-    /// Find the Shaders directory.
-    private static func findNTTShaderDir() -> String {
-        let execPath = CommandLine.arguments[0]
-        let execDir = (execPath as NSString).deletingLastPathComponent
-
-        // Check SPM resource bundle paths
-        for bundle in Bundle.allBundles {
-            if let url = bundle.url(forResource: "Shaders", withExtension: nil) {
-                let frPath = url.appendingPathComponent("fields/bn254_fr.metal").path
-                if FileManager.default.fileExists(atPath: frPath) {
-                    return url.path
-                }
-            }
-        }
-
-        let candidates = [
-            "\(execDir)/../Sources/Shaders",
-            "./Sources/Shaders",
-        ]
-        for path in candidates {
-            let frPath = "\(path)/fields/bn254_fr.metal"
-            if FileManager.default.fileExists(atPath: frPath) {
-                return path
-            }
-        }
-        return "./Sources/Shaders"
     }
 
     /// Get or grow scratch buffer for fused-bitrev kernel.

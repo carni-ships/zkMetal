@@ -1,0 +1,1 @@
+cargo:rustc-env=DEP_ZKMETAL_FFI_SHADER_DIR=/Users/carnation/Documents/Claude/zkMetal/Sources/Shaders

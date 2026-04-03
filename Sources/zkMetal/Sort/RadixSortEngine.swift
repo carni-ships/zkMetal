@@ -17,7 +17,7 @@ public class RadixSortEngine {
 
     static let radixBits = 8
     static let radixSize = 256  // 2^radixBits
-    static let tileSize = 1024  // keys per threadgroup
+    static let tileSize = 2048  // keys per threadgroup
 
     // Grow-only buffer cache
     private var histogramBuf: MTLBuffer?
@@ -28,6 +28,10 @@ public class RadixSortEngine {
     private var tempKeysBufSize: Int = 0
     private var tempValsBuf: MTLBuffer?
     private var tempValsBufSize: Int = 0
+    private var inputKeysBuf: MTLBuffer?
+    private var inputKeysBufSize: Int = 0
+    private var inputValsBuf: MTLBuffer?
+    private var inputValsBufSize: Int = 0
 
     public init() throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
@@ -88,8 +92,14 @@ public class RadixSortEngine {
         // Ensure buffers are large enough
         ensureBuffers(n: n, histSize: histSize)
 
-        // Create key buffers (ping-pong)
-        let keyBufA = device.makeBuffer(bytes: keys, length: n * 4, options: .storageModeShared)!
+        // Cached input key buffer (ping-pong partner of tempKeysBuf)
+        let keyBytes = n * 4
+        if inputKeysBufSize < keyBytes {
+            inputKeysBuf = device.makeBuffer(length: keyBytes, options: .storageModeShared)
+            inputKeysBufSize = keyBytes
+        }
+        memcpy(inputKeysBuf!.contents(), keys, keyBytes)
+        let keyBufA = inputKeysBuf!
         let keyBufB = tempKeysBuf!
 
         var inputBuf = keyBufA
@@ -173,9 +183,20 @@ public class RadixSortEngine {
 
         ensureBuffers(n: n, histSize: histSize)
 
-        let keyBufA = device.makeBuffer(bytes: keys, length: n * 4, options: .storageModeShared)!
+        let keyBytes = n * 4
+        if inputKeysBufSize < keyBytes {
+            inputKeysBuf = device.makeBuffer(length: keyBytes, options: .storageModeShared)
+            inputKeysBufSize = keyBytes
+        }
+        memcpy(inputKeysBuf!.contents(), keys, keyBytes)
+        if inputValsBufSize < keyBytes {
+            inputValsBuf = device.makeBuffer(length: keyBytes, options: .storageModeShared)
+            inputValsBufSize = keyBytes
+        }
+        memcpy(inputValsBuf!.contents(), values, keyBytes)
+        let keyBufA = inputKeysBuf!
         let keyBufB = tempKeysBuf!
-        let valBufA = device.makeBuffer(bytes: values, length: n * 4, options: .storageModeShared)!
+        let valBufA = inputValsBuf!
         let valBufB = tempValsBuf!
 
         var inKeys = keyBufA, outKeys = keyBufB

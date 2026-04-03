@@ -15,6 +15,9 @@ GPU-accelerated zero-knowledge cryptography primitives for Apple Silicon, writte
   - [Polynomial Ops](#polynomial-ops-bn254-fr)
   - [KZG Commitments](#kzg-commitments-bn254-g1)
   - [Blake3 Hashing](#blake3-hashing)
+  - [IPA](#ipa-bulletproofs-style-inner-product-argument)
+  - [Verkle Trees](#verkle-trees-pedersen--ipa)
+  - [ECDSA](#ecdsa-secp256k1-batch-verification)
   - [Theoretical Performance Analysis](#theoretical-performance-analysis)
 - [Supported Fields](#supported-fields)
 - [Architecture](#architecture)
@@ -52,22 +55,22 @@ GPU-accelerated zero-knowledge cryptography primitives for Apple Silicon, writte
 
 ## Performance
 
-All benchmarks measured on Apple M3 Pro (6P+6E cores), comparing GPU (Metal), parallel CPU (GCD multithreaded Swift + Pippenger for MSM), and single-threaded CPU (vanilla Swift).
-Run `swift run -c release zkbench all` to reproduce, or `swift run -c release zkbench cpu` for the 3-way comparison.
+All benchmarks measured on Apple M3 Pro (6P+6E cores), comparing GPU (Metal), optimized C CPU (CIOS Montgomery with `__uint128_t`, multi-threaded Pippenger, NEON SIMD), and single-threaded CPU (vanilla Swift).
+Run `swift run -c release zkbench all` to reproduce, or `swift run -c release zkbench cpu` for the 3-way comparison. For small inputs (MSM n≤2048), the engine automatically routes to C Pippenger instead of GPU to avoid dispatch overhead.
 
 ### MSM (BN254 G1)
 
-| Points | Vanilla CPU | Opt CPU (Pippenger) | Opt CPU vs Vanilla | GPU (Metal) | GPU vs Vanilla |
-|--------|-------------|--------------------|--------------------|-------------|----------------|
-| 2^8 | 519ms | 16ms | **32x** | 8ms | **65x** |
-| 2^10 | 1.8s | 47ms | **38x** | 9ms | **200x** |
-| 2^12 | 7.6s | 114ms | **67x** | 14ms | **543x** |
-| 2^14 | 51s | 440ms | **116x** | 24ms | **2125x** |
-| 2^16 | ~3.4min* | ~1.7s* | **~116x** | 37ms | **~5500x** |
-| 2^18 | — | — | — | 102ms | — |
-| 2^20 | — | — | — | 294ms | — |
+| Points | Vanilla CPU | Swift Pippenger | C Pippenger | GPU (Metal) |
+|--------|-------------|----------------|-------------|-------------|
+| 2^8 | 5.5s | 63ms | **11ms** | 8ms |
+| 2^10 | 24s | 121ms | **6ms** | 4ms |
+| 2^12 | 19s | 494ms | **9ms** | 16ms |
+| 2^14 | 87s | 848ms | **28ms** | 29ms |
+| 2^16 | — | — | **71ms** | 43ms |
+| 2^18 | — | — | — | 102ms |
+| 2^20 | — | — | — | 294ms |
 
-\* Extrapolated. Optimized CPU uses Pippenger with window-parallel bucket accumulation (33-116x over vanilla double-and-add).
+C Pippenger uses multi-threaded bucket accumulation with `__uint128_t` CIOS Montgomery (8 pthreads). At n≤2048, C Pippenger is automatically used instead of GPU to avoid dispatch overhead. GPU wins at n≥2^16.
 
 **Comparison to other implementations (BN254 MSM):**
 
@@ -217,7 +220,7 @@ Polynomial multiplication uses NTT under the hood (CPU baseline = 2 forward NTTs
 | Open (eval + witness) | deg 2^8 | 444ms | 5ms | **87x** |
 | Open (eval + witness) | deg 2^10 | 1.8s | 10ms | **179x** |
 
-KZG performance is MSM-dominated. Commit = MSM(SRS, coefficients). Open = Horner eval + synthetic division + MSM for witness. CPU baseline uses sequential double-and-add scalar multiplication.
+KZG performance is MSM-dominated. Commit = MSM(SRS, coefficients). Open = Horner eval + C synthetic division + MSM for witness. CPU baseline uses sequential double-and-add scalar multiplication. SRS generation and quotient polynomial use C CIOS for fast field arithmetic.
 
 ### Blake3 Hashing
 
@@ -230,60 +233,107 @@ KZG performance is MSM-dominated. Commit = MSM(SRS, coefficients). Open = Horner
 
 Blake3 is much simpler than Keccak (7 rounds of 32-bit ARX ops vs 24 rounds of 64-bit Keccak-f). GPU speedup scales with batch size as fixed dispatch overhead amortizes. CPU Blake3 is very fast (0.6µs) so GPU only wins at large batch sizes.
 
+### IPA (Bulletproofs-style Inner Product Argument)
+
+| Size | Prove | Verify |
+|------|-------|--------|
+| n=4 | 9ms | 4ms |
+| n=16 | 39ms | 3ms |
+| n=64 | 26ms | 4ms |
+| n=256 | 59ms | 7ms |
+
+Log(n) halving rounds with GPU batch generator folding (Metal kernel `batch_fold_generators`) and C CIOS scalar multiplication. Fiat-Shamir challenges via Blake3. Previous version (Swift scalar mul): 860ms at n=256 — C CIOS gives **14.6×** improvement.
+
+### Verkle Trees (Pedersen + IPA)
+
+| Operation | Time |
+|-----------|------|
+| Build (width=16, 256 leaves) | 10ms |
+| Path proof (2 openings) | 44ms |
+| Verify path | 6ms |
+
+Verkle tree performance is IPA-dominated. Previous version: 931ms path proof — C CIOS gives **21×** improvement.
+
+### ECDSA (secp256k1 Batch Verification)
+
+| Operation | Time |
+|-----------|------|
+| Single verify | 0.36ms |
+| Batch probabilistic 64 sigs | 14ms (0.22ms/sig) |
+
+secp256k1 ECDSA using C CIOS Montgomery field arithmetic. Previous version (Swift scalar mul): 3.96ms/sig single verify — C CIOS gives **11×** improvement.
+
 ### Theoretical Performance Analysis
 
 How close each primitive is to the hardware floor (M3 Pro: ~3.6 TFLOPS, ~150 GB/s bandwidth), ranked by optimization headroom:
 
 | Rank | Primitive | Current | Theoretical Floor | Bottleneck | Headroom |
 |------|-----------|---------|-------------------|------------|----------|
-| 1 | IPA prove n=256 | 860ms | ~10ms | Sequential scalar mul rounds | ~86x |
-| 2 | Verkle proof 256 | 931ms | ~15ms | IPA-dominated | ~62x |
-| 3 | P2 Merkle 2^16 | 23ms | ~0.6ms (compute) | Dispatch latency (16 levels) | ~37x |
-| 4 | KZG commit 2^10 | 15ms | ~0.5ms | MSM-dominated (small N) | ~30x |
-| 5 | MSM BN254 2^18 | 102ms | ~5ms (scatter BW) | Random-access BW | ~20x |
-| 6 | ECDSA batch 64 | 16.6ms | ~1ms | Sequential verify + scalar mul | ~17x |
-| 7 | FRI Fold 2^20 | 5.3ms | ~0.3ms (BW) | Bandwidth | ~17x |
-| 8 | P2 Batch 2^16 | 9.2ms | ~0.6ms (compute) | Compute | ~15x |
-| 9 | Sumcheck 2^20 | 8.3ms | ~0.85ms (BW) | Bandwidth | ~10x |
-| 10 | Radix Sort 2^20 | 10ms | ~1ms (BW) | Sequential passes + BW | ~10x |
-| 11 | NTT BN254 2^22 | 26ms | ~2.9ms (compute) | Compute + strided BW | ~9x |
-| 12 | Blake3 Batch 2^20 | 4.2ms | ~0.6ms (BW) | Bandwidth | ~7x |
-| 13 | Keccak Batch 2^18 | 3.1ms | ~0.5ms (compute) | Compute | ~6x |
+| 1 | P2 Merkle 2^16 | 23ms | ~0.6ms (compute) | Dispatch latency (16 levels) | ~37x |
+| 2 | KZG commit 2^10 | 15ms | ~0.5ms | MSM-dominated (small N) | ~30x |
+| 3 | MSM BN254 2^18 | 102ms | ~5ms (scatter BW) | Random-access BW | ~20x |
+| 4 | FRI Fold 2^20 | 5.3ms | ~0.3ms (BW) | Bandwidth | ~17x |
+| 5 | ECDSA batch 64 | 14ms | ~1ms | C CIOS scalar mul | ~14x |
+| 6 | P2 Batch 2^16 | 9.2ms | ~0.6ms (compute) | Compute | ~15x |
+| 7 | Sumcheck 2^20 | 8.3ms | ~0.85ms (BW) | Bandwidth | ~10x |
+| 8 | Radix Sort 2^20 | 10ms | ~1ms (BW) | Sequential passes + BW | ~10x |
+| 9 | NTT BN254 2^22 | 26ms | ~2.9ms (compute) | Compute + strided BW | ~9x |
+| 10 | Blake3 Batch 2^20 | 4.2ms | ~0.6ms (BW) | Bandwidth | ~7x |
+| 11 | IPA prove n=256 | 59ms | ~10ms | C scalar mul + GPU batch fold | ~6x |
+| 12 | Keccak Batch 2^18 | 3.1ms | ~0.5ms (compute) | Compute | ~6x |
+| 13 | Verkle proof 256 | 44ms | ~10ms | IPA-dominated (C scalar mul) | ~4x |
 | 14 | NTT Goldilocks 2^24 | 3.0ms | ~1.8ms (compute) | Compute ≈ BW | ~1.7x |
 | 15 | NTT BabyBear 2^24 | 2.0ms | ~1.7ms (BW) | Bandwidth | ~1.2x |
 
-Notes: IPA/Verkle headroom is dominated by 8 sequential rounds of GPU scalar multiplication (double-and-add); windowed or precomputed methods could close the gap. MSM's realistic floor accounts for scatter-gather inefficiency in bucket accumulation. Poseidon2 Merkle overhead comes from 16 sequential kernel dispatches (~0.5ms each). KZG at small sizes is dispatch-overhead dominated. BabyBear and Goldilocks NTT are near-optimal — within 1-2x of hardware bandwidth limits.
+Notes: IPA/Verkle dramatically improved (14-21×) by replacing Swift scalar multiplication with C CIOS `__uint128_t` and GPU batch generator folding. MSM's realistic floor accounts for scatter-gather inefficiency in bucket accumulation. Poseidon2 Merkle overhead comes from 16 sequential kernel dispatches (~0.5ms each). KZG at small sizes is dispatch-overhead dominated. BabyBear and Goldilocks NTT are near-optimal — within 1-2x of hardware bandwidth limits.
 
 ## Supported Fields
 
-- **BN254 Fr** (scalar field) -- Montgomery CIOS, 8x32-bit limbs
+- **BN254 Fr** (scalar field) -- Montgomery CIOS, 8x32-bit limbs (GPU) / 4x64-bit (C CPU)
 - **BN254 Fp** (base field) -- Montgomery CIOS, SOS squaring
 - **BLS12-377 Fr** (scalar field) -- Montgomery CIOS, 8x32-bit limbs, TWO_ADICITY=47
+- **BLS12-377 Fq** (base field) -- Montgomery CIOS, 6x64-bit (C CPU)
+- **secp256k1 Fp** (base field) -- Montgomery CIOS, 4x64-bit (C CPU)
+- **secp256k1 Fr** (scalar field) -- for ECDSA signature verification
 - **Goldilocks** (p = 2^64 - 2^32 + 1) -- native 64-bit reduction
 - **BabyBear** (p = 2^31 - 2^27 + 1) -- 32-bit arithmetic
 
 ## Architecture
 
-All compute runs on Metal GPU shaders. The Swift layer handles buffer management, pipeline dispatch, and host-device coordination.
+Metal GPU shaders handle compute-intensive operations. The Swift engine layer manages buffer caching, pipeline dispatch, and host-device coordination. C CIOS libraries (`NeonFieldOps`) provide optimized CPU paths for field arithmetic, NTT, and MSM using ARM64 `__uint128_t` and NEON SIMD.
 
 ```
 Sources/
   Shaders/         # Metal GPU kernels
     fields/        # Field arithmetic (BN254 Fr/Fp, BLS12-377 Fr, Goldilocks, BabyBear)
-    geometry/      # Elliptic curve operations (BN254 G1)
+    geometry/      # Elliptic curve operations (BN254 G1, BLS12-377 G1, secp256k1)
     msm/           # Multi-scalar multiplication kernels
     ntt/           # NTT butterfly + fused sub-block kernels
     hash/          # Poseidon2, Keccak-256, Blake3
     fri/           # FRI folding kernels
     sumcheck/      # Sumcheck round kernels
     poly/          # Polynomial evaluation/interpolation
+    sort/          # GPU radix sort kernels
+  NeonFieldOps/    # C/ARM64 optimized CPU primitives
+    babybear_ntt.c       # NEON SIMD NTT (4-wide Montgomery)
+    goldilocks_ntt.c     # __uint128_t optimized NTT
+    mont256.c            # BN254 Fr CIOS NTT (29-38× over Swift)
+    bn254_msm.c          # BN254 Pippenger MSM + synthetic division
+    secp256k1_ops.c      # secp256k1 field/curve ops + Pippenger MSM
   zkMetal/         # Swift engine layer
-    Fields/        # CPU-side field arithmetic
-    MSM/           # MSM engine (Pippenger, GLV, signed-digit)
-    NTT/           # NTT engines (BN254, Goldilocks, BabyBear)
-    Hash/          # Poseidon2, Keccak, Merkle tree engines
-    Polynomial/    # FRI, Sumcheck engines
+    Fields/        # CPU-side field arithmetic (BN254, BLS12-377, secp256k1)
+    MSM/           # MSM engines (BN254, BLS12-377, secp256k1)
+    NTT/           # NTT engines (BN254, BLS12-377, Goldilocks, BabyBear)
+    Hash/          # Poseidon2, Keccak, Blake3, Merkle tree engines
+    Polynomial/    # FRI, Sumcheck, Sparse Sumcheck engines
     Poly/          # Polynomial operations engine
+    KZG/           # KZG polynomial commitment engine
+    IPA/           # Inner product argument (Bulletproofs-style)
+    Verkle/        # Verkle tree engine (Pedersen + IPA)
+    ECDSA/         # secp256k1 batch ECDSA verification
+    Lookup/        # LogUp lookup argument + range proofs
+    Sort/          # GPU radix sort engine
+    CPU/           # GCD parallel CPU implementations
   zkbench/         # Benchmark harness
   zkmsm-cli/       # Standalone MSM CLI tool
 Tests/
@@ -338,6 +388,20 @@ let hashes = try blake3.hash64(input)
 // BLS12-377 NTT
 let bls377ntt = try BLS12377NTTEngine()
 let transformed = try bls377ntt.ntt(values377)
+
+// IPA (Bulletproofs-style)
+let ipa = try IPAEngine()
+let proof = try ipa.prove(generators: G, Q: Q, a: values, b: basis)
+let valid = try ipa.verify(generators: G, Q: Q, commitment: C, proof: proof)
+
+// Verkle tree
+let verkle = VerkleEngine(width: 16, ipa: ipa)
+let tree = try verkle.buildTree(leaves: values)
+let pathProof = try verkle.provePathProof(tree: tree, leafIndex: 0)
+
+// ECDSA batch verification
+let ecdsa = ECDSAEngine()
+let valid = try ecdsa.batchVerifyProbabilistic(signatures: sigs, messages: msgs, publicKeys: keys)
 
 ```
 
@@ -408,6 +472,8 @@ swift build -c release
 - **Fused kernels**: Multi-round FRI folding and Poseidon2 full permutations avoid intermediate buffer round-trips.
 - **Signed-digit MSM**: Scalar recoding halves bucket count, reducing bucket accumulation work.
 - **GLV endomorphism**: BN254's efficient endomorphism splits 256-bit scalar muls into two 128-bit half-width muls.
+- **C CIOS field arithmetic**: Hot-path 256-bit Montgomery multiplication uses C `__uint128_t` compiled with `-O3`, which is 29-38× faster than Swift for BN254 Fr carry chains. Used in CPU NTT, MSM, IPA, KZG, and ECDSA.
+- **Small-input fast path**: MSM automatically routes to multi-threaded C Pippenger for small inputs (BN254 n≤2048, secp256k1 n≤1024) to avoid GPU dispatch overhead.
 
 ## Correctness & Testing
 

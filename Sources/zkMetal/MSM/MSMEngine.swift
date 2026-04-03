@@ -168,29 +168,6 @@ public class MetalMSM {
         return library
     }
 
-    private static func findShaderDir() -> String {
-        let execPath = CommandLine.arguments[0]
-        let execDir = (execPath as NSString).deletingLastPathComponent
-        for bundle in Bundle.allBundles {
-            if let url = bundle.url(forResource: "Shaders", withExtension: nil) {
-                let path = url.appendingPathComponent("fields/bn254_fp.metal").path
-                if FileManager.default.fileExists(atPath: path) {
-                    return url.path
-                }
-            }
-        }
-        let candidates = [
-            "\(execDir)/../Sources/Shaders",
-            "./Sources/Shaders",
-        ]
-        for path in candidates {
-            if FileManager.default.fileExists(atPath: "\(path)/fields/bn254_fp.metal") {
-                return path
-            }
-        }
-        return "./Sources/Shaders"
-    }
-
     // BN254 scalar field order r as 8x32-bit limbs (little-endian)
     private static let R_LIMBS: [UInt32] = [
         0xf0000001, 0x43e1f593, 0x79b97091, 0x2833e848,

@@ -3,16 +3,17 @@
 // Three-kernel pipeline per pass:
 //   1. histogram: per-threadgroup local histograms of 8-bit digit
 //   2. prefix_sum: exclusive prefix sum across all threadgroup histograms
-//   3. scatter: load keys into shared memory, bin locally, write coalesced
+//   3. scatter: SIMD-level parallel ranking + coalesced global scatter
 //
-// Shared memory used for local histograms and local binning.
+// Scatter uses SIMD shuffle for intra-SIMD ranking, then cross-SIMD prefix
+// sums to compute global destinations. All threads participate in scatter.
 
 #include <metal_stdlib>
 using namespace metal;
 
 #define RADIX_BITS 8
 #define RADIX_SIZE 256  // 2^RADIX_BITS
-#define TILE_SIZE 1024  // keys per threadgroup
+#define TILE_SIZE 2048  // keys per threadgroup
 
 // --- Kernel 1: Per-threadgroup histogram ---
 // Each threadgroup processes TILE_SIZE keys and writes a 256-bin histogram.
@@ -64,32 +65,18 @@ kernel void radix_prefix_sum(
     uint tid                       [[thread_index_in_threadgroup]],
     uint tg_size                   [[threads_per_threadgroup]]
 ) {
-    // Each thread handles one or more digits
+    threadgroup uint digit_totals[RADIX_SIZE];
+    threadgroup uint digit_prefix[RADIX_SIZE];
+
+    // Pass 1: Compute per-tile prefix sums AND digit totals in a single pass
     for (uint digit = tid; digit < RADIX_SIZE; digit += tg_size) {
         uint running = 0;
-        // For this digit, scan across all tiles
         for (uint t = 0; t < num_tiles; t++) {
             uint count = histograms[t * RADIX_SIZE + digit];
             offsets[t * RADIX_SIZE + digit] = running;
             running += count;
         }
-    }
-
-    // Now offsets[t * 256 + d] = sum of histograms[0..t-1][d] for digit d.
-    // But we need the global offset: for digit d, base = sum of all counts for digits 0..d-1.
-    // Do a second pass to add per-digit base offsets.
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-
-    // Compute per-digit totals and prefix sum
-    threadgroup uint digit_totals[RADIX_SIZE];
-    threadgroup uint digit_prefix[RADIX_SIZE];
-
-    for (uint digit = tid; digit < RADIX_SIZE; digit += tg_size) {
-        uint total = 0;
-        for (uint t = 0; t < num_tiles; t++) {
-            total += histograms[t * RADIX_SIZE + digit];
-        }
-        digit_totals[digit] = total;
+        digit_totals[digit] = running;  // total = final running sum
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
@@ -103,7 +90,7 @@ kernel void radix_prefix_sum(
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    // Add per-digit base offset to all tile offsets
+    // Pass 2: Add per-digit base offset to all tile offsets
     for (uint digit = tid; digit < RADIX_SIZE; digit += tg_size) {
         uint base = digit_prefix[digit];
         for (uint t = 0; t < num_tiles; t++) {
@@ -112,10 +99,11 @@ kernel void radix_prefix_sum(
     }
 }
 
-// --- Kernel 3: Stable scatter with shared-memory local binning ---
-// Phase 1: Load tile keys into shared memory (all threads)
-// Phase 2: Thread 0 bins keys in shared memory (fast — no global memory traffic)
-// Phase 3: All threads write binned keys to global memory (better locality per digit group)
+// --- Kernel 3: Stable scatter with parallel sub-tile ranking ---
+// Process tile in sub-tiles of tg_size keys. Within each sub-tile:
+//   1. SIMD shuffle ranks each key within its SIMD
+//   2. Per-SIMD counts are prefix-summed across SIMDs
+//   3. All threads scatter in parallel
 kernel void radix_scatter(
     device const uint* keys_in    [[buffer(0)]],
     device uint* keys_out         [[buffer(1)]],
@@ -124,43 +112,79 @@ kernel void radix_scatter(
     constant uint& shift          [[buffer(4)]],
     uint tid                      [[thread_index_in_threadgroup]],
     uint tgid                     [[threadgroup_position_in_grid]],
-    uint tg_size                  [[threads_per_threadgroup]]
+    uint tg_size                  [[threads_per_threadgroup]],
+    uint simd_lane                [[thread_index_in_simdgroup]],
+    uint simd_id                  [[simdgroup_index_in_threadgroup]]
 ) {
-    threadgroup uint shared_keys[TILE_SIZE];    // input keys
-    threadgroup uint shared_sorted[TILE_SIZE];  // binned output
-    threadgroup uint shared_dest[TILE_SIZE];    // global destination index per key
+    threadgroup uint running_count[RADIX_SIZE];
+    threadgroup uint sub_count[8][RADIX_SIZE];  // per-SIMD digit counts (8 SIMDs max)
 
     uint base = tgid * TILE_SIZE;
     uint limit = min(uint(TILE_SIZE), n - base);
+    uint num_simds = tg_size / 32;
 
-    // Phase 1: Load keys into shared memory (all threads participate)
-    for (uint i = tid; i < limit; i += tg_size) {
-        shared_keys[i] = keys_in[base + i];
+    // Initialize running counts with global offsets
+    for (uint i = tid; i < RADIX_SIZE; i += tg_size) {
+        running_count[i] = offsets[tgid * RADIX_SIZE + i];
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    // Phase 2: Thread 0 bins keys locally and computes global destinations
-    if (tid == 0) {
-        uint local_count[RADIX_SIZE];
-        for (uint i = 0; i < RADIX_SIZE; i++) local_count[i] = 0;
+    // Process sub-tiles of tg_size keys each
+    for (uint sub = 0; sub < limit; sub += tg_size) {
+        uint idx = sub + tid;
+        uint key = 0;
+        uint digit = 0xFFFF;  // sentinel for inactive
+        bool active = idx < limit;
 
-        for (uint i = 0; i < limit; i++) {
-            uint digit = (shared_keys[i] >> shift) & 0xFF;
-            uint global_pos = offsets[tgid * RADIX_SIZE + digit] + local_count[digit];
-            local_count[digit]++;
-            shared_sorted[i] = shared_keys[i];
-            shared_dest[i] = global_pos;
+        if (active) {
+            key = keys_in[base + idx];
+            digit = (key >> shift) & 0xFF;
         }
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    // Phase 3: All threads write to global memory (distributed across threads)
-    for (uint i = tid; i < limit; i += tg_size) {
-        keys_out[shared_dest[i]] = shared_sorted[i];
+        // Clear per-SIMD counts
+        for (uint i = tid; i < num_simds * RADIX_SIZE; i += tg_size) {
+            sub_count[i / RADIX_SIZE][i % RADIX_SIZE] = 0;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // SIMD-level ranking
+        uint rank_in_simd = 0;
+        uint simd_total = 0;
+        for (uint lane = 0; lane < 32; lane++) {
+            uint other = simd_shuffle(digit, lane);
+            if (active && other == digit) {
+                simd_total++;
+                if (lane < simd_lane) rank_in_simd++;
+            }
+        }
+        if (active && rank_in_simd == 0) {
+            sub_count[simd_id][digit] = simd_total;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // Cross-SIMD prefix sum per digit
+        if (tid < RADIX_SIZE) {
+            uint base_off = running_count[tid];
+            uint sum = 0;
+            for (uint s = 0; s < num_simds; s++) {
+                uint c = sub_count[s][tid];
+                sub_count[s][tid] = base_off + sum;
+                sum += c;
+            }
+            running_count[tid] = base_off + sum;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // Scatter
+        if (active) {
+            uint global_pos = sub_count[simd_id][digit] + rank_in_simd;
+            keys_out[global_pos] = key;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 }
 
-// --- Key-value variant: stable scatter with associated values ---
+// --- Key-value variant: stable scatter with parallel sub-tile ranking ---
 kernel void radix_scatter_kv(
     device const uint* keys_in    [[buffer(0)]],
     device uint* keys_out         [[buffer(1)]],
@@ -171,39 +195,70 @@ kernel void radix_scatter_kv(
     constant uint& shift          [[buffer(6)]],
     uint tid                      [[thread_index_in_threadgroup]],
     uint tgid                     [[threadgroup_position_in_grid]],
-    uint tg_size                  [[threads_per_threadgroup]]
+    uint tg_size                  [[threads_per_threadgroup]],
+    uint simd_lane                [[thread_index_in_simdgroup]],
+    uint simd_id                  [[simdgroup_index_in_threadgroup]]
 ) {
-    threadgroup uint shared_keys[TILE_SIZE];
-    threadgroup uint shared_vals[TILE_SIZE];
-    threadgroup uint shared_dest[TILE_SIZE];
+    threadgroup uint running_count[RADIX_SIZE];
+    threadgroup uint sub_count[8][RADIX_SIZE];
 
     uint base = tgid * TILE_SIZE;
     uint limit = min(uint(TILE_SIZE), n - base);
+    uint num_simds = tg_size / 32;
 
-    // Phase 1: Load keys and values into shared memory
-    for (uint i = tid; i < limit; i += tg_size) {
-        shared_keys[i] = keys_in[base + i];
-        shared_vals[i] = vals_in[base + i];
+    for (uint i = tid; i < RADIX_SIZE; i += tg_size) {
+        running_count[i] = offsets[tgid * RADIX_SIZE + i];
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    // Phase 2: Thread 0 computes global destinations
-    if (tid == 0) {
-        uint local_count[RADIX_SIZE];
-        for (uint i = 0; i < RADIX_SIZE; i++) local_count[i] = 0;
+    for (uint sub = 0; sub < limit; sub += tg_size) {
+        uint idx = sub + tid;
+        uint key = 0, val = 0;
+        uint digit = 0xFFFF;
+        bool active = idx < limit;
 
-        for (uint i = 0; i < limit; i++) {
-            uint digit = (shared_keys[i] >> shift) & 0xFF;
-            shared_dest[i] = offsets[tgid * RADIX_SIZE + digit] + local_count[digit];
-            local_count[digit]++;
+        if (active) {
+            key = keys_in[base + idx];
+            val = vals_in[base + idx];
+            digit = (key >> shift) & 0xFF;
         }
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    // Phase 3: All threads write keys and values to global memory
-    for (uint i = tid; i < limit; i += tg_size) {
-        uint dest = shared_dest[i];
-        keys_out[dest] = shared_keys[i];
-        vals_out[dest] = shared_vals[i];
+        for (uint i = tid; i < num_simds * RADIX_SIZE; i += tg_size) {
+            sub_count[i / RADIX_SIZE][i % RADIX_SIZE] = 0;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        uint rank_in_simd = 0;
+        uint simd_total = 0;
+        for (uint lane = 0; lane < 32; lane++) {
+            uint other = simd_shuffle(digit, lane);
+            if (active && other == digit) {
+                simd_total++;
+                if (lane < simd_lane) rank_in_simd++;
+            }
+        }
+        if (active && rank_in_simd == 0) {
+            sub_count[simd_id][digit] = simd_total;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        if (tid < RADIX_SIZE) {
+            uint base_off = running_count[tid];
+            uint sum = 0;
+            for (uint s = 0; s < num_simds; s++) {
+                uint c = sub_count[s][tid];
+                sub_count[s][tid] = base_off + sum;
+                sum += c;
+            }
+            running_count[tid] = base_off + sum;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        if (active) {
+            uint global_pos = sub_count[simd_id][digit] + rank_in_simd;
+            keys_out[global_pos] = key;
+            vals_out[global_pos] = val;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 }

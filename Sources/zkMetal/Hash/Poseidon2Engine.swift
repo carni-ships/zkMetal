@@ -80,30 +80,7 @@ public class Poseidon2Engine {
         return try device.makeLibrary(source: combined, options: options)
     }
 
-    private static func findShaderDir() -> String {
-        let execPath = CommandLine.arguments[0]
-        let execDir = (execPath as NSString).deletingLastPathComponent
-
-        for bundle in Bundle.allBundles {
-            if let url = bundle.url(forResource: "Shaders", withExtension: nil) {
-                let frPath = url.appendingPathComponent("fields/bn254_fr.metal").path
-                if FileManager.default.fileExists(atPath: frPath) {
-                    return url.path
-                }
-            }
-        }
-
-        let candidates = [
-            "\(execDir)/../Sources/Shaders",
-            "./Sources/Shaders",
-        ]
-        for path in candidates {
-            if FileManager.default.fileExists(atPath: "\(path)/fields/bn254_fr.metal") {
-                return path
-            }
-        }
-        return "./Sources/Shaders"
-    }
+    // Uses global findShaderDir() from zkMetal.swift
 
     /// Batch hash pairs of field elements on GPU.
     /// Input: array of 2n Fr elements (pairs [a0,b0, a1,b1, ...])

@@ -1,0 +1,3 @@
+[workspace]
+members = ["zkmetal-sys", "zkmetal"]
+resolver = "2"

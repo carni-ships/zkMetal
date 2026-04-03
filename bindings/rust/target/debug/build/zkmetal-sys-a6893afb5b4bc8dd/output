@@ -1,0 +1,16 @@
+cargo:rustc-link-search=native=/Users/carnation/Documents/Claude/zkMetal/bindings/lib
+cargo:rustc-link-lib=static=zkmetal_ffi
+cargo:rustc-link-search=native=/Library/Developer/CommandLineTools/usr/lib/swift/macosx
+cargo:rustc-link-lib=framework=Metal
+cargo:rustc-link-lib=framework=Foundation
+cargo:rustc-link-lib=framework=CoreGraphics
+cargo:rustc-link-lib=framework=IOKit
+cargo:rustc-link-lib=dylib=swiftCore
+cargo:rustc-link-lib=dylib=swiftFoundation
+cargo:rustc-link-lib=dylib=swiftMetal
+cargo:rustc-link-lib=dylib=swiftDarwin
+cargo:rustc-link-lib=dylib=swiftDispatch
+cargo:rustc-link-lib=dylib=swiftObjectiveC
+cargo:shader_dir=/Users/carnation/Documents/Claude/zkMetal/Sources/Shaders
+cargo:rerun-if-changed=/Users/carnation/Documents/Claude/zkMetal/bindings/lib/libzkmetal_ffi.a
+cargo:rerun-if-changed=/Users/carnation/Documents/Claude/zkMetal/Sources/zkMetal-ffi/zkMetal_ffi.swift
