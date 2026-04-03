@@ -26,11 +26,11 @@ Run `swift run -c release zkbench all` to reproduce.
 
 | Points | GPU (Metal) |
 |--------|-------------|
-| 256 | 73ms |
-| 1,024 | 74ms |
-| 4,096 | 104ms |
-| 16,384 | 169ms |
-| 65,536 | 173ms |
+| 2^8 (256) | 73ms |
+| 2^10 (1,024) | 74ms |
+| 2^12 (4,096) | 104ms |
+| 2^14 (16,384) | 169ms |
+| 2^16 (65,536) | 173ms |
 
 **Comparison to other implementations (BN254, 2^16 points):**
 
