@@ -50,7 +50,8 @@ public func runKZGBench() {
 
         // Benchmark: commit at various polynomial degrees
         print("\n--- KZG Commit Benchmark ---")
-        for logN in [8, 10, 12] {
+        let srsProj = srs.map { pointFromAffine($0) }
+        for logN in [8, 10] {
             let n = 1 << logN
             guard n <= srsSize else { continue }
             var coeffs = [Fr](repeating: Fr.zero, count: n)
@@ -60,9 +61,27 @@ public func runKZGBench() {
                 coeffs[i] = frFromInt(rng >> 32)
             }
 
-            // Warmup
-            let _ = try engine.commit(coeffs)
+            // CPU baseline: sequential scalar multiplication (double-and-add)
+            let cpuT0 = CFAbsoluteTimeGetCurrent()
+            var cpuResult = pointIdentity()
+            for i in 0..<n {
+                let scalar = frToLimbs(coeffs[i])
+                var acc = pointIdentity()
+                var base = srsProj[i]
+                for limb in scalar {
+                    var word = limb
+                    for _ in 0..<32 {
+                        if word & 1 == 1 { acc = pointAdd(acc, base) }
+                        base = pointDouble(base)
+                        word >>= 1
+                    }
+                }
+                cpuResult = pointAdd(cpuResult, acc)
+            }
+            let cpuTime = (CFAbsoluteTimeGetCurrent() - cpuT0) * 1000
 
+            // GPU (warmup + timed)
+            let _ = try engine.commit(coeffs)
             var times = [Double]()
             for _ in 0..<5 {
                 let t = CFAbsoluteTimeGetCurrent()
@@ -70,12 +89,15 @@ public func runKZGBench() {
                 times.append((CFAbsoluteTimeGetCurrent() - t) * 1000)
             }
             times.sort()
-            print(String(format: "  Commit deg 2^%-2d: %7.2f ms", logN, times[2]))
+            let gpuTime = times[2]
+            let speedup = cpuTime / gpuTime
+            print(String(format: "  Commit deg 2^%-2d | Vanilla CPU: %8.1fms | GPU: %6.1fms | GPU vs Vanilla: **%.0fx**",
+                        logN, cpuTime, gpuTime, speedup))
         }
 
         // Benchmark: open at various polynomial degrees
         print("\n--- KZG Open Benchmark ---")
-        for logN in [8, 10, 12] {
+        for logN in [8, 10] {
             let n = 1 << logN
             guard n <= srsSize else { continue }
             var coeffs = [Fr](repeating: Fr.zero, count: n)
@@ -86,9 +108,39 @@ public func runKZGBench() {
             }
             let challenge = frFromInt(12345)
 
-            // Warmup
-            let _ = try engine.open(coeffs, at: challenge)
+            // CPU baseline: eval + synthetic division + sequential MSM
+            let cpuT0 = CFAbsoluteTimeGetCurrent()
+            // Evaluate p(z) via Horner's
+            var pz = Fr.zero
+            for i in stride(from: n - 1, through: 0, by: -1) {
+                pz = frAdd(coeffs[i], frMul(challenge, pz))
+            }
+            // Synthetic division for quotient
+            var quotient = [Fr](repeating: Fr.zero, count: n - 1)
+            quotient[n - 2] = coeffs[n - 1]
+            for i in stride(from: n - 3, through: 0, by: -1) {
+                quotient[i] = frAdd(coeffs[i + 1], frMul(challenge, quotient[i + 1]))
+            }
+            // Sequential MSM for witness
+            var witness = pointIdentity()
+            for i in 0..<(n - 1) {
+                let scalar = frToLimbs(quotient[i])
+                var acc = pointIdentity()
+                var base = srsProj[i]
+                for limb in scalar {
+                    var word = limb
+                    for _ in 0..<32 {
+                        if word & 1 == 1 { acc = pointAdd(acc, base) }
+                        base = pointDouble(base)
+                        word >>= 1
+                    }
+                }
+                witness = pointAdd(witness, acc)
+            }
+            let cpuTime = (CFAbsoluteTimeGetCurrent() - cpuT0) * 1000
 
+            // GPU (warmup + timed)
+            let _ = try engine.open(coeffs, at: challenge)
             var times = [Double]()
             for _ in 0..<5 {
                 let t = CFAbsoluteTimeGetCurrent()
@@ -96,7 +148,10 @@ public func runKZGBench() {
                 times.append((CFAbsoluteTimeGetCurrent() - t) * 1000)
             }
             times.sort()
-            print(String(format: "  Open deg 2^%-2d:   %7.2f ms", logN, times[2]))
+            let gpuTime = times[2]
+            let speedup = cpuTime / gpuTime
+            print(String(format: "  Open deg 2^%-2d   | Vanilla CPU: %8.1fms | GPU: %6.1fms | GPU vs Vanilla: **%.0fx**",
+                        logN, cpuTime, gpuTime, speedup))
         }
 
     } catch {

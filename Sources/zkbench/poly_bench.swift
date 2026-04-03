@@ -63,9 +63,24 @@ public func runPolyBench() {
                 pb[i] = frFromInt(rng >> 32)
             }
 
-            // Warmup
-            let _ = try engine.multiply(pa, pb)
+            // CPU baseline: NTT-based poly multiply using vanilla cpuNTT
+            let resultLen = pa.count + pb.count - 1
+            var nPad = 1
+            while nPad < resultLen { nPad <<= 1 }
+            let padLogN = Int(log2(Double(nPad)))
+            let aPad = pa + [Fr](repeating: Fr.zero, count: nPad - pa.count)
+            let bPad = pb + [Fr](repeating: Fr.zero, count: nPad - pb.count)
 
+            let cpuT0 = CFAbsoluteTimeGetCurrent()
+            let aNTT = NTTEngine.cpuNTT(aPad, logN: padLogN)
+            let bNTT = NTTEngine.cpuNTT(bPad, logN: padLogN)
+            var cNTT = [Fr](repeating: Fr.zero, count: nPad)
+            for i in 0..<nPad { cNTT[i] = frMul(aNTT[i], bNTT[i]) }
+            let _ = NTTEngine.cpuINTT(cNTT, logN: padLogN)
+            let cpuTime = (CFAbsoluteTimeGetCurrent() - cpuT0) * 1000
+
+            // GPU (warmup + timed)
+            let _ = try engine.multiply(pa, pb)
             var times = [Double]()
             for _ in 0..<5 {
                 let t0 = CFAbsoluteTimeGetCurrent()
@@ -73,7 +88,10 @@ public func runPolyBench() {
                 times.append((CFAbsoluteTimeGetCurrent() - t0) * 1000)
             }
             times.sort()
-            print(String(format: "  deg 2^%-2d: %7.2f ms", logN, times[2]))
+            let gpuTime = times[2]
+            let speedup = cpuTime / gpuTime
+            print(String(format: "  deg 2^%-2d | Vanilla CPU: %8.1fms | GPU: %6.2fms | GPU vs Vanilla: **%.0fx**",
+                        logN, cpuTime, gpuTime, speedup))
         }
 
         // Correctness check for chunked eval (degree >= 256)

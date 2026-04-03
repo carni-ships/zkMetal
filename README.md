@@ -196,28 +196,28 @@ GPU scales sublinearly: 2^14 to 2^22 is 256x more variables for ~17x more time. 
 
 ### Polynomial Ops (BN254 Fr)
 
-| Operation | Size | GPU |
-|-----------|------|-----|
-| Multiply (NTT) | deg 2^10 | 1.5ms |
-| Multiply (NTT) | deg 2^12 | 1.8ms |
-| Multiply (NTT) | deg 2^14 | 3.5ms |
-| Multiply (NTT) | deg 2^16 | 6.6ms |
-| Multi-eval (Horner) | deg 2^10, 1024 pts | 1.7ms |
-| Multi-eval (Horner) | deg 2^12, 4096 pts | 8.6ms |
-| Multi-eval (Horner) | deg 2^14, 16384 pts | 115ms |
+| Operation | Size | Vanilla CPU | GPU (Metal) | GPU vs Vanilla |
+|-----------|------|-------------|-------------|----------------|
+| Multiply (NTT) | deg 2^10 | 27ms | 1.3ms | **21x** |
+| Multiply (NTT) | deg 2^12 | 122ms | 1.6ms | **79x** |
+| Multiply (NTT) | deg 2^14 | 642ms | 2.9ms | **222x** |
+| Multiply (NTT) | deg 2^16 | 2.4s | 4.5ms | **541x** |
+| Multi-eval (Horner) | deg 2^10, 1024 pts | — | 1.7ms | — |
+| Multi-eval (Horner) | deg 2^12, 4096 pts | — | 8.6ms | — |
+| Multi-eval (Horner) | deg 2^14, 16384 pts | — | 115ms | — |
 
-Polynomial multiplication uses NTT under the hood. Multi-point evaluation uses GPU Horner's method (one thread per evaluation point). Subproduct-tree evaluation is available but currently slower than Horner for these sizes due to high constant factors.
+Polynomial multiplication uses NTT under the hood (CPU baseline = 2 forward NTTs + pointwise mul + inverse NTT). Multi-point evaluation uses GPU Horner's method (one thread per evaluation point). Subproduct-tree evaluation is available but currently slower than Horner for these sizes due to high constant factors.
 
 ### KZG Commitments (BN254 G1)
 
-| Operation | Size | GPU |
-|-----------|------|-----|
-| Commit | deg 2^8 | 9ms |
-| Commit | deg 2^10 | 15ms |
-| Open (commit + witness) | deg 2^8 | 5ms |
-| Open (commit + witness) | deg 2^10 | 10ms |
+| Operation | Size | Vanilla CPU | GPU (Metal) | GPU vs Vanilla |
+|-----------|------|-------------|-------------|----------------|
+| Commit | deg 2^8 | 294ms | 9ms | **31x** |
+| Commit | deg 2^10 | 1.2s | 15ms | **80x** |
+| Open (eval + witness) | deg 2^8 | 444ms | 5ms | **87x** |
+| Open (eval + witness) | deg 2^10 | 1.8s | 10ms | **179x** |
 
-KZG performance is MSM-dominated. Commit and open are thin wrappers around MSM + polynomial division.
+KZG performance is MSM-dominated. Commit = MSM(SRS, coefficients). Open = Horner eval + synthetic division + MSM for witness. CPU baseline uses sequential double-and-add scalar multiplication.
 
 ### Blake3 Hashing
 
