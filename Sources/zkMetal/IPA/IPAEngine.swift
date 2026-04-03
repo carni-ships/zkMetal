@@ -19,11 +19,17 @@ public struct IPAProof {
 
 public class IPAEngine {
     public let msmEngine: MetalMSM
+    let device: MTLDevice
+    let commandQueue: MTLCommandQueue
+    let foldGeneratorsFunction: MTLComputePipelineState?
 
     /// Generator points G_0, G_1, ..., G_{n-1}
     public let generators: [PointAffine]
     /// Blinding generator Q (for binding inner product value)
     public let Q: PointAffine
+
+    // GPU threshold: use GPU fold for halfLen >= this
+    static let gpuFoldThreshold = 16
 
     /// Create an IPA engine with the given generators and blinding point.
     /// generators: n points in affine form (n must be power of 2)
@@ -34,6 +40,39 @@ public class IPAEngine {
         self.generators = generators
         self.Q = Q
         self.msmEngine = try MetalMSM()
+        self.device = msmEngine.device
+        self.commandQueue = msmEngine.commandQueue
+
+        // Compile batch fold kernel
+        do {
+            let shaderDir = IPAEngine.findShaderDir()
+            let curveSource = try String(contentsOfFile: shaderDir + "/geometry/bn254_curve.metal", encoding: .utf8)
+            let fpSource = try String(contentsOfFile: shaderDir + "/fields/bn254_fp.metal", encoding: .utf8)
+            let foldSource = try String(contentsOfFile: shaderDir + "/geometry/batch_scalar_mul.metal", encoding: .utf8)
+            // Inline includes: remove #include lines and concatenate
+            let fpClean = fpSource.split(separator: "\n").filter { !$0.contains("#include") }.joined(separator: "\n")
+            let curveClean = curveSource.split(separator: "\n").filter { !$0.contains("#include") }.joined(separator: "\n")
+            let foldClean = foldSource.split(separator: "\n").filter { !$0.contains("#include") }.joined(separator: "\n")
+            let combined = fpClean + "\n" + curveClean + "\n" + foldClean
+            let options = MTLCompileOptions()
+            options.fastMathEnabled = true
+            let library = try device.makeLibrary(source: combined, options: options)
+            if let fn = library.makeFunction(name: "batch_fold_generators") {
+                self.foldGeneratorsFunction = try device.makeComputePipelineState(function: fn)
+            } else {
+                self.foldGeneratorsFunction = nil
+            }
+        } catch {
+            self.foldGeneratorsFunction = nil
+        }
+    }
+
+    private static func findShaderDir() -> String {
+        let execDir = (CommandLine.arguments[0] as NSString).deletingLastPathComponent
+        for path in ["\(execDir)/../Sources/Shaders", "./Sources/Shaders"] {
+            if FileManager.default.fileExists(atPath: "\(path)/geometry/batch_scalar_mul.metal") { return path }
+        }
+        return "./Sources/Shaders"
     }
 
     /// Generate test generators deterministically (NOT secure — for testing only).
@@ -154,15 +193,25 @@ public class IPAEngine {
             //        G' = GL * x^(-1) + GR * x (point linear combination)
             var newA = [Fr](repeating: Fr.zero, count: halfLen)
             var newB = [Fr](repeating: Fr.zero, count: halfLen)
-            var newG = [PointProjective](repeating: pointIdentity(), count: halfLen)
 
             for i in 0..<halfLen {
                 newA[i] = frAdd(frMul(aL[i], x), frMul(aR[i], xInv))
                 newB[i] = frAdd(frMul(bL[i], xInv), frMul(bR[i], x))
-                // G'_i = x^(-1) * GL_i + x * GR_i
-                let gL_scaled = pointScalarMul(GL[i], xInv)
-                let gR_scaled = pointScalarMul(GR[i], x)
-                newG[i] = pointAdd(gL_scaled, gR_scaled)
+            }
+
+            // Fold generators: G'_i = xInv * GL_i + x * GR_i
+            let newG: [PointProjective]
+            if halfLen >= IPAEngine.gpuFoldThreshold, let foldFn = foldGeneratorsFunction {
+                newG = try gpuFoldGenerators(GL: GL, GR: GR, x: x, xInv: xInv,
+                                            halfLen: halfLen, pipelineState: foldFn)
+            } else {
+                var gArr = [PointProjective](repeating: pointIdentity(), count: halfLen)
+                for i in 0..<halfLen {
+                    let gL_scaled = pointScalarMul(GL[i], xInv)
+                    let gR_scaled = pointScalarMul(GR[i], x)
+                    gArr[i] = pointAdd(gL_scaled, gR_scaled)
+                }
+                newG = gArr
             }
 
             a = newA
@@ -271,6 +320,57 @@ public class IPAEngine {
         let expected = pointAdd(aG, abQ)
 
         return pointEqual(Cprime, expected)
+    }
+
+    // MARK: - GPU batch fold
+
+    private func gpuFoldGenerators(GL: [PointProjective], GR: [PointProjective],
+                                   x: Fr, xInv: Fr, halfLen: Int,
+                                   pipelineState: MTLComputePipelineState) throws -> [PointProjective] {
+        // Convert projective points to affine for GPU input
+        let glAffine = batchToAffine(GL)
+        let grAffine = batchToAffine(GR)
+
+        // Convert scalars to integer form (non-Montgomery) as 8×UInt32
+        let xLimbs = frToLimbs(x)
+        let xInvLimbs = frToLimbs(xInv)
+
+        // Create GPU buffers
+        let pointStride = MemoryLayout<PointAffine>.stride
+        let projStride = MemoryLayout<PointProjective>.stride
+
+        let glBuf = device.makeBuffer(bytes: glAffine, length: halfLen * pointStride, options: .storageModeShared)!
+        let grBuf = device.makeBuffer(bytes: grAffine, length: halfLen * pointStride, options: .storageModeShared)!
+        let outBuf = device.makeBuffer(length: halfLen * projStride, options: .storageModeShared)!
+
+        guard let cb = commandQueue.makeCommandBuffer(),
+              let enc = cb.makeComputeCommandEncoder() else {
+            throw MSMError.noCommandBuffer
+        }
+
+        enc.setComputePipelineState(pipelineState)
+        enc.setBuffer(glBuf, offset: 0, index: 0)
+        enc.setBuffer(grBuf, offset: 0, index: 1)
+        var xInvScalar = xInvLimbs  // [UInt32] × 8
+        var xScalar = xLimbs
+        enc.setBytes(&xInvScalar, length: 32, index: 2)
+        enc.setBytes(&xScalar, length: 32, index: 3)
+        enc.setBuffer(outBuf, offset: 0, index: 4)
+        var halfLenVal = UInt32(halfLen)
+        enc.setBytes(&halfLenVal, length: 4, index: 5)
+
+        let tgSize = min(halfLen, Int(pipelineState.maxTotalThreadsPerThreadgroup))
+        let numGroups = (halfLen + tgSize - 1) / tgSize
+        enc.dispatchThreadgroups(MTLSize(width: numGroups, height: 1, depth: 1),
+                                threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
+        enc.endEncoding()
+        cb.commit()
+        cb.waitUntilCompleted()
+        if let error = cb.error { throw MSMError.gpuError(error.localizedDescription) }
+
+        // Read results
+        let ptr = outBuf.contents().bindMemory(to: PointProjective.self, capacity: halfLen)
+        return Array(UnsafeBufferPointer(start: ptr, count: halfLen))
     }
 
     // MARK: - Private helpers

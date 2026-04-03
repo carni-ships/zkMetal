@@ -3,9 +3,9 @@
 // Three-kernel pipeline per pass:
 //   1. histogram: per-threadgroup local histograms of 8-bit digit
 //   2. prefix_sum: exclusive prefix sum across all threadgroup histograms
-//   3. scatter: write keys to globally sorted positions
+//   3. scatter: load keys into shared memory, bin locally, write coalesced
 //
-// Shared memory used for local histograms to avoid global atomic contention.
+// Shared memory used for local histograms and local binning.
 
 #include <metal_stdlib>
 using namespace metal;
@@ -112,10 +112,10 @@ kernel void radix_prefix_sum(
     }
 }
 
-// --- Kernel 3: Stable scatter keys to sorted positions ---
-// Thread 0 processes keys sequentially within each tile to maintain input order (stability).
-// For each key, it increments the per-digit counter to compute its rank,
-// then writes to the global position = offsets[tile][digit] + rank.
+// --- Kernel 3: Stable scatter with shared-memory local binning ---
+// Phase 1: Load tile keys into shared memory (all threads)
+// Phase 2: Thread 0 bins keys in shared memory (fast — no global memory traffic)
+// Phase 3: All threads write binned keys to global memory (better locality per digit group)
 kernel void radix_scatter(
     device const uint* keys_in    [[buffer(0)]],
     device uint* keys_out         [[buffer(1)]],
@@ -126,22 +126,37 @@ kernel void radix_scatter(
     uint tgid                     [[threadgroup_position_in_grid]],
     uint tg_size                  [[threads_per_threadgroup]]
 ) {
-    // Only thread 0 — sequential for stability
-    if (tid != 0) return;
-
-    uint local_count[RADIX_SIZE];
-    for (uint i = 0; i < RADIX_SIZE; i++) {
-        local_count[i] = 0;
-    }
+    threadgroup uint shared_keys[TILE_SIZE];    // input keys
+    threadgroup uint shared_sorted[TILE_SIZE];  // binned output
+    threadgroup uint shared_dest[TILE_SIZE];    // global destination index per key
 
     uint base = tgid * TILE_SIZE;
     uint limit = min(uint(TILE_SIZE), n - base);
-    for (uint i = 0; i < limit; i++) {
-        uint key = keys_in[base + i];
-        uint digit = (key >> shift) & 0xFF;
-        uint global_pos = offsets[tgid * RADIX_SIZE + digit] + local_count[digit];
-        local_count[digit]++;
-        keys_out[global_pos] = key;
+
+    // Phase 1: Load keys into shared memory (all threads participate)
+    for (uint i = tid; i < limit; i += tg_size) {
+        shared_keys[i] = keys_in[base + i];
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Phase 2: Thread 0 bins keys locally and computes global destinations
+    if (tid == 0) {
+        uint local_count[RADIX_SIZE];
+        for (uint i = 0; i < RADIX_SIZE; i++) local_count[i] = 0;
+
+        for (uint i = 0; i < limit; i++) {
+            uint digit = (shared_keys[i] >> shift) & 0xFF;
+            uint global_pos = offsets[tgid * RADIX_SIZE + digit] + local_count[digit];
+            local_count[digit]++;
+            shared_sorted[i] = shared_keys[i];
+            shared_dest[i] = global_pos;
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Phase 3: All threads write to global memory (distributed across threads)
+    for (uint i = tid; i < limit; i += tg_size) {
+        keys_out[shared_dest[i]] = shared_sorted[i];
     }
 }
 
@@ -158,21 +173,37 @@ kernel void radix_scatter_kv(
     uint tgid                     [[threadgroup_position_in_grid]],
     uint tg_size                  [[threads_per_threadgroup]]
 ) {
-    if (tid != 0) return;
-
-    uint local_count[RADIX_SIZE];
-    for (uint i = 0; i < RADIX_SIZE; i++) {
-        local_count[i] = 0;
-    }
+    threadgroup uint shared_keys[TILE_SIZE];
+    threadgroup uint shared_vals[TILE_SIZE];
+    threadgroup uint shared_dest[TILE_SIZE];
 
     uint base = tgid * TILE_SIZE;
     uint limit = min(uint(TILE_SIZE), n - base);
-    for (uint i = 0; i < limit; i++) {
-        uint key = keys_in[base + i];
-        uint digit = (key >> shift) & 0xFF;
-        uint global_pos = offsets[tgid * RADIX_SIZE + digit] + local_count[digit];
-        local_count[digit]++;
-        keys_out[global_pos] = key;
-        vals_out[global_pos] = vals_in[base + i];
+
+    // Phase 1: Load keys and values into shared memory
+    for (uint i = tid; i < limit; i += tg_size) {
+        shared_keys[i] = keys_in[base + i];
+        shared_vals[i] = vals_in[base + i];
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Phase 2: Thread 0 computes global destinations
+    if (tid == 0) {
+        uint local_count[RADIX_SIZE];
+        for (uint i = 0; i < RADIX_SIZE; i++) local_count[i] = 0;
+
+        for (uint i = 0; i < limit; i++) {
+            uint digit = (shared_keys[i] >> shift) & 0xFF;
+            shared_dest[i] = offsets[tgid * RADIX_SIZE + digit] + local_count[digit];
+            local_count[digit]++;
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Phase 3: All threads write keys and values to global memory
+    for (uint i = tid; i < limit; i += tg_size) {
+        uint dest = shared_dest[i];
+        keys_out[dest] = shared_keys[i];
+        vals_out[dest] = shared_vals[i];
     }
 }

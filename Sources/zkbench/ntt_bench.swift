@@ -10,7 +10,7 @@ public func runNTTBench() {
         let engine = try NTTEngine()
 
         // Test sizes from 2^10 to 2^22
-        let sizes = [10, 12, 14, 16, 18, 20, 22]
+        let sizes = [10, 12, 14, 16, 18, 20, 22, 24]
         var rng: UInt64 = 0xDEAD_BEEF
 
         for logN in sizes {

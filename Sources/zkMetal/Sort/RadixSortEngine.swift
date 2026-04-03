@@ -95,16 +95,61 @@ public class RadixSortEngine {
         var inputBuf = keyBufA
         var outputBuf = keyBufB
 
-        // 4 passes: bits 0-7, 8-15, 16-23, 24-31
+        let tgSize = min(256, Int(histogramFunction.maxTotalThreadsPerThreadgroup))
+        let prefixTG = min(256, Int(prefixSumFunction.maxTotalThreadsPerThreadgroup))
+
+        // Single command buffer for all 4 passes (eliminates 11 CPU-GPU round trips)
+        guard let cb = commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
+        }
+
         for pass in 0..<4 {
-            let shift = UInt32(pass * RadixSortEngine.radixBits)
-            try runPass(inputKeys: inputBuf, outputKeys: outputBuf,
-                       n: n, numTiles: numTiles, shift: shift)
+            var nVal = UInt32(n)
+            var shiftVal = UInt32(pass * RadixSortEngine.radixBits)
+            var numTilesVal = UInt32(numTiles)
+
+            // Kernel 1: Histogram
+            let enc1 = cb.makeComputeCommandEncoder()!
+            enc1.setComputePipelineState(histogramFunction)
+            enc1.setBuffer(inputBuf, offset: 0, index: 0)
+            enc1.setBuffer(histogramBuf!, offset: 0, index: 1)
+            enc1.setBytes(&nVal, length: 4, index: 2)
+            enc1.setBytes(&shiftVal, length: 4, index: 3)
+            enc1.dispatchThreadgroups(MTLSize(width: numTiles, height: 1, depth: 1),
+                                     threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
+            enc1.endEncoding()
+
+            // Kernel 2: Prefix sum (single threadgroup)
+            let enc2 = cb.makeComputeCommandEncoder()!
+            enc2.setComputePipelineState(prefixSumFunction)
+            enc2.setBuffer(histogramBuf!, offset: 0, index: 0)
+            enc2.setBuffer(offsetsBuf!, offset: 0, index: 1)
+            enc2.setBytes(&numTilesVal, length: 4, index: 2)
+            enc2.dispatchThreadgroups(MTLSize(width: 1, height: 1, depth: 1),
+                                     threadsPerThreadgroup: MTLSize(width: prefixTG, height: 1, depth: 1))
+            enc2.endEncoding()
+
+            // Kernel 3: Scatter
+            let enc3 = cb.makeComputeCommandEncoder()!
+            enc3.setComputePipelineState(scatterFunction)
+            enc3.setBuffer(inputBuf, offset: 0, index: 0)
+            enc3.setBuffer(outputBuf, offset: 0, index: 1)
+            enc3.setBuffer(offsetsBuf!, offset: 0, index: 2)
+            enc3.setBytes(&nVal, length: 4, index: 3)
+            enc3.setBytes(&shiftVal, length: 4, index: 4)
+            enc3.dispatchThreadgroups(MTLSize(width: numTiles, height: 1, depth: 1),
+                                     threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
+            enc3.endEncoding()
+
             // Swap ping-pong
             let tmp = inputBuf
             inputBuf = outputBuf
             outputBuf = tmp
         }
+
+        cb.commit()
+        cb.waitUntilCompleted()
+        if let error = cb.error { throw MSMError.gpuError(error.localizedDescription) }
 
         // After 4 passes (even number), result is in the original inputBuf position
         let resultPtr = inputBuf.contents().bindMemory(to: UInt32.self, capacity: n)
@@ -136,14 +181,61 @@ public class RadixSortEngine {
         var inKeys = keyBufA, outKeys = keyBufB
         var inVals = valBufA, outVals = valBufB
 
+        let tgSize = min(256, Int(histogramFunction.maxTotalThreadsPerThreadgroup))
+        let prefixTG = min(256, Int(prefixSumFunction.maxTotalThreadsPerThreadgroup))
+
+        // Single command buffer for all 4 passes
+        guard let cb = commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
+        }
+
         for pass in 0..<4 {
-            let shift = UInt32(pass * RadixSortEngine.radixBits)
-            try runPassKV(inputKeys: inKeys, outputKeys: outKeys,
-                         inputVals: inVals, outputVals: outVals,
-                         n: n, numTiles: numTiles, shift: shift)
+            var nVal = UInt32(n)
+            var shiftVal = UInt32(pass * RadixSortEngine.radixBits)
+            var numTilesVal = UInt32(numTiles)
+
+            // Kernel 1: Histogram
+            let enc1 = cb.makeComputeCommandEncoder()!
+            enc1.setComputePipelineState(histogramFunction)
+            enc1.setBuffer(inKeys, offset: 0, index: 0)
+            enc1.setBuffer(histogramBuf!, offset: 0, index: 1)
+            enc1.setBytes(&nVal, length: 4, index: 2)
+            enc1.setBytes(&shiftVal, length: 4, index: 3)
+            enc1.dispatchThreadgroups(MTLSize(width: numTiles, height: 1, depth: 1),
+                                     threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
+            enc1.endEncoding()
+
+            // Kernel 2: Prefix sum
+            let enc2 = cb.makeComputeCommandEncoder()!
+            enc2.setComputePipelineState(prefixSumFunction)
+            enc2.setBuffer(histogramBuf!, offset: 0, index: 0)
+            enc2.setBuffer(offsetsBuf!, offset: 0, index: 1)
+            enc2.setBytes(&numTilesVal, length: 4, index: 2)
+            enc2.dispatchThreadgroups(MTLSize(width: 1, height: 1, depth: 1),
+                                     threadsPerThreadgroup: MTLSize(width: prefixTG, height: 1, depth: 1))
+            enc2.endEncoding()
+
+            // Kernel 3: Scatter KV
+            let enc3 = cb.makeComputeCommandEncoder()!
+            enc3.setComputePipelineState(scatterKVFunction)
+            enc3.setBuffer(inKeys, offset: 0, index: 0)
+            enc3.setBuffer(outKeys, offset: 0, index: 1)
+            enc3.setBuffer(inVals, offset: 0, index: 2)
+            enc3.setBuffer(outVals, offset: 0, index: 3)
+            enc3.setBuffer(offsetsBuf!, offset: 0, index: 4)
+            enc3.setBytes(&nVal, length: 4, index: 5)
+            enc3.setBytes(&shiftVal, length: 4, index: 6)
+            enc3.dispatchThreadgroups(MTLSize(width: numTiles, height: 1, depth: 1),
+                                     threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
+            enc3.endEncoding()
+
             swap(&inKeys, &outKeys)
             swap(&inVals, &outVals)
         }
+
+        cb.commit()
+        cb.waitUntilCompleted()
+        if let error = cb.error { throw MSMError.gpuError(error.localizedDescription) }
 
         let kPtr = inKeys.contents().bindMemory(to: UInt32.self, capacity: n)
         let vPtr = inVals.contents().bindMemory(to: UInt32.self, capacity: n)
@@ -151,112 +243,7 @@ public class RadixSortEngine {
                 Array(UnsafeBufferPointer(start: vPtr, count: n)))
     }
 
-    // MARK: - Single pass
-
-    private func runPass(inputKeys: MTLBuffer, outputKeys: MTLBuffer,
-                        n: Int, numTiles: Int, shift: UInt32) throws {
-        var nVal = UInt32(n)
-        var shiftVal = shift
-        var numTilesVal = UInt32(numTiles)
-        let tgSize = min(256, Int(histogramFunction.maxTotalThreadsPerThreadgroup))
-
-        // Kernel 1: Histogram
-        let cb1 = commandQueue.makeCommandBuffer()!
-        let enc1 = cb1.makeComputeCommandEncoder()!
-        enc1.setComputePipelineState(histogramFunction)
-        enc1.setBuffer(inputKeys, offset: 0, index: 0)
-        enc1.setBuffer(histogramBuf!, offset: 0, index: 1)
-        enc1.setBytes(&nVal, length: 4, index: 2)
-        enc1.setBytes(&shiftVal, length: 4, index: 3)
-        enc1.dispatchThreadgroups(MTLSize(width: numTiles, height: 1, depth: 1),
-                                 threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
-        enc1.endEncoding()
-        cb1.commit()
-        cb1.waitUntilCompleted()
-
-        // Kernel 2: Prefix sum (single threadgroup)
-        let cb2 = commandQueue.makeCommandBuffer()!
-        let enc2 = cb2.makeComputeCommandEncoder()!
-        enc2.setComputePipelineState(prefixSumFunction)
-        enc2.setBuffer(histogramBuf!, offset: 0, index: 0)
-        enc2.setBuffer(offsetsBuf!, offset: 0, index: 1)
-        enc2.setBytes(&numTilesVal, length: 4, index: 2)
-        let prefixTG = min(256, Int(prefixSumFunction.maxTotalThreadsPerThreadgroup))
-        enc2.dispatchThreadgroups(MTLSize(width: 1, height: 1, depth: 1),
-                                 threadsPerThreadgroup: MTLSize(width: prefixTG, height: 1, depth: 1))
-        enc2.endEncoding()
-        cb2.commit()
-        cb2.waitUntilCompleted()
-
-        // Kernel 3: Scatter
-        let cb3 = commandQueue.makeCommandBuffer()!
-        let enc3 = cb3.makeComputeCommandEncoder()!
-        enc3.setComputePipelineState(scatterFunction)
-        enc3.setBuffer(inputKeys, offset: 0, index: 0)
-        enc3.setBuffer(outputKeys, offset: 0, index: 1)
-        enc3.setBuffer(offsetsBuf!, offset: 0, index: 2)
-        enc3.setBytes(&nVal, length: 4, index: 3)
-        enc3.setBytes(&shiftVal, length: 4, index: 4)
-        enc3.dispatchThreadgroups(MTLSize(width: numTiles, height: 1, depth: 1),
-                                 threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
-        enc3.endEncoding()
-        cb3.commit()
-        cb3.waitUntilCompleted()
-    }
-
-    private func runPassKV(inputKeys: MTLBuffer, outputKeys: MTLBuffer,
-                          inputVals: MTLBuffer, outputVals: MTLBuffer,
-                          n: Int, numTiles: Int, shift: UInt32) throws {
-        var nVal = UInt32(n)
-        var shiftVal = shift
-        var numTilesVal = UInt32(numTiles)
-        let tgSize = min(256, Int(histogramFunction.maxTotalThreadsPerThreadgroup))
-
-        // Kernel 1: Histogram
-        let cb1 = commandQueue.makeCommandBuffer()!
-        let enc1 = cb1.makeComputeCommandEncoder()!
-        enc1.setComputePipelineState(histogramFunction)
-        enc1.setBuffer(inputKeys, offset: 0, index: 0)
-        enc1.setBuffer(histogramBuf!, offset: 0, index: 1)
-        enc1.setBytes(&nVal, length: 4, index: 2)
-        enc1.setBytes(&shiftVal, length: 4, index: 3)
-        enc1.dispatchThreadgroups(MTLSize(width: numTiles, height: 1, depth: 1),
-                                 threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
-        enc1.endEncoding()
-        cb1.commit()
-        cb1.waitUntilCompleted()
-
-        // Kernel 2: Prefix sum
-        let cb2 = commandQueue.makeCommandBuffer()!
-        let enc2 = cb2.makeComputeCommandEncoder()!
-        enc2.setComputePipelineState(prefixSumFunction)
-        enc2.setBuffer(histogramBuf!, offset: 0, index: 0)
-        enc2.setBuffer(offsetsBuf!, offset: 0, index: 1)
-        enc2.setBytes(&numTilesVal, length: 4, index: 2)
-        let prefixTG = min(256, Int(prefixSumFunction.maxTotalThreadsPerThreadgroup))
-        enc2.dispatchThreadgroups(MTLSize(width: 1, height: 1, depth: 1),
-                                 threadsPerThreadgroup: MTLSize(width: prefixTG, height: 1, depth: 1))
-        enc2.endEncoding()
-        cb2.commit()
-        cb2.waitUntilCompleted()
-
-        // Kernel 3: Scatter KV
-        let cb3 = commandQueue.makeCommandBuffer()!
-        let enc3 = cb3.makeComputeCommandEncoder()!
-        enc3.setComputePipelineState(scatterKVFunction)
-        enc3.setBuffer(inputKeys, offset: 0, index: 0)
-        enc3.setBuffer(outputKeys, offset: 0, index: 1)
-        enc3.setBuffer(inputVals, offset: 0, index: 2)
-        enc3.setBuffer(outputVals, offset: 0, index: 3)
-        enc3.setBuffer(offsetsBuf!, offset: 0, index: 4)
-        enc3.setBytes(&nVal, length: 4, index: 5)
-        enc3.setBytes(&shiftVal, length: 4, index: 6)
-        enc3.dispatchThreadgroups(MTLSize(width: numTiles, height: 1, depth: 1),
-                                 threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
-        enc3.endEncoding()
-        cb3.commit()
-        cb3.waitUntilCompleted()
-    }
+    // MARK: - Single pass (used by debugPass only)
 
     /// Debug: run one pass and return intermediate state
     public func debugPass(keys: [UInt32], shift: UInt32) throws -> (histogram: [UInt32], offsets: [UInt32], output: [UInt32]) {

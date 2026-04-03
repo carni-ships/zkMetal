@@ -19,7 +19,7 @@ func runMSMBench() throws {
     let gProj = pointFromAffine(PointAffine(x: gx, y: gy))
 
     // Generate max points once, slice for smaller sizes
-    let logSizes = [8, 10, 12, 14, 16, 17, 18]
+    let logSizes = [8, 10, 12, 14, 16, 17, 18, 20]
     let sizes = logSizes.map { 1 << $0 }
     let maxN = sizes.last!
 
@@ -136,7 +136,10 @@ if cmd == "calibrate" {
     runSparseSumcheckBench()
 } else if cmd == "sort" || cmd == "radix" {
     runSortBench()
+} else if cmd == "msm" {
+    try runMSMBench()
 } else if cmd == "all" {
+    try runMSMBench()
     runNTTBench()
     runBLS12377NTTBench()
     runPoseidon2Bench()
@@ -147,6 +150,12 @@ if cmd == "calibrate" {
     runSumcheckBench()
     runKZGBench()
     runBlake3Bench()
+    runIPABench()
+    runVerkleBench()
+    runLookupBench()
+    runSparseSumcheckBench()
+    runSortBench()
+    runECDSABench()
 } else {
     try runMSMBench()
 }
