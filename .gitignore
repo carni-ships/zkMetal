@@ -2,5 +2,9 @@
 .build/
 .swiftpm/
 
+# Rust build artifacts
+bindings/rust/target/
+bindings/lib/
+
 # OS
 .DS_Store
