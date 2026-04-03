@@ -91,13 +91,12 @@ GPU scaling is strongly sublinear: 1024x more points (2^8 to 2^18) costs only ~9
 
 | Size | Vanilla CPU | Opt C | Opt C vs Vanilla | GPU (Metal) | GPU vs Vanilla |
 |------|-------------|-------|------------------|-------------|----------------|
-| 2^14 | 103ms | 2.7ms | **38x** | 0.49ms | **210x** |
-| 2^16 | 743ms | 24ms | **31x** | 0.95ms | **782x** |
-| 2^18 | 3.0s | 104ms | **29x** | 1.9ms | **1579x** |
-| 2^20 | 7.6s | ~420ms* | **~18x** | 6.1ms | **1246x** |
-| 2^22 | 31s | ~1.7s* | **~18x** | 26ms | **1192x** |
+| 2^14 | 94ms | 2.7ms | **35x** | 0.49ms | **192x** |
+| 2^16 | 481ms | 18ms | **27x** | 0.95ms | **506x** |
+| 2^18 | 3.3s | 108ms | **30x** | 1.9ms | **1737x** |
+| 2^20 | 9.0s | 503ms | **18x** | 6.1ms | **1475x** |
 
-\* Extrapolated. Optimized C uses fully unrolled 4-limb CIOS Montgomery multiplication with `__uint128_t` (compiled with `-O3`). Also available: parallel CPU (GCD, 12 cores) at 5.4x over vanilla.
+Optimized C uses fully unrolled 4-limb CIOS Montgomery multiplication with `__uint128_t` (compiled with `-O3`). Also available: parallel CPU (GCD, 12 cores) at 5.4x over vanilla.
 
 **Multi-field NTT comparison (GPU):**
 

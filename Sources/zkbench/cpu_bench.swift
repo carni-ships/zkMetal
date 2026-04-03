@@ -342,7 +342,7 @@ public func runCPUBench() {
     print("\n--- NTT BN254 Fr: Optimized C vs Vanilla CPU vs GPU ---")
     do {
         let engine = try NTTEngine()
-        let sizes = [14, 16, 18]  // Skip 2^20 (too slow for vanilla)
+        let sizes = [14, 16, 18, 20]
         var rng: UInt64 = 0xDEAD_BEEF
 
         for logN in sizes {
