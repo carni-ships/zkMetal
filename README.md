@@ -10,11 +10,11 @@ GPU-accelerated zero-knowledge cryptography primitives for Apple Silicon, writte
 | **NTT** | Number theoretic transform (four-step FFT with fused sub-blocks) |
 | **Poseidon2** | Algebraic hash function (t=3, BN254 Fr) |
 | **Keccak-256** | SHA-3 hash (fused subtree Merkle) |
-| **Merkle Trees** | Poseidon2 and Keccak-256 backends |
-| **FRI** | Fast Reed-Solomon IOP folding (fused 2/4-round kernels) |
+| **Merkle Trees** | Poseidon2, Keccak-256, and Blake3 backends |
+| **FRI** | Fast Reed-Solomon IOP (fold + commit + query + verify) |
 | **Sumcheck** | Interactive sumcheck protocol (fused round+reduce with SIMD shuffles) |
 | **KZG** | Polynomial commitment scheme (commit + open via MSM) |
-| **Blake3** | BLAKE3 hash (batch hashing, Merkle-ready) |
+| **Blake3** | BLAKE3 hash (batch hashing + Merkle trees) |
 | **Polynomial Ops** | Evaluation, interpolation, subproduct trees |
 
 ## Performance
@@ -122,8 +122,12 @@ GPU per-hash cost is roughly constant across batch sizes (linear scaling), while
 | Keccak-256 | 2^16 | 17ms | 390ms | **23x** |
 | Keccak-256 | 2^18 | 39ms | 1.5s | **40x** |
 | Keccak-256 | 2^20 | 155ms | 6.2s | **42x** |
+| Blake3 | 2^14 | 16ms | -- | -- |
+| Blake3 | 2^16 | 23ms | -- | -- |
+| Blake3 | 2^18 | 40ms | -- | -- |
+| Blake3 | 2^20 | 96ms | -- | -- |
 
-Both GPU and CPU scale linearly (O(n) tree construction). GPU speedup grows with size as fixed dispatch overhead is amortized -- Poseidon2 reaches 90x at 2^20, while Keccak plateaus around 42x due to its simpler per-hash arithmetic offering less GPU parallelism advantage. No other Metal Merkle tree implementations are known.
+All three backends scale linearly (O(n) tree construction). GPU speedup grows with size as fixed dispatch overhead is amortized. Blake3 is the fastest Merkle backend at large sizes (96ms vs 136ms Keccak vs 1.5s Poseidon2 at 2^20) due to its simpler 32-bit ARX arithmetic.
 
 ### FRI Folding (BN254 Fr)
 
