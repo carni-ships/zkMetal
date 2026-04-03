@@ -366,7 +366,7 @@ public class MetalMSM {
         let fullBuckets = 1 << Int(windowBits)
         let halfBuckets = fullBuckets >> 1
         let nBuckets = halfBuckets + 1  // signed-digit: bucket indices in [0, halfBuckets]
-        let nSegments = min(512, max(1, nBuckets / 2))
+        let nSegments = min(256, max(1, nBuckets / 2))
 
         ensureBuffers(n: effectiveN, nBuckets: nBuckets, nSegments: nSegments, nWindows: nWindows)
         guard let pointsBuffer = pointsBuffer,
