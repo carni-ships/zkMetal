@@ -19,7 +19,8 @@ func runMSMBench() throws {
     let gProj = pointFromAffine(PointAffine(x: gx, y: gy))
 
     // Generate max points once, slice for smaller sizes
-    let sizes = [256, 1024, 4096, 16384, 65536, 131072, 262144]
+    let logSizes = [8, 10, 12, 14, 16, 17, 18]
+    let sizes = logSizes.map { 1 << $0 }
     let maxN = sizes.last!
 
     fputs("Generating \(maxN) distinct points...\n", stderr)
@@ -65,7 +66,8 @@ func runMSMBench() throws {
         }
         times.sort()
         let median = times[runs / 2]
-        fputs(String(format: "  MSM %7d pts: %7.1f ms\n", n, median), stderr)
+        let logN = logSizes[sizes.firstIndex(of: n)!]
+        fputs(String(format: "  MSM 2^%-2d = %7d pts: %7.1f ms\n", logN, n, median), stderr)
     }
 }
 
@@ -110,6 +112,8 @@ if cmd == "calibrate" {
     runKZGBench()
 } else if cmd == "bls377" || cmd == "bls12377" {
     runBLS12377NTTBench()
+} else if cmd == "blake3" || cmd == "b3" {
+    runBlake3Bench()
 } else if cmd == "all" {
     runNTTBench()
     runBLS12377NTTBench()
@@ -120,6 +124,7 @@ if cmd == "calibrate" {
     runFRIBench()
     runSumcheckBench()
     runKZGBench()
+    runBlake3Bench()
 } else {
     try runMSMBench()
 }
