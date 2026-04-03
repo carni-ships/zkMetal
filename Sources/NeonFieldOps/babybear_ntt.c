@@ -1,160 +1,164 @@
-// BabyBear NTT with ARM NEON intrinsics
+// BabyBear NTT with ARM NEON intrinsics — Montgomery form
 // p = 0x78000001 = 2013265921 (31-bit prime, 2^31 - 2^27 + 1)
-// Uses Barrett reduction for modular multiplication (no 64-bit division).
-// Processes 4 butterflies simultaneously via uint32x4_t NEON vectors.
+//
+// Uses Montgomery multiplication via vqdmulhq_s32 + vhsubq_s32 (Plonky3 technique):
+//   ~7 NEON instructions per 4-element modular multiply (vs ~20 for Barrett).
+// Twiddle tables cached across calls. Lazy [0,2p) reduction for add/sub.
 
 #include "NeonFieldOps.h"
 #include <arm_neon.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
 
 // ============================================================
-// BabyBear constants
+// Constants
 // ============================================================
 
-#define BB_P          2013265921u   // 0x78000001
-#define BB_P2         4026531842u   // 2 * P (for lazy reduction)
-#define BB_ROOT_2_27  440564289u    // primitive 2^27-th root of unity
-#define BB_GENERATOR  31u
+#define BB_P            2013265921u   // 0x78000001
+#define BB_P_S          2013265921    // signed
+#define BB_2P           4026531842u   // 2*P (lazy reduction bound)
+#define BB_ROOT_2_27    440564289u    // primitive 2^27-th root of unity
 
-// Barrett reduction: r = a*b mod p
-// m = floor(2^62 / p), shift = 62
-// q = (uint64_t)(prod * m) >> 62, r = prod - q * p, if r >= p: r -= p
-#define BARRETT_M     2290649223ull  // floor(2^62 / p)
-#define BARRETT_SHIFT 62
+// Montgomery R = 2^32
+// R mod p = 2^32 mod p = 268435454
+#define MONTY_R_MOD_P   268435454u    // 2^32 mod p
+// R^2 mod p — precomputed: (2^32)^2 mod p
+#define MONTY_R2_MOD_P  1172168163u   // 2^64 mod p
+
+// p^{-1} mod 2^32: Montgomery reduction constant (Plonky3 subtraction variant)
+// p * P_INV ≡ 1 (mod 2^32)
+#define P_INV           2281701377u   // p^{-1} mod 2^32
+#define P_INV_S         ((int32_t)P_INV)
 
 // ============================================================
-// Scalar field arithmetic
+// Scalar Montgomery arithmetic
 // ============================================================
 
-static inline uint32_t bb_add(uint32_t a, uint32_t b) {
+static inline uint32_t monty_reduce64(uint64_t x) {
+    uint32_t lo = (uint32_t)x;
+    uint32_t q = lo * P_INV;
+    int64_t t = (int64_t)x - (int64_t)q * (int64_t)BB_P;
+    int32_t r = (int32_t)(t >> 32);
+    return r < 0 ? (uint32_t)(r + BB_P_S) : (uint32_t)r;
+}
+
+static inline uint32_t monty_mul(uint32_t a, uint32_t b) {
+    return monty_reduce64((uint64_t)a * (uint64_t)b);
+}
+
+static inline uint32_t to_monty(uint32_t a) {
+    return monty_mul(a, MONTY_R2_MOD_P);
+}
+
+static inline uint32_t from_monty(uint32_t a) {
+    return monty_reduce64((uint64_t)a);
+}
+
+static inline uint32_t monty_add(uint32_t a, uint32_t b) {
     uint32_t s = a + b;
     return s >= BB_P ? s - BB_P : s;
 }
 
-static inline uint32_t bb_sub(uint32_t a, uint32_t b) {
+static inline uint32_t monty_sub(uint32_t a, uint32_t b) {
     return a >= b ? a - b : a + BB_P - b;
 }
 
-static inline uint32_t bb_mul(uint32_t a, uint32_t b) {
-    uint64_t prod = (uint64_t)a * (uint64_t)b;
-    uint64_t q = (unsigned __int128)prod * BARRETT_M >> BARRETT_SHIFT;
-    uint32_t r = (uint32_t)(prod - q * BB_P);
-    return r >= BB_P ? r - BB_P : r;
-}
-
-static inline uint32_t bb_pow(uint32_t base, uint32_t exp) {
-    uint32_t result = 1;
-    uint32_t b = base;
+static inline uint32_t monty_pow(uint32_t base, uint32_t exp) {
+    uint32_t result = to_monty(1);  // 1 in Montgomery form = R mod p
+    uint32_t b = base;  // already in Montgomery form
     while (exp > 0) {
-        if (exp & 1) result = bb_mul(result, b);
-        b = bb_mul(b, b);
+        if (exp & 1) result = monty_mul(result, b);
+        b = monty_mul(b, b);
         exp >>= 1;
     }
     return result;
 }
 
-static inline uint32_t bb_inv(uint32_t a) {
-    return bb_pow(a, BB_P - 2);
+static inline uint32_t monty_inv(uint32_t a) {
+    return monty_pow(a, BB_P - 2);
+}
+
+// Plain (non-Montgomery) pow for root computation
+static inline uint32_t plain_mul(uint32_t a, uint32_t b) {
+    return (uint32_t)((uint64_t)a * b % BB_P);
+}
+
+static inline uint32_t plain_pow(uint32_t base, uint32_t exp) {
+    uint32_t result = 1;
+    uint32_t b = base;
+    while (exp > 0) {
+        if (exp & 1) result = plain_mul(result, b);
+        b = plain_mul(b, b);
+        exp >>= 1;
+    }
+    return result;
 }
 
 // ============================================================
-// NEON 4-wide field arithmetic
+// NEON 4-wide Montgomery multiply
 // ============================================================
-
-// NEON Barrett multiply: 4 lanes of (a * b) mod p
-// Each a, b < p < 2^31. Product < p^2 < 2^62. Fits in uint64.
-// We process as two pairs via vmull_u32 (2 lanes each -> 64-bit result).
 //
-// Barrett reduction: q = floor(prod * M / 2^62), r = prod - q*p
-// where M = floor(2^62 / p) = 2290649223.
-// Since prod < 2^62 and M < 2^32, prod*M < 2^94.
-// We split prod into (prod_hi32, prod_lo32) and compute:
-//   lo_m = prod_lo32 * M  (uint64)
-//   hi_m = prod_hi32 * M  (uint64)
-//   q = (hi_m + (lo_m >> 32)) >> 30
-// This gives exact q or q-1, corrected by up to two conditional subtracts.
-static inline uint32x4_t bb_mul_neon(uint32x4_t a, uint32x4_t b) {
-    uint32x2_t m_vec = vdup_n_u32((uint32_t)BARRETT_M);
-    uint32x4_t pv = vdupq_n_u32(BB_P);
+// Plonky3 technique: uses vqdmulhq_s32 (doubling saturating multiply-high)
+// which computes floor(2*a*b / 2^32) = floor(a*b / 2^31).
+//
+// Montgomery reduction with R=2^32 (subtraction variant):
+//   prod_lo = (a*b) mod 2^32           [vmulq_s32]
+//   q = prod_lo * p^{-1} mod 2^32      [vmulq_s32] — positive inverse!
+//   prod_hi31 = floor(a*b / 2^31)      [vqdmulhq_s32]
+//   qp_hi31 = floor(q*p / 2^31)        [vqdmulhq_s32]
+//   result = (prod_hi31 - qp_hi31) / 2 [vhsubq_s32]  — halving sub gives /2^32
+//   if result < 0: result += p
+// Since q*p ≡ a*b (mod 2^32), (a*b - q*p) is divisible by 2^32.
+//
+// Total: 7 NEON instructions for 4 multiplies.
 
-    // --- Lanes 0,1 ---
-    uint64x2_t prod_01 = vmull_u32(vget_low_u32(a), vget_low_u32(b));
-    uint32x2_t prod_01_lo = vmovn_u64(prod_01);          // low 32 bits
-    uint32x2_t prod_01_hi = vshrn_n_u64(prod_01, 32);    // high 32 bits
-
-    uint64x2_t lo_m_01 = vmull_u32(prod_01_lo, m_vec);   // prod_lo * M
-    uint64x2_t hi_m_01 = vmull_u32(prod_01_hi, m_vec);   // prod_hi * M
-    // q = (hi_m + (lo_m >> 32)) >> 30
-    uint64x2_t sum_01 = vaddq_u64(hi_m_01, vshrq_n_u64(lo_m_01, 32));
-    uint32x2_t q_01 = vshrn_n_u64(sum_01, 30);
-
-    // --- Lanes 2,3 ---
-    uint64x2_t prod_23 = vmull_u32(vget_high_u32(a), vget_high_u32(b));
-    uint32x2_t prod_23_lo = vmovn_u64(prod_23);
-    uint32x2_t prod_23_hi = vshrn_n_u64(prod_23, 32);
-
-    uint64x2_t lo_m_23 = vmull_u32(prod_23_lo, m_vec);
-    uint64x2_t hi_m_23 = vmull_u32(prod_23_hi, m_vec);
-    uint64x2_t sum_23 = vaddq_u64(hi_m_23, vshrq_n_u64(lo_m_23, 32));
-    uint32x2_t q_23 = vshrn_n_u64(sum_23, 30);
-
-    // Combine q and prod_low32 into 4-wide vectors
-    uint32x4_t q = vcombine_u32(q_01, q_23);
-    uint32x4_t prod_low32 = vcombine_u32(prod_01_lo, prod_23_lo);
-
-    // r = prod_low32 - q * p (mod 2^32, wrapping is fine since r < 2p < 2^32)
-    uint32x4_t qp = vmulq_u32(q, pv);
-    uint32x4_t r = vsubq_u32(prod_low32, qp);
-
-    // Conditional subtract: if r >= p, r -= p (up to twice for off-by-one)
-    uint32x4_t mask = vcgeq_u32(r, pv);
-    r = vsubq_u32(r, vandq_u32(mask, pv));
-    mask = vcgeq_u32(r, pv);
-    r = vsubq_u32(r, vandq_u32(mask, pv));
-
-    return r;
+static inline int32x4_t monty_mul_neon(int32x4_t a, int32x4_t b,
+                                        int32x4_t p_inv_v, int32x4_t p_vec) {
+    int32x4_t prod_lo = vmulq_s32(a, b);
+    int32x4_t q = vmulq_s32(prod_lo, p_inv_v);
+    int32x4_t ab_hi = vqdmulhq_s32(a, b);
+    int32x4_t qp_hi = vqdmulhq_s32(q, p_vec);
+    int32x4_t r = vhsubq_s32(ab_hi, qp_hi);
+    // Conditional add p if r < 0
+    int32x4_t mask = vshrq_n_s32(r, 31);
+    return vaddq_s32(r, vandq_s32(mask, p_vec));
 }
 
-// NEON modular add: (a + b) mod p, inputs in [0, p)
-static inline uint32x4_t bb_add_neon(uint32x4_t a, uint32x4_t b) {
-    uint32x4_t s = vaddq_u32(a, b);
-    uint32x4_t pv = vdupq_n_u32(BB_P);
-    uint32x4_t mask = vcgeq_u32(s, pv);
-    return vsubq_u32(s, vandq_u32(mask, pv));
+// Lazy modular add: result in [0, 2p). No conditional branch.
+static inline int32x4_t monty_add_lazy_neon(int32x4_t a, int32x4_t b) {
+    return vaddq_s32(a, b);  // caller ensures a+b < 2p (both in [0,p))
 }
 
-// NEON modular sub: (a - b) mod p, inputs in [0, p)
-static inline uint32x4_t bb_sub_neon(uint32x4_t a, uint32x4_t b) {
-    uint32x4_t pv = vdupq_n_u32(BB_P);
-    // If a >= b, result = a - b. Else result = a + p - b.
-    uint32x4_t diff = vsubq_u32(a, b);
-    uint32x4_t mask = vcltq_u32(a, b);  // lanes where a < b
-    return vaddq_u32(diff, vandq_u32(mask, pv));
+// Full modular add: result in [0, p).
+static inline int32x4_t monty_add_neon(int32x4_t a, int32x4_t b, int32x4_t p_vec) {
+    int32x4_t s = vaddq_s32(a, b);
+    // if s >= p: s -= p.  Since s < 2p for inputs in [0,p), one subtract suffices.
+    int32x4_t reduced = vsubq_s32(s, p_vec);
+    // Keep reduced if >= 0, else keep s
+    int32x4_t mask = vshrq_n_s32(reduced, 31);  // all 1s if reduced < 0
+    return vbslq_s32(vreinterpretq_u32_s32(mask), s, reduced);
 }
 
-// Multiply all 4 lanes by the same scalar twiddle factor
-static inline uint32x4_t bb_mul_scalar_neon(uint32x4_t a, uint32_t tw) {
-    return bb_mul_neon(a, vdupq_n_u32(tw));
+// Full modular sub: result in [0, p).
+static inline int32x4_t monty_sub_neon(int32x4_t a, int32x4_t b, int32x4_t p_vec) {
+    int32x4_t diff = vsubq_s32(a, b);
+    // if diff < 0: diff += p
+    int32x4_t mask = vshrq_n_s32(diff, 31);
+    return vaddq_s32(diff, vandq_s32(mask, p_vec));
 }
 
 // ============================================================
 // Bit-reversal permutation
 // ============================================================
 
-static inline uint32_t bit_reverse(uint32_t x, int logN) {
-    uint32_t r = 0;
-    for (int i = 0; i < logN; i++) {
-        r = (r << 1) | (x & 1);
-        x >>= 1;
-    }
-    return r;
-}
-
 static void bit_reverse_permute(uint32_t *data, int logN) {
     int n = 1 << logN;
-    for (int i = 0; i < n; i++) {
-        int j = (int)bit_reverse((uint32_t)i, logN);
+    for (int i = 1, j = 0; i < n; i++) {
+        int bit = n >> 1;
+        for (; j & bit; bit >>= 1)
+            j ^= bit;
+        j ^= bit;
         if (i < j) {
             uint32_t tmp = data[i];
             data[i] = data[j];
@@ -164,108 +168,95 @@ static void bit_reverse_permute(uint32_t *data, int logN) {
 }
 
 // ============================================================
-// Twiddle factor precomputation
+// Cached twiddle tables (Montgomery form)
 // ============================================================
-
-// Compute primitive 2^logN-th root of unity
-static uint32_t bb_root_of_unity(int logN) {
-    uint32_t omega = BB_ROOT_2_27;
-    for (int i = 0; i < 27 - logN; i++) {
-        omega = bb_mul(omega, omega);
-    }
-    return omega;
-}
-
-// Precompute twiddle factors for all stages.
-// Layout: for stage s (0-indexed), halfBlock = 1 << s, twiddles start at offset halfBlock.
-// twiddles[halfBlock + j] = omega_blockSize^j for j in [0, halfBlock)
-// where omega_blockSize = omega_N^(N / blockSize)
-// Total storage: N/2 entries (plus entry 0 unused, entry 1 = 1).
-// Actually store flat: twiddles[0..N/2) where for stage s, entry at j has
-//   twiddle = omega_N^(j * (N / (2 * halfBlock)))   using bit-reversal indexing...
-//
-// Simpler: store per-stage twiddles.
-// For Cooley-Tukey DIT stage s: halfBlock = 1<<s, blockSize = 2*halfBlock
-//   w_m = omega_N^(N/blockSize) = omega_N^(N >> (s+1))
-//   For butterfly j in [0, halfBlock): twiddle = w_m^j
-// We precompute a flat table: twiddles_flat[offset_s + j] for each stage s.
-// offset_s = sum_{i=0}^{s-1} (1 << i) = (1 << s) - 1
-// So offset_s = halfBlock - 1, and we store halfBlock twiddles per stage.
-// Total = sum_{s=0}^{logN-1} (1<<s) = (1<<logN) - 1 = N - 1.
 
 typedef struct {
-    uint32_t *twiddles;  // N-1 entries for forward, N-1 for inverse
+    uint32_t *fwd;   // forward twiddles, N-1 entries
+    uint32_t *inv;   // inverse twiddles, N-1 entries
     int logN;
-} TwiddleTable;
+} CachedTwiddles;
 
-static TwiddleTable *precompute_twiddles(int logN) {
+// Simple cache: one table per logN (up to 27)
+static CachedTwiddles cached[28] = {{0}};
+static pthread_mutex_t cache_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void ensure_twiddles(int logN) {
+    if (cached[logN].fwd) return;  // already computed
+
+    pthread_mutex_lock(&cache_lock);
+    if (cached[logN].fwd) { pthread_mutex_unlock(&cache_lock); return; }
+
     int n = 1 << logN;
-    TwiddleTable *table = (TwiddleTable *)malloc(sizeof(TwiddleTable));
-    table->logN = logN;
-    table->twiddles = (uint32_t *)malloc((size_t)(n - 1) * sizeof(uint32_t));
 
-    uint32_t omega = bb_root_of_unity(logN);
+    // Compute root of unity in plain form, then convert to Montgomery
+    uint32_t omega_plain = BB_ROOT_2_27;
+    for (int i = 0; i < 27 - logN; i++)
+        omega_plain = plain_mul(omega_plain, omega_plain);
+    uint32_t omega = to_monty(omega_plain);
+
+    uint32_t omega_inv_plain = plain_pow(omega_plain, BB_P - 2);
+    uint32_t omega_inv = to_monty(omega_inv_plain);
+
+    uint32_t *fwd = (uint32_t *)malloc((size_t)(n - 1) * sizeof(uint32_t));
+    uint32_t *inv = (uint32_t *)malloc((size_t)(n - 1) * sizeof(uint32_t));
+
+    uint32_t one_mont = to_monty(1);
 
     for (int s = 0; s < logN; s++) {
         int halfBlock = 1 << s;
         int offset = halfBlock - 1;
-        // w_m = omega^(n / (2 * halfBlock)) = omega^(n >> (s+1))
-        uint32_t w_m = bb_pow(omega, (uint32_t)(n >> (s + 1)));
-        uint32_t w = 1;
+        uint32_t w_m = monty_pow(omega, (uint32_t)(n >> (s + 1)));
+        uint32_t w_m_inv = monty_pow(omega_inv, (uint32_t)(n >> (s + 1)));
+        uint32_t w = one_mont;
+        uint32_t wi = one_mont;
         for (int j = 0; j < halfBlock; j++) {
-            table->twiddles[offset + j] = w;
-            w = bb_mul(w, w_m);
+            fwd[offset + j] = w;
+            inv[offset + j] = wi;
+            w = monty_mul(w, w_m);
+            wi = monty_mul(wi, w_m_inv);
         }
     }
 
-    return table;
-}
-
-static TwiddleTable *precompute_inv_twiddles(int logN) {
-    int n = 1 << logN;
-    TwiddleTable *table = (TwiddleTable *)malloc(sizeof(TwiddleTable));
-    table->logN = logN;
-    table->twiddles = (uint32_t *)malloc((size_t)(n - 1) * sizeof(uint32_t));
-
-    uint32_t omega = bb_root_of_unity(logN);
-    uint32_t omega_inv = bb_inv(omega);
-
-    for (int s = 0; s < logN; s++) {
-        int halfBlock = 1 << s;
-        int offset = halfBlock - 1;
-        uint32_t w_m = bb_pow(omega_inv, (uint32_t)(n >> (s + 1)));
-        uint32_t w = 1;
-        for (int j = 0; j < halfBlock; j++) {
-            table->twiddles[offset + j] = w;
-            w = bb_mul(w, w_m);
-        }
-    }
-
-    return table;
-}
-
-static void free_twiddle_table(TwiddleTable *table) {
-    if (table) {
-        free(table->twiddles);
-        free(table);
-    }
+    cached[logN].fwd = fwd;
+    cached[logN].inv = inv;
+    cached[logN].logN = logN;
+    pthread_mutex_unlock(&cache_lock);
 }
 
 // ============================================================
-// Forward NTT — Cooley-Tukey DIT
+// Forward NTT — Cooley-Tukey DIT (Montgomery form)
 // ============================================================
 
 void babybear_ntt_neon(uint32_t *data, int logN) {
     if (logN <= 0) return;
     int n = 1 << logN;
 
+    ensure_twiddles(logN);
+    const uint32_t *tw = cached[logN].fwd;
+
+    // Convert input to Montgomery form
+    {
+        int32x4_t r2_vec = vdupq_n_s32((int32_t)MONTY_R2_MOD_P);
+        int32x4_t p_inv = vdupq_n_s32(P_INV_S);
+        int32x4_t pv = vdupq_n_s32(BB_P_S);
+        int i = 0;
+        for (; i + 3 < n; i += 4) {
+            int32x4_t v = vld1q_s32((const int32_t *)&data[i]);
+            v = monty_mul_neon(v, r2_vec, p_inv, pv);
+            vst1q_s32((int32_t *)&data[i], v);
+        }
+        for (; i < n; i++)
+            data[i] = to_monty(data[i]);
+    }
+
     // Bit-reversal permutation
     bit_reverse_permute(data, logN);
 
-    // Precompute twiddle factors
-    TwiddleTable *tw = precompute_twiddles(logN);
-
     // Butterfly stages
+    int32x4_t p_inv = vdupq_n_s32(P_INV_S);
+    int32x4_t pv = vdupq_n_s32(BB_P_S);
+
     for (int s = 0; s < logN; s++) {
         int halfBlock = 1 << s;
         int blockSize = halfBlock << 1;
@@ -273,56 +264,87 @@ void babybear_ntt_neon(uint32_t *data, int logN) {
         int twOffset = halfBlock - 1;
 
         if (halfBlock >= 4) {
-            // NEON path: process 4 butterflies at a time
+            // NEON path: 4 butterflies per iteration
             for (int bk = 0; bk < nBlocks; bk++) {
                 int base = bk * blockSize;
                 int j = 0;
-                // NEON: 4 butterflies per iteration
                 for (; j + 3 < halfBlock; j += 4) {
-                    uint32x4_t tw_vec = vld1q_u32(&tw->twiddles[twOffset + j]);
-                    uint32x4_t u = vld1q_u32(&data[base + j]);
-                    uint32x4_t v_raw = vld1q_u32(&data[base + j + halfBlock]);
-                    uint32x4_t v = bb_mul_neon(tw_vec, v_raw);
-                    vst1q_u32(&data[base + j], bb_add_neon(u, v));
-                    vst1q_u32(&data[base + j + halfBlock], bb_sub_neon(u, v));
+                    int32x4_t tw_vec = vld1q_s32((const int32_t *)&tw[twOffset + j]);
+                    int32x4_t u = vld1q_s32((const int32_t *)&data[base + j]);
+                    int32x4_t v_raw = vld1q_s32((const int32_t *)&data[base + j + halfBlock]);
+                    int32x4_t v = monty_mul_neon(tw_vec, v_raw, p_inv, pv);
+                    vst1q_s32((int32_t *)&data[base + j], monty_add_neon(u, v, pv));
+                    vst1q_s32((int32_t *)&data[base + j + halfBlock], monty_sub_neon(u, v, pv));
                 }
                 // Scalar tail
                 for (; j < halfBlock; j++) {
                     uint32_t u = data[base + j];
-                    uint32_t v = bb_mul(tw->twiddles[twOffset + j], data[base + j + halfBlock]);
-                    data[base + j] = bb_add(u, v);
-                    data[base + j + halfBlock] = bb_sub(u, v);
+                    uint32_t v = monty_mul(tw[twOffset + j], data[base + j + halfBlock]);
+                    data[base + j] = monty_add(u, v);
+                    data[base + j + halfBlock] = monty_sub(u, v);
                 }
             }
         } else {
-            // Small stages (halfBlock < 4): scalar path
+            // Small stages: scalar
             for (int bk = 0; bk < nBlocks; bk++) {
                 int base = bk * blockSize;
                 for (int j = 0; j < halfBlock; j++) {
                     uint32_t u = data[base + j];
-                    uint32_t v = bb_mul(tw->twiddles[twOffset + j], data[base + j + halfBlock]);
-                    data[base + j] = bb_add(u, v);
-                    data[base + j + halfBlock] = bb_sub(u, v);
+                    uint32_t v = monty_mul(tw[twOffset + j], data[base + j + halfBlock]);
+                    data[base + j] = monty_add(u, v);
+                    data[base + j + halfBlock] = monty_sub(u, v);
                 }
             }
         }
     }
 
-    free_twiddle_table(tw);
+    // Convert back from Montgomery form
+    {
+        int i = 0;
+        for (; i + 3 < n; i += 4) {
+            int32x4_t v = vld1q_s32((const int32_t *)&data[i]);
+            // from_monty: multiply by 1 (= monty_reduce64(v))
+            // Equivalent to monty_mul(v, 1) but 1 in non-Montgomery = just reduce
+            // We use the NEON mul with ones = vdupq_n_s32(1)
+            int32x4_t ones = vdupq_n_s32(1);
+            v = monty_mul_neon(v, ones, p_inv, pv);
+            vst1q_s32((int32_t *)&data[i], v);
+        }
+        for (; i < n; i++)
+            data[i] = from_monty(data[i]);
+    }
 }
 
 // ============================================================
-// Inverse NTT — Gentleman-Sande DIF
+// Inverse NTT — Gentleman-Sande DIF (Montgomery form)
 // ============================================================
 
 void babybear_intt_neon(uint32_t *data, int logN) {
     if (logN <= 0) return;
     int n = 1 << logN;
 
-    // Precompute inverse twiddle factors
-    TwiddleTable *tw = precompute_inv_twiddles(logN);
+    ensure_twiddles(logN);
+    const uint32_t *tw = cached[logN].inv;
 
-    // DIF stages (top-down: from stage logN-1 down to 0)
+    // Convert to Montgomery form
+    {
+        int32x4_t r2_vec = vdupq_n_s32((int32_t)MONTY_R2_MOD_P);
+        int32x4_t p_inv = vdupq_n_s32(P_INV_S);
+        int32x4_t pv = vdupq_n_s32(BB_P_S);
+        int i = 0;
+        for (; i + 3 < n; i += 4) {
+            int32x4_t v = vld1q_s32((const int32_t *)&data[i]);
+            v = monty_mul_neon(v, r2_vec, p_inv, pv);
+            vst1q_s32((int32_t *)&data[i], v);
+        }
+        for (; i < n; i++)
+            data[i] = to_monty(data[i]);
+    }
+
+    int32x4_t p_inv = vdupq_n_s32(P_INV_S);
+    int32x4_t pv = vdupq_n_s32(BB_P_S);
+
+    // DIF stages (top-down)
     for (int si = 0; si < logN; si++) {
         int s = logN - 1 - si;
         int halfBlock = 1 << s;
@@ -335,18 +357,20 @@ void babybear_intt_neon(uint32_t *data, int logN) {
                 int base = bk * blockSize;
                 int j = 0;
                 for (; j + 3 < halfBlock; j += 4) {
-                    uint32x4_t tw_vec = vld1q_u32(&tw->twiddles[twOffset + j]);
-                    uint32x4_t a = vld1q_u32(&data[base + j]);
-                    uint32x4_t b = vld1q_u32(&data[base + j + halfBlock]);
-                    vst1q_u32(&data[base + j], bb_add_neon(a, b));
-                    uint32x4_t diff = bb_sub_neon(a, b);
-                    vst1q_u32(&data[base + j + halfBlock], bb_mul_neon(diff, tw_vec));
+                    int32x4_t tw_vec = vld1q_s32((const int32_t *)&tw[twOffset + j]);
+                    int32x4_t a = vld1q_s32((const int32_t *)&data[base + j]);
+                    int32x4_t b = vld1q_s32((const int32_t *)&data[base + j + halfBlock]);
+                    int32x4_t sum = monty_add_neon(a, b, pv);
+                    int32x4_t diff = monty_sub_neon(a, b, pv);
+                    vst1q_s32((int32_t *)&data[base + j], sum);
+                    vst1q_s32((int32_t *)&data[base + j + halfBlock],
+                              monty_mul_neon(diff, tw_vec, p_inv, pv));
                 }
                 for (; j < halfBlock; j++) {
                     uint32_t a = data[base + j];
                     uint32_t b = data[base + j + halfBlock];
-                    data[base + j] = bb_add(a, b);
-                    data[base + j + halfBlock] = bb_mul(bb_sub(a, b), tw->twiddles[twOffset + j]);
+                    data[base + j] = monty_add(a, b);
+                    data[base + j + halfBlock] = monty_mul(monty_sub(a, b), tw[twOffset + j]);
                 }
             }
         } else {
@@ -355,27 +379,42 @@ void babybear_intt_neon(uint32_t *data, int logN) {
                 for (int j = 0; j < halfBlock; j++) {
                     uint32_t a = data[base + j];
                     uint32_t b = data[base + j + halfBlock];
-                    data[base + j] = bb_add(a, b);
-                    data[base + j + halfBlock] = bb_mul(bb_sub(a, b), tw->twiddles[twOffset + j]);
+                    data[base + j] = monty_add(a, b);
+                    data[base + j + halfBlock] = monty_mul(monty_sub(a, b), tw[twOffset + j]);
                 }
             }
         }
     }
 
-    free_twiddle_table(tw);
-
     // Bit-reversal permutation
     bit_reverse_permute(data, logN);
 
-    // Scale by 1/n
-    uint32_t n_inv = bb_inv((uint32_t)n);
-    uint32x4_t n_inv_vec = vdupq_n_u32(n_inv);
-    int i = 0;
-    for (; i + 3 < n; i += 4) {
-        uint32x4_t v = vld1q_u32(&data[i]);
-        vst1q_u32(&data[i], bb_mul_neon(v, n_inv_vec));
-    }
-    for (; i < n; i++) {
-        data[i] = bb_mul(data[i], n_inv);
+    // Scale by 1/n and convert from Montgomery form in one step:
+    // from_monty(monty_mul(x, n_inv_mont)) = x * n_inv_mont * R^{-1} * R^{-1} ... no, that's wrong.
+    // Just: from_monty(monty_mul(x, n_inv_mont)) where n_inv_mont = to_monty(n^{-1} mod p)
+    // monty_mul gives x * n_inv_mont * R^{-1}, then from_monty gives * R^{-1} again.
+    // That's one R^{-1} too many.
+    //
+    // Correct: monty_mul(x, n_inv_mont) gives (x * n_inv * R) * R^{-1} = x * n_inv (in Mont form).
+    // Then from_monty gives x * n_inv (in plain form). Two steps.
+    //
+    // Or: single step — monty_mul(x, plain_n_inv) where plain_n_inv is NOT in Montgomery form:
+    //   = x * plain_n_inv * R^{-1}. Then from_monty gives x * plain_n_inv * R^{-2} — wrong.
+    //
+    // Simplest correct: fuse scale + from_monty by multiplying by n_inv (plain, not Montgomery).
+    // monty_reduce64(x * n_inv_plain) = x * n_inv_plain * R^{-1}.
+    // But x is in Montgomery form = x_real * R, so:
+    // result = x_real * R * n_inv_plain * R^{-1} = x_real * n_inv_plain. Correct!
+    {
+        uint32_t n_inv_plain = plain_pow(n, BB_P - 2);  // n^{-1} mod p (plain form)
+        int32x4_t n_inv_vec = vdupq_n_s32((int32_t)n_inv_plain);
+        int i = 0;
+        for (; i + 3 < n; i += 4) {
+            int32x4_t v = vld1q_s32((const int32_t *)&data[i]);
+            v = monty_mul_neon(v, n_inv_vec, p_inv, pv);
+            vst1q_s32((int32_t *)&data[i], v);
+        }
+        for (; i < n; i++)
+            data[i] = monty_reduce64((uint64_t)data[i] * n_inv_plain);
     }
 }
