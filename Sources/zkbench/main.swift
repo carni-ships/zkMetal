@@ -153,8 +153,10 @@ if cmd == "calibrate" {
     runSparseSumcheckBench()
 } else if cmd == "sort" || cmd == "radix" {
     runSortBench()
+} else if cmd == "test-parallel-ntt" {
+    runParallelNTTTests()
 } else if cmd == "test" {
-    runCorrectnessTests()
+    runAllCorrectnessTests()
 } else if cmd == "cpu" {
     runCPUBench()
 } else if cmd == "cpu-msm" {
