@@ -26,23 +26,22 @@ GPU-accelerated zero-knowledge cryptography primitives for Apple Silicon, writte
 
 ## Performance
 
-All benchmarks measured on Apple M3 Pro, comparing GPU (Metal) vs single-threaded CPU (Swift).
-Run `swift run -c release zkbench all` to reproduce.
+All benchmarks measured on Apple M3 Pro (6P+6E cores), comparing GPU (Metal), parallel CPU (GCD multithreaded Swift + Pippenger for MSM), and single-threaded CPU (vanilla Swift).
+Run `swift run -c release zkbench all` to reproduce, or `swift run -c release zkbench cpu` for the 3-way comparison.
 
 ### MSM (BN254 G1)
 
-| Points | GPU (Metal) | CPU (single-threaded) | Speedup |
-|--------|-------------|----------------------|---------|
-| 2^8 | 8ms | 428ms | **51x** |
-| 2^10 | 9ms | 1.7s | **194x** |
-| 2^12 | 14ms | 6.9s | **484x** |
-| 2^14 | 24ms | 32.6s | **1345x** |
-| 2^16 | 37ms | ~2.2min* | ~3500x |
-| 2^17 | 68ms | — | — |
-| 2^18 | 102ms | — | — |
-| 2^20 | 294ms | — | — |
+| Points | GPU (Metal) | Parallel CPU (Pippenger) | Vanilla CPU | GPU vs Parallel |
+|--------|-------------|-------------------------|-------------|-----------------|
+| 2^8 | 8ms | 16ms | 519ms | 0.5x |
+| 2^10 | 9ms | 47ms | 1.8s | 0.2x |
+| 2^12 | 14ms | 114ms | 7.6s | 0.1x |
+| 2^14 | 24ms | 440ms | 51s | 0.05x |
+| 2^16 | 37ms | ~1.7s* | ~3.4min* | 0.02x |
+| 2^18 | 102ms | — | — | — |
+| 2^20 | 294ms | — | — | — |
 
-\* Extrapolated from measured 2^14 = 32.6s (sequential double-and-add). CPU times for 2^17+ would exceed 10 minutes.
+\* Extrapolated. Parallel CPU Pippenger is 33-116x faster than vanilla sequential double-and-add, but GPU is still 1.8-18x faster than parallel CPU at all sizes.
 
 **Comparison to other implementations (BN254 MSM):**
 
@@ -64,16 +63,16 @@ GPU scaling is strongly sublinear: 1024x more points (2^8 to 2^18) costs only ~9
 
 **BN254 Fr (256-bit, 8x32-bit limbs):**
 
-| Size | GPU | CPU | Speedup |
-|------|-----|-----|---------|
-| 2^10 | 0.32ms | 4ms | **12x** |
-| 2^12 | 0.43ms | 18ms | **41x** |
-| 2^14 | 0.49ms | 100ms | **206x** |
-| 2^16 | 0.95ms | 369ms | **387x** |
-| 2^18 | 1.9ms | 1.6s | **856x** |
-| 2^20 | 6.1ms | 7.2s | **1184x** |
-| 2^22 | 26ms | 31s | **1194x** |
-| 2^24 | 113ms | 140s | **1237x** |
+| Size | GPU | Parallel CPU (12 cores) | Vanilla CPU | GPU vs Parallel |
+|------|-----|------------------------|-------------|-----------------|
+| 2^14 | 0.49ms | 32ms | 87ms | **65x** |
+| 2^16 | 0.95ms | 108ms | 889ms | **114x** |
+| 2^18 | 1.9ms | 316ms | 2.3s | **166x** |
+| 2^20 | 6.1ms | 1.4s | 7.6s | **230x** |
+| 2^22 | 26ms | ~5.5s* | 31s | **212x** |
+| 2^24 | 113ms | ~24s* | 140s | **212x** |
+
+\* Extrapolated from measured sizes. Parallel CPU achieves 2.7-8.2x over vanilla (256-bit field mul is expensive enough to amortize thread dispatch).
 
 **Multi-field NTT comparison (GPU):**
 
@@ -85,7 +84,7 @@ GPU scaling is strongly sublinear: 1024x more points (2^8 to 2^18) costs only ~9
 | 2^22 | 26ms | 26ms | 4.4ms | 2.9ms |
 | 2^24 | 113ms | 116ms | 3.0ms | 2.0ms |
 
-Smaller fields see dramatic throughput gains: BabyBear NTT at 2^24 (16M elements) runs in **2ms** — one element per 0.12ns, or **8.5B elements/sec**. The GPU advantage for small fields comes from native 32-bit arithmetic (1 mul per element vs 64 muls for BN254 CIOS), 8x higher memory density, and better threadgroup utilization.
+Smaller fields see dramatic throughput gains: BabyBear NTT at 2^24 (16M elements) runs in **2ms** — one element per 0.12ns, or **8.5B elements/sec**. The GPU advantage for small fields comes from native 32-bit arithmetic (1 mul per element vs 64 muls for BN254 CIOS), 8x higher memory density, and better threadgroup utilization. Note: parallel CPU NTT helps BN254 (2.7-8.2x) but **regresses** for BabyBear/Goldilocks (0.4x) — field ops are too cheap (single 32/64-bit mul) for GCD dispatch overhead to pay off. NEON SIMD intrinsics (B14 on backlog) would be the right approach for small-field CPU optimization.
 
 **Comparison to ICICLE-Metal v3.8 NTT (measured locally, M3 Pro):**
 
@@ -105,18 +104,16 @@ GPU scales sublinearly: 2^10 to 2^22 is 4096x more data for ~100x more time. CPU
 
 ### Hashing
 
-| Primitive | Batch Size | GPU | CPU (single-core) | Speedup |
-|-----------|-----------|-----|-------|---------|
-| Poseidon2 | 2^14 | 0.17 µs/hash | 280 µs/hash | **1647x** |
-| Poseidon2 | 2^16 | 0.14 µs/hash | 280 µs/hash | **2000x** |
-| Poseidon2 | 2^18 | 0.13 µs/hash | 280 µs/hash | **2154x** |
-| Poseidon2 | 2^20 | 0.11 µs/hash | 280 µs/hash | **2545x** |
-| Keccak-256 | 2^14 | 0.035 µs/hash | 9 µs/hash | **257x** |
-| Keccak-256 | 2^16 | 0.027 µs/hash | 9 µs/hash | **333x** |
-| Keccak-256 | 2^18 | 0.012 µs/hash | 9 µs/hash | **750x** |
-| Keccak-256 | 2^20 | 0.011 µs/hash | 9 µs/hash | **818x** |
+| Primitive | Batch Size | GPU | Parallel CPU (12 cores) | Vanilla CPU | GPU vs Parallel |
+|-----------|-----------|-----|------------------------|-------------|-----------------|
+| Poseidon2 | 2^12 | 0.61 µs/hash | 21 µs/hash | 119 µs/hash | **34x** |
+| Poseidon2 | 2^14 | 0.17 µs/hash | 20 µs/hash | 128 µs/hash | **118x** |
+| Poseidon2 | 2^16 | 0.14 µs/hash | 19 µs/hash | 150 µs/hash | **136x** |
+| Keccak-256 | 2^14 | 0.035 µs/hash | 1.5 µs/hash | 6 µs/hash | **43x** |
+| Keccak-256 | 2^16 | 0.027 µs/hash | 1.4 µs/hash | 6 µs/hash | **52x** |
+| Keccak-256 | 2^18 | 0.012 µs/hash | 1.5 µs/hash | 6.2 µs/hash | **125x** |
 
-GPU per-hash cost is roughly constant across batch sizes (linear scaling), while CPU per-hash cost is constant by definition. Speedup peaks at 2^16--2^18 where GPU occupancy is saturated without memory pressure. No other Metal implementations of Poseidon2 or Keccak-256 batch hashing are known.
+Parallel CPU achieves 4-8x over vanilla (embarrassingly parallel — each hash independent). GPU remains 34-136x faster than parallel CPU. No other Metal implementations of Poseidon2 or Keccak-256 batch hashing are known.
 
 ### Merkle Trees
 
@@ -328,8 +325,18 @@ swift run -c release zkbench poly      # Polynomial ops
 swift run -c release zkbench kzg       # KZG commitments
 swift run -c release zkbench fri       # FRI folding
 swift run -c release zkbench sumcheck  # Sumcheck
-swift run -c release zkbench all       # Everything
-swift run -c release zkbench calibrate # Re-calibrate GPU parameters
+swift run -c release zkbench bls377msm  # MSM (BLS12-377 G1)
+swift run -c release zkbench secpmsm    # MSM (secp256k1 G1)
+swift run -c release zkbench ecdsa      # ECDSA batch verification
+swift run -c release zkbench ipa        # IPA (Bulletproofs-style)
+swift run -c release zkbench verkle     # Verkle trees
+swift run -c release zkbench lookup     # LogUp lookup argument
+swift run -c release zkbench sparse     # Sparse sumcheck
+swift run -c release zkbench sort       # GPU radix sort
+swift run -c release zkbench all        # Everything
+swift run -c release zkbench test       # Correctness tests (all primitives)
+swift run -c release zkbench cpu        # CPU-optimized vs GPU comparison
+swift run -c release zkbench calibrate  # Re-calibrate GPU parameters
 swift run -c release zkbench all --no-cpu  # GPU-only (skip slow CPU baselines)
 ```
 
@@ -372,20 +379,33 @@ swift build -c release
 - **Signed-digit MSM**: Scalar recoding halves bucket count, reducing bucket accumulation work.
 - **GLV endomorphism**: BN254's efficient endomorphism splits 256-bit scalar muls into two 128-bit half-width muls.
 
-## Correctness & Provenance
+## Correctness & Testing
 
-All GPU kernels are verified against CPU reference implementations. The CPU implementations use standard, well-known algorithms and externally-sourced parameters:
+Run the full correctness suite with `swift run -c release zkbench test`. All GPU kernels are verified against CPU reference implementations. The CPU references are vanilla single-threaded implementations preserved unchanged for correctness verification.
 
 | Component | Source | Verification |
 |-----------|--------|-------------|
 | **BN254 curve** | Standard parameters (same as Ethereum/bn256) | Field arithmetic unit tests |
-| **Poseidon2 constants** | [HorizenLabs reference](https://github.com/HorizenLabs/poseidon2/blob/main/plain_implementations/src/poseidon2/poseidon2_instance_bn256.rs) | Constants copied from official repo |
-| **Keccak-256** | FIPS 202 (SHA-3) | Validated against NIST test vectors |
-| **NTT** | Cooley-Tukey (DIT) / Gentleman-Sande (DIF) | Round-trip tests + root of unity verification |
-| **FRI folding** | Standard FRI protocol | GPU vs CPU cross-check + multi-fold to constant |
-| **Sumcheck** | Standard interactive protocol | Protocol-level verification (S(0)+S(1) = sum at each round) |
+| **BN254 MSM** | Pippenger + signed-digit + GLV | GPU vs CPU cross-check (low + full scalars), on-curve check |
+| **BLS12-377 MSM** | Pippenger + signed-digit | GPU vs CPU cross-check, determinism, on-curve check |
+| **secp256k1 MSM** | Pippenger + signed-digit | Identity, 2G, 5G, 16-pt cross-check, 256-pt determinism, on-curve |
+| **Poseidon2** | [HorizenLabs reference](https://github.com/HorizenLabs/poseidon2/blob/main/plain_implementations/src/poseidon2/poseidon2_instance_bn256.rs) | Known-answer test + GPU vs CPU batch cross-check |
+| **Keccak-256** | FIPS 202 (SHA-3) | NIST test vectors + GPU vs CPU batch cross-check |
+| **Blake3** | [BLAKE3 spec](https://github.com/BLAKE3-team/BLAKE3-specs) | Reference vector + GPU vs CPU batch cross-check |
+| **Merkle trees** | Poseidon2, Keccak, Blake3 backends | GPU vs CPU root comparison + parallel structure validation |
+| **NTT** | Cooley-Tukey (DIT) / Gentleman-Sande (DIF) | Round-trip (2^10, 2^20, 2^22) + CPU cross-check (all 4 fields) |
+| **FRI** | Standard FRI protocol | GPU vs CPU fold cross-check + full commit/query/verify round-trip |
+| **Sumcheck** | Standard interactive protocol | S(0)+S(1)=sum verification + GPU vs CPU reduce/roundPoly |
+| **Sparse Sumcheck** | O(nnz) sparse multilinear | Round-poly match, reduce match, full protocol, proof verify |
+| **KZG** | Polynomial commitment (MSM-based) | Commit linearity, multi-point eval, constant/linear poly checks |
+| **IPA** | Bulletproofs-style inner product argument | Prove + verify at n=4,16,64,256 + wrong-value rejection |
+| **Verkle trees** | Width-N Pedersen + IPA openings | Single openings, tree build, path proofs, wrong-root rejection |
+| **LogUp** | Lookup via logarithmic derivatives | 7 tests: simple, repeated, multiplicities, batch inverse, tamper rejection |
+| **ECDSA** | secp256k1 batch verification | Single verify, wrong msg/key rejection, batch 64, bad-sig detection |
+| **Radix sort** | LSD radix sort (4-pass, 8-bit) | 10 tests: sorted, reverse, duplicates, random, KV, edge cases |
 | **Goldilocks** | p = 2^64 - 2^32 + 1 (standard) | NTT round-trip + CPU cross-check |
 | **BabyBear** | p = 2^31 - 2^27 + 1 (standard) | NTT round-trip + CPU cross-check |
+| **Parallel CPU** | GCD multithreaded implementations | Cross-checked against vanilla CPU for NTT (Fr, Bb, Gl), MSM, batch hash, Merkle |
 
 Every benchmark run includes correctness checks (printed as PASS/FAIL). The test suite (`swift test`) covers field arithmetic, curve operations, and NTT correctness.
 

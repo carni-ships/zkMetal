@@ -153,6 +153,10 @@ if cmd == "calibrate" {
     runSparseSumcheckBench()
 } else if cmd == "sort" || cmd == "radix" {
     runSortBench()
+} else if cmd == "test" {
+    runCorrectnessTests()
+} else if cmd == "cpu" {
+    runCPUBench()
 } else if cmd == "msm" {
     try runMSMBench()
 } else if cmd == "all" {
