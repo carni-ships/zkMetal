@@ -76,6 +76,20 @@ GPU scaling is strongly sublinear: 1024x more points (2^8 to 2^18) costs only ~9
 
 Smaller fields see dramatic throughput gains: BabyBear NTT at 2^24 (16M elements) runs in **29ms** — one element per 1.7ns, or **690M elements/sec**. The GPU advantage for small fields comes from native 32-bit arithmetic (1 mul per element vs 64 muls for BN254 CIOS), 8x higher memory density, and better threadgroup utilization.
 
+**Comparison to ICICLE-Metal v3.8 NTT (measured locally, M3 Pro):**
+
+| Size | zkMetal BN254&#185; | ICICLE BN254&#185; | zkMetal BabyBear&#185; | ICICLE BabyBear&#185; |
+|------|------------|-------------|----------------|----------------|
+| 2^16 | **24ms** | 89ms | **18ms** | 86ms |
+| 2^18 | **43ms** | 108ms | **17ms** | 92ms |
+| 2^20 | **88ms** | 194ms | **18ms** | 108ms |
+| 2^22 | **373ms** | 915ms | **48ms** | 181ms |
+| 2^24 | — | 3,892ms | **29ms** | 709ms |
+
+&#185; Measured locally on M3 Pro. ICICLE-Metal has ~85ms per-call overhead.
+
+zkMetal is **2-2.5x faster** on BN254 and **4-24x faster** on BabyBear. ICICLE does not ship Goldilocks in their Metal backend.
+
 GPU scales sublinearly: 2^10 to 2^22 is 4096x more data for ~100x more time. CPU scales linearly with n log n. Speedup grows with input size.
 
 ### Hashing
