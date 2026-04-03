@@ -13,6 +13,8 @@ GPU-accelerated zero-knowledge cryptography primitives for Apple Silicon, writte
 | **Merkle Trees** | Poseidon2 and Keccak-256 backends |
 | **FRI** | Fast Reed-Solomon IOP folding (fused 2/4-round kernels) |
 | **Sumcheck** | Interactive sumcheck protocol (fused round+reduce with SIMD shuffles) |
+| **KZG** | Polynomial commitment scheme (commit + open via MSM) |
+| **Blake3** | BLAKE3 hash (batch hashing, Merkle-ready) |
 | **Polynomial Ops** | Evaluation, interpolation, subproduct trees |
 
 ## Performance
@@ -55,7 +57,7 @@ GPU scaling is strongly sublinear: 256x more points (256 to 65K) costs only 2.4x
 | 2^20 | 74ms | 7.3s | **99x** |
 | 2^22 | 285ms | 31s | **109x** |
 
-NTT is also available for Goldilocks (249ms at 2^24) and BabyBear (262ms at 2^24).
+NTT is also available for BLS12-377 (339ms at 2^22), Goldilocks (249ms at 2^24), and BabyBear (262ms at 2^24).
 
 GPU scales sublinearly (O(n log n) algorithm, but GPU utilization improves with size): 2^10 to 2^22 is 4096x more data for ~100x more time. CPU scales linearly with n log n. Speedup grows with input size. No other Metal NTT implementations are known for comparison; CUDA NTT (ICICLE) reports 320x improvement over SnarkJS at 2^22, though that baseline is JavaScript.
 
@@ -120,14 +122,45 @@ GPU scales sublinearly: 2^14 to 2^22 is 256x more variables for ~16x more time. 
 
 ### Polynomial Ops (BN254 Fr)
 
-Polynomial multiplication uses NTT under the hood, so performance scales with the NTT table above. Multi-point evaluation uses GPU Horner's method (one thread per evaluation point) or subproduct-tree evaluation for large batches.
+| Operation | Size | GPU |
+|-----------|------|-----|
+| Multiply (NTT) | deg 2^10 | 32ms |
+| Multiply (NTT) | deg 2^12 | 41ms |
+| Multiply (NTT) | deg 2^14 | 50ms |
+| Multiply (NTT) | deg 2^16 | 67ms |
+| Multi-eval (Horner) | deg 2^10, 1024 pts | 19ms |
+| Multi-eval (Horner) | deg 2^12, 4096 pts | 104ms |
+| Multi-eval (Horner) | deg 2^14, 16384 pts | 1.5s |
 
-Run `swift run -c release zkbench poly` for detailed benchmarks.
+Polynomial multiplication uses NTT under the hood. Multi-point evaluation uses GPU Horner's method (one thread per evaluation point). Subproduct-tree evaluation is available but currently slower than Horner for these sizes due to high constant factors.
+
+### KZG Commitments (BN254 G1)
+
+| Operation | Size | GPU |
+|-----------|------|-----|
+| Commit | deg 2^8 | 35ms |
+| Commit | deg 2^10 | 65ms |
+| Open (commit + witness) | deg 2^8 | 29ms |
+| Open (commit + witness) | deg 2^10 | 70ms |
+
+KZG performance is MSM-dominated. Commit and open are thin wrappers around MSM + polynomial division.
+
+### Blake3 Hashing
+
+| Batch Size | GPU | CPU (single-core) | Speedup |
+|-----------|-----|-------|---------|
+| 2^14 | 0.87 µs/hash | 0.6 µs/hash | 0.7x |
+| 2^16 | 0.14 µs/hash | 0.6 µs/hash | **4x** |
+| 2^18 | 0.07 µs/hash | 0.6 µs/hash | **9x** |
+| 2^20 | 0.02 µs/hash | 0.6 µs/hash | **30x** |
+
+Blake3 is much simpler than Keccak (7 rounds of 32-bit ARX ops vs 24 rounds of 64-bit Keccak-f). GPU speedup scales with batch size as fixed dispatch overhead amortizes. CPU Blake3 is very fast (0.6µs) so GPU only wins at large batch sizes.
 
 ## Supported Fields
 
 - **BN254 Fr** (scalar field) -- Montgomery CIOS, 8x32-bit limbs
 - **BN254 Fp** (base field) -- Montgomery CIOS, SOS squaring
+- **BLS12-377 Fr** (scalar field) -- Montgomery CIOS, 8x32-bit limbs, TWO_ADICITY=47
 - **Goldilocks** (p = 2^64 - 2^32 + 1) -- native 64-bit reduction
 - **BabyBear** (p = 2^31 - 2^27 + 1) -- 32-bit arithmetic
 
@@ -138,11 +171,11 @@ All compute runs on Metal GPU shaders. The Swift layer handles buffer management
 ```
 Sources/
   Shaders/         # Metal GPU kernels
-    fields/        # Field arithmetic (BN254 Fr/Fp, Goldilocks, BabyBear)
+    fields/        # Field arithmetic (BN254 Fr/Fp, BLS12-377 Fr, Goldilocks, BabyBear)
     geometry/      # Elliptic curve operations (BN254 G1)
     msm/           # Multi-scalar multiplication kernels
     ntt/           # NTT butterfly + fused sub-block kernels
-    hash/          # Poseidon2, Keccak-256
+    hash/          # Poseidon2, Keccak-256, Blake3
     fri/           # FRI folding kernels
     sumcheck/      # Sumcheck round kernels
     poly/          # Polynomial evaluation/interpolation
@@ -195,16 +228,33 @@ let folded = try fri.multiFold(evals: evaluations, betas: challenges)
 let sc = try SumcheckEngine()
 let (rounds, finalEval) = try sc.fullSumcheck(evals: evals, challenges: challenges)
 
+// KZG Commitments
+let kzg = try KZGEngine(srs: srs)
+let commitment = try kzg.commit(polynomial)
+let proof = try kzg.open(polynomial, at: z)
+
+// Blake3
+let blake3 = try Blake3Engine()
+let hashes = try blake3.hash64(input)
+
+// BLS12-377 NTT
+let bls377ntt = try BLS12377NTTEngine()
+let transformed = try bls377ntt.ntt(values377)
+
 ```
 
 ### Benchmarks
 
 ```bash
-swift run -c release zkbench msm       # MSM (65K points)
-swift run -c release zkbench ntt       # NTT (all fields)
+swift run -c release zkbench msm       # MSM (BN254 G1)
+swift run -c release zkbench ntt       # NTT (BN254 Fr)
+swift run -c release zkbench bls377    # NTT (BLS12-377 Fr)
 swift run -c release zkbench p2        # Poseidon2
 swift run -c release zkbench keccak    # Keccak-256
+swift run -c release zkbench blake3    # Blake3
 swift run -c release zkbench merkle    # Merkle trees
+swift run -c release zkbench poly      # Polynomial ops
+swift run -c release zkbench kzg       # KZG commitments
 swift run -c release zkbench fri       # FRI folding
 swift run -c release zkbench sumcheck  # Sumcheck
 swift run -c release zkbench all       # Everything
