@@ -67,7 +67,24 @@ func runMSMBench() throws {
         times.sort()
         let median = times[runs / 2]
         let logN = logSizes[sizes.firstIndex(of: n)!]
-        fputs(String(format: "  MSM 2^%-2d = %7d pts: %7.1f ms\n", logN, n, median), stderr)
+
+        // CPU baseline (sequential scalar mul + accumulate) — skip for large sizes
+        if !skipCPU && n <= 16384 {
+            let projPoints = points.map { pointFromAffine($0) }
+            let cpuT0 = CFAbsoluteTimeGetCurrent()
+            var cpuResult = pointIdentity()
+            for i in 0..<n {
+                let scalar = frFromLimbs(scalars[i])
+                cpuResult = pointAdd(cpuResult, pointScalarMul(projPoints[i], scalar))
+            }
+            _ = cpuResult  // prevent optimization
+            let cpuTime = (CFAbsoluteTimeGetCurrent() - cpuT0) * 1000
+            let speedup = cpuTime / median
+            fputs(String(format: "  MSM 2^%-2d = %7d pts: GPU %7.1f ms | CPU %8.1f ms | %.1f×\n",
+                        logN, n, median, cpuTime, speedup), stderr)
+        } else {
+            fputs(String(format: "  MSM 2^%-2d = %7d pts: %7.1f ms\n", logN, n, median), stderr)
+        }
     }
 }
 

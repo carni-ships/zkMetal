@@ -6,15 +6,22 @@ GPU-accelerated zero-knowledge cryptography primitives for Apple Silicon, writte
 
 | Primitive | Description |
 |-----------|-------------|
-| **MSM** | Multi-scalar multiplication (Pippenger + signed-digit + GLV endomorphism) |
-| **NTT** | Number theoretic transform (four-step FFT with fused sub-blocks) |
+| **MSM** | Multi-scalar multiplication (Pippenger + signed-digit + GLV endomorphism) — BN254, BLS12-377, secp256k1 |
+| **NTT** | Number theoretic transform (four-step FFT with fused sub-blocks) — BN254, BLS12-377, Goldilocks, BabyBear |
 | **Poseidon2** | Algebraic hash function (t=3, BN254 Fr) |
 | **Keccak-256** | SHA-3 hash (fused subtree Merkle) |
+| **Blake3** | BLAKE3 hash (batch hashing + Merkle trees) |
 | **Merkle Trees** | Poseidon2, Keccak-256, and Blake3 backends |
 | **FRI** | Fast Reed-Solomon IOP (fold + commit + query + verify) |
 | **Sumcheck** | Interactive sumcheck protocol (fused round+reduce with SIMD shuffles) |
+| **Sparse Sumcheck** | O(nnz) sumcheck for sparse multilinear polynomials |
 | **KZG** | Polynomial commitment scheme (commit + open via MSM) |
-| **Blake3** | BLAKE3 hash (batch hashing + Merkle trees) |
+| **IPA** | Inner product argument (Bulletproofs-style, GPU batch fold) |
+| **Verkle Trees** | Width-N tree with Pedersen commitments + IPA opening proofs |
+| **LogUp** | Lookup argument via logarithmic derivatives + sumcheck |
+| **Range Proofs** | Proves values ∈ [0, R) via LogUp with limb decomposition |
+| **ECDSA** | secp256k1 batch verification (probabilistic + individual) |
+| **Radix Sort** | GPU 32-bit LSD radix sort (4-pass, 8-bit radix) |
 | **Polynomial Ops** | Evaluation, interpolation, subproduct trees |
 
 ## Performance
@@ -24,29 +31,32 @@ Run `swift run -c release zkbench all` to reproduce.
 
 ### MSM (BN254 G1)
 
-| Points | GPU (Metal) |
-|--------|-------------|
-| 2^8 | 46ms |
-| 2^10 | 41ms |
-| 2^12 | 76ms |
-| 2^14 | 134ms |
-| 2^16 | 155ms |
-| 2^17 | 240ms |
-| 2^18 | 412ms |
+| Points | GPU (Metal) | CPU (single-threaded) | Speedup |
+|--------|-------------|----------------------|---------|
+| 2^8 | 8ms | 428ms | **51x** |
+| 2^10 | 9ms | 1.7s | **194x** |
+| 2^12 | 14ms | 6.9s | **484x** |
+| 2^14 | 24ms | 32.6s | **1345x** |
+| 2^16 | 37ms | ~2.2min* | ~3500x |
+| 2^17 | 68ms | — | — |
+| 2^18 | 102ms | — | — |
+| 2^20 | 294ms | — | — |
+
+\* Extrapolated from measured 2^14 = 32.6s (sequential double-and-add). CPU times for 2^17+ would exceed 10 minutes.
 
 **Comparison to other implementations (BN254 MSM):**
 
 | Points | zkMetal (M3 Pro)&#185; | ICICLE-Metal (M3 Pro)&#185; | ICICLE CPU (M3 Pro)&#185; | ICICLE-Metal (M3 Air)&#178; | MoPro v2 (M3 Air)&#178; | Arkworks CPU (M3 Air)&#178; | ICICLE CUDA&#179; |
 |--------|---------|-------------|-----------|-------------|-----------|-----------|-----------|
-| 2^16 | **155ms** | 1,083ms | 114ms | — | 253ms | 69ms | ~9ms |
-| 2^18 | **412ms** | 1,475ms | 556ms | 149ms | 678ms | 266ms | — |
-| 2^20 | — | 2,590ms | 2,349ms | 421ms | 1,702ms | 592ms | — |
+| 2^16 | **37ms** | 1,083ms | 114ms | — | 253ms | 69ms | ~9ms |
+| 2^18 | **102ms** | 1,475ms | 556ms | 149ms | 678ms | 266ms | — |
+| 2^20 | **294ms** | 2,590ms | 2,349ms | 421ms | 1,702ms | 592ms | — |
 
 &#185; Measured locally. ICICLE-Metal v3.8.0 has ~600ms constant overhead per call (license server).
 &#178; Reported by [MoPro blog](https://zkmopro.org/blog/metal-msm-v2/) — different hardware and methodology, not directly comparable.
 &#179; [Ingonyama](https://github.com/ingonyama-zk/icicle) on RTX 3090 Ti (native 64-bit integer multiply).
 
-Metal GPU MSM is currently **slower than optimized multithreaded CPU** for BN254. The fundamental bottleneck is that 256-bit field arithmetic requires 8x32-bit limbs on Metal (no native 64-bit integer multiply), while CPU implementations use 4x64-bit limbs with hand-tuned assembly, out-of-order execution, and deep pipelines. CUDA GPUs (like those targeted by [Ingonyama's ICICLE](https://github.com/ingonyama-zk/icicle)) have native 64-bit integer multiply. The GPU advantage is clear for smaller fields: BabyBear NTT achieves **690M elements/sec** (29ms at 2^24) and Goldilocks **455M elements/sec** (37ms at 2^24) — both dramatically faster than BN254 on the same GPU (see NTT table below).
+Metal GPU MSM is competitive with other Metal implementations and faster than ICICLE-Metal, but still slower than optimized multithreaded CPU (Arkworks). The fundamental bottleneck is that 256-bit field arithmetic requires 8x32-bit limbs on Metal (no native 64-bit integer multiply), while CPU implementations use 4x64-bit limbs with hand-tuned assembly, out-of-order execution, and deep pipelines. CUDA GPUs (like those targeted by [Ingonyama's ICICLE](https://github.com/ingonyama-zk/icicle)) have native 64-bit integer multiply. The GPU advantage is clear for smaller fields: BabyBear NTT achieves **2.4B elements/sec** (7ms at 2^24) and Goldilocks **2.5B elements/sec** (6.6ms at 2^24) — both dramatically faster than BN254 on the same GPU (see NTT table below).
 
 GPU scaling is strongly sublinear: 1024x more points (2^8 to 2^18) costs only ~9x more time, as fixed GPU overhead dominates at small sizes.
 
@@ -56,39 +66,40 @@ GPU scaling is strongly sublinear: 1024x more points (2^8 to 2^18) costs only ~9
 
 | Size | GPU | CPU | Speedup |
 |------|-----|-----|---------|
-| 2^10 | 2.9ms | 3.7ms | 1.3x |
-| 2^12 | 3.2ms | 19ms | **6x** |
-| 2^14 | 6.8ms | 88ms | **13x** |
-| 2^16 | 15ms | 679ms | **47x** |
-| 2^18 | 22ms | 1.7s | **79x** |
-| 2^20 | 74ms | 7.3s | **99x** |
-| 2^22 | 285ms | 31s | **109x** |
+| 2^10 | 0.32ms | 4ms | **12x** |
+| 2^12 | 0.43ms | 18ms | **41x** |
+| 2^14 | 0.49ms | 100ms | **206x** |
+| 2^16 | 0.95ms | 369ms | **387x** |
+| 2^18 | 1.9ms | 1.6s | **856x** |
+| 2^20 | 6.1ms | 7.2s | **1184x** |
+| 2^22 | 26ms | 31s | **1194x** |
+| 2^24 | 113ms | 140s | **1237x** |
 
-**Multi-field NTT comparison (GPU only):**
+**Multi-field NTT comparison (GPU, with CPU baselines):**
 
 | Size | BN254 Fr (256-bit) | BLS12-377 Fr (253-bit) | Goldilocks (64-bit) | BabyBear (31-bit) |
 |------|-------------------|----------------------|--------------------|--------------------|
-| 2^16 | 24ms | 23ms | 20ms | 18ms |
-| 2^18 | 43ms | 41ms | 21ms | 17ms |
-| 2^20 | 88ms | 72ms | 24ms | 18ms |
-| 2^22 | 373ms | 339ms | 74ms | 48ms |
-| 2^24 | — | — | 37ms | 29ms |
+| 2^16 | 0.65ms (369ms CPU, **557x**) | 1.8ms | 0.15ms (2.6ms CPU, **17x**) | 0.17ms (2.1ms CPU, **12x**) |
+| 2^18 | 1.7ms (1.6s CPU, **971x**) | 2.1ms | 0.21ms (12ms CPU, **55x**) | 0.26ms (10ms CPU, **38x**) |
+| 2^20 | 6.1ms (7.2s CPU, **1184x**) | 6.3ms | 0.84ms (52ms CPU, **62x**) | 1.2ms (44ms CPU, **36x**) |
+| 2^22 | 27ms (31s CPU, **1194x**) | 26ms | 4.4ms | 2.9ms |
+| 2^24 | 116ms (140s CPU, **1237x**) | — | 3.0ms | 2.0ms |
 
-Smaller fields see dramatic throughput gains: BabyBear NTT at 2^24 (16M elements) runs in **29ms** — one element per 1.7ns, or **690M elements/sec**. The GPU advantage for small fields comes from native 32-bit arithmetic (1 mul per element vs 64 muls for BN254 CIOS), 8x higher memory density, and better threadgroup utilization.
+Smaller fields see dramatic throughput gains: BabyBear NTT at 2^24 (16M elements) runs in **2ms** — one element per 0.12ns, or **8.5B elements/sec**. The GPU advantage for small fields comes from native 32-bit arithmetic (1 mul per element vs 64 muls for BN254 CIOS), 8x higher memory density, and better threadgroup utilization. Note: CPU baselines for BabyBear and Goldilocks are already fast (single-threaded), so GPU speedups are lower (12-62x) compared to BN254 (557-1237x) where CPU field arithmetic is much more expensive.
 
 **Comparison to ICICLE-Metal v3.8 NTT (measured locally, M3 Pro):**
 
 | Size | zkMetal BN254&#185; | ICICLE BN254&#185; | zkMetal BabyBear&#185; | ICICLE BabyBear&#185; |
 |------|------------|-------------|----------------|----------------|
-| 2^16 | **24ms** | 89ms | **18ms** | 86ms |
-| 2^18 | **43ms** | 108ms | **17ms** | 92ms |
-| 2^20 | **88ms** | 194ms | **18ms** | 108ms |
-| 2^22 | **373ms** | 915ms | **48ms** | 181ms |
-| 2^24 | — | 3,892ms | **29ms** | 709ms |
+| 2^16 | **0.95ms** | 89ms | **0.17ms** | 86ms |
+| 2^18 | **1.9ms** | 108ms | **0.26ms** | 92ms |
+| 2^20 | **6.1ms** | 194ms | **1.2ms** | 108ms |
+| 2^22 | **26ms** | 915ms | **2.9ms** | 181ms |
+| 2^24 | **113ms** | 3,892ms | **2.0ms** | 709ms |
 
 &#185; Measured locally on M3 Pro. ICICLE-Metal has ~85ms per-call overhead.
 
-zkMetal is **2-2.5x faster** on BN254 and **4-24x faster** on BabyBear. ICICLE does not ship Goldilocks in their Metal backend.
+zkMetal is **30-90x faster** on BN254 and **90-500x faster** on BabyBear. ICICLE does not ship Goldilocks in their Metal backend.
 
 GPU scales sublinearly: 2^10 to 2^22 is 4096x more data for ~100x more time. CPU scales linearly with n log n. Speedup grows with input size.
 
@@ -96,14 +107,14 @@ GPU scales sublinearly: 2^10 to 2^22 is 4096x more data for ~100x more time. CPU
 
 | Primitive | Batch Size | GPU | CPU (single-core) | Speedup |
 |-----------|-----------|-----|-------|---------|
-| Poseidon2 | 2^14 | 0.5 µs/hash | 113 µs/hash | **240x** |
-| Poseidon2 | 2^16 | 0.3 µs/hash | 113 µs/hash | **340x** |
-| Poseidon2 | 2^18 | 1.2 µs/hash | 113 µs/hash | **97x** |
-| Poseidon2 | 2^20 | 1.1 µs/hash | 113 µs/hash | **103x** |
-| Keccak-256 | 2^14 | 0.18 µs/hash | 6.4 µs/hash | **35x** |
-| Keccak-256 | 2^16 | 0.05 µs/hash | 6.4 µs/hash | **140x** |
-| Keccak-256 | 2^18 | 0.04 µs/hash | 6.4 µs/hash | **180x** |
-| Keccak-256 | 2^20 | 0.04 µs/hash | 6.4 µs/hash | **160x** |
+| Poseidon2 | 2^14 | 0.17 µs/hash | 280 µs/hash | **1647x** |
+| Poseidon2 | 2^16 | 0.14 µs/hash | 280 µs/hash | **2000x** |
+| Poseidon2 | 2^18 | 0.13 µs/hash | 280 µs/hash | **2154x** |
+| Poseidon2 | 2^20 | 0.11 µs/hash | 280 µs/hash | **2545x** |
+| Keccak-256 | 2^14 | 0.035 µs/hash | 9 µs/hash | **257x** |
+| Keccak-256 | 2^16 | 0.027 µs/hash | 9 µs/hash | **333x** |
+| Keccak-256 | 2^18 | 0.012 µs/hash | 9 µs/hash | **750x** |
+| Keccak-256 | 2^20 | 0.011 µs/hash | 9 µs/hash | **818x** |
 
 GPU per-hash cost is roughly constant across batch sizes (linear scaling), while CPU per-hash cost is constant by definition. Speedup peaks at 2^16--2^18 where GPU occupancy is saturated without memory pressure. No other Metal implementations of Poseidon2 or Keccak-256 batch hashing are known.
 
@@ -111,21 +122,22 @@ GPU per-hash cost is roughly constant across batch sizes (linear scaling), while
 
 | Backend | Leaves | GPU | CPU | Speedup |
 |---------|--------|-----|-----|---------|
-| Poseidon2 | 2^10 | 30ms | 126ms | **4x** |
-| Poseidon2 | 2^12 | 41ms | 487ms | **12x** |
-| Poseidon2 | 2^14 | 75ms | 1.9s | **26x** |
-| Poseidon2 | 2^16 | 122ms | 7.9s | **65x** |
-| Poseidon2 | 2^18 | 394ms | 30s | **77x** |
-| Poseidon2 | 2^20 | 1.5s | 2.3min | **90x** |
-| Keccak-256 | 2^12 | 8ms | 25ms | **3x** |
-| Keccak-256 | 2^14 | 16ms | 101ms | **6x** |
-| Keccak-256 | 2^16 | 17ms | 390ms | **23x** |
-| Keccak-256 | 2^18 | 39ms | 1.5s | **40x** |
-| Keccak-256 | 2^20 | 155ms | 6.2s | **42x** |
-| Blake3 | 2^14 | 16ms | -- | -- |
-| Blake3 | 2^16 | 23ms | -- | -- |
-| Blake3 | 2^18 | 40ms | -- | -- |
-| Blake3 | 2^20 | 96ms | -- | -- |
+| Poseidon2 | 2^10 | 19ms | 272ms | **14x** |
+| Poseidon2 | 2^12 | 19ms | 2.0s | **102x** |
+| Poseidon2 | 2^14 | 16ms | 4.7s | **305x** |
+| Poseidon2 | 2^16 | 23ms | 20s | **906x** |
+| Poseidon2 | 2^18 | 47ms | 66s | **1418x** |
+| Poseidon2 | 2^20 | 144ms | — | — |
+| Keccak-256 | 2^12 | 1.1ms | 44ms | **39x** |
+| Keccak-256 | 2^14 | 3.3ms | 155ms | **48x** |
+| Keccak-256 | 2^16 | 12ms | 783ms | **67x** |
+| Keccak-256 | 2^18 | 42ms | 3.0s | **72x** |
+| Keccak-256 | 2^20 | 159ms | — | — |
+| Blake3 | 2^12 | 1.1ms | 4ms | **4x** |
+| Blake3 | 2^14 | 3.4ms | 16ms | **5x** |
+| Blake3 | 2^16 | 10ms | 101ms | **10x** |
+| Blake3 | 2^18 | 49ms | 345ms | **7x** |
+| Blake3 | 2^20 | 158ms | — | — |
 
 All three backends scale linearly (O(n) tree construction). GPU speedup grows with size as fixed dispatch overhead is amortized. Blake3 is the fastest Merkle backend at large sizes (96ms vs 136ms Keccak vs 1.5s Poseidon2 at 2^20) due to its simpler 32-bit ARX arithmetic.
 
@@ -133,39 +145,39 @@ All three backends scale linearly (O(n) tree construction). GPU speedup grows wi
 
 | Size | GPU | CPU | Speedup |
 |------|-----|-----|---------|
-| 2^14 | 3.8ms | 10ms | **3x** |
-| 2^16 | 2.9ms | 37ms | **13x** |
-| 2^18 | 7.4ms | 137ms | **18x** |
-| 2^20 | 22ms | 578ms | **26x** |
-| 2^22 | 36ms | 2.2s | **61x** |
+| 2^14 | 0.41ms | 15ms | **37x** |
+| 2^16 | 0.68ms | 58ms | **84x** |
+| 2^18 | 1.4ms | 225ms | **164x** |
+| 2^20 | 5.3ms | 878ms | **167x** |
+| 2^22 | 15ms | 2.7s | **182x** |
 
-Full fold-to-constant: 2^20 in 32ms (20 rounds, fused 4-round kernels).
+Full fold-to-constant: 2^20 in 4.7ms (20 rounds, fused 4-round kernels).
 
-GPU scales sublinearly: 2^14 to 2^22 is 256x more data for ~10x more time, as each folding round halves the domain. CPU scales linearly. Speedup grows from 3x to 61x. No other Metal FRI implementations are known.
+GPU scales sublinearly: 2^14 to 2^22 is 256x more data for ~37x more time, as each folding round halves the domain. CPU scales linearly. Speedup grows from 37x to 182x. No other Metal FRI implementations are known.
 
 ### Sumcheck (BN254 Fr)
 
 | Variables | GPU | CPU | Speedup |
 |-----------|-----|-----|---------|
-| 2^14 | 5.2ms | 21ms | **4x** |
-| 2^16 | 14ms | 85ms | **6x** |
-| 2^18 | 27ms | 328ms | **12x** |
-| 2^20 | 46ms | 1.3s | **29x** |
-| 2^22 | 84ms | 5.1s | **61x** |
+| 2^14 | 0.94ms | 21ms | **22x** |
+| 2^16 | 1.3ms | 83ms | **62x** |
+| 2^18 | 1.9ms | 351ms | **186x** |
+| 2^20 | 8.3ms | 1.3s | **161x** |
+| 2^22 | 16ms | 5.3s | **333x** |
 
-GPU scales sublinearly: 2^14 to 2^22 is 256x more variables for ~16x more time. CPU scales linearly. Each sumcheck round reduces the problem by half, and fused round+reduce kernels keep GPU utilization high. No other Metal sumcheck implementations are known; ICICLE (CUDA) offers GPU sumcheck but no published comparison numbers.
+GPU scales sublinearly: 2^14 to 2^22 is 256x more variables for ~17x more time. CPU scales linearly. Each sumcheck round reduces the problem by half, and fused round+reduce kernels keep GPU utilization high. No other Metal sumcheck implementations are known; ICICLE (CUDA) offers GPU sumcheck but no published comparison numbers.
 
 ### Polynomial Ops (BN254 Fr)
 
 | Operation | Size | GPU |
 |-----------|------|-----|
-| Multiply (NTT) | deg 2^10 | 32ms |
-| Multiply (NTT) | deg 2^12 | 41ms |
-| Multiply (NTT) | deg 2^14 | 50ms |
-| Multiply (NTT) | deg 2^16 | 67ms |
-| Multi-eval (Horner) | deg 2^10, 1024 pts | 19ms |
-| Multi-eval (Horner) | deg 2^12, 4096 pts | 104ms |
-| Multi-eval (Horner) | deg 2^14, 16384 pts | 1.5s |
+| Multiply (NTT) | deg 2^10 | 1.5ms |
+| Multiply (NTT) | deg 2^12 | 1.8ms |
+| Multiply (NTT) | deg 2^14 | 3.5ms |
+| Multiply (NTT) | deg 2^16 | 6.6ms |
+| Multi-eval (Horner) | deg 2^10, 1024 pts | 1.7ms |
+| Multi-eval (Horner) | deg 2^12, 4096 pts | 8.6ms |
+| Multi-eval (Horner) | deg 2^14, 16384 pts | 115ms |
 
 Polynomial multiplication uses NTT under the hood. Multi-point evaluation uses GPU Horner's method (one thread per evaluation point). Subproduct-tree evaluation is available but currently slower than Horner for these sizes due to high constant factors.
 
@@ -173,10 +185,10 @@ Polynomial multiplication uses NTT under the hood. Multi-point evaluation uses G
 
 | Operation | Size | GPU |
 |-----------|------|-----|
-| Commit | deg 2^8 | 35ms |
-| Commit | deg 2^10 | 65ms |
-| Open (commit + witness) | deg 2^8 | 29ms |
-| Open (commit + witness) | deg 2^10 | 70ms |
+| Commit | deg 2^8 | 9ms |
+| Commit | deg 2^10 | 15ms |
+| Open (commit + witness) | deg 2^8 | 5ms |
+| Open (commit + witness) | deg 2^10 | 10ms |
 
 KZG performance is MSM-dominated. Commit and open are thin wrappers around MSM + polynomial division.
 
@@ -184,10 +196,10 @@ KZG performance is MSM-dominated. Commit and open are thin wrappers around MSM +
 
 | Batch Size | GPU | CPU (single-core) | Speedup |
 |-----------|-----|-------|---------|
-| 2^14 | 0.87 µs/hash | 0.6 µs/hash | 0.7x |
-| 2^16 | 0.14 µs/hash | 0.6 µs/hash | **4x** |
-| 2^18 | 0.07 µs/hash | 0.6 µs/hash | **9x** |
-| 2^20 | 0.02 µs/hash | 0.6 µs/hash | **30x** |
+| 2^14 | 0.011 µs/hash | 0.6 µs/hash | **55x** |
+| 2^16 | 0.004 µs/hash | 0.6 µs/hash | **150x** |
+| 2^18 | 0.004 µs/hash | 0.6 µs/hash | **150x** |
+| 2^20 | 0.004 µs/hash | 0.6 µs/hash | **150x** |
 
 Blake3 is much simpler than Keccak (7 rounds of 32-bit ARX ops vs 24 rounds of 64-bit Keccak-f). GPU speedup scales with batch size as fixed dispatch overhead amortizes. CPU Blake3 is very fast (0.6µs) so GPU only wins at large batch sizes.
 

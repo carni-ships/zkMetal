@@ -210,8 +210,17 @@ public func runNTTBench() {
             let inttMedian = inttTimes[5]
             let elemPerSec = Double(n) / (nttMedian / 1000)
 
-            print(String(format: "  2^%-2d = %7d | NTT: %7.2fms | iNTT: %7.2fms | %.1fM elem/s",
-                        logN, n, nttMedian, inttMedian, elemPerSec / 1e6))
+            if !skipCPU && logN <= 20 {
+                let cpuT0 = CFAbsoluteTimeGetCurrent()
+                let _ = BabyBearNTTEngine.cpuNTT(data, logN: logN)
+                let cpuTime = (CFAbsoluteTimeGetCurrent() - cpuT0) * 1000
+                let speedup = cpuTime / nttMedian
+                print(String(format: "  2^%-2d = %7d | NTT: %7.2fms | iNTT: %7.2fms | CPU: %8.1fms | %.0fx | %.1fM elem/s",
+                            logN, n, nttMedian, inttMedian, cpuTime, speedup, elemPerSec / 1e6))
+            } else {
+                print(String(format: "  2^%-2d = %7d | NTT: %7.2fms | iNTT: %7.2fms | %.1fM elem/s",
+                            logN, n, nttMedian, inttMedian, elemPerSec / 1e6))
+            }
         }
 
         // Correctness check
@@ -310,8 +319,17 @@ public func runNTTBench() {
             let inttMedian = inttTimes[5]
             let elemPerSec = Double(n) / (nttMedian / 1000)
 
-            print(String(format: "  2^%-2d = %7d | NTT: %7.2fms | iNTT: %7.2fms | %.1fM elem/s",
-                        logN, n, nttMedian, inttMedian, elemPerSec / 1e6))
+            if !skipCPU && logN <= 20 {
+                let cpuT0 = CFAbsoluteTimeGetCurrent()
+                let _ = GoldilocksNTTEngine.cpuNTT(data, logN: logN)
+                let cpuTime = (CFAbsoluteTimeGetCurrent() - cpuT0) * 1000
+                let speedup = cpuTime / nttMedian
+                print(String(format: "  2^%-2d = %7d | NTT: %7.2fms | iNTT: %7.2fms | CPU: %8.1fms | %.0fx | %.1fM elem/s",
+                            logN, n, nttMedian, inttMedian, cpuTime, speedup, elemPerSec / 1e6))
+            } else {
+                print(String(format: "  2^%-2d = %7d | NTT: %7.2fms | iNTT: %7.2fms | %.1fM elem/s",
+                            logN, n, nttMedian, inttMedian, elemPerSec / 1e6))
+            }
         }
 
         // Correctness check
