@@ -22,15 +22,24 @@ Run `swift run -c release zkbench all` to reproduce.
 
 ### MSM (BN254 G1)
 
-| Points | GPU |
-|--------|-----|
+| Points | GPU (Metal) |
+|--------|-------------|
 | 256 | 73ms |
 | 1,024 | 74ms |
 | 4,096 | 104ms |
 | 16,384 | 169ms |
 | 65,536 | 270ms |
 
-No single-threaded CPU comparison is provided -- a naive CPU MSM at 65K points takes minutes. Optimized multithreaded CPU implementations (e.g. Barretenberg) are faster here (~200ms for 200K points) because 256-bit field arithmetic benefits from native 64-bit multiply, out-of-order execution, and hand-tuned assembly -- advantages that Metal's 32-bit ALUs cannot match. GPU MSM becomes competitive for smaller fields (Goldilocks, BabyBear) where the arithmetic fits native GPU word sizes.
+**Comparison to other implementations (BN254, 2^16 points):**
+
+| Implementation | Hardware | Time |
+|----------------|----------|------|
+| zkMetal (this) | M3 Pro Metal GPU | 270ms |
+| Arkworks (Rust, multithreaded) | M3 CPU | 69ms |
+| zkmopro Metal MSM v2 | M3 Metal GPU | 253ms |
+| ICICLE (CUDA) | RTX 3090 Ti | ~9ms |
+
+Metal GPU MSM is currently **slower than optimized multithreaded CPU** for BN254. The fundamental bottleneck is that 256-bit field arithmetic requires 8x32-bit limbs on Metal (no native 64-bit integer multiply), while CPU implementations use 4x64-bit limbs with hand-tuned assembly, out-of-order execution, and deep pipelines. CUDA GPUs have native 64-bit integer multiply, giving them a ~30-50x advantage over CPU. GPU MSM on Metal would become competitive for smaller fields (Goldilocks, BabyBear) where the arithmetic fits native GPU word sizes.
 
 GPU scaling is strongly sublinear: 256x more points (256 to 65K) costs only 3.7x more time, as fixed GPU overhead dominates at small sizes.
 
@@ -48,7 +57,7 @@ GPU scaling is strongly sublinear: 256x more points (256 to 65K) costs only 3.7x
 
 NTT is also available for Goldilocks (249ms at 2^24) and BabyBear (262ms at 2^24).
 
-GPU scales sublinearly (O(n log n) algorithm, but GPU utilization improves with size): 2^10 to 2^22 is 4096x more data for ~100x more time. CPU scales linearly with n log n. Speedup grows with input size.
+GPU scales sublinearly (O(n log n) algorithm, but GPU utilization improves with size): 2^10 to 2^22 is 4096x more data for ~100x more time. CPU scales linearly with n log n. Speedup grows with input size. No other Metal NTT implementations are known for comparison; CUDA NTT (ICICLE) reports 320x improvement over SnarkJS at 2^22, though that baseline is JavaScript.
 
 ### Hashing
 
@@ -63,7 +72,7 @@ GPU scales sublinearly (O(n log n) algorithm, but GPU utilization improves with 
 | Keccak-256 | 2^18 | 0.04 µs/hash | 6.4 µs/hash | **180x** |
 | Keccak-256 | 2^20 | 0.04 µs/hash | 6.4 µs/hash | **160x** |
 
-GPU per-hash cost is roughly constant across batch sizes (linear scaling), while CPU per-hash cost is constant by definition. Speedup peaks at 2^16--2^18 where GPU occupancy is saturated without memory pressure.
+GPU per-hash cost is roughly constant across batch sizes (linear scaling), while CPU per-hash cost is constant by definition. Speedup peaks at 2^16--2^18 where GPU occupancy is saturated without memory pressure. No other Metal implementations of Poseidon2 or Keccak-256 batch hashing are known.
 
 ### Merkle Trees
 
@@ -81,7 +90,7 @@ GPU per-hash cost is roughly constant across batch sizes (linear scaling), while
 | Keccak-256 | 2^18 | 39ms | 1.5s | **40x** |
 | Keccak-256 | 2^20 | 155ms | 6.2s | **42x** |
 
-Both GPU and CPU scale linearly (O(n) tree construction). GPU speedup grows with size as fixed dispatch overhead is amortized -- Poseidon2 reaches 90x at 2^20, while Keccak plateaus around 42x due to its simpler per-hash arithmetic offering less GPU parallelism advantage.
+Both GPU and CPU scale linearly (O(n) tree construction). GPU speedup grows with size as fixed dispatch overhead is amortized -- Poseidon2 reaches 90x at 2^20, while Keccak plateaus around 42x due to its simpler per-hash arithmetic offering less GPU parallelism advantage. No other Metal Merkle tree implementations are known.
 
 ### FRI Folding (BN254 Fr)
 
@@ -95,7 +104,7 @@ Both GPU and CPU scale linearly (O(n) tree construction). GPU speedup grows with
 
 Full fold-to-constant: 2^20 in 32ms (20 rounds, fused 4-round kernels).
 
-GPU scales sublinearly: 2^14 to 2^22 is 256x more data for ~10x more time, as each folding round halves the domain. CPU scales linearly. Speedup grows from 3x to 61x.
+GPU scales sublinearly: 2^14 to 2^22 is 256x more data for ~10x more time, as each folding round halves the domain. CPU scales linearly. Speedup grows from 3x to 61x. No other Metal FRI implementations are known.
 
 ### Sumcheck (BN254 Fr)
 
@@ -107,7 +116,7 @@ GPU scales sublinearly: 2^14 to 2^22 is 256x more data for ~10x more time, as ea
 | 2^20 | 46ms | 1.3s | **29x** |
 | 2^22 | 84ms | 5.1s | **61x** |
 
-GPU scales sublinearly: 2^14 to 2^22 is 256x more variables for ~16x more time. CPU scales linearly. Each sumcheck round reduces the problem by half, and fused round+reduce kernels keep GPU utilization high.
+GPU scales sublinearly: 2^14 to 2^22 is 256x more variables for ~16x more time. CPU scales linearly. Each sumcheck round reduces the problem by half, and fused round+reduce kernels keep GPU utilization high. No other Metal sumcheck implementations are known; ICICLE (CUDA) offers GPU sumcheck but no published comparison numbers.
 
 ### Polynomial Ops (BN254 Fr)
 
