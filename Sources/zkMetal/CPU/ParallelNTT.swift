@@ -343,3 +343,56 @@ public func neonINTT_Bb(_ input: [Bb], logN: Int) -> [Bb] {
     }
     return data
 }
+
+// MARK: - Goldilocks optimized C NTT
+
+/// Forward NTT on Goldilocks using optimized ARM64 scalar C (__uint128_t mul pipelining).
+public func cNTT_Gl(_ input: [Gl], logN: Int) -> [Gl] {
+    let n = input.count
+    precondition(n == 1 << logN, "Input size must be 2^logN")
+    var data = input
+    data.withUnsafeMutableBytes { buf in
+        let ptr = buf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+        goldilocks_ntt(ptr, Int32(logN))
+    }
+    return data
+}
+
+/// Inverse NTT on Goldilocks using optimized ARM64 scalar C.
+public func cINTT_Gl(_ input: [Gl], logN: Int) -> [Gl] {
+    let n = input.count
+    precondition(n == 1 << logN, "Input size must be 2^logN")
+    var data = input
+    data.withUnsafeMutableBytes { buf in
+        let ptr = buf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+        goldilocks_intt(ptr, Int32(logN))
+    }
+    return data
+}
+
+// MARK: - BN254 Fr optimized C NTT
+
+/// Forward NTT on BN254 Fr using optimized ARM64 C (unrolled 4-limb CIOS Montgomery).
+/// Input elements are Fr structs (8x32-bit limbs), which are reinterpreted as 4x64-bit limbs.
+public func cNTT_Fr(_ input: [Fr], logN: Int) -> [Fr] {
+    let n = input.count
+    precondition(n == 1 << logN, "Input size must be 2^logN")
+    var data = input
+    data.withUnsafeMutableBytes { buf in
+        let ptr = buf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+        bn254_fr_ntt(ptr, Int32(logN))
+    }
+    return data
+}
+
+/// Inverse NTT on BN254 Fr using optimized ARM64 C.
+public func cINTT_Fr(_ input: [Fr], logN: Int) -> [Fr] {
+    let n = input.count
+    precondition(n == 1 << logN, "Input size must be 2^logN")
+    var data = input
+    data.withUnsafeMutableBytes { buf in
+        let ptr = buf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+        bn254_fr_intt(ptr, Int32(logN))
+    }
+    return data
+}

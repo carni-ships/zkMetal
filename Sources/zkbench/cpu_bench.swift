@@ -269,6 +269,148 @@ public func runCPUBench() {
         print("Goldilocks NTT Error: \(error)")
     }
 
+    // --- NTT Goldilocks: optimized C ---
+    print("\n--- NTT Goldilocks: Optimized C vs Vanilla CPU vs GPU ---")
+    do {
+        let engine = try GoldilocksNTTEngine()
+        let sizes = [16, 18, 20, 22]
+        var rng: UInt64 = 0xCAFE_BABE
+
+        for logN in sizes {
+            let n = 1 << logN
+            var data = [Gl](repeating: Gl.zero, count: n)
+            for i in 0..<n {
+                rng = rng &* 6364136223846793005 &+ 1442695040888963407
+                data[i] = Gl(v: rng % Gl.P)
+            }
+
+            let cpuT0 = CFAbsoluteTimeGetCurrent()
+            let cpuResult = GoldilocksNTTEngine.cpuNTT(data, logN: logN)
+            let cpuTime = (CFAbsoluteTimeGetCurrent() - cpuT0) * 1000
+
+            // Optimized C (warmup + timed)
+            let _ = cNTT_Gl(data, logN: logN)
+            var cTimes = [Double]()
+            for _ in 0..<5 {
+                let t0 = CFAbsoluteTimeGetCurrent()
+                let _ = cNTT_Gl(data, logN: logN)
+                cTimes.append((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+            }
+            cTimes.sort()
+            let cTime = cTimes[2]
+
+            // Verify C matches vanilla
+            let cResult = cNTT_Gl(data, logN: logN)
+            var match = true
+            for i in 0..<n { if cpuResult[i].v != cResult[i].v { match = false; break } }
+
+            // Round-trip
+            let cRt = cINTT_Gl(cResult, logN: logN)
+            var rtMatch = true
+            for i in 0..<n { if data[i].v != cRt[i].v { rtMatch = false; break } }
+
+            // GPU
+            let dataBuf = engine.device.makeBuffer(
+                length: n * MemoryLayout<Gl>.stride, options: .storageModeShared)!
+            data.withUnsafeBytes { src in
+                memcpy(dataBuf.contents(), src.baseAddress!, n * MemoryLayout<Gl>.stride)
+            }
+            for _ in 0..<3 { try engine.ntt(data: dataBuf, logN: logN) }
+            var gpuTimes = [Double]()
+            for _ in 0..<5 {
+                data.withUnsafeBytes { src in
+                    memcpy(dataBuf.contents(), src.baseAddress!, n * MemoryLayout<Gl>.stride)
+                }
+                let t0 = CFAbsoluteTimeGetCurrent()
+                try engine.ntt(data: dataBuf, logN: logN)
+                gpuTimes.append((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+            }
+            gpuTimes.sort()
+            let gpuTime = gpuTimes[2]
+
+            let cSpeedup = cpuTime / cTime
+            let gpuSpeedup = cpuTime / gpuTime
+            let correct = (match && rtMatch) ? "ok" : (match ? "rt-FAIL" : "MISMATCH")
+            print(String(format: "  2^%-2d | Vanilla: %7.1fms | C: %7.1fms (%.1fx) | GPU: %5.2fms (%.0fx) [%@]",
+                        logN, cpuTime, cTime, cSpeedup, gpuTime, gpuSpeedup, correct))
+        }
+    } catch {
+        print("Goldilocks C NTT Error: \(error)")
+    }
+
+    // --- NTT BN254 Fr: optimized C ---
+    print("\n--- NTT BN254 Fr: Optimized C vs Vanilla CPU vs GPU ---")
+    do {
+        let engine = try NTTEngine()
+        let sizes = [14, 16, 18]  // Skip 2^20 (too slow for vanilla)
+        var rng: UInt64 = 0xDEAD_BEEF
+
+        for logN in sizes {
+            let n = 1 << logN
+            var data = [Fr](repeating: Fr.zero, count: n)
+            for i in 0..<n {
+                rng = rng &* 6364136223846793005 &+ 1442695040888963407
+                data[i] = frFromInt(rng >> 32)
+            }
+
+            let cpuT0 = CFAbsoluteTimeGetCurrent()
+            let cpuResult = NTTEngine.cpuNTT(data, logN: logN)
+            let cpuTime = (CFAbsoluteTimeGetCurrent() - cpuT0) * 1000
+
+            // Optimized C (warmup + timed)
+            let _ = cNTT_Fr(data, logN: logN)
+            var cTimes = [Double]()
+            for _ in 0..<5 {
+                let t0 = CFAbsoluteTimeGetCurrent()
+                let _ = cNTT_Fr(data, logN: logN)
+                cTimes.append((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+            }
+            cTimes.sort()
+            let cTime = cTimes[2]
+
+            // Verify C matches vanilla
+            let cResult = cNTT_Fr(data, logN: logN)
+            var match = true
+            for i in 0..<n {
+                if frToInt(cpuResult[i]) != frToInt(cResult[i]) { match = false; break }
+            }
+
+            // Round-trip
+            let cRt = cINTT_Fr(cResult, logN: logN)
+            var rtMatch = true
+            for i in 0..<n {
+                if frToInt(data[i]) != frToInt(cRt[i]) { rtMatch = false; break }
+            }
+
+            // GPU
+            let dataBuf = engine.device.makeBuffer(
+                length: n * MemoryLayout<Fr>.stride, options: .storageModeShared)!
+            data.withUnsafeBytes { src in
+                memcpy(dataBuf.contents(), src.baseAddress!, n * MemoryLayout<Fr>.stride)
+            }
+            for _ in 0..<3 { try engine.ntt(data: dataBuf, logN: logN) }
+            var gpuTimes = [Double]()
+            for _ in 0..<5 {
+                data.withUnsafeBytes { src in
+                    memcpy(dataBuf.contents(), src.baseAddress!, n * MemoryLayout<Fr>.stride)
+                }
+                let t0 = CFAbsoluteTimeGetCurrent()
+                try engine.ntt(data: dataBuf, logN: logN)
+                gpuTimes.append((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+            }
+            gpuTimes.sort()
+            let gpuTime = gpuTimes[2]
+
+            let cSpeedup = cpuTime / cTime
+            let gpuSpeedup = cpuTime / gpuTime
+            let correct = (match && rtMatch) ? "ok" : (match ? "rt-FAIL" : "MISMATCH")
+            print(String(format: "  2^%-2d | Vanilla: %8.1fms | C: %8.1fms (%.1fx) | GPU: %6.2fms (%.0fx) [%@]",
+                        logN, cpuTime, cTime, cSpeedup, gpuTime, gpuSpeedup, correct))
+        }
+    } catch {
+        print("BN254 Fr C NTT Error: \(error)")
+    }
+
     // --- MSM BN254 ---
     print("\n--- MSM BN254: Vanilla vs Parallel CPU (Pippenger) vs GPU ---")
     do {
