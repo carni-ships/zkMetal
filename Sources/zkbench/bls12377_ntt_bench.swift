@@ -56,7 +56,7 @@ public func runBLS12377NTTBench() {
 
         // Performance benchmark
         print("\n--- BLS12-377 NTT Performance ---")
-        let sizes = [10, 12, 14, 16, 18, 20, 22]
+        let sizes = [10, 12, 14, 16, 18, 20, 22, 24]
 
         for logN in sizes {
             let n = 1 << logN

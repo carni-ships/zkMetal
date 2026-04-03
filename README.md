@@ -75,17 +75,17 @@ GPU scaling is strongly sublinear: 1024x more points (2^8 to 2^18) costs only ~9
 | 2^22 | 26ms | 31s | **1194x** |
 | 2^24 | 113ms | 140s | **1237x** |
 
-**Multi-field NTT comparison (GPU, with CPU baselines):**
+**Multi-field NTT comparison (GPU):**
 
 | Size | BN254 Fr (256-bit) | BLS12-377 Fr (253-bit) | Goldilocks (64-bit) | BabyBear (31-bit) |
 |------|-------------------|----------------------|--------------------|--------------------|
-| 2^16 | 0.65ms (369ms CPU, **557x**) | 1.8ms | 0.15ms (2.6ms CPU, **17x**) | 0.17ms (2.1ms CPU, **12x**) |
-| 2^18 | 1.7ms (1.6s CPU, **971x**) | 2.1ms | 0.21ms (12ms CPU, **55x**) | 0.26ms (10ms CPU, **38x**) |
-| 2^20 | 6.1ms (7.2s CPU, **1184x**) | 6.3ms | 0.84ms (52ms CPU, **62x**) | 1.2ms (44ms CPU, **36x**) |
-| 2^22 | 27ms (31s CPU, **1194x**) | 26ms | 4.4ms | 2.9ms |
-| 2^24 | 116ms (140s CPU, **1237x**) | — | 3.0ms | 2.0ms |
+| 2^16 | 0.95ms | 1.8ms | 0.15ms | 0.17ms |
+| 2^18 | 1.9ms | 2.1ms | 0.21ms | 0.26ms |
+| 2^20 | 6.1ms | 6.3ms | 0.84ms | 1.2ms |
+| 2^22 | 26ms | 26ms | 4.4ms | 2.9ms |
+| 2^24 | 113ms | 116ms | 3.0ms | 2.0ms |
 
-Smaller fields see dramatic throughput gains: BabyBear NTT at 2^24 (16M elements) runs in **2ms** — one element per 0.12ns, or **8.5B elements/sec**. The GPU advantage for small fields comes from native 32-bit arithmetic (1 mul per element vs 64 muls for BN254 CIOS), 8x higher memory density, and better threadgroup utilization. Note: CPU baselines for BabyBear and Goldilocks are already fast (single-threaded), so GPU speedups are lower (12-62x) compared to BN254 (557-1237x) where CPU field arithmetic is much more expensive.
+Smaller fields see dramatic throughput gains: BabyBear NTT at 2^24 (16M elements) runs in **2ms** — one element per 0.12ns, or **8.5B elements/sec**. The GPU advantage for small fields comes from native 32-bit arithmetic (1 mul per element vs 64 muls for BN254 CIOS), 8x higher memory density, and better threadgroup utilization.
 
 **Comparison to ICICLE-Metal v3.8 NTT (measured locally, M3 Pro):**
 
@@ -205,22 +205,27 @@ Blake3 is much simpler than Keccak (7 rounds of 32-bit ARX ops vs 24 rounds of 6
 
 ### Theoretical Performance Analysis
 
-How close each primitive is to the hardware floor (M3 Pro: ~3.6 TFLOPS, ~150 GB/s bandwidth), ranked by optimization opportunity:
+How close each primitive is to the hardware floor (M3 Pro: ~3.6 TFLOPS, ~150 GB/s bandwidth), ranked by optimization headroom:
 
 | Rank | Primitive | Current | Theoretical Floor | Bottleneck | Headroom |
 |------|-----------|---------|-------------------|------------|----------|
-| 1 | MSM BN254 2^18 | 173ms | ~5ms (scatter BW) | Random-access BW | ~35x |
-| 2 | FRI Fold 2^20 | 16ms | 0.32ms (BW) | Bandwidth | ~50x |
-| 3 | Blake3 Batch 2^20 | 21ms | 0.64ms (BW) | Bandwidth | ~33x |
-| 4 | P2 Merkle 2^16 | 17ms | 0.62ms (compute) | Dispatch latency | ~27x |
-| 5 | NTT BabyBear 2^24 | 37ms | 1.71ms (BW) | Bandwidth | ~22x |
-| 6 | NTT Goldilocks 2^24 | 37ms | 1.79ms (compute) | Compute ≈ BW | ~21x |
-| 7 | Keccak Batch 2^18 | 8ms | 0.52ms (compute) | Compute | ~15x |
-| 8 | P2 Batch 2^16 | 9ms | 0.62ms (compute) | Compute | ~14.5x |
-| 9 | Sumcheck 2^20 | 10ms | 0.85ms (BW) | Bandwidth | ~12x |
-| 10 | NTT BN254 2^22 | 365ms | 2.87ms (compute) | Compute + strided BW | ~127x |
+| 1 | IPA prove n=256 | 860ms | ~10ms | Sequential scalar mul rounds | ~86x |
+| 2 | Verkle proof 256 | 931ms | ~15ms | IPA-dominated | ~62x |
+| 3 | P2 Merkle 2^16 | 23ms | ~0.6ms (compute) | Dispatch latency (16 levels) | ~37x |
+| 4 | KZG commit 2^10 | 15ms | ~0.5ms | MSM-dominated (small N) | ~30x |
+| 5 | MSM BN254 2^18 | 102ms | ~5ms (scatter BW) | Random-access BW | ~20x |
+| 6 | ECDSA batch 64 | 16.6ms | ~1ms | Sequential verify + scalar mul | ~17x |
+| 7 | FRI Fold 2^20 | 5.3ms | ~0.3ms (BW) | Bandwidth | ~17x |
+| 8 | P2 Batch 2^16 | 9.2ms | ~0.6ms (compute) | Compute | ~15x |
+| 9 | Sumcheck 2^20 | 8.3ms | ~0.85ms (BW) | Bandwidth | ~10x |
+| 10 | Radix Sort 2^20 | 10ms | ~1ms (BW) | Sequential passes + BW | ~10x |
+| 11 | NTT BN254 2^22 | 26ms | ~2.9ms (compute) | Compute + strided BW | ~9x |
+| 12 | Blake3 Batch 2^20 | 4.2ms | ~0.6ms (BW) | Bandwidth | ~7x |
+| 13 | Keccak Batch 2^18 | 3.1ms | ~0.5ms (compute) | Compute | ~6x |
+| 14 | NTT Goldilocks 2^24 | 3.0ms | ~1.8ms (compute) | Compute ≈ BW | ~1.7x |
+| 15 | NTT BabyBear 2^24 | 2.0ms | ~1.7ms (BW) | Bandwidth | ~1.2x |
 
-Notes: MSM's realistic floor accounts for scatter-gather inefficiency in bucket accumulation. Poseidon2 Merkle overhead is dominated by 16 sequential kernel dispatches (~0.5ms each). FRI fold headroom is inflated by single-fold API overhead (multiFold is ~4x from floor). BN254 NTT 2^22 uses extended four-step with strided column access (32KB per element) — the 127x gap is dominated by non-coalesced memory patterns for 32-byte Fr elements.
+Notes: IPA/Verkle headroom is dominated by 8 sequential rounds of GPU scalar multiplication (double-and-add); windowed or precomputed methods could close the gap. MSM's realistic floor accounts for scatter-gather inefficiency in bucket accumulation. Poseidon2 Merkle overhead comes from 16 sequential kernel dispatches (~0.5ms each). KZG at small sizes is dispatch-overhead dominated. BabyBear and Goldilocks NTT are near-optimal — within 1-2x of hardware bandwidth limits.
 
 ## Supported Fields
 
