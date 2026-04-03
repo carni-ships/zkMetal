@@ -34,29 +34,32 @@ Run `swift run -c release zkbench all` to reproduce.
 | 2^17 | 240ms |
 | 2^18 | 412ms |
 
-**Comparison to other Metal GPU implementations (BN254, Apple Silicon):**
+**Comparison to other Metal GPU implementations (BN254, M3 Pro, measured locally):**
 
-| Points | zkMetal (M3 Pro) | [ICICLE-Metal](https://github.com/ingonyama-zk/icicle) (M3) | [MoPro v2](https://github.com/zkmopro/gpu-acceleration) (M3) |
-|--------|-----------------|-------------|-----------|
-| 2^16 | **155ms** | — | 253ms |
-| 2^18 | **412ms** | 149ms | 678ms |
-| 2^20 | — | 421ms | 1,702ms |
+| Points | zkMetal | [ICICLE-Metal v3.8](https://github.com/ingonyama-zk/icicle) | ICICLE CPU | [MoPro v2](https://github.com/zkmopro/gpu-acceleration)* |
+|--------|---------|-------------|-----------|-----------|
+| 2^16 | **155ms** | 1,083ms | 114ms | 253ms |
+| 2^18 | **412ms** | 1,475ms | 556ms | 678ms |
+| 2^20 | — | 2,590ms | 2,349ms | 1,702ms |
 
-*ICICLE-Metal and MoPro numbers from [MoPro blog](https://zkmopro.org/blog/metal-msm-v2/) on M3 MacBook Air.*
+*MoPro numbers from [their blog](https://zkmopro.org/blog/metal-msm-v2/) on M3 MacBook Air; others measured locally on M3 Pro.*
 
-**Comparison to CPU and CUDA (BN254, 2^16 points):**
+ICICLE-Metal v3.8.0 has ~600ms constant overhead per call (license server). Their Metal backend never beats their own CPU on M3 Pro. The ICICLE CPU backend (multithreaded Rust) is competitive with Arkworks.
 
-| Implementation | Hardware | Time |
+**Comparison to CUDA:**
+
+| Implementation | Hardware | 2^16 |
 |----------------|----------|------|
 | Ingonyama ICICLE (CUDA) | RTX 3090 Ti | ~9ms |
-| Arkworks (Rust, multithreaded) | M3 CPU | 69ms |
 | zkMetal (this) | M3 Pro Metal GPU | 155ms |
 
-Metal GPU MSM is currently **slower than optimized multithreaded CPU** for BN254. The fundamental bottleneck is that 256-bit field arithmetic requires 8x32-bit limbs on Metal (no native 64-bit integer multiply), while CPU implementations use 4x64-bit limbs with hand-tuned assembly, out-of-order execution, and deep pipelines. CUDA GPUs (like those targeted by [Ingonyama's ICICLE](https://github.com/ingonyama-zk/icicle)) have native 64-bit integer multiply, giving them a ~20x advantage over Metal. GPU MSM on Metal would become competitive for smaller fields (Goldilocks, BabyBear) where the arithmetic fits native GPU word sizes.
+Metal GPU MSM is currently **slower than optimized multithreaded CPU** for BN254. The fundamental bottleneck is that 256-bit field arithmetic requires 8x32-bit limbs on Metal (no native 64-bit integer multiply), while CPU implementations use 4x64-bit limbs with hand-tuned assembly, out-of-order execution, and deep pipelines. CUDA GPUs (like those targeted by [Ingonyama's ICICLE](https://github.com/ingonyama-zk/icicle)) have native 64-bit integer multiply. The GPU advantage is clear for smaller fields: BabyBear NTT achieves **690M elements/sec** (29ms at 2^24) and Goldilocks **455M elements/sec** (37ms at 2^24) — both dramatically faster than BN254 on the same GPU (see NTT table below).
 
 GPU scaling is strongly sublinear: 1024x more points (2^8 to 2^18) costs only ~9x more time, as fixed GPU overhead dominates at small sizes.
 
-### NTT (BN254 Fr)
+### NTT
+
+**BN254 Fr (256-bit, 8x32-bit limbs):**
 
 | Size | GPU | CPU | Speedup |
 |------|-----|-----|---------|
@@ -68,9 +71,19 @@ GPU scaling is strongly sublinear: 1024x more points (2^8 to 2^18) costs only ~9
 | 2^20 | 74ms | 7.3s | **99x** |
 | 2^22 | 285ms | 31s | **109x** |
 
-NTT is also available for BLS12-377 (339ms at 2^22), Goldilocks (249ms at 2^24), and BabyBear (262ms at 2^24).
+**Multi-field NTT comparison (GPU only):**
 
-GPU scales sublinearly (O(n log n) algorithm, but GPU utilization improves with size): 2^10 to 2^22 is 4096x more data for ~100x more time. CPU scales linearly with n log n. Speedup grows with input size. No other Metal NTT implementations are known for comparison; CUDA NTT (ICICLE) reports 320x improvement over SnarkJS at 2^22, though that baseline is JavaScript.
+| Size | BN254 Fr (256-bit) | BLS12-377 Fr (253-bit) | Goldilocks (64-bit) | BabyBear (31-bit) |
+|------|-------------------|----------------------|--------------------|--------------------|
+| 2^16 | 24ms | 23ms | 20ms | 18ms |
+| 2^18 | 43ms | 41ms | 21ms | 17ms |
+| 2^20 | 88ms | 72ms | 24ms | 18ms |
+| 2^22 | 373ms | 339ms | 74ms | 48ms |
+| 2^24 | — | — | 37ms | 29ms |
+
+Smaller fields see dramatic throughput gains: BabyBear NTT at 2^24 (16M elements) runs in **29ms** — one element per 1.7ns, or **690M elements/sec**. The GPU advantage for small fields comes from native 32-bit arithmetic (1 mul per element vs 64 muls for BN254 CIOS), 8x higher memory density, and better threadgroup utilization.
+
+GPU scales sublinearly: 2^10 to 2^22 is 4096x more data for ~100x more time. CPU scales linearly with n log n. Speedup grows with input size.
 
 ### Hashing
 
