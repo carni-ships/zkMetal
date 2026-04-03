@@ -108,8 +108,11 @@ if cmd == "calibrate" {
     runSumcheckBench()
 } else if cmd == "kzg" {
     runKZGBench()
+} else if cmd == "bls377" || cmd == "bls12377" {
+    runBLS12377NTTBench()
 } else if cmd == "all" {
     runNTTBench()
+    runBLS12377NTTBench()
     runPoseidon2Bench()
     runKeccakBench()
     runMerkleBench()
