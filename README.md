@@ -26,24 +26,35 @@ Run `swift run -c release zkbench all` to reproduce.
 
 | Points | GPU (Metal) |
 |--------|-------------|
-| 2^8 (256) | 73ms |
-| 2^10 (1,024) | 74ms |
-| 2^12 (4,096) | 104ms |
-| 2^14 (16,384) | 169ms |
-| 2^16 (65,536) | 173ms |
+| 2^8 | 46ms |
+| 2^10 | 41ms |
+| 2^12 | 76ms |
+| 2^14 | 134ms |
+| 2^16 | 155ms |
+| 2^17 | 240ms |
+| 2^18 | 412ms |
 
-**Comparison to other implementations (BN254, 2^16 points):**
+**Comparison to other Metal GPU implementations (BN254, Apple Silicon):**
+
+| Points | zkMetal (M3 Pro) | [ICICLE-Metal](https://github.com/ingonyama-zk/icicle) (M3) | [MoPro v2](https://github.com/zkmopro/gpu-acceleration) (M3) |
+|--------|-----------------|-------------|-----------|
+| 2^16 | **155ms** | — | 253ms |
+| 2^18 | **412ms** | 149ms | 678ms |
+| 2^20 | — | 421ms | 1,702ms |
+
+*ICICLE-Metal and MoPro numbers from [MoPro blog](https://zkmopro.org/blog/metal-msm-v2/) on M3 MacBook Air.*
+
+**Comparison to CPU and CUDA (BN254, 2^16 points):**
 
 | Implementation | Hardware | Time |
 |----------------|----------|------|
-| zkMetal (this) | M3 Pro Metal GPU | 173ms |
-| Arkworks (Rust, multithreaded) | M3 CPU | 69ms |
-| [MoPro](https://github.com/zkmopro/gpu-acceleration) Metal MSM v2 | M3 Metal GPU | 253ms |
 | Ingonyama ICICLE (CUDA) | RTX 3090 Ti | ~9ms |
+| Arkworks (Rust, multithreaded) | M3 CPU | 69ms |
+| zkMetal (this) | M3 Pro Metal GPU | 155ms |
 
 Metal GPU MSM is currently **slower than optimized multithreaded CPU** for BN254. The fundamental bottleneck is that 256-bit field arithmetic requires 8x32-bit limbs on Metal (no native 64-bit integer multiply), while CPU implementations use 4x64-bit limbs with hand-tuned assembly, out-of-order execution, and deep pipelines. CUDA GPUs (like those targeted by [Ingonyama's ICICLE](https://github.com/ingonyama-zk/icicle)) have native 64-bit integer multiply, giving them a ~20x advantage over Metal. GPU MSM on Metal would become competitive for smaller fields (Goldilocks, BabyBear) where the arithmetic fits native GPU word sizes.
 
-GPU scaling is strongly sublinear: 256x more points (256 to 65K) costs only 2.4x more time, as fixed GPU overhead dominates at small sizes.
+GPU scaling is strongly sublinear: 1024x more points (2^8 to 2^18) costs only ~9x more time, as fixed GPU overhead dominates at small sizes.
 
 ### NTT (BN254 Fr)
 
