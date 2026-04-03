@@ -157,6 +157,8 @@ if cmd == "calibrate" {
     runCorrectnessTests()
 } else if cmd == "cpu" {
     runCPUBench()
+} else if cmd == "cpu-msm" {
+    runCPUMSMBench()
 } else if cmd == "msm" {
     try runMSMBench()
 } else if cmd == "all" {

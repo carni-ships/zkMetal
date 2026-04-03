@@ -2,6 +2,103 @@
 import zkMetal
 import Foundation
 
+// Quick MSM-only benchmark for testing C Pippenger
+public func runCPUMSMBench() {
+    print("=== CPU MSM Benchmark (C Pippenger) ===")
+
+    do {
+        let engine = try MetalMSM()
+        let gx = fpFromInt(1)
+        let gy = fpFromInt(2)
+        let gProj = pointFromAffine(PointAffine(x: gx, y: gy))
+
+        let logSizes = [8, 10, 12, 14, 16]
+        let maxN = 1 << logSizes.last!
+
+        print("Generating \(maxN) points...")
+        var projPts = [PointProjective]()
+        projPts.reserveCapacity(maxN)
+        var acc = gProj
+        for _ in 0..<maxN {
+            projPts.append(acc)
+            acc = pointAdd(acc, gProj)
+        }
+        let allPoints = batchToAffine(projPts)
+        projPts = []
+        print("Points ready.")
+
+        var rng: UInt64 = 0xDEAD_BEEF_CAFE_BABE
+        var allScalars = [[UInt32]]()
+        allScalars.reserveCapacity(maxN)
+        for _ in 0..<maxN {
+            var limbs = [UInt32](repeating: 0, count: 8)
+            for j in 0..<8 {
+                rng = rng &* 6364136223846793005 &+ 1442695040888963407
+                limbs[j] = UInt32(truncatingIfNeeded: rng >> 32)
+            }
+            allScalars.append(limbs)
+        }
+
+        for logN in logSizes {
+            let n = 1 << logN
+            let points = Array(allPoints.prefix(n))
+            let scalars = Array(allScalars.prefix(n))
+
+            // Swift Pippenger (skip for > 2^14)
+            var swTime = 0.0
+            if logN <= 14 {
+                let _ = parallelMSM(points: points, scalars: scalars)
+                var swTimes = [Double]()
+                for _ in 0..<3 {
+                    let t = CFAbsoluteTimeGetCurrent()
+                    let _ = parallelMSM(points: points, scalars: scalars)
+                    swTimes.append((CFAbsoluteTimeGetCurrent() - t) * 1000)
+                }
+                swTimes.sort()
+                swTime = swTimes[1]
+            }
+
+            // C Pippenger (warmup + timed)
+            let _ = cPippengerMSM(points: points, scalars: scalars)
+            var cTimes = [Double]()
+            for _ in 0..<5 {
+                let t = CFAbsoluteTimeGetCurrent()
+                let _ = cPippengerMSM(points: points, scalars: scalars)
+                cTimes.append((CFAbsoluteTimeGetCurrent() - t) * 1000)
+            }
+            cTimes.sort()
+            let cTime = cTimes[2]
+
+            // Correctness
+            let cR = cPippengerMSM(points: points, scalars: scalars)
+            let swR = parallelMSM(points: points, scalars: scalars)
+            let match = pointEqual(cR, swR) ? "ok" : "MISMATCH"
+
+            // GPU
+            let _ = try engine.msm(points: points, scalars: scalars)
+            var gpuTimes = [Double]()
+            for _ in 0..<5 {
+                let t = CFAbsoluteTimeGetCurrent()
+                let _ = try engine.msm(points: points, scalars: scalars)
+                gpuTimes.append((CFAbsoluteTimeGetCurrent() - t) * 1000)
+            }
+            gpuTimes.sort()
+            let gpuTime = gpuTimes[2]
+
+            if logN <= 14 && swTime > 0 {
+                let speedup = swTime / cTime
+                print(String(format: "  2^%-2d | Swift Pip: %7.1fms | C Pip: %6.1fms (%.1fx) | GPU: %6.1fms [%@]",
+                            logN, swTime, cTime, speedup, gpuTime, match))
+            } else {
+                print(String(format: "  2^%-2d | C Pip: %6.1fms | GPU: %6.1fms [%@]",
+                            logN, cTime, gpuTime, match))
+            }
+        }
+    } catch {
+        print("Error: \(error)")
+    }
+}
+
 public func runCPUBench() {
     print("=== CPU-Optimized Benchmarks ===")
     print("Cores: \(ProcessInfo.processInfo.activeProcessorCount)")
@@ -412,7 +509,7 @@ public func runCPUBench() {
     }
 
     // --- MSM BN254 ---
-    print("\n--- MSM BN254: Vanilla vs Parallel CPU (Pippenger) vs GPU ---")
+    print("\n--- MSM BN254: Vanilla vs Swift Pippenger vs C Pippenger vs GPU ---")
     do {
         let engine = try MetalMSM()
 
@@ -420,7 +517,7 @@ public func runCPUBench() {
         let gy = fpFromInt(2)
         let gProj = pointFromAffine(PointAffine(x: gx, y: gy))
 
-        let logSizes = [8, 10, 12, 14]
+        let logSizes = [8, 10, 12, 14, 16]
         let maxN = 1 << logSizes.last!
 
         var projPoints = [PointProjective]()
@@ -450,30 +547,48 @@ public func runCPUBench() {
             let points = Array(allPoints.prefix(n))
             let scalars = Array(allScalars.prefix(n))
 
-            // Vanilla CPU (sequential scalar mul)
-            let vanillaT0 = CFAbsoluteTimeGetCurrent()
-            var vanillaResult = pointIdentity()
-            let projPts = points.map { pointFromAffine($0) }
-            for i in 0..<n {
-                let scalar = frFromLimbs(scalars[i])
-                vanillaResult = pointAdd(vanillaResult, pointScalarMul(projPts[i], scalar))
+            // Vanilla CPU (sequential scalar mul) — skip for large sizes
+            var vanillaTime = 0.0
+            if logN <= 14 {
+                let vanillaT0 = CFAbsoluteTimeGetCurrent()
+                var vanillaResult = pointIdentity()
+                let projPts = points.map { pointFromAffine($0) }
+                for i in 0..<n {
+                    let scalar = frFromLimbs(scalars[i])
+                    vanillaResult = pointAdd(vanillaResult, pointScalarMul(projPts[i], scalar))
+                }
+                vanillaTime = (CFAbsoluteTimeGetCurrent() - vanillaT0) * 1000
             }
-            let vanillaTime = (CFAbsoluteTimeGetCurrent() - vanillaT0) * 1000
 
-            // Parallel CPU (Pippenger)
-            let _ = parallelMSM(points: points, scalars: scalars)
-            var parTimes = [Double]()
-            for _ in 0..<3 {
-                let t0 = CFAbsoluteTimeGetCurrent()
+            // Swift Pippenger — skip for large sizes
+            var parTime = 0.0
+            if logN <= 14 {
                 let _ = parallelMSM(points: points, scalars: scalars)
-                parTimes.append((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+                var parTimes = [Double]()
+                for _ in 0..<3 {
+                    let t0 = CFAbsoluteTimeGetCurrent()
+                    let _ = parallelMSM(points: points, scalars: scalars)
+                    parTimes.append((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+                }
+                parTimes.sort()
+                parTime = parTimes[1]
             }
-            parTimes.sort()
-            let parTime = parTimes[1]
 
-            // Verify: parallel result matches vanilla
-            let parResult = parallelMSM(points: points, scalars: scalars)
-            let match = pointEqual(vanillaResult, parResult) ? "ok" : "MISMATCH"
+            // C Pippenger (warmup + timed)
+            let _ = cPippengerMSM(points: points, scalars: scalars)
+            var cTimes = [Double]()
+            for _ in 0..<5 {
+                let t0 = CFAbsoluteTimeGetCurrent()
+                let _ = cPippengerMSM(points: points, scalars: scalars)
+                cTimes.append((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+            }
+            cTimes.sort()
+            let cTime = cTimes[2]
+
+            // Verify: C Pippenger matches Swift Pippenger
+            let cResult = cPippengerMSM(points: points, scalars: scalars)
+            let swResult = parallelMSM(points: points, scalars: scalars)
+            let match = pointEqual(cResult, swResult) ? "ok" : "MISMATCH"
 
             // GPU
             let _ = try engine.msm(points: points, scalars: scalars)
@@ -486,10 +601,15 @@ public func runCPUBench() {
             gpuTimes.sort()
             let gpuTime = gpuTimes[2]
 
-            let parSpeedup = vanillaTime / parTime
-            let gpuSpeedup = vanillaTime / gpuTime
-            print(String(format: "  2^%-2d | Vanilla: %8.1fms | Pippenger: %7.1fms (%.1fx) | GPU: %6.1fms (%.0fx) [%@]",
-                        logN, vanillaTime, parTime, parSpeedup, gpuTime, gpuSpeedup, match))
+            if logN <= 14 {
+                let cSpeedup = parTime / cTime
+                let gpuSpeedup = parTime / gpuTime
+                print(String(format: "  2^%-2d | Vanilla: %8.1fms | Swift Pip: %7.1fms | C Pip: %6.1fms (%.1fx) | GPU: %6.1fms (%.1fx) [%@]",
+                            logN, vanillaTime, parTime, cTime, cSpeedup, gpuTime, gpuSpeedup, match))
+            } else {
+                print(String(format: "  2^%-2d | C Pip: %6.1fms | GPU: %6.1fms [%@]",
+                            logN, cTime, gpuTime, match))
+            }
         }
     } catch {
         print("MSM Error: \(error)")

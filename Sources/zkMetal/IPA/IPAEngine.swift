@@ -10,6 +10,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 public struct IPAProof {
     public let L: [PointProjective]  // left commitments per round
@@ -98,22 +99,16 @@ public class IPAEngine {
     /// Commit to a vector: C = MSM(G, a)
     public func commit(_ a: [Fr]) throws -> PointProjective {
         precondition(a.count == generators.count)
-        if a.count <= 64 {
-            let gProjs = generators.map { pointFromAffine($0) }
-            return cpuMSM(points: gProjs, scalars: a)
-        }
+        // Use C Pippenger for all sizes (faster than GPU for typical IPA sizes ≤ 4096)
         let scalars = a.map { frToLimbs($0) }
-        return try msmEngine.msm(points: generators, scalars: scalars)
+        return cPippengerMSM(points: generators, scalars: scalars)
     }
 
-    /// CPU multi-scalar multiplication for small vectors
+    /// CPU multi-scalar multiplication using C Pippenger for speed
     private func cpuMSM(points: [PointProjective], scalars: [Fr]) -> PointProjective {
-        var result = pointIdentity()
-        for i in 0..<points.count {
-            let term = pointScalarMul(points[i], scalars[i])
-            result = pointAdd(result, term)
-        }
-        return result
+        let affPts = batchToAffine(points)
+        let limbScalars = scalars.map { frToLimbs($0) }
+        return cPippengerMSM(points: affPts, scalars: limbScalars)
     }
 
     /// Compute inner product <a, b> = sum(a_i * b_i)
@@ -153,8 +148,8 @@ public class IPAEngine {
         // Seed with bound commitment C_bound = MSM(G, a) + v*Q
         // Must match what the verifier seeds with
         let C = try commit(inputA)
-        let v = IPAEngine.innerProduct(inputA, inputB)
-        let vQ = pointScalarMul(qProj, v)
+        let v = cFrInnerProduct(inputA, inputB)
+        let vQ = cPointScalarMul(qProj, v)
         let Cbound = pointAdd(C, vQ)
         appendPoint(&transcript, Cbound)
         appendFr(&transcript, v)
@@ -170,9 +165,9 @@ public class IPAEngine {
             let GL = Array(G.prefix(halfLen))
             let GR = Array(G.suffix(halfLen))
 
-            // Compute cross inner products
-            let cL = IPAEngine.innerProduct(aL, bR)
-            let cR = IPAEngine.innerProduct(aR, bL)
+            // Compute cross inner products (C-accelerated)
+            let cL = cFrInnerProduct(aL, bR)
+            let cR = cFrInnerProduct(aR, bL)
 
             // L = MSM(GR, aL) + cL * Q
             let L = try computeLR(generators: GR, scalars: aL, crossIP: cL, Q: qProj)
@@ -188,30 +183,32 @@ public class IPAEngine {
             let x = deriveChallenge(transcript)
             let xInv = frInverse(x)
 
-            // Fold: a' = aL * x + aR * x^(-1)
-            //        b' = bL * x^(-1) + bR * x
-            //        G' = GL * x^(-1) + GR * x (point linear combination)
-            var newA = [Fr](repeating: Fr.zero, count: halfLen)
-            var newB = [Fr](repeating: Fr.zero, count: halfLen)
-
-            for i in 0..<halfLen {
-                newA[i] = frAdd(frMul(aL[i], x), frMul(aR[i], xInv))
-                newB[i] = frAdd(frMul(bL[i], xInv), frMul(bR[i], x))
-            }
+            // Fold: a' = aL * x + aR * x^(-1), b' = bL * x^(-1) + bR * x
+            let newA = cFrVectorFold(aL, aR, x: x, xInv: xInv)
+            let newB = cFrVectorFold(bL, bR, x: xInv, xInv: x)
 
             // Fold generators: G'_i = xInv * GL_i + x * GR_i
-            let newG: [PointProjective]
-            if halfLen >= IPAEngine.gpuFoldThreshold, let foldFn = foldGeneratorsFunction {
-                newG = try gpuFoldGenerators(GL: GL, GR: GR, x: x, xInv: xInv,
-                                            halfLen: halfLen, pipelineState: foldFn)
-            } else {
-                var gArr = [PointProjective](repeating: pointIdentity(), count: halfLen)
-                for i in 0..<halfLen {
-                    let gL_scaled = pointScalarMul(GL[i], xInv)
-                    let gR_scaled = pointScalarMul(GR[i], x)
-                    gArr[i] = pointAdd(gL_scaled, gR_scaled)
+            // Use C multi-threaded fold (much faster than GPU dispatch or Swift scalar mul)
+            let xLimbs = frToLimbs(x)
+            let xInvLimbs = frToLimbs(xInv)
+            var newG = [PointProjective](repeating: pointIdentity(), count: halfLen)
+            GL.withUnsafeBytes { glBuf in
+                GR.withUnsafeBytes { grBuf in
+                    xLimbs.withUnsafeBufferPointer { xBuf in
+                        xInvLimbs.withUnsafeBufferPointer { xiBuf in
+                            newG.withUnsafeMutableBytes { outBuf in
+                                bn254_fold_generators(
+                                    glBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                    grBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                    xBuf.baseAddress!,
+                                    xiBuf.baseAddress!,
+                                    Int32(halfLen),
+                                    outBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                                )
+                            }
+                        }
+                    }
                 }
-                newG = gArr
             }
 
             a = newA
@@ -254,23 +251,32 @@ public class IPAEngine {
         }
 
         // Fold commitment: C' = C + sum(x_i^2 * L_i + x_i^(-2) * R_i)
+        // Use C point scalar mul for massive speedup over Swift
         var Cprime = C
         for round in 0..<logN {
             let x = challenges[round]
             let x2 = frMul(x, x)
             let xInv = frInverse(x)
             let xInv2 = frMul(xInv, xInv)
-            let lTerm = pointScalarMul(proof.L[round], x2)
-            let rTerm = pointScalarMul(proof.R[round], xInv2)
+            let lTerm = cPointScalarMul(proof.L[round], x2)
+            let rTerm = cPointScalarMul(proof.R[round], xInv2)
             Cprime = pointAdd(Cprime, pointAdd(lTerm, rTerm))
         }
 
-        // Fold generators: G_final = multiexp with challenge products
-        // G'_0 = sum_i (s_i * G_i) where s_i = product of x_j^(±1) based on bit decomposition
+        // Fold generators: G_final = MSM(G, s) where s_i = product of x_j^(±1)
+        // Precompute challenges and inverses, then use C Fr operations
+        var challengeInvs = [Fr]()
+        challengeInvs.reserveCapacity(logN)
+        for round in 0..<logN {
+            challengeInvs.append(frInverse(challenges[round]))
+        }
+
+        // Compute s[] — use Swift frMul (C inner_product used for larger ops)
+        // This is n×logN muls, manageable even in Swift for typical IPA sizes
         var s = [Fr](repeating: Fr.one, count: n)
         for round in 0..<logN {
             let x = challenges[round]
-            let xInv = frInverse(x)
+            let xInv = challengeInvs[round]
             for i in 0..<n {
                 let bit = (i >> (logN - 1 - round)) & 1
                 if bit == 0 {
@@ -281,42 +287,25 @@ public class IPAEngine {
             }
         }
 
-        // G_final = MSM(G, s)
-        let gFinal: PointProjective
-        if n <= 64 {
-            // CPU MSM for small vectors
-            let gProjs = generators.map { pointFromAffine($0) }
-            var acc = pointIdentity()
-            for i in 0..<n {
-                acc = pointAdd(acc, pointScalarMul(gProjs[i], s[i]))
-            }
-            gFinal = acc
-        } else {
-            let sLimbs = s.map { frToLimbs($0) }
-            guard let result = try? msmEngine.msm(points: generators, scalars: sLimbs) else { return false }
-            gFinal = result
-        }
+        // G_final = MSM(G, s) — use C Pippenger
+        let sLimbs = s.map { frToLimbs($0) }
+        let gFinal = cPippengerMSM(points: generators, scalars: sLimbs)
 
-        // Fold b: b_final = <s, inputB> element-wise products then sum... no.
-        // Actually fold b the same way as in the prover
+        // Fold b using C vector fold
         var bFolded = inputB
         var halfLen = n / 2
         for round in 0..<logN {
-            let x = challenges[round]
-            let xInv = frInverse(x)
-            var newB = [Fr](repeating: Fr.zero, count: halfLen)
-            for i in 0..<halfLen {
-                newB[i] = frAdd(frMul(bFolded[i], xInv), frMul(bFolded[halfLen + i], x))
-            }
-            bFolded = newB
+            let bL = Array(bFolded.prefix(halfLen))
+            let bR = Array(bFolded.suffix(halfLen))
+            bFolded = cFrVectorFold(bL, bR, x: challengeInvs[round], xInv: challenges[round])
             halfLen /= 2
         }
         let bFinal = bFolded[0]
 
         // Check: C' == proof.a * G_final + (proof.a * bFinal) * Q
-        let aG = pointScalarMul(gFinal, proof.a)
+        let aG = cPointScalarMul(gFinal, proof.a)
         let ab = frMul(proof.a, bFinal)
-        let abQ = pointScalarMul(qProj, ab)
+        let abQ = cPointScalarMul(qProj, ab)
         let expected = pointAdd(aG, abQ)
 
         return pointEqual(Cprime, expected)
@@ -377,17 +366,9 @@ public class IPAEngine {
 
     private func computeLR(generators G: [PointProjective], scalars a: [Fr],
                            crossIP c: Fr, Q qProj: PointProjective) throws -> PointProjective {
-        // MSM(G, a) + c * Q
-        let msmResult: PointProjective
-        if G.count <= 64 {
-            // CPU MSM for small vectors (GPU has high fixed overhead)
-            msmResult = cpuMSM(points: G, scalars: a)
-        } else {
-            let affineG = batchToAffine(G)
-            let limbScalars = a.map { frToLimbs($0) }
-            msmResult = try msmEngine.msm(points: affineG, scalars: limbScalars)
-        }
-        let cQ = pointScalarMul(qProj, c)
+        // MSM(G, a) + c * Q — always use C Pippenger (faster than GPU for IPA sizes)
+        let msmResult = cpuMSM(points: G, scalars: a)
+        let cQ = cpuMSM(points: [qProj], scalars: [c])
         return pointAdd(msmResult, cQ)
     }
 
