@@ -28,13 +28,13 @@ Run `swift run -c release zkbench all` to reproduce.
 | 1,024 | 74ms |
 | 4,096 | 104ms |
 | 16,384 | 169ms |
-| 65,536 | 270ms |
+| 65,536 | 235ms |
 
 **Comparison to other implementations (BN254, 2^16 points):**
 
 | Implementation | Hardware | Time |
 |----------------|----------|------|
-| zkMetal (this) | M3 Pro Metal GPU | 270ms |
+| zkMetal (this) | M3 Pro Metal GPU | 235ms |
 | Arkworks (Rust, multithreaded) | M3 CPU | 69ms |
 | zkmopro Metal MSM v2 | M3 Metal GPU | 253ms |
 | ICICLE (CUDA) | RTX 3090 Ti | ~9ms |
