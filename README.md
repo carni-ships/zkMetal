@@ -57,17 +57,17 @@ Run `swift run -c release zkbench all` to reproduce, or `swift run -c release zk
 
 ### MSM (BN254 G1)
 
-| Points | GPU (Metal) | Parallel CPU (Pippenger) | Vanilla CPU | GPU vs Parallel |
-|--------|-------------|-------------------------|-------------|-----------------|
-| 2^8 | 8ms | 16ms | 519ms | 0.5x |
-| 2^10 | 9ms | 47ms | 1.8s | 0.2x |
-| 2^12 | 14ms | 114ms | 7.6s | 0.1x |
-| 2^14 | 24ms | 440ms | 51s | 0.05x |
-| 2^16 | 37ms | ~1.7s* | ~3.4min* | 0.02x |
-| 2^18 | 102ms | — | — | — |
-| 2^20 | 294ms | — | — | — |
+| Points | Vanilla CPU | Optimized CPU (Pippenger) | GPU (Metal) | Opt CPU vs Vanilla | GPU vs Vanilla |
+|--------|-------------|--------------------------|-------------|-------------------|----------------|
+| 2^8 | 519ms | 16ms | 8ms | **32x** | **65x** |
+| 2^10 | 1.8s | 47ms | 9ms | **38x** | **200x** |
+| 2^12 | 7.6s | 114ms | 14ms | **67x** | **543x** |
+| 2^14 | 51s | 440ms | 24ms | **116x** | **2125x** |
+| 2^16 | ~3.4min* | ~1.7s* | 37ms | **~116x** | **~5500x** |
+| 2^18 | — | — | 102ms | — | — |
+| 2^20 | — | — | 294ms | — | — |
 
-\* Extrapolated. Parallel CPU Pippenger is 33-116x faster than vanilla sequential double-and-add, but GPU is still 1.8-18x faster than parallel CPU at all sizes.
+\* Extrapolated. Optimized CPU uses Pippenger with window-parallel bucket accumulation (33-116x over vanilla double-and-add).
 
 **Comparison to other implementations (BN254 MSM):**
 
@@ -89,16 +89,15 @@ GPU scaling is strongly sublinear: 1024x more points (2^8 to 2^18) costs only ~9
 
 **BN254 Fr (256-bit, 8x32-bit limbs):**
 
-| Size | GPU | Parallel CPU (12 cores) | Vanilla CPU | GPU vs Parallel |
-|------|-----|------------------------|-------------|-----------------|
-| 2^14 | 0.49ms | 32ms | 87ms | **65x** |
-| 2^16 | 0.95ms | 108ms | 889ms | **114x** |
-| 2^18 | 1.9ms | 316ms | 2.3s | **166x** |
-| 2^20 | 6.1ms | 1.4s | 7.6s | **230x** |
-| 2^22 | 26ms | ~5.5s* | 31s | **212x** |
-| 2^24 | 113ms | ~24s* | 140s | **212x** |
+| Size | Vanilla CPU | Optimized C | GPU (Metal) | C vs Vanilla | GPU vs Vanilla |
+|------|-------------|------------|-------------|--------------|----------------|
+| 2^14 | 103ms | 2.7ms | 0.49ms | **38x** | **210x** |
+| 2^16 | 743ms | 24ms | 0.95ms | **31x** | **782x** |
+| 2^18 | 3.0s | 104ms | 1.9ms | **29x** | **1579x** |
+| 2^20 | 7.6s | ~420ms* | 6.1ms | **~18x** | **1246x** |
+| 2^22 | 31s | ~1.7s* | 26ms | **~18x** | **1192x** |
 
-\* Extrapolated from measured sizes. Parallel CPU achieves 2.7-8.2x over vanilla (256-bit field mul is expensive enough to amortize thread dispatch).
+\* Extrapolated. Optimized C uses fully unrolled 4-limb CIOS Montgomery multiplication with `__uint128_t` (compiled with `-O3`). Also available: parallel CPU (GCD, 12 cores) at 5.4x over vanilla.
 
 **Multi-field NTT comparison (GPU):**
 
@@ -110,7 +109,13 @@ GPU scaling is strongly sublinear: 1024x more points (2^8 to 2^18) costs only ~9
 | 2^22 | 26ms | 26ms | 4.4ms | 2.9ms |
 | 2^24 | 113ms | 116ms | 3.0ms | 2.0ms |
 
-Smaller fields see dramatic throughput gains: BabyBear NTT at 2^24 (16M elements) runs in **2ms** — one element per 0.12ns, or **8.5B elements/sec**. The GPU advantage for small fields comes from native 32-bit arithmetic (1 mul per element vs 64 muls for BN254 CIOS), 8x higher memory density, and better threadgroup utilization. Note: parallel CPU NTT helps BN254 (2.7-8.2x) but **regresses** for BabyBear/Goldilocks (0.4x) — field ops are too cheap (single 32/64-bit mul) for GCD dispatch overhead to pay off. NEON SIMD intrinsics (B14 on backlog) would be the right approach for small-field CPU optimization.
+Smaller fields see dramatic throughput gains: BabyBear NTT at 2^24 (16M elements) runs in **2ms** — one element per 0.12ns, or **8.5B elements/sec**. The GPU advantage for small fields comes from native 32-bit arithmetic (1 mul per element vs 64 muls for BN254 CIOS), 8x higher memory density, and better threadgroup utilization.
+
+**CPU optimization results by field:**
+- **BN254 Fr:** C with unrolled CIOS Montgomery gives **29-38x** over vanilla Swift (Swift's optimizer is very poor for 256-bit multi-limb carry chains).
+- **BabyBear:** NEON SIMD (4-wide Montgomery via `vqdmulhq_s32`, Plonky3 technique) gives **5.6x** over vanilla.
+- **Goldilocks:** Optimized C with `__uint128_t` gives **1.8-3.1x** over vanilla.
+- GCD parallel dispatch **regresses** for BabyBear/Goldilocks (0.4x) — field ops are too cheap for thread overhead.
 
 **Comparison to ICICLE-Metal v3.8 NTT (measured locally, M3 Pro):**
 
@@ -130,16 +135,16 @@ GPU scales sublinearly: 2^10 to 2^22 is 4096x more data for ~100x more time. CPU
 
 ### Hashing
 
-| Primitive | Batch Size | GPU | Parallel CPU (12 cores) | Vanilla CPU | GPU vs Parallel |
-|-----------|-----------|-----|------------------------|-------------|-----------------|
-| Poseidon2 | 2^12 | 0.61 µs/hash | 21 µs/hash | 119 µs/hash | **34x** |
-| Poseidon2 | 2^14 | 0.17 µs/hash | 20 µs/hash | 128 µs/hash | **118x** |
-| Poseidon2 | 2^16 | 0.14 µs/hash | 19 µs/hash | 150 µs/hash | **136x** |
-| Keccak-256 | 2^14 | 0.035 µs/hash | 1.5 µs/hash | 6 µs/hash | **43x** |
-| Keccak-256 | 2^16 | 0.027 µs/hash | 1.4 µs/hash | 6 µs/hash | **52x** |
-| Keccak-256 | 2^18 | 0.012 µs/hash | 1.5 µs/hash | 6.2 µs/hash | **125x** |
+| Primitive | Batch Size | Vanilla CPU | Parallel CPU (12 cores) | GPU (Metal) | Parallel vs Vanilla | GPU vs Vanilla |
+|-----------|-----------|-------------|------------------------|-------------|--------------------|--------------------|
+| Poseidon2 | 2^12 | 119 µs/hash | 21 µs/hash | 0.61 µs/hash | **6x** | **195x** |
+| Poseidon2 | 2^14 | 128 µs/hash | 20 µs/hash | 0.17 µs/hash | **6x** | **753x** |
+| Poseidon2 | 2^16 | 150 µs/hash | 19 µs/hash | 0.14 µs/hash | **8x** | **1071x** |
+| Keccak-256 | 2^14 | 6 µs/hash | 1.5 µs/hash | 0.035 µs/hash | **4x** | **171x** |
+| Keccak-256 | 2^16 | 6 µs/hash | 1.4 µs/hash | 0.027 µs/hash | **4x** | **222x** |
+| Keccak-256 | 2^18 | 6.2 µs/hash | 1.5 µs/hash | 0.012 µs/hash | **4x** | **517x** |
 
-Parallel CPU achieves 4-8x over vanilla (embarrassingly parallel — each hash independent). GPU remains 34-136x faster than parallel CPU. No other Metal implementations of Poseidon2 or Keccak-256 batch hashing are known.
+Parallel CPU achieves 4-8x over vanilla (embarrassingly parallel — each hash independent). GPU achieves 195-1071x over vanilla. No other Metal implementations of Poseidon2 or Keccak-256 batch hashing are known.
 
 ### Merkle Trees
 
@@ -432,7 +437,9 @@ Run the full correctness suite with `swift run -c release zkbench test`. All GPU
 | **Goldilocks** | p = 2^64 - 2^32 + 1 (standard) | NTT round-trip + CPU cross-check |
 | **BabyBear** | p = 2^31 - 2^27 + 1 (standard) | NTT round-trip + CPU cross-check |
 | **Parallel CPU** | GCD multithreaded implementations | Cross-checked against vanilla CPU for NTT (Fr, Bb, Gl), MSM, batch hash, Merkle |
-| **NEON BabyBear** | C/ARM NEON Barrett NTT (4-wide SIMD) | Cross-checked against vanilla cpuNTT + round-trip verification |
+| **NEON BabyBear** | C/ARM NEON Montgomery NTT (4-wide SIMD, Plonky3 technique) | Cross-checked against vanilla cpuNTT + round-trip verification |
+| **C Goldilocks** | Optimized C NTT (`__uint128_t` mul pipelining) | Cross-checked against vanilla cpuNTT + round-trip verification |
+| **C BN254 Fr** | Fully unrolled 4-limb CIOS Montgomery NTT | Cross-checked against vanilla cpuNTT + round-trip verification |
 
 Every benchmark run includes correctness checks (printed as PASS/FAIL). The test suite (`swift test`) covers field arithmetic, curve operations, and NTT correctness.
 
