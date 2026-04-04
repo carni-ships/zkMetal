@@ -1,6 +1,7 @@
 // Polynomial Operations Benchmark
 import zkMetal
 import Foundation
+import NeonFieldOps
 
 public func runPolyBench() {
     print("=== Polynomial Operations Benchmark ===")
@@ -178,6 +179,106 @@ public func runPolyBench() {
             }
             times.sort()
             print(String(format: "  deg 2^%-2d, %d points: %7.2f ms (Tree)", logN, numPts, times[2]))
+        }
+
+        // Benchmark: polynomial division by (x - z)
+        print("\n--- Polynomial Division by (x - z) ---")
+
+        // Correctness: p(x) = 6 + 11x + 6x^2 + x^3 = (x+1)(x+2)(x+3)
+        // Divide by (x - (-1)) = (x + 1): q(x) = x^2 + 5x + 6 = (x+2)(x+3)
+        do {
+            let divPoly = [frFromInt(6), frFromInt(11), frFromInt(6), frFromInt(1)]
+            // z = -1 mod r: negate frFromInt(1)
+            let negOne = frSub(Fr.zero, frFromInt(1))
+            let q = try engine.divideByLinear(divPoly, z: negOne)
+            let q0 = frToInt(q[0])[0], q1 = frToInt(q[1])[0], q2 = frToInt(q[2])[0]
+            if q0 == 6 && q1 == 5 && q2 == 1 {
+                print("  [pass] Divide (6+11x+6x^2+x^3) / (x+1) = 6+5x+x^2")
+            } else {
+                print("  [FAIL] Expected [6,5,1], got [\(q0),\(q1),\(q2)]")
+            }
+        }
+
+        // Correctness at larger size: construct p(x) = q(x) * (x - z), verify division recovers q
+        do {
+            let testN = 2048
+            let z = frFromInt(42)
+            // Generate random q(x) of degree testN-2
+            var qExpected = [Fr](repeating: Fr.zero, count: testN - 1)
+            var rng2: UInt64 = 0xBEEF_CAFE
+            for i in 0..<(testN - 1) {
+                rng2 = rng2 &* 6364136223846793005 &+ 1442695040888963407
+                qExpected[i] = frFromInt(rng2 >> 32)
+            }
+            // Construct p(x) = q(x) * (x - z) = q(x)*x - z*q(x)
+            var p = [Fr](repeating: Fr.zero, count: testN)
+            // q(x)*x shifts coefficients up by 1
+            for i in 0..<(testN - 1) { p[i + 1] = frAdd(p[i + 1], qExpected[i]) }
+            // -z * q(x)
+            for i in 0..<(testN - 1) { p[i] = frSub(p[i], frMul(z, qExpected[i])) }
+
+            let qGot = try engine.divideByLinear(p, z: z)
+            var match = qGot.count == qExpected.count
+            if match {
+                for i in 0..<qGot.count {
+                    if frToInt(qGot[i]) != frToInt(qExpected[i]) { match = false; break }
+                }
+            }
+            print("  [" + (match ? "pass" : "FAIL") + "] GPU divide correctness (n=\(testN))")
+        }
+
+        // Benchmark at various sizes
+        for logN in [10, 14, 18, 20] {
+            let n = 1 << logN
+            var pCoeffs = [Fr](repeating: Fr.zero, count: n)
+            var rng2: UInt64 = 0xFACE_BEAD
+            for i in 0..<n {
+                rng2 = rng2 &* 6364136223846793005 &+ 1442695040888963407
+                pCoeffs[i] = frFromInt(rng2 >> 32)
+            }
+            let z = frFromInt(12345)
+
+            // CPU baseline (sequential synthetic division via C)
+            let cpuT0 = CFAbsoluteTimeGetCurrent()
+            var cpuQ = [Fr](repeating: Fr.zero, count: n - 1)
+            pCoeffs.withUnsafeBytes { cBuf in
+                withUnsafeBytes(of: z) { zBuf in
+                    cpuQ.withUnsafeMutableBytes { qBuf in
+                        bn254_fr_synthetic_div(
+                            cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            zBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n),
+                            qBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                        )
+                    }
+                }
+            }
+            let cpuTime = (CFAbsoluteTimeGetCurrent() - cpuT0) * 1000
+
+            // GPU (warmup + timed)
+            let _ = try engine.divideByLinear(pCoeffs, z: z)
+            var times = [Double]()
+            for _ in 0..<5 {
+                let t0 = CFAbsoluteTimeGetCurrent()
+                let _ = try engine.divideByLinear(pCoeffs, z: z)
+                times.append((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+            }
+            times.sort()
+            let gpuTime = times[2]
+
+            // Verify correctness against CPU
+            let gpuQ = try engine.divideByLinear(pCoeffs, z: z)
+            var correct = gpuQ.count == cpuQ.count
+            if correct {
+                for i in 0..<min(gpuQ.count, cpuQ.count) {
+                    if frToInt(gpuQ[i]) != frToInt(cpuQ[i]) { correct = false; break }
+                }
+            }
+
+            let speedup = cpuTime / gpuTime
+            let tag = correct ? "" : " [INCORRECT]"
+            print(String(format: "  deg 2^%-2d | CPU: %8.2fms | GPU: %6.2fms | speedup: %.1fx%@",
+                        logN, cpuTime, gpuTime, speedup, tag))
         }
 
     } catch {

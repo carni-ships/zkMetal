@@ -2,6 +2,7 @@
 // Supports: add, sub, hadamard product, scalar mul, NTT-based multiply, multi-point eval
 import Foundation
 import Metal
+import NeonFieldOps
 
 public class PolyEngine {
     public static let version = Versions.poly
@@ -16,6 +17,11 @@ public class PolyEngine {
     let evalHornerFunction: MTLComputePipelineState
     let evalHornerChunkedFunction: MTLComputePipelineState
     let batchInverseFunction: MTLComputePipelineState
+    // Parallel polynomial division kernels
+    let divChunkFunction: MTLComputePipelineState
+    let divCarryPropagateFunction: MTLComputePipelineState
+    let divPrecomputePowersFunction: MTLComputePipelineState
+    let divApplyCarryFunction: MTLComputePipelineState
     // Subproduct tree kernels
     let treeBuildLinearPairsFunction: MTLComputePipelineState?
     let treeBuildSchoolbookFunction: MTLComputePipelineState?
@@ -55,7 +61,11 @@ public class PolyEngine {
               let scalarMulFn = library.makeFunction(name: "poly_scalar_mul"),
               let evalHornerFn = library.makeFunction(name: "poly_eval_horner"),
               let evalHornerChunkedFn = library.makeFunction(name: "poly_eval_horner_chunked"),
-              let batchInvFn = library.makeFunction(name: "batch_inverse") else {
+              let batchInvFn = library.makeFunction(name: "batch_inverse"),
+              let divChunkFn = library.makeFunction(name: "poly_div_chunk"),
+              let divCarryFn = library.makeFunction(name: "poly_div_carry_propagate"),
+              let divPowersFn = library.makeFunction(name: "poly_div_precompute_powers"),
+              let divApplyFn = library.makeFunction(name: "poly_div_apply_carry") else {
             throw MSMError.missingKernel
         }
         self.addFunction = try device.makeComputePipelineState(function: addFn)
@@ -65,6 +75,10 @@ public class PolyEngine {
         self.evalHornerFunction = try device.makeComputePipelineState(function: evalHornerFn)
         self.evalHornerChunkedFunction = try device.makeComputePipelineState(function: evalHornerChunkedFn)
         self.batchInverseFunction = try device.makeComputePipelineState(function: batchInvFn)
+        self.divChunkFunction = try device.makeComputePipelineState(function: divChunkFn)
+        self.divCarryPropagateFunction = try device.makeComputePipelineState(function: divCarryFn)
+        self.divPrecomputePowersFunction = try device.makeComputePipelineState(function: divPowersFn)
+        self.divApplyCarryFunction = try device.makeComputePipelineState(function: divApplyFn)
 
         // Load tree kernels (optional — may not exist in all builds)
         let treeLib = try? PolyEngine.compileTreeShaders(device: device)
@@ -236,6 +250,133 @@ public class PolyEngine {
         cmdBuf.waitUntilCompleted()
         if let error = cmdBuf.error { throw MSMError.gpuError(error.localizedDescription) }
         return readBuffer(outBuf, count: n)
+    }
+
+    // MARK: - Polynomial division by (x - z)
+
+    /// Divide polynomial by (x - z) using GPU parallel chunked synthetic division.
+    /// Returns quotient q(x) such that p(x) = q(x) * (x - z) + p(z).
+    /// Coefficients are in ascending order: c0 + c1*x + c2*x^2 + ...
+    /// For n input coefficients, returns n-1 quotient coefficients.
+    ///
+    /// Uses 3-phase parallel algorithm:
+    /// 1. Each GPU threadgroup processes a chunk via sequential synthetic division
+    /// 2. Carry propagation across chunks (single thread)
+    /// 3. Apply carry corrections in parallel
+    public func divideByLinear(_ coeffs: [Fr], z: Fr) throws -> [Fr] {
+        let n = coeffs.count
+        guard n >= 2 else {
+            return []  // constant polynomial: quotient is empty
+        }
+
+        let outN = n - 1
+
+        // For small polynomials, use CPU path (GPU overhead dominates below ~2^16)
+        if n <= 65536 {
+            return divideByLinearCPU(coeffs, z: z)
+        }
+
+        // Choose number of chunks based on size.
+        // Phase 1: each chunk is sequential (1 thread), O(chunk_size) each.
+        // Phase 2: sequential carry propagation, O(num_chunks).
+        // Phase 2.5: sequential z powers precompute, O(chunk_size).
+        // Phase 3: fully parallel, O(1) per thread (lookup + 1 multiply).
+        // Total sequential work = chunk_size + num_chunks ≈ sqrt(n) when balanced.
+        let targetChunkSize = max(64, Int(sqrt(Double(outN))))
+        let numChunks = max(1, min(outN, (outN + targetChunkSize - 1) / targetChunkSize))
+
+        let coeffsBuf = createBuffer(coeffs)
+        let outBuf = device.makeBuffer(length: outN * MemoryLayout<Fr>.stride, options: .storageModeShared)!
+        let zBuf = createBuffer([z])
+        let carriesBuf = device.makeBuffer(length: 2 * numChunks * MemoryLayout<Fr>.stride, options: .storageModeShared)!
+
+        guard let cmdBuf = commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
+        }
+
+        // Phase 1: Per-chunk synthetic division
+        let enc1 = cmdBuf.makeComputeCommandEncoder()!
+        enc1.setComputePipelineState(divChunkFunction)
+        enc1.setBuffer(coeffsBuf, offset: 0, index: 0)
+        enc1.setBuffer(outBuf, offset: 0, index: 1)
+        enc1.setBuffer(zBuf, offset: 0, index: 2)
+        enc1.setBuffer(carriesBuf, offset: 0, index: 3)
+        var nVal = UInt32(n)
+        var chunksVal = UInt32(numChunks)
+        enc1.setBytes(&nVal, length: 4, index: 4)
+        enc1.setBytes(&chunksVal, length: 4, index: 5)
+        // One threadgroup per chunk, 1 active thread per threadgroup
+        enc1.dispatchThreadgroups(MTLSize(width: numChunks, height: 1, depth: 1),
+                                 threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1))
+        enc1.endEncoding()
+
+        // Phase 2 + Phase 2.5 + Phase 3: Carry propagation, power precomputation, and correction
+        if numChunks > 1 {
+            let chunkSize = (outN + numChunks - 1) / numChunks
+
+            // Phase 2: Carry propagation (single thread)
+            let enc2 = cmdBuf.makeComputeCommandEncoder()!
+            enc2.setComputePipelineState(divCarryPropagateFunction)
+            enc2.setBuffer(carriesBuf, offset: 0, index: 0)
+            enc2.setBytes(&chunksVal, length: 4, index: 1)
+            enc2.dispatchThreadgroups(MTLSize(width: 1, height: 1, depth: 1),
+                                     threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1))
+            enc2.endEncoding()
+
+            // Phase 2.5: Precompute z powers table
+            let zPowersBuf = getCachedBuffer(slot: "div_zpowers",
+                                              minBytes: chunkSize * MemoryLayout<Fr>.stride)
+            let enc25 = cmdBuf.makeComputeCommandEncoder()!
+            enc25.setComputePipelineState(divPrecomputePowersFunction)
+            enc25.setBuffer(zPowersBuf, offset: 0, index: 0)
+            enc25.setBuffer(zBuf, offset: 0, index: 1)
+            var csVal = UInt32(chunkSize)
+            enc25.setBytes(&csVal, length: 4, index: 2)
+            enc25.dispatchThreadgroups(MTLSize(width: 1, height: 1, depth: 1),
+                                      threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1))
+            enc25.endEncoding()
+
+            // Phase 3: Apply carry corrections (one thread per element)
+            let enc3 = cmdBuf.makeComputeCommandEncoder()!
+            enc3.setComputePipelineState(divApplyCarryFunction)
+            enc3.setBuffer(outBuf, offset: 0, index: 0)
+            enc3.setBuffer(zPowersBuf, offset: 0, index: 1)
+            enc3.setBuffer(carriesBuf, offset: 0, index: 2)
+            var outNVal = UInt32(outN)
+            enc3.setBytes(&outNVal, length: 4, index: 3)
+            enc3.setBytes(&chunksVal, length: 4, index: 4)
+            let tg3 = min(tuning.nttThreadgroupSize, Int(divApplyCarryFunction.maxTotalThreadsPerThreadgroup))
+            enc3.dispatchThreads(MTLSize(width: outN, height: 1, depth: 1),
+                                threadsPerThreadgroup: MTLSize(width: tg3, height: 1, depth: 1))
+            enc3.endEncoding()
+        }
+
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+        if let error = cmdBuf.error { throw MSMError.gpuError(error.localizedDescription) }
+
+        return readBuffer(outBuf, count: outN)
+    }
+
+    /// CPU fallback for small polynomials (avoids GPU dispatch overhead).
+    /// Uses the optimized C implementation via NeonFieldOps.
+    private func divideByLinearCPU(_ coeffs: [Fr], z: Fr) -> [Fr] {
+        let n = coeffs.count
+        if n < 2 { return [] }
+        var quotient = [Fr](repeating: Fr.zero, count: n - 1)
+        coeffs.withUnsafeBytes { cBuf in
+            withUnsafeBytes(of: z) { zBuf in
+                quotient.withUnsafeMutableBytes { qBuf in
+                    bn254_fr_synthetic_div(
+                        cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        zBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n),
+                        qBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    )
+                }
+            }
+        }
+        return quotient
     }
 
     // MARK: - Polynomial multiplication via NTT

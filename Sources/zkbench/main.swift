@@ -249,6 +249,8 @@ if cmd == "calibrate" {
     runCPUMSMBench()
 } else if cmd == "plonk" {
     runPlonkBench()
+} else if cmd == "plonk-custom" || cmd == "plonk_custom" {
+    runPlonkCustomBench()
 } else if cmd == "marlin" || cmd == "ahp" {
     fputs("Marlin bench: stub\n", stderr)
 } else if cmd == "tensor" || cmd == "tc" {
