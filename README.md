@@ -24,7 +24,7 @@ GPU-accelerated zero-knowledge cryptography library for Apple Silicon, written i
 
 | Primitive | Platform | Description |
 |-----------|----------|-------------|
-| **MSM** | GPU/CPU | Multi-scalar multiplication (Pippenger + signed-digit + GLV) -- BN254, BLS12-377, secp256k1, Pallas, Vesta |
+| **MSM** | GPU/CPU | Multi-scalar multiplication (Pippenger + signed-digit + GLV) -- BN254, BLS12-377, secp256k1, Pallas, Vesta, Ed25519, Grumpkin |
 | **NTT** | GPU/CPU | Number theoretic transform (four-step FFT, fused bitrev+butterfly, twiddle fusion) -- BN254, BLS12-377, Goldilocks, BabyBear |
 | **Poseidon2** | GPU | Algebraic hash (t=3 BN254 Fr; t=16 M31) |
 | **Keccak-256** | GPU/CPU | SHA-3 hash (fused subtree Merkle) |
@@ -65,6 +65,10 @@ GPU-accelerated zero-knowledge cryptography library for Apple Silicon, written i
 | **Marlin** | GPU | Preprocessed SNARK with algebraic holographic proof + KZG |
 | **Spartan** | GPU | Transparent SNARK (no trusted setup) via multilinear extensions + sumcheck |
 | **Jolt** | GPU | zkVM via Lasso structured lookups (10 RISC-like opcodes) |
+| **SHA-256** | GPU | SHA-256 hash (batch + fused Merkle subtree) |
+| **Ed25519** | GPU/CPU | Curve25519 field, twisted Edwards curve, EdDSA, GPU MSM |
+| **BabyJubjub** | GPU/CPU | Twisted Edwards over BN254 Fr, Pedersen hash, EdDSA |
+| **Grumpkin** | GPU | BN254 inner curve (y²=x³-17), GPU MSM with signed-digit |
 
 ## Performance
 
@@ -295,7 +299,7 @@ Sparse wiring predicate evaluation: previous dense implementation 3728ms at 2^6 
 | Points | BN254 GPU | BLS12-377 GPU | secp256k1 GPU | secp256k1 C Pip | Pallas GPU | Vesta GPU |
 |--------|-----------|---------------|---------------|-----------------|------------|-----------|
 | 2^8 | 1.1ms | 9ms | 1.3ms | 1.4ms | 5.9ms | 4.4ms |
-| 2^10 | -- | 35ms | 4.3ms | 4.3ms | 12ms | 11ms |
+| 2^10 | 3.0ms | 35ms | 4.3ms | 4.3ms | 12ms | 11ms |
 | 2^14 | 22ms | 36ms | 22ms | 31ms | 194ms | 204ms |
 | 2^16 | 27ms | 176ms | 38ms | 92ms | 40ms | 51ms |
 | 2^18 | 45ms | 205ms | 78ms | 339ms | -- | -- |
