@@ -210,11 +210,11 @@ GPU scales sublinearly: 2^14 to 2^22 is 256x more data for ~37x more time, as ea
 
 | Variables | GPU | CPU | Speedup |
 |-----------|-----|-----|---------|
-| 2^14 | 0.94ms | 21ms | **22x** |
-| 2^16 | 1.3ms | 83ms | **62x** |
-| 2^18 | 1.9ms | 351ms | **186x** |
-| 2^20 | 8.3ms | 1.3s | **161x** |
-| 2^22 | 16ms | 5.3s | **333x** |
+| 2^14 | 0.68ms | 21ms | **31x** |
+| 2^16 | 0.90ms | 83ms | **93x** |
+| 2^18 | 2.3ms | 337ms | **144x** |
+| 2^20 | 4.4ms | 1.3s | **301x** |
+| 2^22 | 14ms | 5.2s | **361x** |
 
 GPU scales sublinearly: 2^14 to 2^22 is 256x more variables for ~17x more time. CPU scales linearly. Each sumcheck round reduces the problem by half, and fused round+reduce kernels keep GPU utilization high. No other Metal sumcheck implementations are known; ICICLE (CUDA) offers GPU sumcheck but no published comparison numbers.
 
@@ -258,12 +258,12 @@ Blake3 is much simpler than Keccak (7 rounds of 32-bit ARX ops vs 24 rounds of 6
 
 | Size | Prove | Verify |
 |------|-------|--------|
-| n=4 | 9ms | 4ms |
-| n=16 | 39ms | 3ms |
-| n=64 | 26ms | 4ms |
-| n=256 | 59ms | 7ms |
+| n=4 | 1.4ms | 1.5ms |
+| n=16 | 3.0ms | 1.8ms |
+| n=64 | 5.3ms | 2.5ms |
+| n=256 | 12ms | 3.7ms |
 
-Log(n) halving rounds with GPU batch generator folding (Metal kernel `batch_fold_generators`) and C CIOS scalar multiplication. Fiat-Shamir challenges via Blake3. Previous version (Swift scalar mul): 860ms at n=256 — C CIOS gives **14.6×** improvement.
+Log(n) halving rounds with GPU batch generator folding (Metal kernel `batch_fold_generators`) and C CIOS scalar multiplication. Fiat-Shamir challenges via Blake3.
 
 ### Verkle Trees (Pedersen + IPA)
 
@@ -283,6 +283,28 @@ Verkle tree performance is IPA-dominated. Previous version: 931ms path proof —
 | Batch probabilistic 64 sigs | 14ms (0.22ms/sig) |
 
 secp256k1 ECDSA using C CIOS Montgomery field arithmetic. Previous version (Swift scalar mul): 3.96ms/sig single verify — C CIOS gives **11×** improvement.
+
+### Circle STARK (Mersenne31)
+
+| Trace Size | Prove | Verify | Proof Size |
+|-----------|-------|--------|------------|
+| 2^6 | 62ms | 3.9ms | 17 KB |
+| 2^8 | 75ms | 8.8ms | 39 KB |
+| 2^10 | 240ms | 12ms | 53 KB |
+| 2^12 | 1.34s | 24ms | 69 KB |
+
+GPU-accelerated Circle STARK prover over Mersenne31 with Fibonacci AIR. Merkle commitments via Keccak-256, Fiat-Shamir via custom transcript. M31 arithmetic uses single 32-bit multiply (vs 64 multiplies for BN254), giving native hardware efficiency.
+
+### Circle NTT (Mersenne31, GPU)
+
+| Size | GPU Time | Throughput |
+|------|----------|------------|
+| 2^14 | 0.40ms | 41M elem/s |
+| 2^16 | 0.36ms | 182M elem/s |
+| 2^18 | 0.95ms | 276M elem/s |
+| 2^20 | 1.82ms | 576M elem/s |
+
+Circle-group NTT exploits the unique structure of the circle domain (x^2+y^2=1 over M31). First fold uses y-coordinates, subsequent folds use x-coordinate squaring map. All operations are single-word 32-bit arithmetic.
 
 ### Theoretical Performance Analysis
 
