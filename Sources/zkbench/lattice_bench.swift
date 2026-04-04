@@ -8,16 +8,19 @@ public func runLatticeBench() {
     fputs("\n=== Lattice Cryptography Benchmark ===\n", stderr)
     fputs("Kyber-768 (q=3329, 16-bit) + Dilithium2 (q=8380417, 32-bit)\n\n", stderr)
 
+    // Run field benchmarks first (CPU-only, no GPU needed)
+    runFieldBenchmarks()
+
     do {
+        fputs("Initializing GPU LatticeNTTEngine...\n", stderr)
         let nttEngine = try LatticeNTTEngine()
         fputs("GPU: \(nttEngine.device.name)\n\n", stderr)
 
-        runFieldBenchmarks()
         runNTTBenchmarks(nttEngine: nttEngine)
         runKyberBenchmarks(nttEngine: nttEngine)
         runDilithiumBenchmarks(nttEngine: nttEngine)
     } catch {
-        fputs("Error: \(error)\n", stderr)
+        fputs("GPU Error: \(error)\n", stderr)
     }
 }
 
@@ -38,8 +41,11 @@ private func runFieldBenchmarks() {
     }
     var elapsed = CFAbsoluteTimeGetCurrent() - t0
     fputs("  Kyber mul+add:     \(String(format: "%.1f", Double(iters) / elapsed / 1e6)) Mops/s  (sink: \(a.value))\n", stderr)
+    fflush(stderr)
 
     // Dilithium field
+    fputs("  Starting Dilithium field bench...\n", stderr)
+    fflush(stderr)
     var c = DilithiumField(value: 123456)
     var d = DilithiumField(value: 7654321)
 

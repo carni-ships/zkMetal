@@ -316,37 +316,9 @@ public class CQEngine {
 
     /// Compute roots of unity omega^0, omega^1, ..., omega^{n-1}
     /// where omega is the principal n-th root of unity for BN254 Fr.
+    /// Uses the same root as the NTT engine for consistency.
     private func computeRootsOfUnity(logN: Int) -> [Fr] {
-        let n = 1 << logN
-        // BN254 Fr has a 2^28-th root of unity.
-        // The primitive 2^28-th root is OMEGA_28.
-        // For n = 2^logN, omega_n = OMEGA_28^(2^(28 - logN))
-        let omega = rootOfUnity(logN: logN)
-        var roots = [Fr](repeating: Fr.zero, count: n)
-        roots[0] = Fr.one
-        for i in 1..<n {
-            roots[i] = frMul(roots[i - 1], omega)
-        }
-        return roots
-    }
-
-    /// Get the n-th root of unity for BN254 Fr (n = 2^logN).
-    private func rootOfUnity(logN: Int) -> Fr {
-        // The 2^28-th primitive root of unity for BN254 Fr (in Montgomery form).
-        // omega_28 = 19103219067921713944291392827692070036674651213730446576152998835171324499365
-        // In 64-bit limbs (standard form):
-        let omega28Limbs: [UInt64] = [
-            0x3c3d3ca739381fb2, 0x9a14cda3ec99772b,
-            0xd7f4e2f43e8cc868, 0x0f3a6ca462326449
-        ]
-        var omega = Fr.from64(omega28Limbs)
-        omega = frMul(omega, Fr.from64(Fr.R2_MOD_R))  // to Montgomery form
-
-        // Square (28 - logN) times to get 2^logN-th root
-        for _ in 0..<(28 - logN) {
-            omega = frMul(omega, omega)
-        }
-        return omega
+        return precomputeTwiddles(logN: logN)
     }
 
     /// Evaluate vanishing polynomial Z_T(z) = z^T - 1

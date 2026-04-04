@@ -4,24 +4,15 @@ import Foundation
 
 public func runBrakedownBench() {
     print("=== Brakedown Polynomial Commitment Benchmark ===")
-    fflush(stdout)
     print("NTT-free PCS using random linear codes + Merkle commitments")
-    fflush(stdout)
 
     do {
-        print("Creating engine...")
-        fflush(stdout)
         let engine = try BrakedownEngine(rateInverse: 4, numQueries: 30)
-        print("Engine created.")
-        fflush(stdout)
 
         // --- Correctness Tests ---
         print("\n--- Correctness verification ---")
-        fflush(stdout)
 
         // Test 1: Linear code encode/decode consistency
-        print("  Starting linear code test...")
-        fflush(stdout)
         let code = LinearCode(messageLength: 8, rateInverse: 4, seed: 0xBEEF)
         var rng: UInt64 = 0xDEAD_BEEF_CAFE
         var msg = [Fr](repeating: Fr.zero, count: 8)
@@ -37,18 +28,12 @@ public func runBrakedownBench() {
         }
         print("  Linear code systematic property: \(sysMatch ? "PASS" : "FAIL")")
         print("  Codeword length: \(codeword.count) (message: \(code.messageLength), redundancy: \(code.redundancyLength))")
-        fflush(stdout)
 
         // Test 2: Tensor product computation
-        print("  Starting tensor test...")
-        fflush(stdout)
         let point2 = [frFromInt(3), frFromInt(5)]
         let tensor = engine.computeTensor(point2)
-        // tensor should be: [(1-3)(1-5), 3*(1-5), (1-3)*5, 3*5] = [-2*-4, -12, -10, 15]
-        // In Fr arithmetic (mod p)
         // tensor[i] = prod_j (if bit j of i is 1: z_j, else 1-z_j)
-        // With z0=3, z1=5:
-        // tensor[0] = (1-z0)(1-z1), tensor[1] = (1-z0)*z1, tensor[2] = z0*(1-z1), tensor[3] = z0*z1
+        // tensor[0]=(1-z0)(1-z1), tensor[1]=(1-z0)*z1, tensor[2]=z0*(1-z1), tensor[3]=z0*z1
         let expected0 = frMul(frSub(Fr.one, frFromInt(3)), frSub(Fr.one, frFromInt(5)))
         let expected1 = frMul(frSub(Fr.one, frFromInt(3)), frFromInt(5))
         let expected2 = frMul(frFromInt(3), frSub(Fr.one, frFromInt(5)))
@@ -60,11 +45,7 @@ public func runBrakedownBench() {
         print("  Tensor product (2-var): \(tensorOK ? "PASS" : "FAIL")")
 
         // Test 3: Commit -> Open -> Verify round-trip
-        print("  Starting commit-open-verify tests...")
-        fflush(stdout)
         for logN in [8, 10, 12] {
-            print("    Testing 2^\(logN)...")
-            fflush(stdout)
             let n = 1 << logN
             var evals = [Fr](repeating: Fr.zero, count: n)
             for i in 0..<n {
@@ -78,19 +59,9 @@ public func runBrakedownBench() {
                 point.append(frFromInt(rng >> 32))
             }
 
-            print("      committing...")
-            fflush(stdout)
             let commitment = try engine.commit(evaluations: evals)
-            print("      opening...")
-            fflush(stdout)
             let proof = try engine.open(evaluations: evals, point: point, commitment: commitment)
-            print("      evaluating...")
-            fflush(stdout)
-
-            // Compute expected value using CPU multilinear evaluation
             let expectedValue = BrakedownEngine.cpuEvaluate(evaluations: evals, point: point)
-            print("      verifying...")
-            fflush(stdout)
 
             let verified = engine.verify(
                 commitment: commitment,

@@ -7,8 +7,34 @@ public func runIncrementalMerkleBench() {
     print("  (Poseidon2 BN254 Fr, unified memory)\n")
 
     do {
+        // --- 0. Quick smoke test ---
+        print("--- Smoke Test ---")
+        do {
+            let tree = try IncrementalMerkleTree(depth: 4)
+            for i in 0..<8 {
+                try tree.append(leaf: frFromInt(UInt64(i + 1)))
+            }
+            let fullRoot = try tree.fullRebuildRoot()
+            let match = frEqual(tree.root, fullRoot)
+            print("  Depth-4, 8 leaves: root match = \(match ? "PASS" : "FAIL")")
+
+            // Batch append
+            let tree2 = try IncrementalMerkleTree(depth: 4)
+            var leaves4 = [Fr]()
+            for i in 0..<8 { leaves4.append(frFromInt(UInt64(i + 1))) }
+            try tree2.appendBatchFused(leaves: leaves4)
+            let match2 = frEqual(tree2.root, fullRoot)
+            print("  Depth-4, batch 8: root match = \(match2 ? "PASS" : "FAIL")")
+
+            // Proof
+            let prf = tree.proof(index: 3)
+            let leaf3 = frFromInt(UInt64(4))
+            let proofOk = IncrementalMerkleTree.verify(leaf: leaf3, proof: prf, root: tree.root)
+            print("  Proof for leaf 3: \(proofOk ? "PASS" : "FAIL")")
+        }
+
         // --- 1. Single append to existing tree ---
-        print("--- Single Append ---")
+        print("\n--- Single Append ---")
         for logN in [16, 20] {
             let depth = logN
             let prefill = (1 << logN) / 2  // half full

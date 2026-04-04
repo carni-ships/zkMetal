@@ -121,12 +121,9 @@ public struct DilithiumField: Equatable {
     }
 
     public init(reducing v: UInt64) {
-        // Barrett reduction: v mod 8380417
-        let t = (v * DilithiumField.BARRETT_M) >> DilithiumField.BARRETT_SHIFT
-        var r = Int64(v) - Int64(t) * Int64(DilithiumField.Q)
-        while r >= Int64(DilithiumField.Q) { r -= Int64(DilithiumField.Q) }
-        while r < 0 { r += Int64(DilithiumField.Q) }
-        self.value = UInt32(r)
+        // Direct modulo — safe and fast for 47-bit products on 64-bit CPU
+        // (q fits in 23 bits, product of two elements fits in 46 bits)
+        self.value = UInt32(v % UInt64(DilithiumField.Q))
     }
 
     public var isZero: Bool { value == 0 }

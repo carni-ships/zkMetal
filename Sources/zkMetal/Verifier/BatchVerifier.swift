@@ -106,6 +106,8 @@ public class BatchVerifier {
         let n = items.count
         guard n == scalars.count, n > 0, !srs.isEmpty else { return false }
 
+        fputs("  [dbg] batchVerifyKZGWithScalars n=\(n)\n", stderr)
+
         // Compute LHS: Sum r_i*C_i - (Sum r_i*v_i)*G
         var lhs = pointIdentity()
         var aggregatedEval = Fr.zero
@@ -118,11 +120,13 @@ public class BatchVerifier {
             // r_i * v_i
             aggregatedEval = frAdd(aggregatedEval, frMul(scalars[i], items[i].value))
         }
+        fputs("  [dbg] LHS loop done\n", stderr)
 
         // Subtract (Sum r_i*v_i)*G from LHS
         let g = pointFromAffine(srs[0])
         let evalG = cPointScalarMul(g, aggregatedEval)
         lhs = pointAdd(lhs, pointNeg(evalG))
+        fputs("  [dbg] LHS complete\n", stderr)
 
         // Compute RHS: s * Sum(r_i*pi_i) - Sum(r_i*z_i*pi_i)
         var sumRiPi = pointIdentity()
@@ -136,8 +140,10 @@ public class BatchVerifier {
             let riZiPi = cPointScalarMul(items[i].proof, riZi)
             sumRiZiPi = pointAdd(sumRiZiPi, riZiPi)
         }
+        fputs("  [dbg] RHS loops done\n", stderr)
 
         let rhs = pointAdd(cPointScalarMul(sumRiPi, srsSecret), pointNeg(sumRiZiPi))
+        fputs("  [dbg] RHS complete\n", stderr)
 
         // Compare LHS == RHS via affine coordinates
         let lhsAff = batchToAffine([lhs])

@@ -72,6 +72,76 @@ public func runGKRBench() {
             tableSum = frAdd(tableSum, g)
         }
         fputs("  table sum = \(frToInt(tableSum))\n", stderr)
+
+        // Debug verify step by step
+        let vt2 = Transcript(label: "tiny", backend: .keccak256)
+        for v in output { vt2.absorb(v) }
+        vt2.absorbLabel("gkr-init")
+        let r2 = vt2.squeezeN(nOut)
+        let claim2 = outputMLE.evaluate(at: r2)
+
+        let totalVars = 2 * nIn
+        let lp = proof.layerProofs[0]
+        var currentClaim = claim2
+        var challenges2 = [Fr]()
+        for roundIdx in 0..<totalVars {
+            let msg = lp.sumcheckMsgs[roundIdx]
+            let sum = frAdd(msg.s0, msg.s1)
+            let sumMatch = frToInt(frSub(sum, currentClaim))
+            fputs("  Round \(roundIdx): s0+s1 match? \(sumMatch[0] == 0 && sumMatch[1] == 0 && sumMatch[2] == 0 && sumMatch[3] == 0)\n", stderr)
+
+            vt2.absorb(msg.s0)
+            vt2.absorb(msg.s1)
+            vt2.absorb(msg.s2)
+            let chal = vt2.squeeze()
+            challenges2.append(chal)
+
+            // Lagrange eval at challenge
+            let one = Fr.one
+            let two = frAdd(one, one)
+            let inv2 = frInverse(two)
+            let cm1 = frSub(chal, one)
+            let cm2 = frSub(chal, two)
+            let neg1 = frSub(Fr.zero, one)
+            let l0 = frMul(frMul(cm1, cm2), inv2)
+            let l1 = frMul(frMul(chal, cm2), neg1)
+            let l2 = frMul(frMul(chal, cm1), inv2)
+            currentClaim = frAdd(frAdd(frMul(msg.s0, l0), frMul(msg.s1, l1)), frMul(msg.s2, l2))
+        }
+
+        let rx2 = Array(challenges2.prefix(nIn))
+        let ry2 = Array(challenges2.suffix(nIn))
+        let vx2 = lp.claimedVx
+        let vy2 = lp.claimedVy
+
+        let fullPt = r2 + rx2 + ry2
+        let addVal = addMLE.evaluate(at: fullPt)
+        let mulVal = mulMLE.evaluate(at: fullPt)
+        let expected = frAdd(frMul(addVal, frAdd(vx2, vy2)), frMul(mulVal, frMul(vx2, vy2)))
+        let finalMatch = frToInt(frSub(currentClaim, expected))
+        fputs("  Final SC check: \(finalMatch[0] == 0 && finalMatch[1] == 0 && finalMatch[2] == 0 && finalMatch[3] == 0)\n", stderr)
+        fputs("  currentClaim = \(frToInt(currentClaim))\n", stderr)
+        fputs("  expected     = \(frToInt(expected))\n", stderr)
+        fputs("  addVal = \(frToInt(addVal))\n", stderr)
+        fputs("  mulVal = \(frToInt(mulVal))\n", stderr)
+        fputs("  vx = \(frToInt(vx2)), vy = \(frToInt(vy2))\n", stderr)
+
+        // Check input layer
+        vt2.absorb(vx2)
+        vt2.absorb(vy2)
+        vt2.absorbLabel("gkr-layer-0")
+        let beta2 = vt2.squeeze()
+        var newR2 = [Fr]()
+        for i in 0..<nIn {
+            newR2.append(frAdd(rx2[i], frMul(beta2, frSub(ry2[i], rx2[i]))))
+        }
+        let newClaim2 = frAdd(vx2, frMul(beta2, frSub(vy2, vx2)))
+        let inputMLE2 = MultilinearPoly(numVars: newR2.count, values: inputs)
+        let inputEval2 = inputMLE2.evaluate(at: newR2)
+        let inputMatch = frToInt(frSub(newClaim2, inputEval2))
+        fputs("  Input check: \(inputMatch[0] == 0 && inputMatch[1] == 0 && inputMatch[2] == 0 && inputMatch[3] == 0)\n", stderr)
+        fputs("  newClaim = \(frToInt(newClaim2))\n", stderr)
+        fputs("  inputEval = \(frToInt(inputEval2))\n", stderr)
     }
 
     // Generate random field inputs

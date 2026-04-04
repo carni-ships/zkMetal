@@ -268,34 +268,22 @@ public class UnivariateSumcheckEngine {
     // MARK: - Helpers
 
     /// Divide polynomial g by the vanishing polynomial Z_H(X) = X^n - 1.
-    /// Returns quotient h such that g = h * Z_H + remainder.
-    /// Assumes g is exactly divisible (remainder should be zero for a valid sumcheck).
+    /// Returns quotient h such that g = h * (X^n - 1).
+    /// Assumes g is exactly divisible (remainder = 0 for valid sumcheck).
     ///
-    /// Algorithm: synthetic division from high degree down.
-    /// If g has degree d, then h has degree d - n.
-    /// h_{d-n} = g_d, h_i = g_{i+n} + h_{i+n} (but h_{i+n} = 0 for i+n > d-n)
-    /// Simplified: h_i = g_{i+n} for i = d-n down to 0, accumulating.
+    /// Derivation: g_i = h_{i-n} - h_i, so h_{i-n} = g_i + h_i.
+    /// Process top-down from i = d-1 to i = n.
     func divideByVanishing(_ g: [Fr], vanishingDegree n: Int) -> [Fr] {
         let d = g.count
-        guard d > n else {
-            // g has degree < n, so g/Z_H = 0 (only valid if g = 0)
-            return []
-        }
+        guard d > n else { return [] }
 
         let hLen = d - n
         var h = [Fr](repeating: Fr.zero, count: hLen)
 
-        // Process from highest degree down
-        // g(X) = h(X) * (X^n - 1)
-        // Expanding: for each coefficient position i of g:
-        //   g_i = h_{i-n} - h_i  (where h_j = 0 for j >= hLen or j < 0)
-        // Rearranging: h_{i-n} = g_i + h_i
-        // Working top-down: i from d-1 to n
         for i in stride(from: d - 1, through: n, by: -1) {
             let hIdx = i - n
-            let val = frAdd(g[i], hIdx < hLen && i - n != hIdx ? Fr.zero : Fr.zero)
-            // h[i-n] = g[i] + h[i] (if i < hLen)
             if i < hLen {
+                // h[i] was set by a previous (higher) iteration
                 h[hIdx] = frAdd(g[i], h[i])
             } else {
                 h[hIdx] = g[i]

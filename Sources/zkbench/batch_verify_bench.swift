@@ -63,16 +63,37 @@ public func runBatchVerifyBench() {
             ))
         }
         let proofGenTime = (CFAbsoluteTimeGetCurrent() - proofGenT0) * 1000
-        print(String(format: "  Proof generation (%d proofs): %.0f ms", maxN, proofGenTime))
+        fputs(String(format: "  Proof generation (%d proofs): %.0f ms\n", maxN, proofGenTime), stderr)
 
         // MARK: - Correctness test
 
-        print("\n--- Correctness Tests ---")
+        fputs("\n--- Correctness Tests ---\n", stderr)
 
         // Test 1: All valid proofs should verify
+        fputs("  Setting up test...\n", stderr)
         let testItems = Array(allItems.prefix(10))
         let scalars = (0..<10).map { _ in frFromInt(nextRng()) }
 
+        fputs("  Running batch verify (n=\(testItems.count))...\n", stderr)
+        fputs("  First item: commitment z=\(pointIsIdentity(testItems[0].commitment)), proof z=\(pointIsIdentity(testItems[0].proof))\n", stderr)
+
+        // Test individual proof verification first
+        fputs("  Testing individual proof...\n", stderr)
+        let item0 = testItems[0]
+        let g = pointFromAffine(srs[0])
+        fputs("    g loaded\n", stderr)
+        let vG = cPointScalarMul(g, item0.value)
+        fputs("    vG computed\n", stderr)
+        let lhsTest = pointAdd(item0.commitment, pointNeg(vG))
+        fputs("    lhs computed\n", stderr)
+        let sMz = frSub(srsSecret, item0.point)
+        let rhsTest = cPointScalarMul(item0.proof, sMz)
+        fputs("    rhs computed\n", stderr)
+        let la = batchToAffine([lhsTest])
+        let ra = batchToAffine([rhsTest])
+        fputs("    affine conversion done, match=\(fpToInt(la[0].x) == fpToInt(ra[0].x))\n", stderr)
+
+        fputs("  Now running batch verify...\n", stderr)
         let allValid = try batchVerifier.batchVerifyKZGWithScalars(
             items: testItems, scalars: scalars, srs: srs, srsSecret: srsSecret)
         print("  [\(allValid ? "pass" : "FAIL")] Batch verify 10 valid proofs: \(allValid)")

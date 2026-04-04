@@ -134,15 +134,19 @@ public struct IPAAccumulator {
     public let generators: [PallasPointAffine]
     /// Blinding generator Q
     public let Q: PallasPointAffine
+    /// IPA proof final scalar (tracks through folding: a' = a1 + r*a2)
+    public let proofA: VestaFp
 
     public init(commitment: PallasPointProjective, b: [VestaFp], value: VestaFp,
-                challenges: [VestaFp], generators: [PallasPointAffine], Q: PallasPointAffine) {
+                challenges: [VestaFp], generators: [PallasPointAffine], Q: PallasPointAffine,
+                proofA: VestaFp) {
         self.commitment = commitment
         self.b = b
         self.value = value
         self.challenges = challenges
         self.generators = generators
         self.Q = Q
+        self.proofA = proofA
     }
 }
 
@@ -433,89 +437,30 @@ public class PallasAccumulationEngine {
             value: v,
             challenges: challenges,
             generators: generators,
-            Q: Q
+            Q: Q,
+            proofA: proof.a
         )
-    }
-
-    // MARK: - Fold
-
-    /// Fold two accumulators into one (cheap: EC addition + scalar mul).
-    /// The fold uses a random challenge r to combine the two claims linearly.
-    public func fold(_ acc1: IPAAccumulator, _ acc2: IPAAccumulator,
-                     randomness r: VestaFp) -> IPAAccumulator {
-        // C' = acc1.C + r * acc2.C
-        let rC2 = pallasPointScalarMul(acc2.commitment, r)
-        let Cprime = pallasPointAdd(acc1.commitment, rC2)
-
-        // v' = acc1.v + r * acc2.v
-        let vprime = vestaAdd(acc1.value, vestaMul(r, acc2.value))
-
-        // b' = acc1.b + r * acc2.b (element-wise)
-        let n = acc1.b.count
-        var bprime = [VestaFp](repeating: VestaFp.zero, count: n)
-        for i in 0..<n {
-            bprime[i] = vestaAdd(acc1.b[i], vestaMul(r, acc2.b[i]))
-        }
-
-        // Challenges: combine (simplified — for the decider we track both sets)
-        // In a full implementation, the folded challenges would need careful handling.
-        // Here we use acc1's challenges as the primary (the decider verifies the folded claim).
-        return IPAAccumulator(
-            commitment: Cprime,
-            b: bprime,
-            value: vprime,
-            challenges: acc1.challenges,
-            generators: generators,
-            Q: Q
-        )
-    }
-
-    /// Fold N accumulators into one using Fiat-Shamir-derived randomness.
-    public func foldMany(_ accs: [IPAAccumulator]) -> IPAAccumulator {
-        precondition(accs.count >= 1)
-        if accs.count == 1 { return accs[0] }
-
-        // Derive folding randomness from all accumulator commitments
-        var transcript = [UInt8]()
-        for acc in accs {
-            appendPallasPoint(&transcript, acc.commitment)
-        }
-
-        var result = accs[0]
-        for i in 1..<accs.count {
-            // Derive fresh randomness for each fold step
-            var stepTranscript = transcript
-            appendVestaFp(&stepTranscript, vestaFromInt(UInt64(i)))
-            let r = derivePallasChallenge(stepTranscript)
-            result = fold(result, accs[i], randomness: r)
-        }
-        return result
     }
 
     // MARK: - Decide
 
-    /// Decide: fully verify the final accumulated claim (expensive, done once).
+    /// Decide: fully verify a single accumulator (expensive, done once per accumulator).
     /// This reconstructs the folded generator and checks the accumulated commitment.
     ///
-    /// For a properly accumulated claim, this checks:
-    ///   C' == a_final * G_final + (a_final * b_final) * Q
-    /// where G_final and b_final are computed from the IPA challenges.
-    ///
-    /// NOTE: The decider needs the original proof's final scalar `a`. For a single
-    /// accumulation, pass the proof's `a` value. For folded accumulators, the
-    /// verification equation is checked directly on the accumulated commitment.
-    public func decide(_ acc: IPAAccumulator, proofA: VestaFp) -> Bool {
+    /// Checks: C' == a * G_final + (a * b_final) * Q
+    /// where G_final = MSM(G, s) and b_final are computed from the IPA challenges.
+    public func decide(_ acc: IPAAccumulator) -> Bool {
         let n = generators.count
         let qProj = pallasPointFromAffine(Q)
 
         // Compute s vector from challenges
+        let logN = acc.challenges.count
         var s = [VestaFp](repeating: VestaFp.one, count: n)
-        var challengeInvs = acc.challenges.map { vestaInverse($0) }
+        let challengeInvs = acc.challenges.map { vestaInverse($0) }
 
-        for round in 0..<acc.challenges.count {
+        for round in 0..<logN {
             let x = acc.challenges[round]
             let xInv = challengeInvs[round]
-            let logN = acc.challenges.count
             for i in 0..<n {
                 let bit = (i >> (logN - 1 - round)) & 1
                 if bit == 0 {
@@ -536,7 +481,7 @@ public class PallasAccumulationEngine {
         // Fold b using challenges
         var bFolded = acc.b
         var halfLen = n / 2
-        for round in 0..<acc.challenges.count {
+        for round in 0..<logN {
             var newB = [VestaFp](repeating: VestaFp.zero, count: halfLen)
             for i in 0..<halfLen {
                 newB[i] = vestaAdd(
@@ -549,12 +494,120 @@ public class PallasAccumulationEngine {
         let bFinal = bFolded[0]
 
         // Check: acc.C == proofA * G_final + (proofA * bFinal) * Q
-        let aG = pallasPointScalarMul(gFinal, proofA)
-        let ab = vestaMul(proofA, bFinal)
+        let aG = pallasPointScalarMul(gFinal, acc.proofA)
+        let ab = vestaMul(acc.proofA, bFinal)
         let abQ = pallasPointScalarMul(qProj, ab)
         let expected = pallasPointAdd(aG, abQ)
 
         return pallasPointEqual(acc.commitment, expected)
+    }
+
+    // MARK: - Batch Decide
+
+    /// Batch decide: verify N accumulators using random linear combination.
+    ///
+    /// Instead of verifying each accumulator separately (N expensive MSMs),
+    /// combine with random weights and check one equation:
+    ///   sum(r_i * C'_i) == sum(r_i * (a_i * G_final_i + (a_i * b_final_i) * Q))
+    ///
+    /// The RHS requires one MSM (generators are shared) since:
+    ///   sum(r_i * a_i * MSM(G, s_i)) = MSM(G, sum(r_i * a_i * s_i))
+    ///
+    /// Cost: N scalar muls for LHS, 1 MSM for RHS (instead of N MSMs).
+    /// Sound with overwhelming probability if all claims are valid.
+    public func batchDecide(_ accs: [IPAAccumulator]) -> Bool {
+        precondition(!accs.isEmpty)
+        if accs.count == 1 { return decide(accs[0]) }
+
+        let n = generators.count
+        let qProj = pallasPointFromAffine(Q)
+
+        // Derive random weights from all commitments
+        var transcript = [UInt8]()
+        for acc in accs {
+            appendPallasPoint(&transcript, acc.commitment)
+        }
+
+        var weights = [VestaFp]()
+        weights.reserveCapacity(accs.count)
+        weights.append(VestaFp.one) // first weight = 1 (optimization)
+        for i in 1..<accs.count {
+            var stepTranscript = transcript
+            appendVestaFp(&stepTranscript, vestaFromInt(UInt64(i)))
+            weights.append(derivePallasChallenge(stepTranscript))
+        }
+
+        // LHS: sum(r_i * C'_i)
+        var lhs = pallasPointIdentity()
+        for i in 0..<accs.count {
+            if i == 0 {
+                lhs = accs[0].commitment
+            } else {
+                lhs = pallasPointAdd(lhs, pallasPointScalarMul(accs[i].commitment, weights[i]))
+            }
+        }
+
+        // RHS: MSM(G, combined_s) + combined_ab * Q
+        // where combined_s_j = sum_i(r_i * a_i * s_i_j)
+        var combinedS = [VestaFp](repeating: VestaFp.zero, count: n)
+        var combinedAB = VestaFp.zero
+
+        for i in 0..<accs.count {
+            let acc = accs[i]
+            let logN = acc.challenges.count
+            let challengeInvs = acc.challenges.map { vestaInverse($0) }
+
+            // Compute s vector for this accumulator
+            var s = [VestaFp](repeating: VestaFp.one, count: n)
+            for round in 0..<logN {
+                let x = acc.challenges[round]
+                let xInv = challengeInvs[round]
+                for j in 0..<n {
+                    let bit = (j >> (logN - 1 - round)) & 1
+                    if bit == 0 {
+                        s[j] = vestaMul(s[j], xInv)
+                    } else {
+                        s[j] = vestaMul(s[j], x)
+                    }
+                }
+            }
+
+            // Fold b for this accumulator
+            var bFolded = acc.b
+            var halfLen = n / 2
+            for round in 0..<logN {
+                var newB = [VestaFp](repeating: VestaFp.zero, count: halfLen)
+                for j in 0..<halfLen {
+                    newB[j] = vestaAdd(
+                        vestaMul(challengeInvs[round], bFolded[j]),
+                        vestaMul(acc.challenges[round], bFolded[halfLen + j]))
+                }
+                bFolded = newB
+                halfLen /= 2
+            }
+            let bFinal = bFolded[0]
+
+            // Weight * a
+            let ra = vestaMul(weights[i], acc.proofA)
+
+            // Accumulate into combined_s: combined_s_j += r_i * a_i * s_j
+            for j in 0..<n {
+                combinedS[j] = vestaAdd(combinedS[j], vestaMul(ra, s[j]))
+            }
+
+            // Accumulate into combined_ab: combined_ab += r_i * a_i * b_final
+            combinedAB = vestaAdd(combinedAB, vestaMul(ra, bFinal))
+        }
+
+        // G_combined = MSM(G, combined_s) — one expensive MSM for all accumulators
+        var gCombined = pallasPointIdentity()
+        for j in 0..<n {
+            gCombined = pallasPointAdd(gCombined, pallasPointScalarMul(
+                pallasPointFromAffine(generators[j]), combinedS[j]))
+        }
+
+        let rhs = pallasPointAdd(gCombined, pallasPointScalarMul(qProj, combinedAB))
+        return pallasPointEqual(lhs, rhs)
     }
 
     // MARK: - Transcript Helpers

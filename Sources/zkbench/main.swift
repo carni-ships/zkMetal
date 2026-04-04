@@ -137,8 +137,14 @@ if cmd == "calibrate" {
     runFieldBench()
 } else if cmd == "fri" {
     runFRIBench()
+} else if cmd == "stir" {
+    runSTIRBench()
+} else if cmd == "whir" {
+    runWHIRBench()
 } else if cmd == "sumcheck" || cmd == "sc" {
     runSumcheckBench()
+} else if cmd == "usumcheck" || cmd == "usc" {
+    runUnivariateSumcheckBench()
 } else if cmd == "kzg" {
     runKZGBench()
 } else if cmd == "kzg-batch" {
@@ -169,6 +175,8 @@ if cmd == "calibrate" {
     runLookupBench()
 } else if cmd == "lasso" {
     runLassoBench()
+} else if cmd == "cq" || cmd == "cached-quotients" {
+    runCQLookupBench()
 } else if cmd == "sparse" || cmd == "sparse-sumcheck" {
     runSparseSumcheckBench()
 } else if cmd == "batch-field" || cmd == "bf" {
@@ -191,6 +199,8 @@ if cmd == "calibrate" {
     runSerializationBench()
 } else if cmd == "basefold" || cmd == "bf-pcs" {
     runBasefoldBench()
+} else if cmd == "zeromorph" || cmd == "zm" {
+    //     runZeromorphBench()
 } else if cmd == "brakedown" || cmd == "bk" {
     runBrakedownBench()
 } else if cmd == "pasta" {
@@ -201,12 +211,18 @@ if cmd == "calibrate" {
     runBiniusBench()
 } else if cmd == "fold" || cmd == "nova" || cmd == "hypernova" {
     runFoldingBench()
-} else if cmd == "accum" || cmd == "accumulate" || cmd == "accumulation" {
-    runAccumulationBench()
 } else if cmd == "gkr" {
     runGKRBench()
+} else if cmd == "dparallel" || cmd == "dp" {
+    runDataParallelBench()
 } else if cmd == "batch-verify" || cmd == "bv" {
     runBatchVerifyBench()
+} else if cmd == "stream-verify" || cmd == "sv" {
+    runStreamingVerifyBench()
+} else if cmd == "lattice" || cmd == "kyber" || cmd == "dilithium" || cmd == "pq" {
+    runLatticeBench()
+} else if cmd == "rs" || cmd == "erasure" || cmd == "reed-solomon" {
+    runErasureBench()
 } else if cmd == "sort" || cmd == "radix" {
     runSortBench()
 } else if cmd == "test-parallel-ntt" {
@@ -229,6 +245,13 @@ if cmd == "calibrate" {
     runCPUMSMBench()
 } else if cmd == "plonk" {
     runPlonkBench()
+} else if cmd == "marlin" || cmd == "ahp" {
+    runMarlinBench()
+} else if cmd == "spartan" {
+    // runSpartanBench()
+    print("Spartan bench not yet available")
+} else if cmd == "groth16" || cmd == "g16" {
+    runGroth16Bench()
 } else if cmd == "msm" {
     try runMSMBench()
 } else if cmd == "all" {
@@ -256,6 +279,9 @@ if cmd == "calibrate" {
     runBasefoldBench()
     runGKRBench()
     runPlonkBench()
+    // runMarlinBench()
+    // runSpartanBench()
+    runErasureBench()
 } else {
     try runMSMBench()
 }

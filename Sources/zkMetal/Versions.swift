@@ -39,6 +39,8 @@ public enum Versions {
 
     // --- Polynomial / STARK ---
     public static let fri            = PrimitiveVersion(version: "1.3.0", updated: "2026-04-03")
+    public static let stir            = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
+    public static let whir           = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let sumcheck       = PrimitiveVersion(version: "1.1.0", updated: "2026-04-02")
     public static let poly           = PrimitiveVersion(version: "1.0.0", updated: "2026-04-01")
     public static let basefold       = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
@@ -51,9 +53,11 @@ public enum Versions {
     // --- Commitment Schemes ---
     public static let kzg            = PrimitiveVersion(version: "1.1.0", updated: "2026-04-03")
     public static let ipa            = PrimitiveVersion(version: "1.1.0", updated: "2026-04-03")
+    public static let zeromorph      = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
 
     // --- GKR ---
     public static let gkr            = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
+    public static let dataParallel   = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
 
     // --- Other ---
     public static let ecdsa          = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
@@ -77,6 +81,10 @@ public enum Versions {
     public static let dilithium      = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let streamVerify   = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let batchVerify    = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
+    public static let marlin         = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
+    public static let spartan           = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
+    public static let tensorCompressor  = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
+    public static let joltVM            = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
 
     /// Print all primitive versions
     public static func printAll() {
@@ -101,11 +109,13 @@ public enum Versions {
             ("RNS NTT (HE)",    rnsNTT),
             ("Mersenne31",       mersenne31),
             ("FRI",               fri),
+            ("STIR",              stir),
             ("Sumcheck",          sumcheck),
             ("Univ. Sumcheck",   univariateSumcheck),
             ("Polynomial Ops",    poly),
             ("KZG",               kzg),
             ("IPA",               ipa),
+            ("Zeromorph",         zeromorph),
             ("ECDSA",             ecdsa),
             ("Radix Sort",        radixSort),
             ("Verkle Tree",       verkle),
@@ -124,10 +134,12 @@ public enum Versions {
             ("Circle FRI",       circleFRI),
             ("HyperNova Fold",   folding),
             ("GKR",              gkr),
+            ("Spartan",          spartan),
             ("Reed-Solomon",     reedSolomon),
             ("Lattice NTT",      latticeNTT),
             ("Kyber KEM",        kyber),
             ("Dilithium Sig",    dilithium),
+            ("Jolt VM",          joltVM),
         ]
         print("=== zkMetal Primitive Versions ===")
         for (name, v) in entries {
