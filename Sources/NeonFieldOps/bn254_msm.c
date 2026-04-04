@@ -359,9 +359,18 @@ static void pt_add(const uint64_t p[12], const uint64_t q[12], uint64_t r[12]) {
     fp_mul(t1, h, r + 8);
 }
 
+// Check if an affine point is identity (represented as (0,0))
+static inline int aff_is_id(const uint64_t q[8]) {
+    return (q[0] | q[1] | q[2] | q[3] | q[4] | q[5] | q[6] | q[7]) == 0;
+}
+
 // Mixed addition: projective P + affine Q (Z_Q = 1)
 // Saves 2 muls + 1 sqr vs full projective add
 static void pt_add_mixed(const uint64_t p[12], const uint64_t q_aff[8], uint64_t r[12]) {
+    if (aff_is_id(q_aff)) {
+        memcpy(r, p, 96);
+        return;
+    }
     if (pt_is_id(p)) {
         memcpy(r, q_aff, 64);        // x, y from affine
         memcpy(r + 8, FP_ONE, 32);   // z = 1

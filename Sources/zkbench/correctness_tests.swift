@@ -1630,6 +1630,129 @@ private func testCPippengerMSM() {
     let swResult = parallelMSM(points: pts, scalars: scalars)
     check("C Pippenger BN254 = Swift Pippenger (256 pts)", pointEqual(cResult, swResult))
 
+    // Small-n tests: compare C Pippenger vs naive scalar-mul accumulation
+    for testN in [1, 2, 4, 8, 16, 32, 64, 128] {
+        let smallPts = Array(pts.prefix(testN))
+        let smallScalars = Array(scalars.prefix(testN))
+        let cSmall = cPippengerMSM(points: smallPts, scalars: smallScalars)
+        // Naive: sum(scalar[i] * point[i]) using C scalar mul
+        var naiveResult = pointIdentity()
+        for i in 0..<testN {
+            let proj = pointFromAffine(smallPts[i])
+            let term = cPointScalarMul(proj, frFromLimbs(smallScalars[i]))
+            naiveResult = pointAdd(naiveResult, term)
+        }
+        check("C Pippenger BN254 = naive (\(testN) pts)", pointEqual(cSmall, naiveResult))
+    }
+
+    // Edge case: scalar = 1 (just point itself)
+    do {
+        let scalarOne: [UInt32] = [1, 0, 0, 0, 0, 0, 0, 0]
+        let cOne = cPippengerMSM(points: [pts[0]], scalars: [scalarOne])
+        let naiveOne = pointFromAffine(pts[0])
+        check("C Pippenger scalar=1, n=1", pointEqual(cOne, naiveOne))
+    }
+
+    // Edge case: scalar = 0 (should return identity)
+    do {
+        let scalarZero: [UInt32] = [0, 0, 0, 0, 0, 0, 0, 0]
+        let cZero = cPippengerMSM(points: [pts[0]], scalars: [scalarZero])
+        check("C Pippenger scalar=0, n=1", pointIsIdentity(cZero))
+    }
+
+    // Edge case: all same points, small scalars
+    do {
+        let samePts = [PointAffine](repeating: pts[0], count: 4)
+        let smallScals: [[UInt32]] = [
+            [1, 0, 0, 0, 0, 0, 0, 0],
+            [2, 0, 0, 0, 0, 0, 0, 0],
+            [3, 0, 0, 0, 0, 0, 0, 0],
+            [4, 0, 0, 0, 0, 0, 0, 0],
+        ]
+        let cSmall = cPippengerMSM(points: samePts, scalars: smallScals)
+        // Expected: (1+2+3+4) * G = 10*G
+        let scalarTen: [UInt32] = [10, 0, 0, 0, 0, 0, 0, 0]
+        let expected = cPointScalarMul(pointFromAffine(pts[0]), frFromLimbs(scalarTen))
+        check("C Pippenger 4 same pts, small scalars", pointEqual(cSmall, expected))
+    }
+
+    // Edge case: n=2 with scalar that has high bits set
+    do {
+        let highScal: [[UInt32]] = [
+            [0, 0, 0, 0, 0, 0, 0, 0x10000000],  // bit 252 set
+            [1, 0, 0, 0, 0, 0, 0, 0],
+        ]
+        let testPts = Array(pts.prefix(2))
+        let cHigh = cPippengerMSM(points: testPts, scalars: highScal)
+        var naiveHigh = pointIdentity()
+        for i in 0..<2 {
+            let proj = pointFromAffine(testPts[i])
+            let term = cPointScalarMul(proj, frFromLimbs(highScal[i]))
+            naiveHigh = pointAdd(naiveHigh, term)
+        }
+        check("C Pippenger n=2 high-bit scalar", pointEqual(cHigh, naiveHigh))
+    }
+
+    // Edge case: mixed zero and non-zero scalars
+    do {
+        let mixScals: [[UInt32]] = [
+            [0, 0, 0, 0, 0, 0, 0, 0],
+            [5, 0, 0, 0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0, 0, 0, 0],
+            [7, 0, 0, 0, 0, 0, 0, 0],
+        ]
+        let testPts = Array(pts.prefix(4))
+        let cMix = cPippengerMSM(points: testPts, scalars: mixScals)
+        var naiveMix = pointIdentity()
+        for i in 0..<4 {
+            let proj = pointFromAffine(testPts[i])
+            let term = cPointScalarMul(proj, frFromLimbs(mixScals[i]))
+            naiveMix = pointAdd(naiveMix, term)
+        }
+        check("C Pippenger n=4 mixed zero scalars", pointEqual(cMix, naiveMix))
+    }
+
+    // Edge case: affine identity point (0,0) in the input
+    do {
+        let zeroAff = PointAffine(x: .zero, y: .zero)
+        let mixedPts = [pts[0], zeroAff, pts[1], zeroAff]
+        let mixScals: [[UInt32]] = [
+            [3, 0, 0, 0, 0, 0, 0, 0],
+            [5, 0, 0, 0, 0, 0, 0, 0],  // scalar * identity = identity
+            [7, 0, 0, 0, 0, 0, 0, 0],
+            [11, 0, 0, 0, 0, 0, 0, 0], // scalar * identity = identity
+        ]
+        let cMixed = cPippengerMSM(points: mixedPts, scalars: mixScals)
+        // Expected: 3*pts[0] + 7*pts[1]
+        let t0 = cPointScalarMul(pointFromAffine(pts[0]), frFromLimbs([3, 0, 0, 0, 0, 0, 0, 0]))
+        let t1 = cPointScalarMul(pointFromAffine(pts[1]), frFromLimbs([7, 0, 0, 0, 0, 0, 0, 0]))
+        let expected = pointAdd(t0, t1)
+        check("C Pippenger n=4 with identity affine points", pointEqual(cMixed, expected))
+    }
+
+    // Edge case: all scalars equal (tests when many points land in same bucket)
+    do {
+        let testPts = Array(pts.prefix(8))
+        let sameScal: [[UInt32]] = Array(repeating: [42, 0, 0, 0, 0, 0, 0, 0], count: 8)
+        let cSame = cPippengerMSM(points: testPts, scalars: sameScal)
+        // Expected: 42 * (pts[0] + pts[1] + ... + pts[7])
+        var sumPts = pointIdentity()
+        for p in testPts { sumPts = pointAdd(sumPts, pointFromAffine(p)) }
+        let expected = cPointScalarMul(sumPts, frFromLimbs([42, 0, 0, 0, 0, 0, 0, 0]))
+        check("C Pippenger n=8 all same scalar", pointEqual(cSame, expected))
+    }
+
+    // Edge case: scalar exceeds Fr order (not reduced)
+    do {
+        // Fr order: 0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001
+        // Use a scalar > Fr order
+        let bigScal: [UInt32] = [0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF,
+                                  0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0x3FFFFFFF]
+        let cBig = cPippengerMSM(points: [pts[0]], scalars: [bigScal])
+        let naiveBig = cPointScalarMul(pointFromAffine(pts[0]), frFromLimbs(bigScal))
+        check("C Pippenger n=1 unreduced scalar", pointEqual(cBig, naiveBig))
+    }
+
     // secp256k1 C Pippenger
     do {
         let gen = secp256k1Generator()

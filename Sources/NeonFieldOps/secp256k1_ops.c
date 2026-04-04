@@ -384,7 +384,15 @@ static void secp_pt_to_affine(const uint64_t p[12], uint64_t ax[4], uint64_t ay[
 // Saves 2 muls + 1 sqr vs full projective add
 // ============================================================
 
+static inline int secp_aff_is_id(const uint64_t q[8]) {
+    return (q[0] | q[1] | q[2] | q[3] | q[4] | q[5] | q[6] | q[7]) == 0;
+}
+
 static void secp_pt_add_mixed(const uint64_t p[12], const uint64_t q_aff[8], uint64_t r[12]) {
+    if (secp_aff_is_id(q_aff)) {
+        memcpy(r, p, 96);
+        return;
+    }
     if (secp_pt_is_id(p)) {
         memcpy(r, q_aff, 64);        // x, y from affine
         memcpy(r + 8, SECP_ONE, 32); // z = 1
