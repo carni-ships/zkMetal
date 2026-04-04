@@ -62,7 +62,10 @@ GPU-accelerated zero-knowledge cryptography library for Apple Silicon, written i
 | **Incremental Merkle** | GPU | Append/update without full rebuild |
 | **Batch Field Ops** | CPU | C-optimized vectorized field arithmetic |
 
-Planned: STIR, Marlin, Spartan, Jolt
+| **STIR** | GPU | Shift-based proximity testing (FRI alternative) |
+| **Marlin** | GPU | Preprocessed SNARK with algebraic holographic proof + KZG |
+| **Spartan** | GPU | Transparent SNARK (no trusted setup) via multilinear extensions + sumcheck |
+| **Jolt** | GPU | zkVM via Lasso structured lookups (10 RISC-like opcodes) |
 
 ## Performance
 
