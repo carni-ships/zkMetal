@@ -98,13 +98,6 @@ public func runEd25519Bench() {
     let genxI = ed25519FpToInt(gen.x)
     let genyI = ed25519FpToInt(gen.y)
     let gPlusIdOk = gxI == genxI && gyI == genyI
-    if !gPlusIdOk {
-        print("    DEBUG G+O x: \(gxI) vs \(genxI)")
-        print("    DEBUG G+O y: \(gyI) vs \(genyI)")
-        // Also check extended coords
-        let gPlusIdZ = ed25519FpToInt(gPlusId.z)
-        print("    DEBUG G+O z: \(gPlusIdZ)")
-    }
     print("  G + O = G: \(gPlusIdOk ? "PASS" : "FAIL")")
 
     // 2*G = G + G
@@ -218,7 +211,7 @@ public func runEd25519Bench() {
         ]
         let tv1ExpectedPK: [UInt8] = [
             0xd7, 0x5a, 0x98, 0x01, 0x82, 0xb1, 0x0a, 0xb7, 0xd5, 0x4b, 0xfe, 0xd3, 0xc9, 0x64, 0x07, 0x3a,
-            0x0e, 0xe1, 0x72, 0xf3, 0xda, 0xa3, 0x23, 0x49, 0x49, 0x07, 0x85, 0x97, 0xc9, 0xd1, 0x9f, 0x42
+            0x0e, 0xe1, 0x72, 0xf3, 0xda, 0xa6, 0x23, 0x25, 0xaf, 0x02, 0x1a, 0x68, 0xf7, 0x07, 0x51, 0x1a
         ]
         // Debug: verify SHA-512 using known test vector
         // SHA-512("abc") should start with ddaf35a193617aba...
@@ -229,7 +222,7 @@ public func runEd25519Bench() {
 
         // Check TV1 seed SHA-512
         let tv1h = sha512(tv1Seed)
-        let expectedH = "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb"
+        let expectedH = "357c83864f2833cb427a2ef1c00a013cfdff2768d980c0a3a520f006904de90f"
         let gotH = tv1h[0..<32].map { String(format: "%02x", $0) }.joined()
         print("  TV1 SHA-512(seed) lo32: \(gotH == expectedH ? "PASS" : "FAIL")")
         if gotH != expectedH {
@@ -261,6 +254,19 @@ public func runEd25519Bench() {
         let tv1Sig = engine.sign(message: [], secretKey: tv1SK)
         let tv1Valid = engine.verify(signature: tv1Sig, message: [], publicKey: tv1SK.publicKey)
         print("  TV1 sign+verify empty msg: \(tv1Valid ? "PASS" : "FAIL")")
+
+        // Verify signature bytes match RFC 8032
+        let tv1ExpectedSig: [UInt8] = [
+            0xe5, 0x56, 0x43, 0x00, 0xc3, 0x60, 0xac, 0x72, 0x90, 0x86, 0xe2, 0xcc, 0x80, 0x6e, 0x82, 0x8a,
+            0x84, 0x87, 0x7f, 0x1e, 0xb8, 0xe5, 0xd9, 0x74, 0xd8, 0x73, 0xe0, 0x65, 0x22, 0x49, 0x01, 0x55,
+            0x5f, 0xb8, 0x82, 0x15, 0x90, 0xa3, 0x3b, 0xac, 0xc6, 0x1e, 0x39, 0x70, 0x1c, 0xf9, 0xb4, 0x6b,
+            0xd2, 0x5b, 0xf5, 0xf0, 0x59, 0x5b, 0xbe, 0x24, 0x65, 0x51, 0x41, 0x43, 0x8e, 0x7a, 0x10, 0x0b
+        ]
+        let tv1SigMatch = tv1Sig.toBytes() == tv1ExpectedSig
+        print("  TV1 signature bytes: \(tv1SigMatch ? "PASS" : "FAIL")")
+        if !tv1SigMatch {
+            print("    got: \(tv1Sig.toBytes().map { String(format: "%02x", $0) }.joined())")
+        }
 
         // --- Performance ---
         if !skipCPU {
@@ -323,7 +329,7 @@ public func runEd25519Bench() {
             let msmEngine = try Ed25519MSM()
 
             // Generate test points
-            let testSizes = [256, 1024]
+            let testSizes = [256, 1024, 4096, 16384]
             var projPoints = [Ed25519PointExtended]()
             projPoints.reserveCapacity(testSizes.last!)
             var pAcc3 = genExt
@@ -372,7 +378,7 @@ public func runEd25519Bench() {
         let allTests = oneOk && zeroOk && addZeroOk && addNegOk && mulOneOk && mulInvOk && distOk &&
                        fqOneOk && fqMulOk && fqInvOk && genOnCurve && isId && gPlusIdOk && dblOk &&
                        g2OnCurve && scalarMulOk && negOk && valid && !invalidMsg && !invalidKey &&
-                       batchValid && !batchInvalid
+                       batchValid && !batchInvalid && tv1PkMatch && tv1Valid && tv1SigMatch
         print("\n  Ed25519 overall: \(allTests ? "ALL PASS" : "SOME FAILED")")
 
     }

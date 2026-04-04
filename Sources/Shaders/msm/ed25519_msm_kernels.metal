@@ -19,7 +19,7 @@ kernel void ed_msm_reduce_sorted_buckets(
     constant uint& n_windows               [[buffer(5)]],
     device const uint* sorted_indices       [[buffer(6)]],
     device const uint* count_sorted_map     [[buffer(7)]],
-    constant EdFp& d2                      [[buffer(8)]],
+    constant EdFp& d_const                      [[buffer(8)]],
     uint tid                               [[thread_position_in_grid]]
 ) {
     uint total = params.n_buckets * n_windows;
@@ -51,7 +51,7 @@ kernel void ed_msm_reduce_sorted_buckets(
         uint raw_idx = sorted_indices[base + offset + i];
         EdPointAffine pt = points[raw_idx & 0x7FFFFFFFu];
         if (raw_idx & 0x80000000u) pt.x = ed_neg(pt.x);
-        acc = ed_point_add_mixed(acc, pt, d2);
+        acc = ed_point_add_mixed(acc, pt, d_const);
     }
     buckets[flat_idx] = acc;
 }
@@ -63,7 +63,7 @@ kernel void ed_msm_bucket_sum_direct(
     constant EdMsmParams& params            [[buffer(2)]],
     constant uint& n_segments              [[buffer(3)]],
     constant uint& n_windows_batch         [[buffer(4)]],
-    constant EdFp& d2                      [[buffer(5)]],
+    constant EdFp& d_const                      [[buffer(5)]],
     uint gid                               [[thread_position_in_grid]]
 ) {
     uint total_segs = n_segments * n_windows_batch;
@@ -88,9 +88,9 @@ kernel void ed_msm_bucket_sum_direct(
     for (uint b = end - 1; b >= start; b--) {
         EdPointExtended bkt = buckets[base + b];
         if (!ed_point_is_identity(bkt)) {
-            running = ed_point_add(running, bkt, d2);
+            running = ed_point_add(running, bkt, d_const);
         }
-        partial = ed_point_add(partial, running, d2);
+        partial = ed_point_add(partial, running, d_const);
         if (b == start) break;
     }
 
@@ -102,7 +102,7 @@ kernel void ed_msm_combine_segments(
     device const EdPointExtended* segment_results [[buffer(0)]],
     device EdPointExtended* window_results       [[buffer(1)]],
     constant uint& n_segments                    [[buffer(2)]],
-    constant EdFp& d2                            [[buffer(3)]],
+    constant EdFp& d_const                            [[buffer(3)]],
     uint gid                                     [[thread_position_in_grid]]
 ) {
     uint base = gid * n_segments;
@@ -110,7 +110,7 @@ kernel void ed_msm_combine_segments(
     for (uint i = 0; i < n_segments; i++) {
         EdPointExtended seg = segment_results[base + i];
         if (!ed_point_is_identity(seg)) {
-            result = ed_point_add(result, seg, d2);
+            result = ed_point_add(result, seg, d_const);
         }
     }
     window_results[gid] = result;

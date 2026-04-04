@@ -214,7 +214,7 @@ public func ed25519FpSqrt(_ a: Ed25519Fp) -> Ed25519Fp? {
     if a.isZero { return Ed25519Fp.zero }
 
     // (p+3)/8 = (2^255 - 19 + 3) / 8 = (2^255 - 16) / 8 = 2^252 - 2
-    var exp: [UInt64] = [
+    let exp: [UInt64] = [
         0xfffffffffffffffe, 0xffffffffffffffff,
         0xffffffffffffffff, 0x0fffffffffffffff
     ]
@@ -249,7 +249,7 @@ public func ed25519FpSqrt(_ a: Ed25519Fp) -> Ed25519Fp? {
 /// Compute sqrt(-1) mod p = 2^((p-1)/4) mod p
 private func ed25519FpComputeSqrtMinusOne() -> Ed25519Fp {
     // (p-1)/4 = (2^255 - 20) / 4 = 2^253 - 5
-    var exp: [UInt64] = [
+    let exp: [UInt64] = [
         0xfffffffffffffffb, 0xffffffffffffffff,
         0xffffffffffffffff, 0x1fffffffffffffff
     ]

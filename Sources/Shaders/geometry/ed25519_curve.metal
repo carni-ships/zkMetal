@@ -34,26 +34,23 @@ EdPointExtended ed_point_from_affine(EdPointAffine a) {
     return p;
 }
 
-// Pre-computed 2*d constant (in Montgomery form)
-// This will be computed at initialization by the MSM engine and passed as a constant
-// For now, we compute d = -121665/121666 and 2*d inline
-// d_mont is passed via buffer in practice; here we use a function.
-// In the MSM kernels, 2*d will be a constant buffer parameter.
+// The curve constant d (in Montgomery form) is passed as a buffer parameter
+// from the MSM engine. d = -121665/121666 mod p.
 
 // Point addition using extended coordinates (unified formula)
 // For -x^2 + y^2 = 1 + d*x^2*y^2 (a = -1)
+// A=X1*X2, B=Y1*Y2, C=d*T1*T2, D=Z1*Z2
+// E=(X1+Y1)*(X2+Y2)-A-B, F=D-C, G=D+C, H=B+A (since a=-1, H=B-aA=B+A)
 // Cost: 8M + 1D
-EdPointExtended ed_point_add(EdPointExtended p, EdPointExtended q, EdFp d2) {
+EdPointExtended ed_point_add(EdPointExtended p, EdPointExtended q, EdFp d_const) {
     EdFp a = ed_mul(p.x, q.x);
     EdFp b = ed_mul(p.y, q.y);
-    EdFp c = ed_mul(ed_mul(p.t, q.t), d2);
+    EdFp c = ed_mul(ed_mul(p.t, q.t), d_const);
     EdFp d_val = ed_mul(p.z, q.z);
-    EdFp dd = ed_double(d_val);
     EdFp e = ed_sub(ed_mul(ed_add(p.x, p.y), ed_add(q.x, q.y)), ed_add(a, b));
-    EdFp f = ed_sub(dd, c);
-    EdFp g = ed_add(dd, c);
-    // a_coeff = -1, so h = b + a (= b - (-a) = y1y2 + x1x2 since -x^2 term)
-    EdFp h = ed_add(b, a);
+    EdFp f = ed_sub(d_val, c);
+    EdFp g = ed_add(d_val, c);
+    EdFp h = ed_add(b, a);  // H = B - a*A = B + A since a = -1
 
     EdPointExtended r;
     r.x = ed_mul(e, f);
@@ -63,7 +60,7 @@ EdPointExtended ed_point_add(EdPointExtended p, EdPointExtended q, EdFp d2) {
     return r;
 }
 
-// Point doubling (optimized, no d2 dependency)
+// Point doubling (optimized, no d_const dependency)
 // For -x^2 + y^2 = 1 + d*x^2*y^2 (a = -1)
 EdPointExtended ed_point_double(EdPointExtended p) {
     EdFp a = ed_sqr(p.x);
@@ -83,19 +80,18 @@ EdPointExtended ed_point_double(EdPointExtended p) {
     return r;
 }
 
-// Mixed addition: extended + affine
-EdPointExtended ed_point_add_mixed(EdPointExtended p, EdPointAffine q, EdFp d2) {
+// Mixed addition: extended + affine (Z_q = 1, so D = Z1)
+EdPointExtended ed_point_add_mixed(EdPointExtended p, EdPointAffine q, EdFp d_const) {
     if (ed_point_is_identity(p)) return ed_point_from_affine(q);
 
-    // Extended + affine (Z_q = 1)
     EdFp a = ed_mul(p.x, q.x);
     EdFp b = ed_mul(p.y, q.y);
-    EdFp c = ed_mul(p.t, ed_mul(ed_mul(q.x, q.y), d2));
-    EdFp dd = ed_double(p.z);
+    EdFp c = ed_mul(p.t, ed_mul(ed_mul(q.x, q.y), d_const));
+    EdFp d_val = p.z;  // Z_q = 1, so D = Z1 * Z_q = Z1
     EdFp e = ed_sub(ed_mul(ed_add(p.x, p.y), ed_add(q.x, q.y)), ed_add(a, b));
-    EdFp f = ed_sub(dd, c);
-    EdFp g = ed_add(dd, c);
-    EdFp h = ed_add(b, a);
+    EdFp f = ed_sub(d_val, c);
+    EdFp g = ed_add(d_val, c);
+    EdFp h = ed_add(b, a);  // H = B - a*A = B + A since a = -1
 
     EdPointExtended r;
     r.x = ed_mul(e, f);

@@ -126,7 +126,7 @@ public func ed25519PointToAffine(_ p: Ed25519PointExtended) -> Ed25519PointAffin
 /// Point addition using extended coordinates (unified formula)
 /// For -x^2 + y^2 = 1 + d*x^2*y^2 (a=-1)
 /// A=X1*X2, B=Y1*Y2, C=d*T1*T2, D=Z1*Z2
-/// E=(X1+Y1)*(X2+Y2)-A-B, F=D-C, G=D+C, H=B+A (since a=-1)
+/// E=(X1+Y1)*(X2+Y2)-A-B, F=D-C, G=D+C, H=B-a*A=B+A (since a=-1)
 /// X3=E*F, Y3=G*H, T3=E*H, Z3=F*G
 public func ed25519PointAdd(_ p: Ed25519PointExtended, _ q: Ed25519PointExtended) -> Ed25519PointExtended {
     let dConst = ed25519D()
@@ -137,7 +137,7 @@ public func ed25519PointAdd(_ p: Ed25519PointExtended, _ q: Ed25519PointExtended
     let e = ed25519FpSub(ed25519FpMul(ed25519FpAdd(p.x, p.y), ed25519FpAdd(q.x, q.y)), ed25519FpAdd(a, b))
     let f = ed25519FpSub(d_val, c)
     let g = ed25519FpAdd(d_val, c)
-    let h = ed25519FpAdd(b, a)  // B - a*A = B + A since a = -1
+    let h = ed25519FpAdd(b, a)  // H = B - a*A = B + A since a = -1
 
     return Ed25519PointExtended(
         x: ed25519FpMul(e, f),

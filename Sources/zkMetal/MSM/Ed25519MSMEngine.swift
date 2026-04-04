@@ -26,7 +26,7 @@ public class Ed25519MSM {
     private var segmentResultsBuffer: MTLBuffer?
     private var windowResultsBuffer: MTLBuffer?
     private var countSortedMapBuffer: MTLBuffer?
-    private var d2Buffer: MTLBuffer?
+    private var dBuffer: MTLBuffer?
     private var cpuCountsPtr: UnsafeMutablePointer<Int>?
     private var cpuPositionsPtr: UnsafeMutablePointer<Int>?
     private var cpuScratchCapacity = 0
@@ -81,10 +81,10 @@ public class Ed25519MSM {
         self.combineSegmentsFunction = try device.makeComputePipelineState(function: combineFn)
         self.signedDigitFunction = try device.makeComputePipelineState(function: signedDigitFn)
 
-        // Pre-compute 2*d in Montgomery form and store as GPU buffer
-        let d2 = ed25519D2()
-        let d2Limbs = d2.to32()
-        self.d2Buffer = device.makeBuffer(bytes: d2Limbs, length: 32, options: .storageModeShared)
+        // Pre-compute d in Montgomery form and store as GPU buffer
+        let dConst = ed25519D()
+        let dLimbs = dConst.to32()
+        self.dBuffer = device.makeBuffer(bytes: dLimbs, length: 32, options: .storageModeShared)
     }
 
     private static func compileAndCache(device: MTLDevice, cacheFile: URL) throws -> MTLLibrary {
@@ -276,7 +276,7 @@ public class Ed25519MSM {
               let segmentResultsBuffer = segmentResultsBuffer,
               let windowResultsBuffer = windowResultsBuffer,
               let countSortedMapBuffer = countSortedMapBuffer,
-              let d2Buffer = d2Buffer else {
+              let dBuffer = dBuffer else {
             throw MSMError.gpuError("Failed to allocate Metal buffers")
         }
 
@@ -413,7 +413,7 @@ public class Ed25519MSM {
             enc.setBytes(&nw, length: 4, index: 5)
             enc.setBuffer(sortedIndicesBuffer, offset: 0, index: 6)
             enc.setBuffer(countSortedMapBuffer, offset: 0, index: 7)
-            enc.setBuffer(d2Buffer, offset: 0, index: 8)
+            enc.setBuffer(dBuffer, offset: 0, index: 8)
             let numBucketsTotal = nWindows * nBuckets
             let tg = min(256, Int(reduceSortedFunction.maxTotalThreadsPerThreadgroup))
             enc.dispatchThreads(
@@ -432,7 +432,7 @@ public class Ed25519MSM {
             enc.setBytes(&params, length: MemoryLayout<EdMsmParamsSwift>.stride, index: 2)
             enc.setBytes(&nSegs, length: 4, index: 3)
             enc.setBytes(&nWinsBatch, length: 4, index: 4)
-            enc.setBuffer(d2Buffer, offset: 0, index: 5)
+            enc.setBuffer(dBuffer, offset: 0, index: 5)
             let totalSegments = nSegments * nWindows
             enc.dispatchThreads(
                 MTLSize(width: totalSegments, height: 1, depth: 1),
@@ -443,7 +443,7 @@ public class Ed25519MSM {
             enc.setBuffer(segmentResultsBuffer, offset: 0, index: 0)
             enc.setBuffer(windowResultsBuffer, offset: 0, index: 1)
             enc.setBytes(&nSegs, length: 4, index: 2)
-            enc.setBuffer(d2Buffer, offset: 0, index: 3)
+            enc.setBuffer(dBuffer, offset: 0, index: 3)
             enc.dispatchThreads(
                 MTLSize(width: nWindows, height: 1, depth: 1),
                 threadsPerThreadgroup: MTLSize(width: min(256, nWindows), height: 1, depth: 1))
