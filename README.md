@@ -1,6 +1,6 @@
 # zkMetal
 
-GPU-accelerated zero-knowledge cryptography library for Apple Silicon, written in Metal and Swift. 50+ primitives spanning field arithmetic, MSM, NTT, hash functions, polynomial commitments, proof protocols, post-quantum crypto, and homomorphic encryption across 12+ fields and 7 elliptic curves.
+GPU-accelerated zero-knowledge cryptography library for Apple Silicon, written in Metal and Swift. 50+ primitives spanning field arithmetic, MSM, NTT, hash functions, polynomial commitments, proof protocols, post-quantum crypto, and homomorphic encryption across 15 fields and 7 elliptic curves.
 
 ## Contents
 
@@ -18,6 +18,12 @@ GPU-accelerated zero-knowledge cryptography library for Apple Silicon, written i
   - [IPA](#ipa-bulletproofs-style-inner-product-argument)
   - [Verkle Trees (CPU)](#verkle-trees-cpu-pedersen--ipa)
   - [ECDSA (CPU)](#ecdsa-cpu-secp256k1-batch-verification)
+  - [Circle STARK](#circle-stark-mersenne31)
+  - [Plonk](#plonk-bn254-kzg)
+  - [Groth16](#groth16-bn254)
+  - [GKR](#gkr-bn254-fr-layered-circuits)
+  - [Circle NTT](#circle-ntt-mersenne31-gpu)
+  - [Radix Sort](#gpu-radix-sort)
   - [Theoretical Performance Analysis](#theoretical-performance-analysis)
 - [Supported Fields](#supported-fields)
 - [Architecture](#architecture)
@@ -35,41 +41,41 @@ GPU-accelerated zero-knowledge cryptography library for Apple Silicon, written i
 
 | Primitive | Description |
 |-----------|-------------|
-| **MSM** | Multi-scalar multiplication (Pippenger + signed-digit + GLV endomorphism) — BN254, BLS12-377, secp256k1 |
-| **NTT** | Number theoretic transform (four-step FFT with fused sub-blocks) — BN254, BLS12-377, Goldilocks, BabyBear |
-| **Poseidon2** | Algebraic hash function (t=3, BN254 Fr) |
+| **MSM** | Multi-scalar multiplication (Pippenger + signed-digit + GLV endomorphism) -- BN254, BLS12-377, secp256k1 |
+| **NTT** | Number theoretic transform (four-step FFT with fused bitrev+butterfly, twiddle fusion) -- BN254, BLS12-377, Goldilocks, BabyBear |
+| **Poseidon2** | Algebraic hash function (t=3, BN254 Fr; t=16, Mersenne31) |
 | **Keccak-256** | SHA-3 hash (fused subtree Merkle) |
 | **Blake3** | BLAKE3 hash (batch hashing + Merkle trees) |
 | **Merkle Trees** | Poseidon2, Keccak-256, and Blake3 backends |
 | **FRI** | Fast Reed-Solomon IOP (fold + commit + query + verify) |
+| **Circle FRI** | FRI protocol adapted for circle domain over M31 |
 | **Sumcheck** | Interactive sumcheck protocol (fused round+reduce with SIMD shuffles) |
 | **Sparse Sumcheck** | O(nnz) sumcheck for sparse multilinear polynomials |
 | **KZG** | Polynomial commitment scheme (commit + open via MSM) |
+| **Batch KZG** | Batch polynomial openings via random linear combination |
 | **IPA** | Inner product argument (Bulletproofs-style, GPU batch fold) |
 | **Verkle Trees (CPU)** | Width-N tree with Pedersen commitments + IPA opening proofs |
 | **LogUp** | Lookup argument via logarithmic derivatives + sumcheck |
-| **Range Proofs** | Proves values ∈ [0, R) via LogUp with limb decomposition |
+| **Lasso** | Structured lookup via tensor decomposition of large tables |
+| **Range Proofs** | Proves values in [0, R) via LogUp with limb decomposition |
 | **ECDSA (CPU)** | secp256k1 batch verification (probabilistic + individual) |
 | **Radix Sort** | GPU 32-bit LSD radix sort (4-pass, 8-bit radix) |
 | **Polynomial Ops** | Evaluation, interpolation, subproduct trees |
-| **Lasso** | Structured lookup via tensor decomposition of large tables |
 | **Circle NTT** | Circle-group NTT over Mersenne31 (order 2^31, full 2-adicity) |
-| **Circle FRI** | FRI protocol adapted for circle domain over M31 |
-| **Poseidon2 M31** | Poseidon2 hash over Mersenne31 (t=16, rate=8) with GPU Merkle |
 | **Circle STARK** | Full STARK prover/verifier over M31 circle domain |
+| **Plonk** | Preprocessed polynomial IOP prover with KZG commitments |
+| **Groth16** | zk-SNARK with BN254 pairings (R1CS, trusted setup, prove, verify) |
+| **GKR** | Goldwasser-Kalai-Rothblum interactive proof for layered circuits |
 | **Basefold** | NTT-free multilinear polynomial commitment via sumcheck folding |
+| **Brakedown** | Linear-code polynomial commitment (NTT-free, expander-based) |
+| **HyperNova** | CCS folding scheme for incremental verifiable computation |
+| **BLS12-381** | Full tower arithmetic (Fp/Fp2/Fp6/Fp12), G1/G2, Miller loop, pairings |
+| **Pasta Curves** | Pallas/Vesta cycle (recursive proof composition ready) |
+| **Binius** | Binary tower field arithmetic (GF(2^8)->GF(2^128)), additive FFT |
 | **Transcript** | Fiat-Shamir duplex sponge (Poseidon2 + Keccak backends) |
 | **Serialization** | Proof serialization/deserialization (ProofWriter/ProofReader) |
 | **Witness Gen** | GPU witness trace evaluation (instruction-stream architecture) |
-| **Constraint IR** | Runtime constraint compilation (IR → Metal source → GPU pipeline) |
-| **Batch KZG** | Batch polynomial openings via random linear combination |
-| **BLS12-381** | Full tower arithmetic (Fp/Fp2/Fp6/Fp12), G1/G2, Miller loop, pairings |
-| **Pasta Curves** | Pallas/Vesta cycle (recursive proof composition ready) |
-| **Binius** | Binary tower field arithmetic (GF(2^8)→GF(2^128)), additive FFT |
-| **HyperNova** | CCS folding scheme for incremental verifiable computation |
-| **GKR** | Goldwasser-Kalai-Rothblum interactive proof for layered circuits |
-| **Brakedown** | Linear-code polynomial commitment (NTT-free, expander-based) |
-| **Plonk** | Preprocessed polynomial IOP prover with KZG commitments |
+| **Constraint IR** | Runtime constraint compilation (IR -> Metal source -> GPU pipeline) |
 | **Kyber/Dilithium** | Post-quantum lattice crypto (GPU-accelerated NTT) |
 | **HE NTT** | RNS-based NTT for homomorphic encryption (CKKS/BFV) |
 | **Reed-Solomon** | GPU erasure coding for data availability sampling |
@@ -77,37 +83,46 @@ GPU-accelerated zero-knowledge cryptography library for Apple Silicon, written i
 ## Performance
 
 All benchmarks measured on Apple M3 Pro (6P+6E cores), comparing GPU (Metal), optimized C CPU (CIOS Montgomery with `__uint128_t`, multi-threaded Pippenger, NEON SIMD), and single-threaded CPU (vanilla Swift).
-Run `swift run -c release zkbench all` to reproduce, or `swift run -c release zkbench cpu` for the 3-way comparison. For small inputs (MSM n≤2048), the engine automatically routes to C Pippenger instead of GPU to avoid dispatch overhead.
+Run `swift run -c release zkbench all` to reproduce, or `swift run -c release zkbench cpu` for the 3-way comparison. For small inputs (MSM n<=2048), the engine automatically routes to C Pippenger instead of GPU to avoid dispatch overhead.
 
 ### MSM (BN254 G1)
 
 | Points | Vanilla CPU | Swift Pippenger | C Pippenger | GPU (Metal) |
 |--------|-------------|----------------|-------------|-------------|
-| 2^8 | 5.5s | 63ms | **11ms** | 8ms |
-| 2^10 | 24s | 121ms | **6ms** | 4ms |
-| 2^12 | 19s | 494ms | **9ms** | 16ms |
-| 2^14 | 87s | 848ms | **28ms** | 29ms |
-| 2^16 | — | — | **71ms** | 43ms |
-| 2^18 | — | — | — | 102ms |
-| 2^20 | — | — | — | 294ms |
+| 2^8 | 450ms | 16ms | **1.3ms** | 1.1ms |
+| 2^10 | 1.8s | 45ms | **2.9ms** | 3.0ms |
+| 2^12 | 7.3s | 129ms | **8.1ms** | 14ms |
+| 2^14 | 35s | 429ms | 29ms | **22ms** |
+| 2^16 | -- | -- | 68ms | **27ms** |
+| 2^18 | -- | -- | 240ms | **45ms** |
+| 2^20 | -- | -- | 856ms | **119ms** |
 
-C Pippenger uses multi-threaded bucket accumulation with `__uint128_t` CIOS Montgomery (8 pthreads). At n≤2048, C Pippenger is automatically used instead of GPU to avoid dispatch overhead. GPU wins at n≥2^16.
+C Pippenger uses multi-threaded bucket accumulation with `__uint128_t` CIOS Montgomery (8 pthreads). At n<=2048, C Pippenger is automatically used instead of GPU to avoid dispatch overhead. GPU wins at n>=2^14.
+
+**Other curve MSM:**
+
+| Points | BN254 GPU | BLS12-377 GPU | secp256k1 GPU | secp256k1 C Pip |
+|--------|-----------|---------------|---------------|-----------------|
+| 2^8 | 1.1ms | 9ms | 1.3ms | 1.4ms |
+| 2^14 | 22ms | 36ms | 22ms | 31ms |
+| 2^16 | 27ms | 176ms | 38ms | 92ms |
+| 2^18 | 45ms | 205ms | 78ms | 339ms |
 
 **Comparison to other implementations (BN254 MSM):**
 
 | Points | zkMetal (M3 Pro)&#185; | ICICLE-Metal (M3 Pro)&#185; | ICICLE CPU (M3 Pro)&#185; | ICICLE-Metal (M3 Air)&#178; | MoPro v2 (M3 Air)&#178; | Arkworks CPU (M3 Air)&#178; | ICICLE CUDA&#179; |
 |--------|---------|-------------|-----------|-------------|-----------|-----------|-----------|
-| 2^16 | **37ms** | 1,083ms | 114ms | — | 253ms | 69ms | ~9ms |
-| 2^18 | **102ms** | 1,475ms | 556ms | 149ms | 678ms | 266ms | — |
-| 2^20 | **294ms** | 2,590ms | 2,349ms | 421ms | 1,702ms | 592ms | — |
+| 2^16 | **27ms** | 1,083ms | 114ms | -- | 253ms | 69ms | ~9ms |
+| 2^18 | **45ms** | 1,475ms | 556ms | 149ms | 678ms | 266ms | -- |
+| 2^20 | **119ms** | 2,590ms | 2,349ms | 421ms | 1,702ms | 592ms | -- |
 
 &#185; Measured locally. ICICLE-Metal v3.8.0 has ~600ms constant overhead per call (license server).
-&#178; Reported by [MoPro blog](https://zkmopro.org/blog/metal-msm-v2/) — different hardware and methodology, not directly comparable.
+&#178; Reported by [MoPro blog](https://zkmopro.org/blog/metal-msm-v2/) -- different hardware and methodology, not directly comparable.
 &#179; [Ingonyama](https://github.com/ingonyama-zk/icicle) on RTX 3090 Ti (native 64-bit integer multiply).
 
-Metal GPU MSM is competitive with other Metal implementations and faster than ICICLE-Metal, but still slower than optimized multithreaded CPU (Arkworks). The fundamental bottleneck is that 256-bit field arithmetic requires 8x32-bit limbs on Metal (no native 64-bit integer multiply), while CPU implementations use 4x64-bit limbs with hand-tuned assembly, out-of-order execution, and deep pipelines. CUDA GPUs (like those targeted by [Ingonyama's ICICLE](https://github.com/ingonyama-zk/icicle)) have native 64-bit integer multiply. The GPU advantage is clear for smaller fields: BabyBear NTT achieves **2.4B elements/sec** (7ms at 2^24) and Goldilocks **2.5B elements/sec** (6.6ms at 2^24) — both dramatically faster than BN254 on the same GPU (see NTT table below).
+Metal GPU MSM is competitive with other Metal implementations and faster than ICICLE-Metal, but still slower than optimized multithreaded CPU (Arkworks). The fundamental bottleneck is that 256-bit field arithmetic requires 8x32-bit limbs on Metal (no native 64-bit integer multiply), while CPU implementations use 4x64-bit limbs with hand-tuned assembly, out-of-order execution, and deep pipelines. CUDA GPUs (like those targeted by [Ingonyama's ICICLE](https://github.com/ingonyama-zk/icicle)) have native 64-bit integer multiply. The GPU advantage is clear for smaller fields: BabyBear NTT achieves **8.5B elements/sec** (2ms at 2^24) and Goldilocks **5.7B elements/sec** (3ms at 2^24) -- both dramatically faster than BN254 on the same GPU (see NTT table below).
 
-GPU scaling is strongly sublinear: 1024x more points (2^8 to 2^18) costs only ~9x more time, as fixed GPU overhead dominates at small sizes.
+GPU scaling is strongly sublinear: 1024x more points (2^8 to 2^18) costs only ~40x more time, as fixed GPU overhead dominates at small sizes.
 
 ### NTT
 
@@ -115,40 +130,40 @@ GPU scaling is strongly sublinear: 1024x more points (2^8 to 2^18) costs only ~9
 
 | Size | Vanilla CPU | Opt C | Opt C vs Vanilla | GPU (Metal) | GPU vs Vanilla |
 |------|-------------|-------|------------------|-------------|----------------|
-| 2^14 | 94ms | 2.7ms | **35x** | 0.49ms | **192x** |
-| 2^16 | 481ms | 18ms | **27x** | 0.95ms | **506x** |
-| 2^18 | 3.3s | 108ms | **30x** | 1.9ms | **1737x** |
-| 2^20 | 9.0s | 503ms | **18x** | 6.1ms | **1475x** |
+| 2^14 | 79ms | 2.6ms | **30x** | 0.45ms | **176x** |
+| 2^16 | 369ms | 12ms | **30x** | 0.76ms | **483x** |
+| 2^18 | 1.6s | 55ms | **30x** | 2.2ms | **749x** |
+| 2^20 | 7.3s | 246ms | **30x** | 6.1ms | **1198x** |
 
-Optimized C uses fully unrolled 4-limb CIOS Montgomery multiplication with `__uint128_t` (compiled with `-O3`). Also available: parallel CPU (GCD, 12 cores) at 5.4x over vanilla.
+Optimized C uses fully unrolled 4-limb CIOS Montgomery multiplication with `__uint128_t` (compiled with `-O3`). Also available: parallel CPU (GCD, 12 cores) at 5x over vanilla.
 
 **Multi-field NTT comparison (GPU):**
 
 | Size | BN254 Fr (256-bit) | BLS12-377 Fr (253-bit) | Goldilocks (64-bit) | BabyBear (31-bit) |
 |------|-------------------|----------------------|--------------------|--------------------|
-| 2^16 | 0.95ms | 1.8ms | 0.15ms | 0.17ms |
-| 2^18 | 1.9ms | 2.1ms | 0.21ms | 0.26ms |
-| 2^20 | 6.1ms | 6.3ms | 0.84ms | 1.2ms |
-| 2^22 | 26ms | 26ms | 4.4ms | 2.9ms |
-| 2^24 | 113ms | 116ms | 3.0ms | 2.0ms |
+| 2^16 | 0.47ms | 1.4ms | 0.14ms | 0.18ms |
+| 2^18 | 1.6ms | 2.1ms | 0.19ms | 0.26ms |
+| 2^20 | 6.1ms | 5.8ms | 0.81ms | 0.95ms |
+| 2^22 | 26ms | 25ms | 4.2ms | 2.8ms |
+| 2^24 | 116ms | 110ms | 3.0ms | 2.0ms |
 
-Smaller fields see dramatic throughput gains: BabyBear NTT at 2^24 (16M elements) runs in **2ms** — one element per 0.12ns, or **8.5B elements/sec**. The GPU advantage for small fields comes from native 32-bit arithmetic (1 mul per element vs 64 muls for BN254 CIOS), 8x higher memory density, and better threadgroup utilization.
+Smaller fields see dramatic throughput gains: BabyBear NTT at 2^24 (16M elements) runs in **2ms** -- one element per 0.12ns, or **8.5B elements/sec**. The GPU advantage for small fields comes from native 32-bit arithmetic (1 mul per element vs 64 muls for BN254 CIOS), 8x higher memory density, and better threadgroup utilization.
 
 **CPU optimization results by field:**
-- **BN254 Fr:** C with unrolled CIOS Montgomery gives **29-38x** over vanilla Swift (Swift's optimizer is very poor for 256-bit multi-limb carry chains).
+- **BN254 Fr:** C with unrolled CIOS Montgomery gives **29-30x** over vanilla Swift (Swift's optimizer is very poor for 256-bit multi-limb carry chains).
 - **BabyBear:** NEON SIMD (4-wide Montgomery via `vqdmulhq_s32`, Plonky3 technique) gives **5.6x** over vanilla.
-- **Goldilocks:** Optimized C with `__uint128_t` gives **1.8-3.1x** over vanilla.
-- GCD parallel dispatch **regresses** for BabyBear/Goldilocks (0.4x) — field ops are too cheap for thread overhead.
+- **Goldilocks:** Optimized C with `__uint128_t` gives **2.1-2.2x** over vanilla.
+- GCD parallel dispatch **regresses** for BabyBear/Goldilocks (0.4-0.5x) -- field ops are too cheap for thread overhead.
 
 **Comparison to ICICLE-Metal v3.8 NTT (measured locally, M3 Pro):**
 
 | Size | zkMetal BN254&#185; | ICICLE BN254&#185; | zkMetal BabyBear&#185; | ICICLE BabyBear&#185; |
 |------|------------|-------------|----------------|----------------|
-| 2^16 | **0.95ms** | 89ms | **0.17ms** | 86ms |
-| 2^18 | **1.9ms** | 108ms | **0.26ms** | 92ms |
-| 2^20 | **6.1ms** | 194ms | **1.2ms** | 108ms |
-| 2^22 | **26ms** | 915ms | **2.9ms** | 181ms |
-| 2^24 | **113ms** | 3,892ms | **2.0ms** | 709ms |
+| 2^16 | **0.76ms** | 89ms | **0.18ms** | 86ms |
+| 2^18 | **1.6ms** | 108ms | **0.26ms** | 92ms |
+| 2^20 | **6.1ms** | 194ms | **0.95ms** | 108ms |
+| 2^22 | **26ms** | 915ms | **2.8ms** | 181ms |
+| 2^24 | **116ms** | 3,892ms | **2.0ms** | 709ms |
 
 &#185; Measured locally on M3 Pro. ICICLE-Metal has ~85ms per-call overhead.
 
@@ -160,75 +175,75 @@ GPU scales sublinearly: 2^10 to 2^22 is 4096x more data for ~100x more time. CPU
 
 | Primitive | Batch Size | Vanilla CPU | Parallel CPU (12 cores) | Parallel vs Vanilla | GPU (Metal) | GPU vs Vanilla |
 |-----------|-----------|-------------|------------------------|--------------------|--------------------|----------------|
-| Poseidon2 | 2^12 | 119 µs/hash | 21 µs/hash | **6x** | 0.61 µs/hash | **195x** |
-| Poseidon2 | 2^14 | 128 µs/hash | 20 µs/hash | **6x** | 0.17 µs/hash | **753x** |
-| Poseidon2 | 2^16 | 150 µs/hash | 19 µs/hash | **8x** | 0.14 µs/hash | **1071x** |
-| Keccak-256 | 2^14 | 6 µs/hash | 1.5 µs/hash | **4x** | 0.035 µs/hash | **171x** |
-| Keccak-256 | 2^16 | 6 µs/hash | 1.4 µs/hash | **4x** | 0.027 µs/hash | **222x** |
-| Keccak-256 | 2^18 | 6.2 µs/hash | 1.5 µs/hash | **4x** | 0.012 µs/hash | **517x** |
+| Poseidon2 | 2^12 | 523ms | 71ms | **7x** | 2.3ms | **227x** |
+| Poseidon2 | 2^14 | 2.0s | 278ms | **7x** | 2.3ms | **871x** |
+| Poseidon2 | 2^16 | 8.0s | 1.1s | **7x** | 8.1ms | **993x** |
+| Keccak-256 | 2^14 | 100ms | 23ms | **4x** | 0.20ms | **500x** |
+| Keccak-256 | 2^16 | 387ms | 89ms | **4x** | 0.45ms | **860x** |
+| Keccak-256 | 2^18 | 1.6s | 360ms | **4x** | 1.4ms | **1143x** |
 
-Parallel CPU achieves 4-8x over vanilla (embarrassingly parallel — each hash independent). GPU achieves 195-1071x over vanilla. No other Metal implementations of Poseidon2 or Keccak-256 batch hashing are known.
+Parallel CPU achieves 4-7x over vanilla (embarrassingly parallel -- each hash independent). GPU achieves 227-1143x over vanilla. No other Metal implementations of Poseidon2 or Keccak-256 batch hashing are known.
 
 ### Merkle Trees
 
 | Backend | Leaves | GPU | CPU | Speedup |
 |---------|--------|-----|-----|---------|
-| Poseidon2 | 2^10 | 19ms | 272ms | **14x** |
-| Poseidon2 | 2^12 | 19ms | 2.0s | **102x** |
-| Poseidon2 | 2^14 | 16ms | 4.7s | **305x** |
-| Poseidon2 | 2^16 | 23ms | 20s | **906x** |
-| Poseidon2 | 2^18 | 47ms | 66s | **1418x** |
-| Poseidon2 | 2^20 | 144ms | — | — |
-| Keccak-256 | 2^12 | 1.1ms | 44ms | **39x** |
-| Keccak-256 | 2^14 | 3.3ms | 155ms | **48x** |
-| Keccak-256 | 2^16 | 12ms | 783ms | **67x** |
-| Keccak-256 | 2^18 | 42ms | 3.0s | **72x** |
-| Keccak-256 | 2^20 | 159ms | — | — |
-| Blake3 | 2^12 | 1.1ms | 4ms | **4x** |
-| Blake3 | 2^14 | 3.4ms | 16ms | **5x** |
-| Blake3 | 2^16 | 10ms | 101ms | **10x** |
-| Blake3 | 2^18 | 49ms | 345ms | **7x** |
-| Blake3 | 2^20 | 158ms | — | — |
+| Poseidon2 | 2^10 | 7.4ms | 272ms | **37x** |
+| Poseidon2 | 2^12 | 8.8ms | 2.0s | **227x** |
+| Poseidon2 | 2^14 | 10ms | 4.7s | **470x** |
+| Poseidon2 | 2^16 | 22ms | 20s | **909x** |
+| Poseidon2 | 2^18 | 46ms | 66s | **1435x** |
+| Poseidon2 | 2^20 | 130ms | -- | -- |
+| Keccak-256 | 2^12 | 0.37ms | 44ms | **119x** |
+| Keccak-256 | 2^14 | 0.51ms | 155ms | **304x** |
+| Keccak-256 | 2^16 | 1.4ms | 783ms | **559x** |
+| Keccak-256 | 2^18 | 4.5ms | 3.0s | **667x** |
+| Keccak-256 | 2^20 | 13ms | -- | -- |
+| Blake3 | 2^12 | 0.72ms | 4ms | **6x** |
+| Blake3 | 2^14 | 0.92ms | 16ms | **17x** |
+| Blake3 | 2^16 | 1.3ms | 101ms | **78x** |
+| Blake3 | 2^18 | 3.9ms | 345ms | **88x** |
+| Blake3 | 2^20 | 12ms | -- | -- |
 
-All three backends scale linearly (O(n) tree construction). GPU speedup grows with size as fixed dispatch overhead is amortized. Blake3 is the fastest Merkle backend at large sizes (96ms vs 136ms Keccak vs 1.5s Poseidon2 at 2^20) due to its simpler 32-bit ARX arithmetic.
+All three backends scale linearly (O(n) tree construction). GPU speedup grows with size as fixed dispatch overhead is amortized. Keccak and Blake3 are the fastest Merkle backends at large sizes (13ms and 12ms at 2^20) due to simpler arithmetic vs Poseidon2 (130ms).
 
 ### FRI Folding (BN254 Fr)
 
 | Size | GPU | CPU | Speedup |
 |------|-----|-----|---------|
 | 2^14 | 0.41ms | 15ms | **37x** |
-| 2^16 | 0.68ms | 58ms | **84x** |
-| 2^18 | 1.4ms | 225ms | **164x** |
-| 2^20 | 5.3ms | 878ms | **167x** |
-| 2^22 | 15ms | 2.7s | **182x** |
+| 2^16 | 0.59ms | 58ms | **98x** |
+| 2^18 | 1.2ms | 225ms | **188x** |
+| 2^20 | 4.4ms | 878ms | **200x** |
+| 2^22 | 9.2ms | 2.7s | **293x** |
 
-Full fold-to-constant: 2^20 in 4.7ms (20 rounds, fused 4-round kernels).
+Full fold-to-constant: 2^20 in 4.5ms (20 rounds, fused 4-round kernels).
 
-GPU scales sublinearly: 2^14 to 2^22 is 256x more data for ~37x more time, as each folding round halves the domain. CPU scales linearly. Speedup grows from 37x to 182x. No other Metal FRI implementations are known.
+GPU scales sublinearly: 2^14 to 2^22 is 256x more data for ~22x more time, as each folding round halves the domain. CPU scales linearly. Speedup grows from 37x to 293x. No other Metal FRI implementations are known.
 
 ### Sumcheck (BN254 Fr)
 
 | Variables | GPU | CPU | Speedup |
 |-----------|-----|-----|---------|
-| 2^14 | 0.68ms | 21ms | **31x** |
-| 2^16 | 0.90ms | 83ms | **93x** |
-| 2^18 | 2.3ms | 337ms | **144x** |
-| 2^20 | 4.4ms | 1.3s | **301x** |
-| 2^22 | 14ms | 5.2s | **361x** |
+| 2^14 | 0.89ms | 21ms | **24x** |
+| 2^16 | 0.85ms | 83ms | **98x** |
+| 2^18 | 2.2ms | 337ms | **153x** |
+| 2^20 | 7.3ms | 1.3s | **178x** |
+| 2^22 | 16ms | 5.2s | **325x** |
 
-GPU scales sublinearly: 2^14 to 2^22 is 256x more variables for ~17x more time. CPU scales linearly. Each sumcheck round reduces the problem by half, and fused round+reduce kernels keep GPU utilization high. No other Metal sumcheck implementations are known; ICICLE (CUDA) offers GPU sumcheck but no published comparison numbers.
+GPU scales sublinearly: 2^14 to 2^22 is 256x more variables for ~18x more time. CPU scales linearly. Each sumcheck round reduces the problem by half, and fused round+reduce kernels keep GPU utilization high. No other Metal sumcheck implementations are known; ICICLE (CUDA) offers GPU sumcheck but no published comparison numbers.
 
 ### Polynomial Ops (BN254 Fr)
 
 | Operation | Size | Vanilla CPU | GPU (Metal) | GPU vs Vanilla |
 |-----------|------|-------------|-------------|----------------|
-| Multiply (NTT) | deg 2^10 | 27ms | 1.3ms | **21x** |
-| Multiply (NTT) | deg 2^12 | 122ms | 1.6ms | **79x** |
-| Multiply (NTT) | deg 2^14 | 642ms | 2.9ms | **222x** |
-| Multiply (NTT) | deg 2^16 | 2.4s | 4.5ms | **541x** |
-| Multi-eval (Horner) | deg 2^10, 1024 pts | — | 1.7ms | — |
-| Multi-eval (Horner) | deg 2^12, 4096 pts | — | 8.6ms | — |
-| Multi-eval (Horner) | deg 2^14, 16384 pts | — | 115ms | — |
+| Multiply (NTT) | deg 2^10 | 57ms | 1.7ms | **34x** |
+| Multiply (NTT) | deg 2^12 | 218ms | 2.0ms | **109x** |
+| Multiply (NTT) | deg 2^14 | 1.1s | 3.3ms | **328x** |
+| Multiply (NTT) | deg 2^16 | 2.4s | 7.7ms | **319x** |
+| Multi-eval (Horner) | deg 2^10, 1024 pts | -- | 1.7ms | -- |
+| Multi-eval (Horner) | deg 2^12, 4096 pts | -- | 8.2ms | -- |
+| Multi-eval (Horner) | deg 2^14, 16384 pts | -- | 114ms | -- |
 
 Polynomial multiplication uses NTT under the hood (CPU baseline = 2 forward NTTs + pointwise mul + inverse NTT). Multi-point evaluation uses GPU Horner's method (one thread per evaluation point). Subproduct-tree evaluation is available but currently slower than Horner for these sizes due to high constant factors.
 
@@ -236,10 +251,10 @@ Polynomial multiplication uses NTT under the hood (CPU baseline = 2 forward NTTs
 
 | Operation | Size | Vanilla CPU | GPU (Metal) | GPU vs Vanilla |
 |-----------|------|-------------|-------------|----------------|
-| Commit | deg 2^8 | 294ms | 9ms | **31x** |
-| Commit | deg 2^10 | 1.2s | 15ms | **80x** |
-| Open (eval + witness) | deg 2^8 | 444ms | 5ms | **87x** |
-| Open (eval + witness) | deg 2^10 | 1.8s | 10ms | **179x** |
+| Commit | deg 2^8 | 293ms | 0.4ms | **652x** |
+| Commit | deg 2^10 | 2.2s | 4.6ms | **490x** |
+| Open (eval + witness) | deg 2^8 | 859ms | 3.9ms | **223x** |
+| Open (eval + witness) | deg 2^10 | 2.1s | 4.6ms | **459x** |
 
 KZG performance is MSM-dominated. Commit = MSM(SRS, coefficients). Open = Horner eval + C synthetic division + MSM for witness. CPU baseline uses sequential double-and-add scalar multiplication. SRS generation and quotient polynomial use C CIOS for fast field arithmetic.
 
@@ -247,21 +262,21 @@ KZG performance is MSM-dominated. Commit = MSM(SRS, coefficients). Open = Horner
 
 | Batch Size | GPU | CPU (single-core) | Speedup |
 |-----------|-----|-------|---------|
-| 2^14 | 0.011 µs/hash | 0.6 µs/hash | **55x** |
-| 2^16 | 0.004 µs/hash | 0.6 µs/hash | **150x** |
-| 2^18 | 0.004 µs/hash | 0.6 µs/hash | **150x** |
-| 2^20 | 0.004 µs/hash | 0.6 µs/hash | **150x** |
+| 2^14 | 0.012 µs/hash | 0.6 µs/hash | **50x** |
+| 2^16 | 0.006 µs/hash | 0.6 µs/hash | **100x** |
+| 2^18 | 0.007 µs/hash | 0.6 µs/hash | **86x** |
+| 2^20 | 0.003 µs/hash | 0.6 µs/hash | **200x** |
 
-Blake3 is much simpler than Keccak (7 rounds of 32-bit ARX ops vs 24 rounds of 64-bit Keccak-f). GPU speedup scales with batch size as fixed dispatch overhead amortizes. CPU Blake3 is very fast (0.6µs) so GPU only wins at large batch sizes.
+Blake3 is much simpler than Keccak (7 rounds of 32-bit ARX ops vs 24 rounds of 64-bit Keccak-f). GPU speedup scales with batch size as fixed dispatch overhead amortizes. CPU Blake3 is very fast (0.6us) so GPU only wins at large batch sizes.
 
 ### IPA (Bulletproofs-style Inner Product Argument)
 
 | Size | Prove | Verify |
 |------|-------|--------|
-| n=4 | 1.4ms | 1.5ms |
-| n=16 | 3.0ms | 1.8ms |
-| n=64 | 5.3ms | 2.5ms |
-| n=256 | 12ms | 3.7ms |
+| n=4 | 1.6ms | 1.7ms |
+| n=16 | 3.1ms | 2.0ms |
+| n=64 | 6.1ms | 2.9ms |
+| n=256 | 12.8ms | 3.8ms |
 
 Log(n) halving rounds with GPU batch generator folding (Metal kernel `batch_fold_generators`) and C CIOS scalar multiplication. Fiat-Shamir challenges via Blake3.
 
@@ -269,64 +284,88 @@ Log(n) halving rounds with GPU batch generator folding (Metal kernel `batch_fold
 
 | Operation | Time |
 |-----------|------|
-| Build (width=16, 256 leaves) | 10ms |
-| Path proof (2 openings) | 44ms |
-| Verify path | 6ms |
+| Build (width=16, 256 leaves) | 12ms |
+| Path proof (2 openings) | 23ms |
+| Verify path | 5ms |
 
-CPU-only implementation using the IPA engine with C ARM64 CIOS scalar multiplication. Verkle tree performance is IPA-dominated. Previous version: 931ms path proof — C CIOS gives **21×** improvement.
+Verkle tree performance is IPA-dominated. Previous version: 931ms path proof -- C CIOS gives **40x** improvement.
 
 ### ECDSA (CPU, secp256k1 Batch Verification)
 
 | Operation | Time |
 |-----------|------|
-| Single verify | 0.36ms |
-| Batch probabilistic 64 sigs | 14ms (0.22ms/sig) |
+| Single verify | 0.32ms |
+| Batch probabilistic 64 sigs | 8.0ms (0.13ms/sig) |
 
-CPU-only implementation using C ARM64 secp256k1 operations. secp256k1 ECDSA using C CIOS Montgomery field arithmetic. Previous version (Swift scalar mul): 3.96ms/sig single verify — C CIOS gives **11×** improvement.
+secp256k1 ECDSA using C CIOS Montgomery field arithmetic. Previous version (Swift scalar mul): 3.96ms/sig single verify -- C CIOS gives **12x** improvement.
 
 ### Circle STARK (Mersenne31)
 
 | Trace Size | Prove | Verify | Proof Size |
 |-----------|-------|--------|------------|
-| 2^8 | 14ms | 8.9ms | 39 KB |
-| 2^10 | 13ms | 12ms | 53 KB |
-| 2^12 | 18ms | 16ms | 69 KB |
-| 2^14 | 35ms | 20ms | 87 KB |
+| 2^8 | 109ms | 15ms | 39 KB |
+| 2^10 | 24ms | 14ms | 53 KB |
+| 2^12 | 22ms | 16ms | 69 KB |
+| 2^14 | 56ms | 28ms | 87 KB |
 
-GPU-accelerated Circle STARK prover over Mersenne31 with Fibonacci AIR. Full GPU pipeline: Circle NTT for LDE, GPU constraint evaluation, GPU Keccak Merkle trees (hash_m31 + level-by-level tree), CPU FRI fold with GPU Merkle per round. Previous version (CPU Merkle): 785ms at 2^12 — GPU Merkle gives **45×** improvement.
+GPU-accelerated Circle STARK prover over Mersenne31 with Fibonacci AIR. Full GPU pipeline: Circle NTT for LDE, GPU constraint evaluation, GPU Keccak Merkle trees (hash_m31 + level-by-level tree), CPU FRI fold with GPU Merkle per round. Profile at 2^14: LDE 10ms, commit 12ms, constraint eval 2ms, FRI 27ms.
 
 ### Plonk (BN254, KZG)
 
 | Gates | Setup | Prove | Verify |
 |-------|-------|-------|--------|
-| 16 | 9ms | 17ms | 3ms |
-| 64 | 13ms | 25ms | 3ms |
-| 256 | 17ms | 54ms | 3ms |
-| 1024 | 35ms | 164ms | 3ms |
+| 16 | 18ms | 26ms | 3ms |
+| 64 | 32ms | 44ms | 3ms |
+| 256 | 17ms | 56ms | 3ms |
+| 1024 | 48ms | 157ms | 3ms |
 
-Preprocessed Plonk prover with KZG polynomial commitments over BN254. NTT-based polynomial multiplication for quotient computation. Previous version (naive O(n^2) poly mul): 7365ms at n=1024 — GPU NTT gives **43×** improvement.
+Preprocessed Plonk prover with KZG polynomial commitments over BN254. NTT-based polynomial multiplication for quotient computation. Previous version (naive O(n^2) poly mul): 7365ms at n=1024 -- GPU NTT gives **43x** improvement.
+
+### Groth16 (BN254)
+
+| Constraints | Setup | Prove | Verify |
+|-------------|-------|-------|--------|
+| 8 | 121ms | 68ms | 73ms |
+| 64 | 625ms | 317ms | 76ms |
+| 256 | 2.4s | 1.5s | 104ms |
+
+zk-SNARK with BN254 pairings. R1CS constraint system, trusted setup (powers of tau), MSM-based proving, pairing-based verification. BN254 pairing: 35ms (bilinearity verified).
 
 ### GKR (BN254 Fr, Layered Circuits)
 
 | Circuit | Prove | Verify |
 |---------|-------|--------|
-| 2^4 width, d=4 | 2.1ms | 3.0ms |
-| 2^5 width, d=4 | 4.4ms | 3.8ms |
-| 2^6 width, d=4 | 9.6ms | 4.9ms |
-| 2^6 width, d=8 | 19.6ms | 9.8ms |
+| 2^4 width, d=4 | 1.8ms | 2.7ms |
+| 2^5 width, d=4 | 4.2ms | 3.6ms |
+| 2^6 width, d=4 | 9.5ms | 4.7ms |
+| 2^6 width, d=8 | 19ms | 9.3ms |
+| 2^8 width, d=4 | 46ms | 8.8ms |
+| 2^8 width, d=8 | 93ms | 17ms |
+| 2^10 width, d=4 | 241ms | 23ms |
 
-Goldwasser-Kalai-Rothblum interactive proof for layered arithmetic circuits via batched sumcheck. Sparse wiring predicate evaluation reduces prover work from O(2^(3·logW)) to O(numGates) per sumcheck round. Previous dense implementation: 3728ms at 2^6 d=8 — sparse sumcheck gives **190×** improvement.
+Goldwasser-Kalai-Rothblum interactive proof for layered arithmetic circuits via batched sumcheck. Sparse wiring predicate evaluation reduces prover work from O(2^(3*logW)) to O(numGates) per sumcheck round. Previous dense implementation: 3728ms at 2^6 d=8 -- sparse sumcheck gives **190x** improvement.
 
 ### Circle NTT (Mersenne31, GPU)
 
 | Size | GPU Time | Throughput |
 |------|----------|------------|
-| 2^14 | 0.40ms | 41M elem/s |
-| 2^16 | 0.36ms | 182M elem/s |
-| 2^18 | 0.95ms | 276M elem/s |
-| 2^20 | 1.82ms | 576M elem/s |
+| 2^14 | 0.24ms | 68M elem/s |
+| 2^16 | 0.44ms | 149M elem/s |
+| 2^18 | 1.2ms | 222M elem/s |
+| 2^20 | 4.0ms | 262M elem/s |
 
 Circle-group NTT exploits the unique structure of the circle domain (x^2+y^2=1 over M31). First fold uses y-coordinates, subsequent folds use x-coordinate squaring map. All operations are single-word 32-bit arithmetic.
+
+### GPU Radix Sort
+
+| Size | GPU | CPU | Speedup |
+|------|-----|-----|---------|
+| 2^16 | 0.6ms | 3.1ms | **5x** |
+| 2^18 | 1.4ms | 14ms | **10x** |
+| 2^20 | 4.1ms | 62ms | **15x** |
+| 2^22 | 7.9ms | 278ms | **35x** |
+
+4-pass LSD radix sort with 8-bit radix. Used internally by MSM for bucket assignment. Speedup grows with size as GPU parallelism amortizes dispatch overhead.
 
 ### Theoretical Performance Analysis
 
@@ -334,23 +373,22 @@ How close each primitive is to the hardware floor (M3 Pro: ~3.6 TFLOPS, ~150 GB/
 
 | Rank | Primitive | Current | Theoretical Floor | Bottleneck | Headroom |
 |------|-----------|---------|-------------------|------------|----------|
-| 1 | P2 Merkle 2^16 | 23ms | ~0.6ms (compute) | Dispatch latency (16 levels) | ~37x |
-| 2 | KZG commit 2^10 | 15ms | ~0.5ms | MSM-dominated (small N) | ~30x |
-| 3 | MSM BN254 2^18 | 102ms | ~5ms (scatter BW) | Random-access BW | ~20x |
-| 4 | FRI Fold 2^20 | 5.3ms | ~0.3ms (BW) | Bandwidth | ~17x |
-| 5 | ECDSA batch 64 (CPU) | 14ms | ~1ms | C CIOS scalar mul | ~14x |
-| 6 | P2 Batch 2^16 | 9.2ms | ~0.6ms (compute) | Compute | ~15x |
-| 7 | Sumcheck 2^20 | 8.3ms | ~0.85ms (BW) | Bandwidth | ~10x |
-| 8 | Radix Sort 2^20 | 10ms | ~1ms (BW) | Sequential passes + BW | ~10x |
-| 9 | NTT BN254 2^22 | 26ms | ~2.9ms (compute) | Compute + strided BW | ~9x |
-| 10 | Blake3 Batch 2^20 | 4.2ms | ~0.6ms (BW) | Bandwidth | ~7x |
-| 11 | IPA prove n=256 | 12ms | ~10ms | C scalar mul + GPU batch fold | ~1.2x |
-| 12 | Keccak Batch 2^18 | 3.1ms | ~0.5ms (compute) | Compute | ~6x |
-| 13 | Verkle proof 256 (CPU) | 18ms | ~10ms | IPA-dominated (C scalar mul) | ~1.8x |
-| 14 | NTT Goldilocks 2^24 | 3.0ms | ~1.8ms (compute) | Compute ≈ BW | ~1.7x |
-| 15 | NTT BabyBear 2^24 | 2.0ms | ~1.7ms (BW) | Bandwidth | ~1.2x |
+| 1 | P2 Merkle 2^16 | 22ms | ~0.6ms (compute) | Dispatch latency (16 levels) | ~37x |
+| 2 | KZG commit 2^10 | 4.6ms | ~0.5ms | MSM-dominated (small N) | ~9x |
+| 3 | MSM BN254 2^18 | 45ms | ~5ms (scatter BW) | Random-access BW | ~9x |
+| 4 | FRI Fold 2^20 | 4.4ms | ~0.3ms (BW) | Bandwidth | ~15x |
+| 5 | ECDSA batch 64 | 8ms | ~1ms | C CIOS scalar mul | ~8x |
+| 6 | Sumcheck 2^20 | 7.3ms | ~0.85ms (BW) | Bandwidth | ~9x |
+| 7 | Radix Sort 2^20 | 4.1ms | ~1ms (BW) | Sequential passes + BW | ~4x |
+| 8 | NTT BN254 2^22 | 26ms | ~2.9ms (compute) | Compute + strided BW | ~9x |
+| 9 | Blake3 Batch 2^20 | 3.5ms | ~0.6ms (BW) | Bandwidth | ~6x |
+| 10 | IPA prove n=256 | 13ms | ~10ms | C scalar mul + GPU batch fold | ~1.3x |
+| 11 | Keccak Batch 2^18 | 1.4ms | ~0.5ms (compute) | Compute | ~3x |
+| 12 | Verkle proof 256 | 23ms | ~10ms | IPA-dominated (C scalar mul) | ~2.3x |
+| 13 | NTT Goldilocks 2^24 | 3.0ms | ~1.8ms (compute) | Compute ~= BW | ~1.7x |
+| 14 | NTT BabyBear 2^24 | 2.0ms | ~1.7ms (BW) | Bandwidth | ~1.2x |
 
-Notes: IPA/Verkle near theoretical floor after C CIOS + GPU batch fold. GKR achieves 190× improvement via sparse wiring predicates. MSM's realistic floor accounts for scatter-gather inefficiency in bucket accumulation. Poseidon2 Merkle overhead comes from 16 sequential kernel dispatches (~0.5ms each). KZG at small sizes is dispatch-overhead dominated. BabyBear and Goldilocks NTT are near-optimal — within 1-2x of hardware bandwidth limits.
+Notes: IPA/Verkle near theoretical floor after C CIOS + GPU batch fold. GKR achieves 190x improvement via sparse wiring predicates. MSM's realistic floor accounts for scatter-gather inefficiency in bucket accumulation. Poseidon2 Merkle overhead comes from 16 sequential kernel dispatches (~0.5ms each). BabyBear and Goldilocks NTT are near-optimal -- within 1-2x of hardware bandwidth limits.
 
 ## Supported Fields
 
@@ -368,7 +406,7 @@ Notes: IPA/Verkle near theoretical floor after C CIOS + GPU batch fold. GKR achi
 - **BLS12-381 Fp** -- 381-bit base field (12x32-bit limbs), Fp2/Fp6/Fp12 tower
 - **Pallas Fp** -- 255-bit base field for Pallas curve (cycle with Vesta)
 - **Vesta Fp** -- 255-bit base field for Vesta curve (cycle with Pallas)
-- **Binary Tower** -- GF(2^8)→GF(2^16)→GF(2^32)→GF(2^64)→GF(2^128) (XOR addition)
+- **Binary Tower** -- GF(2^8)->GF(2^16)->GF(2^32)->GF(2^64)->GF(2^128) (XOR addition)
 
 ## Architecture
 
@@ -394,7 +432,7 @@ Sources/
   NeonFieldOps/    # C/ARM64 optimized CPU primitives
     babybear_ntt.c       # NEON SIMD NTT (4-wide Montgomery)
     goldilocks_ntt.c     # __uint128_t optimized NTT
-    mont256.c            # BN254 Fr CIOS NTT (29-38× over Swift)
+    mont256.c            # BN254 Fr CIOS NTT (29-38x over Swift)
     bn254_msm.c          # BN254 Pippenger MSM + synthetic division
     secp256k1_ops.c      # secp256k1 field/curve ops + Pippenger MSM
   zkMetal/         # Swift engine layer
@@ -416,6 +454,7 @@ Sources/
     Folding/       # HyperNova CCS folding scheme
     GKR/           # GKR interactive proof for layered circuits
     Plonk/         # Plonk preprocessed prover/verifier
+    Groth16/       # Groth16 zk-SNARK with BN254 pairings
     Witness/       # GPU witness trace evaluation engine
     Constraint/    # Constraint IR compiler + fused evaluation
     Transcript/    # Fiat-Shamir transcript (Poseidon2 + Keccak)
@@ -547,6 +586,7 @@ swift run -c release zkbench sort       # GPU radix sort
 swift run -c release zkbench lasso      # Lasso structured lookups
 swift run -c release zkbench circle     # Circle NTT + M31 benchmarks
 swift run -c release zkbench circle-fri # Circle FRI over M31
+swift run -c release zkbench circle-stark # Circle STARK prover/verifier
 swift run -c release zkbench p2m31      # Poseidon2 over Mersenne31
 swift run -c release zkbench basefold   # Basefold PCS
 swift run -c release zkbench transcript # Fiat-Shamir transcript
@@ -560,6 +600,7 @@ swift run -c release zkbench binius     # Binary tower fields
 swift run -c release zkbench fold       # HyperNova folding
 swift run -c release zkbench gkr        # GKR protocol
 swift run -c release zkbench plonk      # Plonk prover
+swift run -c release zkbench groth16    # Groth16 zk-SNARK
 swift run -c release zkbench serialize  # Proof serialization
 swift run -c release zkbench versions   # Print primitive versions
 swift run -c release zkbench all        # Everything
@@ -589,7 +630,7 @@ To force re-calibration:
 swift run -c release zkbench calibrate
 ```
 
-This takes ~500ms and prints the discovered parameters. Different Apple Silicon chips (M1, M2, M3, M4) have different optimal settings — auto-tuning ensures peak performance on any hardware.
+This takes ~500ms and prints the discovered parameters. Different Apple Silicon chips (M1, M2, M3, M4) have different optimal settings -- auto-tuning ensures peak performance on any hardware.
 
 ## Building
 
@@ -604,11 +645,11 @@ swift build -c release
 - **Montgomery form everywhere**: All field elements stay in Montgomery representation on GPU. Conversion happens only at host boundaries.
 - **Buffer caching**: GPU Metal buffers are cached and reused across calls to avoid allocation overhead.
 - **Four-step FFT**: Large NTTs (>2^16) split into sub-blocks processed in shared memory, reducing global memory traffic.
-- **Fused kernels**: Multi-round FRI folding and Poseidon2 full permutations avoid intermediate buffer round-trips.
+- **Fused kernels**: Multi-round FRI folding and Poseidon2 full permutations avoid intermediate buffer round-trips. NTT uses fused bitrev+butterfly and twiddle fusion for 30-47% improvement.
 - **Signed-digit MSM**: Scalar recoding halves bucket count, reducing bucket accumulation work.
 - **GLV endomorphism**: BN254's efficient endomorphism splits 256-bit scalar muls into two 128-bit half-width muls.
-- **C CIOS field arithmetic**: Hot-path 256-bit Montgomery multiplication uses C `__uint128_t` compiled with `-O3`, which is 29-38× faster than Swift for BN254 Fr carry chains. Used in CPU NTT, MSM, IPA, KZG, and ECDSA.
-- **Small-input fast path**: MSM automatically routes to multi-threaded C Pippenger for small inputs (BN254 n≤2048, secp256k1 n≤1024) to avoid GPU dispatch overhead.
+- **C CIOS field arithmetic**: Hot-path 256-bit Montgomery multiplication uses C `__uint128_t` compiled with `-O3`, which is 29-30x faster than Swift for BN254 Fr carry chains. Used in CPU NTT, MSM, IPA, KZG, and ECDSA.
+- **Small-input fast path**: MSM automatically routes to multi-threaded C Pippenger for small inputs (BN254 n<=2048, secp256k1 n<=1024) to avoid GPU dispatch overhead.
 
 ## Correctness & Testing
 
@@ -630,12 +671,17 @@ Run the full correctness suite with `swift run -c release zkbench test`. All GPU
 | **Sparse Sumcheck** | O(nnz) sparse multilinear | Round-poly match, reduce match, full protocol, proof verify |
 | **KZG** | Polynomial commitment (MSM-based) | Commit linearity, multi-point eval, constant/linear poly checks |
 | **IPA** | Bulletproofs-style inner product argument | Prove + verify at n=4,16,64,256 + wrong-value rejection |
-| **Verkle trees (CPU)** | Width-N Pedersen + IPA openings | Single openings, tree build, path proofs, wrong-root rejection |
+| **Verkle trees** | Width-N Pedersen + IPA openings | Single openings, tree build, path proofs, wrong-root rejection |
 | **LogUp** | Lookup via logarithmic derivatives | 7 tests: simple, repeated, multiplicities, batch inverse, tamper rejection |
-| **ECDSA (CPU)** | secp256k1 batch verification | Single verify, wrong msg/key rejection, batch 64, bad-sig detection |
+| **ECDSA** | secp256k1 batch verification | Single verify, wrong msg/key rejection, batch 64, bad-sig detection |
 | **Radix sort** | LSD radix sort (4-pass, 8-bit) | 10 tests: sorted, reverse, duplicates, random, KV, edge cases |
 | **Goldilocks** | p = 2^64 - 2^32 + 1 (standard) | NTT round-trip + CPU cross-check |
 | **BabyBear** | p = 2^31 - 2^27 + 1 (standard) | NTT round-trip + CPU cross-check |
+| **Circle NTT** | Circle group over M31 | GPU vs CPU roundtrip at all sizes 2 through 4096 |
+| **Circle STARK** | Fibonacci AIR over M31 | Prove + verify + tampered proof rejection |
+| **Plonk** | Preprocessed BN254 + KZG | Prove + verify at n=16,64,256,1024 |
+| **Groth16** | BN254 R1CS + pairings | Prove + verify, bilinearity checks |
+| **GKR** | Layered circuit sumcheck | 1-layer, 2-layer, hash circuits, inner product circuits |
 | **Parallel CPU** | GCD multithreaded implementations | Cross-checked against vanilla CPU for NTT (Fr, Bb, Gl), MSM, batch hash, Merkle |
 | **NEON BabyBear** | C/ARM NEON Montgomery NTT (4-wide SIMD, Plonky3 technique) | Cross-checked against vanilla cpuNTT + round-trip verification |
 | **C Goldilocks** | Optimized C NTT (`__uint128_t` mul pipelining) | Cross-checked against vanilla cpuNTT + round-trip verification |
