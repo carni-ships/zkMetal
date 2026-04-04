@@ -14,19 +14,36 @@ public class Groth16Prover {
         z[0] = .one; for i in 0..<nP { z[1+i] = publicInputs[i] }
         for i in 0..<witness.count { z[1+nP+i] = witness[i] }
         precondition(r1cs.isSatisfied(z: z), "R1CS not satisfied")
-        var _t = CFAbsoluteTimeGetCurrent()
-        let h = try computeH(r1cs: r1cs, z: z)
-        if profileGroth16 { let _e = CFAbsoluteTimeGetCurrent(); fputs(String(format: "  [groth16] computeH: %.2f ms\n", (_e - _t) * 1000), stderr); _t = _e }
         let r = groth16RandomFr(); let s = groth16RandomFr()
-        let pA = try proofA(pk: pk, z: z, r: r)
-        if profileGroth16 { let _e = CFAbsoluteTimeGetCurrent(); fputs(String(format: "  [groth16] proofA: %.2f ms\n", (_e - _t) * 1000), stderr); _t = _e }
-        let pB = proofBG2(pk: pk, z: z, s: s)
-        if profileGroth16 { let _e = CFAbsoluteTimeGetCurrent(); fputs(String(format: "  [groth16] proofBG2: %.2f ms\n", (_e - _t) * 1000), stderr); _t = _e }
-        let pBg1 = try proofBG1(pk: pk, z: z, s: s)
-        if profileGroth16 { let _e = CFAbsoluteTimeGetCurrent(); fputs(String(format: "  [groth16] proofBG1: %.2f ms\n", (_e - _t) * 1000), stderr); _t = _e }
-        let pC = try proofC(pk: pk, w: witness, h: h, a: pA, bg1: pBg1, r: r, s: s)
+
+        // Phase 1: computeH, proofA, proofBG2, proofBG1 are all independent
+        var _t = CFAbsoluteTimeGetCurrent()
+        var h: [Fr]?; var pA: PointProjective?; var pB: G2ProjectivePoint?; var pBg1: PointProjective?
+        var hError: Error?; var aError: Error?; var bg1Error: Error?
+        let group = DispatchGroup()
+
+        // proofBG2 is CPU-only and the slowest single phase - run on separate thread
+        group.enter()
+        DispatchQueue.global(qos: .userInitiated).async { [self] in
+            pB = proofBG2(pk: pk, z: z, s: s)
+            group.leave()
+        }
+
+        // computeH, proofA, proofBG1 use GPU (MSM/NTT) so run sequentially on main thread
+        do { h = try computeH(r1cs: r1cs, z: z) } catch { hError = error }
+        do { pA = try proofA(pk: pk, z: z, r: r) } catch { aError = error }
+        do { pBg1 = try proofBG1(pk: pk, z: z, s: s) } catch { bg1Error = error }
+
+        group.wait()
+        if profileGroth16 { let _e = CFAbsoluteTimeGetCurrent(); fputs(String(format: "  [groth16] phase1 (H+A+BG2+BG1): %.2f ms\n", (_e - _t) * 1000), stderr); _t = _e }
+
+        if let e = hError { throw e }
+        if let e = aError { throw e }
+        if let e = bg1Error { throw e }
+
+        let pC = try proofC(pk: pk, w: witness, h: h!, a: pA!, bg1: pBg1!, r: r, s: s)
         if profileGroth16 { let _e = CFAbsoluteTimeGetCurrent(); fputs(String(format: "  [groth16] proofC: %.2f ms\n", (_e - _t) * 1000), stderr); _t = _e }
-        return Groth16Proof(a: pA, b: pB, c: pC)
+        return Groth16Proof(a: pA!, b: pB!, c: pC)
     }
 
     private func computeH(r1cs: R1CSInstance, z: [Fr]) throws -> [Fr] {
@@ -98,7 +115,6 @@ public class Groth16Prover {
             if !z[i].isZero { pts.append(pk.b_g2_query[i]); scs.append(frToInt(z[i])) }
         }
         pts.append(pk.delta_g2); scs.append(frToInt(s))
-        if profileGroth16 { fputs("  [groth16] proofBG2 non-zero points: \(pts.count) / \(n+1)\n", stderr) }
         let m = g2PippengerMSM(points: pts, scalars: scs)
         return g2Add(pk.beta_g2, m)
     }

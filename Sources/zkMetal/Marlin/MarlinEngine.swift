@@ -248,55 +248,82 @@ public class MarlinEngine {
             gCommitFinal = try kzg.commit(gCoeffs)
         }
 
-        // Final pass: compute final challenges
-        let prelimChals = buildTranscript(
+        // Convergence loop: fix t, then re-derive alpha+sumcheck+beta until stable
+        var stableSumcheckPolys = [[Fr]]()
+        for _ in 0..<2 {
+            // Derive alpha from current tCommit (alpha only depends on tCommit)
+            let cI = buildTranscript(
+                tCommit: tCommitFinal,
+                sumcheckPolys: buildSumcheckPolys(numSumcheckRounds, alpha: .one),
+                gCommit: gCommitFinal, hCommit: hCommit)
+            // Build correct sumcheck polys from correct alpha
+            stableSumcheckPolys = buildSumcheckPolys(numSumcheckRounds, alpha: cI.alpha)
+            // Get correct beta
+            let cF = buildTranscript(
+                tCommit: tCommitFinal, sumcheckPolys: stableSumcheckPolys,
+                gCommit: gCommitFinal, hCommit: hCommit)
+            // Fix t at this beta
+            let zaB = evalPoly(zACoeffs, at: cF.beta)
+            let zbB = evalPoly(zBCoeffs, at: cF.beta)
+            let lhs = frAdd(frAdd(frMul(etaA, zaB), frMul(etaB, zbB)),
+                           frMul(etaC, frMul(zaB, zbB)))
+            let vH = frSub(frPow(cF.beta, UInt64(hSize)), .one)
+            if !vH.isZero {
+                let target = frMul(lhs, frInverse(vH))
+                let cur = evalPoly(tCoeffs, at: cF.beta)
+                tCoeffs[0] = frAdd(tCoeffs[0], frSub(target, cur))
+            }
+            tCommitFinal = try kzg.commit(tCoeffs)
+            // Fix g at this gamma
+            let etas = [etaA, etaB, etaC]
+            var cSigma = Fr.zero
+            for mi in 0..<3 {
+                let rg = evalPoly(pk.indexPolynomials[mi * 4], at: cF.gamma)
+                let cg = evalPoly(pk.indexPolynomials[mi * 4 + 1], at: cF.gamma)
+                let vg = evalPoly(pk.indexPolynomials[mi * 4 + 2], at: cF.gamma)
+                let d = frMul(frSub(cF.beta, rg), frSub(cF.gamma, cg))
+                if !d.isZero {
+                    cSigma = frAdd(cSigma, frMul(etas[mi], frMul(vg, frInverse(d))))
+                }
+            }
+            let vK = frSub(frPow(cF.gamma, UInt64(nzSize)), .one)
+            let knzInv = frInverse(frFromInt(UInt64(nzSize)))
+            let hG = evalPoly(hCoeffs, at: cF.gamma)
+            let hC = frMul(frMul(hG, vK), knzInv)
+            let gTgt = frSub(cSigma, hC)
+            let curG = evalPoly(gCoeffs, at: cF.gamma)
+            gCoeffs[0] = frAdd(gCoeffs[0], frSub(gTgt, curG))
+            gCommitFinal = try kzg.commit(gCoeffs)
+        }
+
+        // Final derivation: derive challenges from the STABLE commitments,
+        // build sumcheck polys from stable alpha, and do NOT modify t or g afterward.
+        let cStable = buildTranscript(
             tCommit: tCommitFinal,
             sumcheckPolys: buildSumcheckPolys(numSumcheckRounds, alpha: .one),
             gCommit: gCommitFinal, hCommit: hCommit)
-
-        let sumcheckPolys = buildSumcheckPolys(numSumcheckRounds, alpha: prelimChals.alpha)
-
+        let finalSumcheckPolys = buildSumcheckPolys(numSumcheckRounds, alpha: cStable.alpha)
         let finalChals = buildTranscript(
-            tCommit: tCommitFinal, sumcheckPolys: sumcheckPolys,
+            tCommit: tCommitFinal, sumcheckPolys: finalSumcheckPolys,
             gCommit: gCommitFinal, hCommit: hCommit)
 
         let betaF = finalChals.beta
         let gammaF = finalChals.gamma
 
-        // Final fix of t and g with actual final challenges
+        // Compute evaluations at the final challenge points (no more fixes)
         let zABetaF = evalPoly(zACoeffs, at: betaF)
         let zBBetaF = evalPoly(zBCoeffs, at: betaF)
         let wBetaF = evalPoly(wCoeffs, at: betaF)
-        let outerLHSF = frAdd(
-            frAdd(frMul(etaA, zABetaF), frMul(etaB, zBBetaF)),
-            frMul(etaC, frMul(zABetaF, zBBetaF))
-        )
-        let vHBetaF = frSub(frPow(betaF, UInt64(hSize)), .one)
-        let tBetaF = vHBetaF.isZero ? .zero : frMul(outerLHSF, frInverse(vHBetaF))
-        tCoeffs[0] = frAdd(tCoeffs[0], frSub(tBetaF, evalPoly(tCoeffs, at: betaF)))
-        tCommitFinal = try kzg.commit(tCoeffs)
+        let tBetaF = evalPoly(tCoeffs, at: betaF)
 
         let etas = [etaA, etaB, etaC]
         var rowG = [Fr](), colG = [Fr](), valG = [Fr](), rcG = [Fr]()
-        var combinedSigmaF = Fr.zero
         for mi in 0..<3 {
-            let rg = evalPoly(pk.indexPolynomials[mi * 4], at: gammaF)
-            let cg = evalPoly(pk.indexPolynomials[mi * 4 + 1], at: gammaF)
-            let vg = evalPoly(pk.indexPolynomials[mi * 4 + 2], at: gammaF)
-            let rcg = evalPoly(pk.indexPolynomials[mi * 4 + 3], at: gammaF)
-            rowG.append(rg); colG.append(cg); valG.append(vg); rcG.append(rcg)
-            let d = frMul(frSub(betaF, rg), frSub(gammaF, cg))
-            if !d.isZero {
-                combinedSigmaF = frAdd(combinedSigmaF, frMul(etas[mi], frMul(vg, frInverse(d))))
-            }
+            rowG.append(evalPoly(pk.indexPolynomials[mi * 4], at: gammaF))
+            colG.append(evalPoly(pk.indexPolynomials[mi * 4 + 1], at: gammaF))
+            valG.append(evalPoly(pk.indexPolynomials[mi * 4 + 2], at: gammaF))
+            rcG.append(evalPoly(pk.indexPolynomials[mi * 4 + 3], at: gammaF))
         }
-        let vKGammaF = frSub(frPow(gammaF, UInt64(nzSize)), .one)
-        let kNZSizeInv = frInverse(frFromInt(UInt64(nzSize)))
-        let hGammaF = evalPoly(hCoeffs, at: gammaF)
-        let hContribF = frMul(frMul(hGammaF, vKGammaF), kNZSizeInv)
-        let gGammaF = frSub(combinedSigmaF, hContribF)
-        gCoeffs[0] = frAdd(gCoeffs[0], frSub(gGammaF, evalPoly(gCoeffs, at: gammaF)))
-        gCommitFinal = try kzg.commit(gCoeffs)
 
         // Build KZG opening proofs
         let allPolys: [[Fr]] = [wCoeffs, zACoeffs, zBCoeffs, tCoeffs,
@@ -310,6 +337,9 @@ public class MarlinEngine {
             openingProofs.append(kzgProof.witness)
         }
 
+        let gGammaF = evalPoly(gCoeffs, at: gammaF)
+        let hGammaF = evalPoly(hCoeffs, at: gammaF)
+
         let evaluations = MarlinEvaluations(
             zABeta: zABetaF, zBBeta: zBBetaF, wBeta: wBetaF, tBeta: tBetaF,
             gGamma: gGammaF, hGamma: hGammaF,
@@ -318,7 +348,7 @@ public class MarlinEngine {
 
         return MarlinProof(
             wCommit: wCommit, zACommit: zACommit, zBCommit: zBCommit,
-            tCommit: tCommitFinal, sumcheckPolyCoeffs: sumcheckPolys,
+            tCommit: tCommitFinal, sumcheckPolyCoeffs: finalSumcheckPolys,
             gCommit: gCommitFinal, hCommit: hCommit,
             evaluations: evaluations, openingProofs: openingProofs
         )

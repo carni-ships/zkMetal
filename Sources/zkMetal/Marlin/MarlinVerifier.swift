@@ -288,8 +288,9 @@ public class MarlinVerifier {
         marlinAbsorbPointImpl(transcript, proof.hCommit)
         let gamma = transcript.squeeze()
 
-        if !verifySumcheckRounds(proof.sumcheckPolyCoeffs, alpha: alpha) {
-            return "FAIL:sumcheck"
+        let scResult = verifySumcheckRoundsDebug(proof.sumcheckPolyCoeffs, alpha: alpha)
+        if scResult != "ok" {
+            return "FAIL:sumcheck(\(scResult))"
         }
 
         let evals = proof.evaluations
@@ -325,6 +326,30 @@ public class MarlinVerifier {
         }
 
         return "PASS"
+    }
+
+    private func verifySumcheckRoundsDebug(_ roundPolys: [[Fr]], alpha: Fr) -> String {
+        guard !roundPolys.isEmpty else { return "empty" }
+        var challenges = [Fr]()
+        var chalSeed = alpha
+        for _ in 0..<roundPolys.count {
+            challenges.append(chalSeed)
+            chalSeed = frMul(chalSeed, alpha)
+        }
+        let firstSum = frAdd(roundPolys[0][0], roundPolys[0][1])
+        if !firstSum.isZero {
+            let limbs = frToInt(firstSum)
+            return "round0-sum!=0(\(limbs[0]))"
+        }
+        for i in 0..<(roundPolys.count - 1) {
+            let ri = challenges[i]
+            let siRi = evaluateDeg2Poly(roundPolys[i], at: ri)
+            let nextSum = frAdd(roundPolys[i + 1][0], roundPolys[i + 1][1])
+            if frToInt(siRi) != frToInt(nextSum) {
+                return "round\(i+1)-mismatch"
+            }
+        }
+        return "ok"
     }
 
     // MARK: - Sumcheck Verification

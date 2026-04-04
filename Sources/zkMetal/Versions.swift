@@ -27,6 +27,10 @@ public enum Versions {
     public static let msmSecp256k1   = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let msmPallas      = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let msmVesta       = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
+    public static let msmEd25519     = PrimitiveVersion(version: "1.0.0", updated: "2026-04-04")
+
+    // --- Signatures ---
+    public static let eddsa          = PrimitiveVersion(version: "1.0.0", updated: "2026-04-04")
 
     // --- NTT ---
     public static let nttBN254       = PrimitiveVersion(version: "1.3.0", updated: "2026-04-02")
@@ -61,7 +65,6 @@ public enum Versions {
 
     // --- Other ---
     public static let ecdsa          = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
-    public static let eddsa          = PrimitiveVersion(version: "1.0.0", updated: "2026-04-04")
     public static let radixSort      = PrimitiveVersion(version: "1.1.0", updated: "2026-04-02")
     public static let verkle         = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let lookup         = PrimitiveVersion(version: "1.0.0", updated: "2026-04-01")
@@ -82,7 +85,7 @@ public enum Versions {
     public static let dilithium      = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let streamVerify   = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let batchVerify    = PrimitiveVersion(version: "2.0.0", updated: "2026-04-04")
-    public static let marlin         = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
+    public static let marlin         = PrimitiveVersion(version: "2.0.0", updated: "2026-04-04")
     public static let spartan           = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let tensorCompressor  = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let joltVM            = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
@@ -102,6 +105,8 @@ public enum Versions {
             ("MSM secp256k1",     msmSecp256k1),
             ("MSM Pallas",        msmPallas),
             ("MSM Vesta",         msmVesta),
+            ("MSM Ed25519",       msmEd25519),
+            ("EdDSA Ed25519",    eddsa),
             ("NTT BN254",         nttBN254),
             ("NTT Goldilocks",    nttGoldilocks),
             ("NTT BabyBear",      nttBabyBear),

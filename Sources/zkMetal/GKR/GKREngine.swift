@@ -176,8 +176,11 @@ public class GKREngine {
         }
         wiring.sort { $0.idx < $1.idx }
 
+        // In-place reduction: we overwrite the first half each round, tracking effective size.
         var curVx = prevMLE.evals
         var curVy = prevMLE.evals
+        var vxSize = curVx.count
+        var vySize = curVy.count
 
         var msgs = [SumcheckRoundMsg]()
         msgs.reserveCapacity(totalVars)
@@ -203,11 +206,15 @@ public class GKREngine {
             var hi = splitPos
 
             if isXPhase {
-                let vxHalf = curVx.count / 2
+                // X-phase: vy is fixed per entry, vx varies with low/high.
+                // Optimization: g = a*(vx+vy) + m*(vx*vy) = (a + m*vy)*vx + a*vy
+                // Precompute combined = a + m*vy and avy = a*vy per coeff level,
+                // then g = combined*vx + avy (1 frMul instead of 3).
+                let vxHalf = vxSize / 2
 
                 curVx.withUnsafeBufferPointer { vxBuf in
                     curVy.withUnsafeBufferPointer { vyBuf in
-                        let yMask = vyBuf.count - 1
+                        let yMask = vySize - 1
                         while li < splitPos || hi < wiring.count {
                             let lowIdx = li < splitPos ? wiring[li].idx : Int.max
                             let highIdx = hi < wiring.count ? wiring[hi].idx &- halfSize : Int.max
@@ -235,32 +242,35 @@ public class GKREngine {
                             let yIdx = mergedIdx & yMask
                             let xIdx = mergedIdx >> nIn
                             let vx0 = xIdx < vxHalf ? vxBuf[xIdx] : Fr.zero
-                            let vx1 = (xIdx &+ vxHalf) < vxBuf.count ? vxBuf[xIdx &+ vxHalf] : Fr.zero
-                            let vyVal = yIdx < vyBuf.count ? vyBuf[yIdx] : Fr.zero
+                            let vx1 = (xIdx &+ vxHalf) < vxSize ? vxBuf[xIdx &+ vxHalf] : Fr.zero
+                            let vyVal = yIdx < vySize ? vyBuf[yIdx] : Fr.zero
 
-                            // s0: g(0) = a0*(vx0+vy) + m0*(vx0*vy)
-                            let sumVx0Vy = frAdd(vx0, vyVal)
-                            let prodVx0Vy = frMul(vx0, vyVal)
-                            s0 = frAdd(s0, frAdd(frMul(a0, sumVx0Vy), frMul(m0, prodVx0Vy)))
+                            // Precompute: combined_i = a_i + m_i*vy, avy_i = a_i*vy
+                            let m0vy = frMul(m0, vyVal)
+                            let m1vy = frMul(m1, vyVal)
+                            let c0 = frAdd(a0, m0vy)      // a0 + m0*vy
+                            let c1 = frAdd(a1, m1vy)      // a1 + m1*vy
+                            let a0vy = frMul(a0, vyVal)
+                            let a1vy = frMul(a1, vyVal)
 
-                            // s1: g(1) = a1*(vx1+vy) + m1*(vx1*vy)
-                            let sumVx1Vy = frAdd(vx1, vyVal)
-                            let prodVx1Vy = frMul(vx1, vyVal)
-                            s1 = frAdd(s1, frAdd(frMul(a1, sumVx1Vy), frMul(m1, prodVx1Vy)))
-
-                            // s2: g(2) via degree-2 extrapolation
-                            let a2 = frSub(frAdd(a1, a1), a0)
-                            let m2 = frSub(frAdd(m1, m1), m0)
+                            // g0 = c0*vx0 + a0vy  (7 frMul total instead of 9)
+                            s0 = frAdd(s0, frAdd(frMul(c0, vx0), a0vy))
+                            // g1 = c1*vx1 + a1vy
+                            s1 = frAdd(s1, frAdd(frMul(c1, vx1), a1vy))
+                            // g2 via extrapolation: c2=2c1-c0, a2vy=2*a1vy-a0vy, vx2=2vx1-vx0
+                            let c2 = frSub(frAdd(c1, c1), c0)
+                            let a2vy = frSub(frAdd(a1vy, a1vy), a0vy)
                             let vx2 = frSub(frAdd(vx1, vx1), vx0)
-                            let sumVx2Vy = frAdd(vx2, vyVal)
-                            let prodVx2Vy = frMul(vx2, vyVal)
-                            s2 = frAdd(s2, frAdd(frMul(a2, sumVx2Vy), frMul(m2, prodVx2Vy)))
+                            s2 = frAdd(s2, frAdd(frMul(c2, vx2), a2vy))
                         }
                     }
                 }
             } else {
-                let vxScalar = curVx.count > 0 ? curVx[0] : Fr.zero
-                let vyHalf = curVy.count / 2
+                // Y-phase: vx is a single scalar, vy varies.
+                // Optimization: g = a*(vx+vy) + m*(vx*vy) = (a + m*vx)*vy + a*vx
+                // Precompute combined = a + m*vx and avx = a*vx, then g = combined*vy + avx
+                let vxScalar = vxSize > 0 ? curVx[0] : Fr.zero
+                let vyHalf = vySize / 2
 
                 curVy.withUnsafeBufferPointer { vyBuf in
                     while li < splitPos || hi < wiring.count {
@@ -288,22 +298,25 @@ public class GKREngine {
                         }
 
                         let vy0 = mergedIdx < vyHalf ? vyBuf[mergedIdx] : Fr.zero
-                        let vy1 = (mergedIdx &+ vyHalf) < vyBuf.count ? vyBuf[mergedIdx &+ vyHalf] : Fr.zero
+                        let vy1 = (mergedIdx &+ vyHalf) < vySize ? vyBuf[mergedIdx &+ vyHalf] : Fr.zero
 
-                        let sumVxVy0 = frAdd(vxScalar, vy0)
-                        let prodVxVy0 = frMul(vxScalar, vy0)
-                        s0 = frAdd(s0, frAdd(frMul(a0, sumVxVy0), frMul(m0, prodVxVy0)))
+                        // Precompute: combined_i = a_i + m_i*vx, avx_i = a_i*vx
+                        let m0vx = frMul(m0, vxScalar)
+                        let m1vx = frMul(m1, vxScalar)
+                        let c0 = frAdd(a0, m0vx)
+                        let c1 = frAdd(a1, m1vx)
+                        let a0vx = frMul(a0, vxScalar)
+                        let a1vx = frMul(a1, vxScalar)
 
-                        let sumVxVy1 = frAdd(vxScalar, vy1)
-                        let prodVxVy1 = frMul(vxScalar, vy1)
-                        s1 = frAdd(s1, frAdd(frMul(a1, sumVxVy1), frMul(m1, prodVxVy1)))
-
-                        let a2 = frSub(frAdd(a1, a1), a0)
-                        let m2 = frSub(frAdd(m1, m1), m0)
+                        // g0 = c0*vy0 + a0vx
+                        s0 = frAdd(s0, frAdd(frMul(c0, vy0), a0vx))
+                        // g1 = c1*vy1 + a1vx
+                        s1 = frAdd(s1, frAdd(frMul(c1, vy1), a1vx))
+                        // g2: c2=2c1-c0, a2vx=2*a1vx-a0vx, vy2=2vy1-vy0
+                        let c2 = frSub(frAdd(c1, c1), c0)
+                        let a2vx = frSub(frAdd(a1vx, a1vx), a0vx)
                         let vy2 = frSub(frAdd(vy1, vy1), vy0)
-                        let sumVxVy2 = frAdd(vxScalar, vy2)
-                        let prodVxVy2 = frMul(vxScalar, vy2)
-                        s2 = frAdd(s2, frAdd(frMul(a2, sumVxVy2), frMul(m2, prodVxVy2)))
+                        s2 = frAdd(s2, frAdd(frMul(c2, vy2), a2vx))
                     }
                 }
             }
@@ -354,23 +367,22 @@ public class GKREngine {
             swap(&wiring, &newWiring)
             currentTableSize = halfSize
 
+            // In-place reduction: overwrite first half, update size tracker
             if isXPhase {
-                let vxHalf = curVx.count / 2
+                let vxHalf = vxSize / 2
                 if vxHalf > 0 {
-                    var newVx = [Fr](repeating: Fr.zero, count: vxHalf)
                     for j in 0..<vxHalf {
-                        newVx[j] = frAdd(frMul(oneMinusC, curVx[j]), frMul(challenge, curVx[j + vxHalf]))
+                        curVx[j] = frAdd(frMul(oneMinusC, curVx[j]), frMul(challenge, curVx[j + vxHalf]))
                     }
-                    curVx = newVx
+                    vxSize = vxHalf
                 }
             } else {
-                let vyHalf = curVy.count / 2
+                let vyHalf = vySize / 2
                 if vyHalf > 0 {
-                    var newVy = [Fr](repeating: Fr.zero, count: vyHalf)
                     for j in 0..<vyHalf {
-                        newVy[j] = frAdd(frMul(oneMinusC, curVy[j]), frMul(challenge, curVy[j + vyHalf]))
+                        curVy[j] = frAdd(frMul(oneMinusC, curVy[j]), frMul(challenge, curVy[j + vyHalf]))
                     }
-                    curVy = newVy
+                    vySize = vyHalf
                 }
             }
         }
@@ -399,7 +411,6 @@ public class GKREngine {
         var rPoints: [([Fr], Fr)] = [(r0, Fr.one)]
 
         for layerIdx in stride(from: d - 1, through: 0, by: -1) {
-            let nOut = circuit.outputVars(layer: layerIdx)
             let nIn = circuit.inputVars(layer: layerIdx)
             let layerProof = proof.layerProofs[d - 1 - layerIdx]
 
