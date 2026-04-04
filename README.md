@@ -16,8 +16,8 @@ GPU-accelerated zero-knowledge cryptography library for Apple Silicon, written i
   - [KZG Commitments](#kzg-commitments-bn254-g1)
   - [Blake3 Hashing](#blake3-hashing)
   - [IPA](#ipa-bulletproofs-style-inner-product-argument)
-  - [Verkle Trees](#verkle-trees-pedersen--ipa)
-  - [ECDSA](#ecdsa-secp256k1-batch-verification)
+  - [Verkle Trees (CPU)](#verkle-trees-cpu-pedersen--ipa)
+  - [ECDSA (CPU)](#ecdsa-cpu-secp256k1-batch-verification)
   - [Theoretical Performance Analysis](#theoretical-performance-analysis)
 - [Supported Fields](#supported-fields)
 - [Architecture](#architecture)
@@ -46,10 +46,10 @@ GPU-accelerated zero-knowledge cryptography library for Apple Silicon, written i
 | **Sparse Sumcheck** | O(nnz) sumcheck for sparse multilinear polynomials |
 | **KZG** | Polynomial commitment scheme (commit + open via MSM) |
 | **IPA** | Inner product argument (Bulletproofs-style, GPU batch fold) |
-| **Verkle Trees** | Width-N tree with Pedersen commitments + IPA opening proofs |
+| **Verkle Trees (CPU)** | Width-N tree with Pedersen commitments + IPA opening proofs |
 | **LogUp** | Lookup argument via logarithmic derivatives + sumcheck |
 | **Range Proofs** | Proves values ∈ [0, R) via LogUp with limb decomposition |
-| **ECDSA** | secp256k1 batch verification (probabilistic + individual) |
+| **ECDSA (CPU)** | secp256k1 batch verification (probabilistic + individual) |
 | **Radix Sort** | GPU 32-bit LSD radix sort (4-pass, 8-bit radix) |
 | **Polynomial Ops** | Evaluation, interpolation, subproduct trees |
 | **Lasso** | Structured lookup via tensor decomposition of large tables |
@@ -265,7 +265,7 @@ Blake3 is much simpler than Keccak (7 rounds of 32-bit ARX ops vs 24 rounds of 6
 
 Log(n) halving rounds with GPU batch generator folding (Metal kernel `batch_fold_generators`) and C CIOS scalar multiplication. Fiat-Shamir challenges via Blake3.
 
-### Verkle Trees (Pedersen + IPA)
+### Verkle Trees (CPU, Pedersen + IPA)
 
 | Operation | Time |
 |-----------|------|
@@ -273,16 +273,16 @@ Log(n) halving rounds with GPU batch generator folding (Metal kernel `batch_fold
 | Path proof (2 openings) | 44ms |
 | Verify path | 6ms |
 
-Verkle tree performance is IPA-dominated. Previous version: 931ms path proof — C CIOS gives **21×** improvement.
+CPU-only implementation using the IPA engine with C ARM64 CIOS scalar multiplication. Verkle tree performance is IPA-dominated. Previous version: 931ms path proof — C CIOS gives **21×** improvement.
 
-### ECDSA (secp256k1 Batch Verification)
+### ECDSA (CPU, secp256k1 Batch Verification)
 
 | Operation | Time |
 |-----------|------|
 | Single verify | 0.36ms |
 | Batch probabilistic 64 sigs | 14ms (0.22ms/sig) |
 
-secp256k1 ECDSA using C CIOS Montgomery field arithmetic. Previous version (Swift scalar mul): 3.96ms/sig single verify — C CIOS gives **11×** improvement.
+CPU-only implementation using C ARM64 secp256k1 operations. secp256k1 ECDSA using C CIOS Montgomery field arithmetic. Previous version (Swift scalar mul): 3.96ms/sig single verify — C CIOS gives **11×** improvement.
 
 ### Circle STARK (Mersenne31)
 
@@ -338,7 +338,7 @@ How close each primitive is to the hardware floor (M3 Pro: ~3.6 TFLOPS, ~150 GB/
 | 2 | KZG commit 2^10 | 15ms | ~0.5ms | MSM-dominated (small N) | ~30x |
 | 3 | MSM BN254 2^18 | 102ms | ~5ms (scatter BW) | Random-access BW | ~20x |
 | 4 | FRI Fold 2^20 | 5.3ms | ~0.3ms (BW) | Bandwidth | ~17x |
-| 5 | ECDSA batch 64 | 14ms | ~1ms | C CIOS scalar mul | ~14x |
+| 5 | ECDSA batch 64 (CPU) | 14ms | ~1ms | C CIOS scalar mul | ~14x |
 | 6 | P2 Batch 2^16 | 9.2ms | ~0.6ms (compute) | Compute | ~15x |
 | 7 | Sumcheck 2^20 | 8.3ms | ~0.85ms (BW) | Bandwidth | ~10x |
 | 8 | Radix Sort 2^20 | 10ms | ~1ms (BW) | Sequential passes + BW | ~10x |
@@ -346,7 +346,7 @@ How close each primitive is to the hardware floor (M3 Pro: ~3.6 TFLOPS, ~150 GB/
 | 10 | Blake3 Batch 2^20 | 4.2ms | ~0.6ms (BW) | Bandwidth | ~7x |
 | 11 | IPA prove n=256 | 12ms | ~10ms | C scalar mul + GPU batch fold | ~1.2x |
 | 12 | Keccak Batch 2^18 | 3.1ms | ~0.5ms (compute) | Compute | ~6x |
-| 13 | Verkle proof 256 | 18ms | ~10ms | IPA-dominated (C scalar mul) | ~1.8x |
+| 13 | Verkle proof 256 (CPU) | 18ms | ~10ms | IPA-dominated (C scalar mul) | ~1.8x |
 | 14 | NTT Goldilocks 2^24 | 3.0ms | ~1.8ms (compute) | Compute ≈ BW | ~1.7x |
 | 15 | NTT BabyBear 2^24 | 2.0ms | ~1.7ms (BW) | Bandwidth | ~1.2x |
 
@@ -630,9 +630,9 @@ Run the full correctness suite with `swift run -c release zkbench test`. All GPU
 | **Sparse Sumcheck** | O(nnz) sparse multilinear | Round-poly match, reduce match, full protocol, proof verify |
 | **KZG** | Polynomial commitment (MSM-based) | Commit linearity, multi-point eval, constant/linear poly checks |
 | **IPA** | Bulletproofs-style inner product argument | Prove + verify at n=4,16,64,256 + wrong-value rejection |
-| **Verkle trees** | Width-N Pedersen + IPA openings | Single openings, tree build, path proofs, wrong-root rejection |
+| **Verkle trees (CPU)** | Width-N Pedersen + IPA openings | Single openings, tree build, path proofs, wrong-root rejection |
 | **LogUp** | Lookup via logarithmic derivatives | 7 tests: simple, repeated, multiplicities, batch inverse, tamper rejection |
-| **ECDSA** | secp256k1 batch verification | Single verify, wrong msg/key rejection, batch 64, bad-sig detection |
+| **ECDSA (CPU)** | secp256k1 batch verification | Single verify, wrong msg/key rejection, batch 64, bad-sig detection |
 | **Radix sort** | LSD radix sort (4-pass, 8-bit) | 10 tests: sorted, reverse, duplicates, random, KV, edge cases |
 | **Goldilocks** | p = 2^64 - 2^32 + 1 (standard) | NTT round-trip + CPU cross-check |
 | **BabyBear** | p = 2^31 - 2^27 + 1 (standard) | NTT round-trip + CPU cross-check |

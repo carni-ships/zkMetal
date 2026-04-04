@@ -14,7 +14,7 @@ public class Groth16Prover {
         for i in 0..<witness.count { z[1+nP+i] = witness[i] }
         precondition(r1cs.isSatisfied(z: z), "R1CS not satisfied")
         let h = try computeH(r1cs: r1cs, z: z)
-        let r = Fr.zero; let s = Fr.zero  // DEBUG: disable blinding
+        let r = groth16RandomFr(); let s = groth16RandomFr()
         let pA = try proofA(pk: pk, z: z, r: r)
         let pB = proofBG2(pk: pk, z: z, s: s)
         let pBg1 = try proofBG1(pk: pk, z: z, s: s)
@@ -108,8 +108,11 @@ public class Groth16Prover {
 
     private func doMSM(pts: [PointProjective], sc: [Fr]) throws -> PointProjective {
         let n = pts.count; if n == 0 { return pointIdentity() }
-        let aff = batchToAffine(pts); var sl = [[UInt32]](); sl.reserveCapacity(n)
-        for s in sc { sl.append(frToLimbs(s)) }
-        return n >= 256 ? try msm.msm(points: aff, scalars: sl) : cPippengerMSM(points: aff, scalars: sl)
+        // Use naive scalar mul for correctness (MSM has a bug for small inputs)
+        var result = pointIdentity()
+        for i in 0..<n {
+            if !sc[i].isZero { result = pointAdd(result, pointScalarMul(pts[i], sc[i])) }
+        }
+        return result
     }
 }

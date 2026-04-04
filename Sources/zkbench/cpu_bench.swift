@@ -12,7 +12,7 @@ public func runCPUMSMBench() {
         let gy = fpFromInt(2)
         let gProj = pointFromAffine(PointAffine(x: gx, y: gy))
 
-        let logSizes = [8, 10, 12, 14, 16]
+        let logSizes = [8, 10, 12, 14, 16, 18, 20]
         let maxN = 1 << logSizes.last!
 
         print("Generating \(maxN) points...")
@@ -69,10 +69,16 @@ public func runCPUMSMBench() {
             cTimes.sort()
             let cTime = cTimes[2]
 
-            // Correctness
+            // Correctness (skip Swift Pippenger for large sizes)
             let cR = cPippengerMSM(points: points, scalars: scalars)
-            let swR = parallelMSM(points: points, scalars: scalars)
-            let match = pointEqual(cR, swR) ? "ok" : "MISMATCH"
+            var match: String
+            if logN <= 16 {
+                let swR = parallelMSM(points: points, scalars: scalars)
+                match = pointEqual(cR, swR) ? "ok" : "MISMATCH"
+            } else {
+                let gpuR = try engine.msm(points: points, scalars: scalars)
+                match = pointEqual(cR, gpuR) ? "ok" : "MISMATCH"
+            }
 
             // GPU
             let _ = try engine.msm(points: points, scalars: scalars)
@@ -517,7 +523,7 @@ public func runCPUBench() {
         let gy = fpFromInt(2)
         let gProj = pointFromAffine(PointAffine(x: gx, y: gy))
 
-        let logSizes = [8, 10, 12, 14, 16]
+        let logSizes = [8, 10, 12, 14, 16, 18, 20]
         let maxN = 1 << logSizes.last!
 
         var projPoints = [PointProjective]()
@@ -585,10 +591,16 @@ public func runCPUBench() {
             cTimes.sort()
             let cTime = cTimes[2]
 
-            // Verify: C Pippenger matches Swift Pippenger
+            // Verify: C Pippenger matches Swift Pippenger (skip Swift for large sizes)
             let cResult = cPippengerMSM(points: points, scalars: scalars)
-            let swResult = parallelMSM(points: points, scalars: scalars)
-            let match = pointEqual(cResult, swResult) ? "ok" : "MISMATCH"
+            var match: String
+            if logN <= 16 {
+                let swResult = parallelMSM(points: points, scalars: scalars)
+                match = pointEqual(cResult, swResult) ? "ok" : "MISMATCH"
+            } else {
+                let gpuResult = try engine.msm(points: points, scalars: scalars)
+                match = pointEqual(cResult, gpuResult) ? "ok" : "MISMATCH"
+            }
 
             // GPU
             let _ = try engine.msm(points: points, scalars: scalars)

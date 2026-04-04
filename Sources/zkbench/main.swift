@@ -282,6 +282,7 @@ if cmd == "calibrate" {
     runBasefoldBench()
     runGKRBench()
     runPlonkBench()
+    runGroth16Bench()
     // runMarlinBench()
     // fputs("stub\n", stderr)
     runErasureBench()
