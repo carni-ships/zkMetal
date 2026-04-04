@@ -176,10 +176,6 @@ public class IncrementalMerkleTree {
     private let engine: Poseidon2Engine
     private var dirtyTracker: DirtyTracker
 
-    /// Small scratch buffer for single-path rehash (avoids per-call allocation).
-    /// Layout: [depth pairs input (2*depth Fr)] [depth output (depth Fr)]
-    private var pathScratchBuf: MTLBuffer?
-
     public init(depth: Int) throws {
         precondition(depth > 0 && depth <= 26, "Depth must be in [1, 26]")
         self.depth = depth

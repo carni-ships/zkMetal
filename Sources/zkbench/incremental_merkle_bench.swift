@@ -178,34 +178,36 @@ public func runIncrementalMerkleBench() {
                         updateCount, incMedian, fullMedian, speedup))
         }
 
-        // --- 4. Sequential appends (build from empty) ---
-        print("\n--- Sequential Build (append 1 at a time) ---")
-        for logN in [10, 14] {
+        // --- 4. Sequential vs batch build (correctness + timing) ---
+        print("\n--- Sequential vs Batch Build ---")
+        for logN in [10, 12] {
             let depth = logN
             let n = 1 << logN
-            let tree = try IncrementalMerkleTree(depth: depth)
+            var leaves = [Fr](repeating: Fr.zero, count: n)
+            for i in 0..<n { leaves[i] = frFromInt(UInt64(i + 1)) }
 
+            // Sequential (one at a time)
+            let seqTree = try IncrementalMerkleTree(depth: depth)
             let t0 = CFAbsoluteTimeGetCurrent()
             for i in 0..<n {
-                try tree.append(leaf: frFromInt(UInt64(i + 1)))
+                try seqTree.append(leaf: leaves[i])
             }
             let seqMs = (CFAbsoluteTimeGetCurrent() - t0) * 1000
 
-            // Full rebuild
-            var leaves = [Fr](repeating: Fr.zero, count: n)
-            for i in 0..<n { leaves[i] = frFromInt(UInt64(i + 1)) }
-            let merkle = try Poseidon2MerkleEngine()
-            let _ = try merkle.merkleRoot(leaves)  // warmup
+            // Batch (single call)
+            let batchTree = try IncrementalMerkleTree(depth: depth)
             let t1 = CFAbsoluteTimeGetCurrent()
-            let _ = try merkle.merkleRoot(leaves)
-            let fullMs = (CFAbsoluteTimeGetCurrent() - t1) * 1000
+            try batchTree.appendBatchFused(leaves: leaves)
+            let batchMs = (CFAbsoluteTimeGetCurrent() - t1) * 1000
 
-            // Verify sequential build matches full rebuild
-            let seqRoot = tree.root
+            // Full rebuild
+            let merkle = try Poseidon2MerkleEngine()
             let fullRoot = try merkle.merkleRoot(leaves)
-            let rootMatch = frEqual(seqRoot, fullRoot)
-            print(String(format: "  Build 2^%d sequential: %.1f ms | rebuild: %.2f ms | match: %@",
-                        logN, seqMs, fullMs, rootMatch ? "PASS" : "FAIL"))
+            let seqMatch = frEqual(seqTree.root, fullRoot)
+            let batchMatch = frEqual(batchTree.root, fullRoot)
+
+            print(String(format: "  2^%d: seq %.0f ms | batch %.1f ms | seq=%@ batch=%@",
+                        logN, seqMs, batchMs, seqMatch ? "OK" : "FAIL", batchMatch ? "OK" : "FAIL"))
         }
 
         // --- 5. Correctness verification ---
