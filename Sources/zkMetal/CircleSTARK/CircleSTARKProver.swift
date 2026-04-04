@@ -342,6 +342,7 @@ public class CircleSTARKProver {
         var currentEvals = evals
         var currentLogN = logN
         var rounds = [CircleFRIRound]()
+        var friProfileFold = 0.0, friProfileMerkle = 0.0, friProfileQuery = 0.0
 
         transcript.absorbLabel("fri-queries")
         var queryIndices = [Int]()
@@ -354,6 +355,7 @@ public class CircleSTARKProver {
         let inv2 = m31Inverse(M31(v: 2))
 
         while currentLogN > 1 {
+            let foldT0 = CFAbsoluteTimeGetCurrent()
             let n = 1 << currentLogN
             let half = n / 2
             let foldAlpha = transcript.squeezeM31()
@@ -391,24 +393,35 @@ public class CircleSTARKProver {
                 let diff = m31Mul(m31Sub(fi, fih), invTw2)
                 folded[i] = m31Add(sum, m31Mul(foldAlpha, diff))
             }
+            let foldT1 = CFAbsoluteTimeGetCurrent()
+            friProfileFold += foldT1 - foldT0
 
+            let merkleT0 = CFAbsoluteTimeGetCurrent()
             let merkle = try ensureMerkle()
             let foldedVals = folded.map { $0.v }
             let foldedFlatTree = try merkle.buildTreeFromM31(foldedVals, count: half)
             let commitment = KeccakMerkleEngine.rootFromFlat(foldedFlatTree, n: half)
             transcript.absorbBytes(commitment)
+            friProfileMerkle += CFAbsoluteTimeGetCurrent() - merkleT0
 
+            let queryT0 = CFAbsoluteTimeGetCurrent()
             var roundQueries = [(M31, M31, [[UInt8]])]()
             for qi in currentQueryIndices {
                 let idx = qi % half
                 roundQueries.append((currentEvals[idx], currentEvals[idx + half],
                                      KeccakMerkleEngine.merkleProofFlat(foldedFlatTree, n: half, index: idx)))
             }
+            friProfileQuery += CFAbsoluteTimeGetCurrent() - queryT0
 
             rounds.append(CircleFRIRound(commitment: commitment, queryResponses: roundQueries))
             currentEvals = folded
             currentLogN -= 1
             currentQueryIndices = currentQueryIndices.map { $0 % max(half / 2, 1) }
+        }
+
+        if profileProve {
+            fputs(String(format: "  FRI breakdown: fold %.1fms, merkle %.1fms, query %.1fms\n",
+                        friProfileFold * 1000, friProfileMerkle * 1000, friProfileQuery * 1000), stderr)
         }
 
         return CircleFRIProofData(
