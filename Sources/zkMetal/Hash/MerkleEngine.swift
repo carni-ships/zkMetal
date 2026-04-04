@@ -294,9 +294,11 @@ public class Poseidon2MerkleEngine {
 
 public class KeccakMerkleEngine {
     public static let version = Versions.keccakMerkle
-    private let engine: Keccak256Engine
+    public let engine: Keccak256Engine
     private var cachedTreeBuf: MTLBuffer?
     private var cachedTreeBufNodes: Int = 0
+    private var cachedM31Buf: MTLBuffer?
+    private var cachedM31BufCount: Int = 0
 
     public init() throws {
         self.engine = try Keccak256Engine()
@@ -511,6 +513,103 @@ public class KeccakMerkleEngine {
         // Only read the 32-byte root
         let rootPtr = treeBuf.contents().advanced(by: (treeSize - 1) * 32).assumingMemoryBound(to: UInt8.self)
         return Array(UnsafeBufferPointer(start: rootPtr, count: 32))
+    }
+    /// Build a Merkle tree from M31 values: GPU hash (4-byte → 32-byte) + GPU tree.
+    /// Returns flat tree bytes. Layout: nodes[0..<n] = leaf hashes, nodes[n..<2n-1] = internal, root at 2n-2.
+    /// Use `node(_:at:)` to extract individual nodes, `merkleProofFlat` for auth paths.
+    public func buildTreeFromM31(_ values: [UInt32], count n: Int) throws -> [UInt8] {
+        precondition(n > 0 && (n & (n - 1)) == 0)
+        let treeSize = 2 * n - 1
+
+        // Ensure M31 input buffer
+        if n > cachedM31BufCount {
+            guard let buf = engine.device.makeBuffer(length: n * 4, options: .storageModeShared) else {
+                throw MSMError.gpuError("Failed to allocate M31 input buffer")
+            }
+            cachedM31Buf = buf
+            cachedM31BufCount = n
+        }
+        memcpy(cachedM31Buf!.contents(), values, n * 4)
+
+        // Ensure tree buffer
+        if treeSize > cachedTreeBufNodes {
+            guard let buf = engine.device.makeBuffer(length: treeSize * 32, options: .storageModeShared) else {
+                throw MSMError.gpuError("Failed to allocate Keccak Merkle buffer")
+            }
+            cachedTreeBuf = buf
+            cachedTreeBufNodes = treeSize
+        }
+        let treeBuf = cachedTreeBuf!
+
+        // Single command buffer: hash M31 leaves → build Merkle tree
+        guard let cmdBuf = engine.commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
+        }
+        let enc = cmdBuf.makeComputeCommandEncoder()!
+
+        // Phase 0: Hash M31 values → 32-byte leaf hashes at tree[0..<n]
+        engine.encodeHashM31(encoder: enc,
+                              inputBuffer: cachedM31Buf!, inputOffset: 0,
+                              outputBuffer: treeBuf, outputOffset: 0,
+                              count: n)
+        enc.memoryBarrier(scope: .buffers)
+
+        // Build Merkle tree level-by-level (preserves ALL internal nodes for proof extraction)
+        var levelStart = 0
+        var levelSize = n
+
+        while levelSize > 1 {
+            let parentCount = levelSize / 2
+            let inputOffset = levelStart * 32
+            let outputOffset = (levelStart + levelSize) * 32
+
+            engine.encodeHash64(encoder: enc, buffer: treeBuf,
+                                inputOffset: inputOffset,
+                                outputOffset: outputOffset,
+                                count: parentCount)
+
+            levelStart += levelSize
+            levelSize = parentCount
+
+            if levelSize > 1 {
+                enc.memoryBarrier(scope: .buffers)
+            }
+        }
+        enc.endEncoding()
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+        if let error = cmdBuf.error {
+            throw MSMError.gpuError(error.localizedDescription)
+        }
+
+        let readPtr = treeBuf.contents().assumingMemoryBound(to: UInt8.self)
+        return Array(UnsafeBufferPointer(start: readPtr, count: treeSize * 32))
+    }
+
+    /// Extract Merkle authentication path from flat GPU tree layout.
+    /// Layout: nodes[0..<n] = leaves, nodes[n..<2n-1] = internal (level-by-level bottom-up).
+    public static func merkleProofFlat(_ tree: [UInt8], n: Int, index: Int) -> [[UInt8]] {
+        var path = [[UInt8]]()
+        var levelStart = 0
+        var levelSize = n
+        var idx = index
+
+        while levelSize > 1 {
+            let sibling = idx ^ 1
+            let start = (levelStart + sibling) * 32
+            path.append(Array(tree[start..<start + 32]))
+            levelStart += levelSize
+            levelSize /= 2
+            idx /= 2
+        }
+        return path
+    }
+
+    /// Get root from flat tree. Root is at node index 2n-2.
+    public static func rootFromFlat(_ tree: [UInt8], n: Int) -> [UInt8] {
+        let rootIdx = 2 * n - 2
+        let start = rootIdx * 32
+        return Array(tree[start..<start + 32])
     }
 }
 

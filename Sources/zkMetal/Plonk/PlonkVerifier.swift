@@ -195,15 +195,22 @@ public class PlonkVerifier {
         return check2
     }
 
-    /// Compute the evaluation of the linearization polynomial r at zeta,
-    /// given the proof evaluations and challenges.
+    /// Compute the evaluation of the linearization polynomial r at zeta.
+    ///
+    /// The linearization keeps sigma3(x) and z(x) as polynomials, substituting
+    /// known evaluations for the other wires. At x=zeta, this differs from the
+    /// full (zero) constraint by two correction terms:
+    ///   1. Permutation: alpha * (a+beta*s1+gamma)(b+beta*s2+gamma)(c+gamma)*z(zw)
+    ///   2. Boundary:    alpha^2 * L_1(zeta)
+    /// giving r(zeta) = alpha*permCorr + alpha^2*L_1(zeta).
     private func computeLinearizationEval(proof: PlonkProof, alpha: Fr, beta: Fr, gamma: Fr,
                                            zeta: Fr, k1: Fr, k2: Fr, l1Zeta: Fr, zhZeta: Fr) -> Fr {
-        // In the standard Plonk verifier, the linearization polynomial r(x) is constructed
-        // so that r(zeta) = 0 when the proof is valid. The prover builds r(x) and the
-        // opening proof demonstrates this. The batch opening combines [r] with other
-        // polynomials, so the combined eval should reflect r(zeta) = 0.
-        _ = (proof, alpha, beta, gamma, zeta, k1, k2, l1Zeta, zhZeta)
-        return Fr.zero
+        _ = (zeta, k1, k2, zhZeta)  // unused in this calculation
+        let alpha2 = frSqr(alpha)
+        let term1 = frAdd(frAdd(proof.aEval, frMul(beta, proof.sigma1Eval)), gamma)
+        let term2 = frAdd(frAdd(proof.bEval, frMul(beta, proof.sigma2Eval)), gamma)
+        let term3 = frAdd(proof.cEval, gamma)
+        let permCorr = frMul(frMul(frMul(term1, term2), term3), proof.zOmegaEval)
+        return frAdd(frMul(alpha, permCorr), frMul(alpha2, l1Zeta))
     }
 }

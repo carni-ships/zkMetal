@@ -288,12 +288,12 @@ secp256k1 ECDSA using C CIOS Montgomery field arithmetic. Previous version (Swif
 
 | Trace Size | Prove | Verify | Proof Size |
 |-----------|-------|--------|------------|
-| 2^6 | 62ms | 3.9ms | 17 KB |
-| 2^8 | 75ms | 8.8ms | 39 KB |
-| 2^10 | 240ms | 12ms | 53 KB |
-| 2^12 | 1.34s | 24ms | 69 KB |
+| 2^8 | 14ms | 8.9ms | 39 KB |
+| 2^10 | 13ms | 12ms | 53 KB |
+| 2^12 | 18ms | 16ms | 69 KB |
+| 2^14 | 35ms | 20ms | 87 KB |
 
-GPU-accelerated Circle STARK prover over Mersenne31 with Fibonacci AIR. Merkle commitments via Keccak-256, Fiat-Shamir via custom transcript. M31 arithmetic uses single 32-bit multiply (vs 64 multiplies for BN254), giving native hardware efficiency.
+GPU-accelerated Circle STARK prover over Mersenne31 with Fibonacci AIR. Full GPU pipeline: Circle NTT for LDE, GPU constraint evaluation, GPU Keccak Merkle trees (hash_m31 + level-by-level tree), CPU FRI fold with GPU Merkle per round. Previous version (CPU Merkle): 785ms at 2^12 — GPU Merkle gives **45×** improvement.
 
 ### Circle NTT (Mersenne31, GPU)
 

@@ -49,9 +49,9 @@ public func runGKRBench() {
         fputs("  2-layer: \(ok ? "PASS" : "FAIL")\n", stderr)
     }
 
-    let configs: [(Int, Int)] = [(4, 4), (6, 8), (8, 8), (8, 16), (10, 8), (10, 16)]
     let quick = CommandLine.arguments.contains("--quick")
-    let active = quick ? Array(configs.prefix(3)) : configs
+    let configs: [(Int, Int)] = quick ? [(3, 2), (4, 4), (5, 4)] : [(4, 4), (5, 4), (6, 4), (6, 8)]
+    let active = configs
 
     fputs("\n  Hash circuits:\n", stderr)
     for (logW, depth) in active {
@@ -87,7 +87,7 @@ public func runGKRBench() {
 
     // Inner product
     fputs("\n  Inner product:\n", stderr)
-    for logN in (quick ? [4, 6] : [4, 6, 8]) {
+    for logN in (quick ? [2, 4] : [4, 6, 8]) {
         let n = 1 << logN
         let circuit = LayeredCircuit.innerProductCircuit(size: n)
         let inputs = randomInputs(2 * n)

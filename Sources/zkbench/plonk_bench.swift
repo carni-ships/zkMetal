@@ -113,7 +113,7 @@ func runPlonkBench() {
         // --- Benchmark at various sizes ---
         let logSizes = CommandLine.arguments.contains("--quick") ? [4, 6] : [4, 6, 8, 10]
         fputs("\n  Size benchmarks:\n", stderr)
-        fputs("  \(String(format: "%6s", "n")) | \(String(format: "%10s", "setup(ms)")) | \(String(format: "%10s", "prove(ms)")) | \(String(format: "%10s", "verify(ms)"))\n", stderr)
+        fputs("       n |   setup(ms) |   prove(ms) |  verify(ms)\n", stderr)
         fputs("  " + String(repeating: "-", count: 50) + "\n", stderr)
 
         for logN in logSizes {

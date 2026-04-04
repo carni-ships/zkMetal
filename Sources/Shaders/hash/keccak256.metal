@@ -385,3 +385,30 @@ kernel void keccak256_hash_32(
         out64[i] = from_interleaved(state[i]);
     }
 }
+
+// Keccak-256 hash of a 4-byte M31 value → 32-byte digest
+// Equivalent to keccak256(le_bytes(uint32)) with standard padding
+kernel void keccak256_hash_m31(
+    device const uint* input       [[buffer(0)]],
+    device uchar* output           [[buffer(1)]],
+    constant uint& count           [[buffer(2)]],
+    uint gid                       [[thread_position_in_grid]]
+) {
+    if (gid >= count) return;
+
+    uint2 state[25];
+    for (uint i = 0; i < 25; i++) state[i] = uint2(0, 0);
+
+    // 4 bytes of M31 data at offset 0, padding 0x01 at byte 4
+    ulong lane0 = ulong(input[gid]) | (ulong(0x01) << 32);
+    state[0] = to_interleaved(lane0);
+    // Final padding bit at byte 135 (lane 16, byte 7)
+    state[16] ^= uint2(0x00000000u, 0x80000000u);
+
+    keccak_f1600_il(state);
+
+    device ulong* out64p = (device ulong*)(output + gid * 32);
+    for (uint i = 0; i < 4; i++) {
+        out64p[i] = from_interleaved(state[i]);
+    }
+}

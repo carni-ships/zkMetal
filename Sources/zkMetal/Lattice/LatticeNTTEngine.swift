@@ -209,7 +209,7 @@ public class LatticeNTTEngine {
         let enc = cmdBuf.makeComputeCommandEncoder()!
         enc.setComputePipelineState(kyberINTTFunction)
         enc.setBuffer(dataBuf, offset: 0, index: 0)
-        enc.setBuffer(kyberInvTwiddleBuf!, offset: 0, index: 1)
+        enc.setBuffer(kyberTwiddleBuf!, offset: 0, index: 1)  // INTT uses forward twiddles
         var numP = UInt32(numPolys)
         enc.setBytes(&numP, length: 4, index: 2)
         enc.setBuffer(kyberInvNBuf!, offset: 0, index: 3)
@@ -282,7 +282,7 @@ public class LatticeNTTEngine {
         let enc = cmdBuf.makeComputeCommandEncoder()!
         enc.setComputePipelineState(dilithiumINTTFunction)
         enc.setBuffer(dataBuf, offset: 0, index: 0)
-        enc.setBuffer(dilithiumInvTwiddleBuf!, offset: 0, index: 1)
+        enc.setBuffer(dilithiumTwiddleBuf!, offset: 0, index: 1)  // INTT uses forward twiddles
         var numP = UInt32(numPolys)
         enc.setBytes(&numP, length: 4, index: 2)
         enc.setBuffer(dilithiumInvNBuf!, offset: 0, index: 3)

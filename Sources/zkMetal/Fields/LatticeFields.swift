@@ -106,8 +106,10 @@ public struct DilithiumField: Equatable {
     public static let BARRETT_M: UInt64 = 33579385
     public static let BARRETT_SHIFT: UInt64 = 48
 
-    // Primitive 256th root of unity: zeta = 1753 (verified: 1753^128 = -1 mod q)
-    public static let ZETA: UInt32 = 1753
+    // Primitive 512th root of unity: 1753 (1753^256 = -1 mod q, order 512)
+    // For the 256-element negacyclic NTT, we need zeta^2 = 1753^2 mod q = 3073009
+    // which satisfies (3073009)^128 = -1 mod q, (3073009)^256 = 1 mod q
+    public static let ZETA: UInt32 = 3073009
 
     // Montgomery form constants for GPU
     public static let MONT_R: UInt32 = 4193792  // 2^23 mod q (since q is 23 bits, use R=2^23)
@@ -263,16 +265,17 @@ public func kyberNTTCPU(_ poly: inout [KyberField]) {
     }
 }
 
-/// CPU Kyber inverse NTT
+/// CPU Kyber inverse NTT (Gentleman-Sande)
+/// Uses forward twiddles (not inverse), matching the standard Kyber INTT formulation.
 public func kyberInvNTTCPU(_ poly: inout [KyberField]) {
     precondition(poly.count == 256)
-    let invTwiddles = kyberInvTwiddles()
+    let twiddles = kyberTwiddles()  // use FORWARD twiddles
     var k = 127
     var len = 2
     while len <= 128 {
         var start = 0
         while start < 256 {
-            let tw = invTwiddles[k]
+            let tw = twiddles[k]
             k -= 1
             for j in start..<(start + len) {
                 let t = poly[j]
@@ -283,7 +286,6 @@ public func kyberInvNTTCPU(_ poly: inout [KyberField]) {
         }
         len <<= 1
     }
-    // Scale by 1/128 = 3329 - (3329-1)/128 = ... actually 128^{-1} mod 3329
     let invN = kyberInverse(KyberField(value: 128))
     for i in 0..<256 {
         poly[i] = kyberMul(poly[i], invN)
@@ -312,16 +314,17 @@ public func dilithiumNTTCPU(_ poly: inout [DilithiumField]) {
     }
 }
 
-/// CPU Dilithium inverse NTT
+/// CPU Dilithium inverse NTT (Gentleman-Sande)
+/// Uses forward twiddles, matching the standard formulation.
 public func dilithiumInvNTTCPU(_ poly: inout [DilithiumField]) {
     precondition(poly.count == 256)
-    let invTwiddles = dilithiumInvTwiddles()
+    let twiddles = dilithiumTwiddles()  // use FORWARD twiddles
     var k = 127
     var len = 2
     while len <= 128 {
         var start = 0
         while start < 256 {
-            let tw = invTwiddles[k]
+            let tw = twiddles[k]
             k -= 1
             for j in start..<(start + len) {
                 let t = poly[j]

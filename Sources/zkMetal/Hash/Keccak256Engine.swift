@@ -8,6 +8,7 @@ public class Keccak256Engine {
     public let commandQueue: MTLCommandQueue
     let hash64Function: MTLComputePipelineState   // hash 64-byte inputs
     let hash32Function: MTLComputePipelineState   // hash 32-byte inputs
+    let hashM31Function: MTLComputePipelineState  // hash 4-byte M31 inputs
     let merkleFusedFunction: MTLComputePipelineState  // fused 1024-leaf subtree
 
     // Cached buffers for hash64 array API
@@ -31,11 +32,13 @@ public class Keccak256Engine {
         let library = try Keccak256Engine.compileShaders(device: device)
         guard let hash64Fn = library.makeFunction(name: "keccak256_hash_64"),
               let hash32Fn = library.makeFunction(name: "keccak256_hash_32"),
+              let hashM31Fn = library.makeFunction(name: "keccak256_hash_m31"),
               let merkleFusedFn = library.makeFunction(name: "keccak256_merkle_fused") else {
             throw MSMError.missingKernel
         }
         self.hash64Function = try device.makeComputePipelineState(function: hash64Fn)
         self.hash32Function = try device.makeComputePipelineState(function: hash32Fn)
+        self.hashM31Function = try device.makeComputePipelineState(function: hashM31Fn)
         self.merkleFusedFunction = try device.makeComputePipelineState(function: merkleFusedFn)
         self.tuning = TuningManager.shared.config(device: device)
     }
@@ -152,6 +155,21 @@ public class Keccak256Engine {
         let tgSize = min(subtreeSize / 2, 512)
         encoder.dispatchThreadgroups(MTLSize(width: numSubtrees, height: 1, depth: 1),
                                      threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
+    }
+
+    /// Encode M31 hash dispatch: uint32 values → 32-byte Keccak-256 digests.
+    public func encodeHashM31(encoder: MTLComputeCommandEncoder,
+                               inputBuffer: MTLBuffer, inputOffset: Int,
+                               outputBuffer: MTLBuffer, outputOffset: Int,
+                               count: Int) {
+        encoder.setComputePipelineState(hashM31Function)
+        encoder.setBuffer(inputBuffer, offset: inputOffset, index: 0)
+        encoder.setBuffer(outputBuffer, offset: outputOffset, index: 1)
+        var n = UInt32(count)
+        encoder.setBytes(&n, length: 4, index: 2)
+        let tg = min(tuning.hashThreadgroupSize, Int(hashM31Function.maxTotalThreadsPerThreadgroup))
+        encoder.dispatchThreads(MTLSize(width: count, height: 1, depth: 1),
+                               threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
     }
 
     /// Encode hash64 dispatch into an existing compute encoder (for batched Merkle).

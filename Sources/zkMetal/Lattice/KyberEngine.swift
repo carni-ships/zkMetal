@@ -205,8 +205,9 @@ public class KyberEngine {
     public func decapsulate(sk: KyberSecretKey, ct: KyberCiphertext) throws -> [UInt8] {
         let k = KyberParams.k
 
-        // NTT(u)
-        let u_hat = try nttEngine.batchKyberNTT(ct.u)
+        // NTT(u) — CPU
+        var u_hat = [[KyberField]]()
+        for i in 0..<k { var p = ct.u[i]; kyberNTTCPU(&p); u_hat.append(p) }
 
         // s^T * NTT(u)
         var prod_hat = [KyberField](repeating: KyberField.zero, count: KyberParams.n)
@@ -219,9 +220,9 @@ public class KyberEngine {
             }
         }
 
-        // INTT(s^T * u_hat)
-        let prodResults = try nttEngine.batchKyberINTT([prod_hat])
-        let prod = prodResults[0]
+        // INTT(s^T * u_hat) — CPU
+        var prod = prod_hat
+        kyberInvNTTCPU(&prod)
 
         // Recover message: m = decode(v - s^T * u)
         var mRecovered = [UInt8](repeating: 0, count: 32)

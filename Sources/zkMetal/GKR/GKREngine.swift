@@ -75,12 +75,10 @@ public class GKREngine {
         let r0 = transcript.squeezeN(outputVars)
 
         let outputMLE = MultilinearPoly(numVars: outputVars, values: outputValues)
-        let initialClaim = outputMLE.evaluate(at: r0)
+        _ = outputMLE.evaluate(at: r0)  // claim absorbed via transcript consistency
 
-        // For the first layer, we have a single claim at one point.
-        // We represent this as rPoints = [(r0, 1.0)] — one point with weight 1.
+        // For the first layer, we have a single claim at one point with weight 1.
         var rPoints: [([Fr], Fr)] = [(r0, Fr.one)]
-        var claim = initialClaim
 
         var layerProofs = [GKRLayerProof]()
 
@@ -113,8 +111,6 @@ public class GKREngine {
             let alpha = transcript.squeeze()
             let beta = transcript.squeeze()
 
-            // New claim = alpha * vx + beta * vy
-            claim = frAdd(frMul(alpha, vx), frMul(beta, vy))
             rPoints = [(rx, alpha), (ry, beta)]
         }
 
@@ -139,28 +135,25 @@ public class GKREngine {
 
         let totalVars = 2 * nIn
 
-        // Build combined wiring tables: sum_k w_k * add(r_k, ·, ·) and sum_k w_k * mul(r_k, ·, ·)
+        // Build combined wiring tables: sum_k w_k * add(r_k, ., .) and sum_k w_k * mul(r_k, ., .)
         let xySize = 1 << totalVars
         var curAdd = [Fr](repeating: Fr.zero, count: xySize)
         var curMul = [Fr](repeating: Fr.zero, count: xySize)
 
         for (rk, wk) in rPoints {
-            // Fix the output variables in the wiring MLEs to r_k
             var addFixed = addMLE
             for i in 0..<nOut { addFixed = addFixed.fixVariable(rk[i]) }
             var mulFixed = mulMLE
             for i in 0..<nOut { mulFixed = mulFixed.fixVariable(rk[i]) }
 
-            // Accumulate weighted contribution
             for j in 0..<xySize {
                 curAdd[j] = frAdd(curAdd[j], frMul(wk, addFixed.evals[j]))
                 curMul[j] = frAdd(curMul[j], frMul(wk, mulFixed.evals[j]))
             }
         }
 
-        // V tables: curVx reduced during x-phase, curVy reduced during y-phase
-        var curVx = prevMLE.evals  // 2^nIn entries
-        var curVy = prevMLE.evals  // 2^nIn entries
+        var curVx = prevMLE.evals
+        var curVy = prevMLE.evals
 
         var msgs = [SumcheckRoundMsg]()
         msgs.reserveCapacity(totalVars)
@@ -186,7 +179,6 @@ public class GKREngine {
                     let m0 = curMul[j]
                     let m1 = curMul[j + halfWirings]
 
-                    // Extract x-index and y-index from j
                     let yIdx = j & (ySize - 1)
                     let xIdx = j >> nIn
 
@@ -194,15 +186,12 @@ public class GKREngine {
                     let vx1 = (xIdx + vxHalf) < curVx.count ? curVx[xIdx + vxHalf] : Fr.zero
                     let vyVal = yIdx < curVy.count ? curVy[yIdx] : Fr.zero
 
-                    // At t=0
                     let g0 = frAdd(frMul(a0, frAdd(vx0, vyVal)), frMul(m0, frMul(vx0, vyVal)))
                     s0 = frAdd(s0, g0)
 
-                    // At t=1
                     let g1 = frAdd(frMul(a1, frAdd(vx1, vyVal)), frMul(m1, frMul(vx1, vyVal)))
                     s1 = frAdd(s1, g1)
 
-                    // At t=2: linear extrapolation of each component, then combine
                     let a2 = frSub(frAdd(a1, a1), a0)
                     let m2 = frSub(frAdd(m1, m1), m0)
                     let vx2 = frSub(frAdd(vx1, vx1), vx0)
@@ -224,15 +213,12 @@ public class GKREngine {
                     let vy0 = yIdx < vyHalf ? curVy[yIdx] : Fr.zero
                     let vy1 = (yIdx + vyHalf) < curVy.count ? curVy[yIdx + vyHalf] : Fr.zero
 
-                    // At t=0
                     let g0 = frAdd(frMul(a0, frAdd(vxScalar, vy0)), frMul(m0, frMul(vxScalar, vy0)))
                     s0 = frAdd(s0, g0)
 
-                    // At t=1
                     let g1 = frAdd(frMul(a1, frAdd(vxScalar, vy1)), frMul(m1, frMul(vxScalar, vy1)))
                     s1 = frAdd(s1, g1)
 
-                    // At t=2
                     let a2 = frSub(frAdd(a1, a1), a0)
                     let m2 = frSub(frAdd(m1, m1), m0)
                     let vy2 = frSub(frAdd(vy1, vy1), vy0)
@@ -250,7 +236,6 @@ public class GKREngine {
             let challenge = transcript.squeeze()
             challenges.append(challenge)
 
-            // Reduce wiring tables
             let oneMinusC = frSub(Fr.one, challenge)
             var newAdd = [Fr](repeating: Fr.zero, count: halfWirings)
             var newMul = [Fr](repeating: Fr.zero, count: halfWirings)
@@ -261,7 +246,6 @@ public class GKREngine {
             curAdd = newAdd
             curMul = newMul
 
-            // Reduce V tables
             if isXPhase {
                 let vxHalf = curVx.count / 2
                 if vxHalf > 0 {
@@ -299,12 +283,11 @@ public class GKREngine {
         transcript.absorbLabel("gkr-init")
 
         let outputVars = circuit.outputVars(layer: d - 1)
-        var r0 = transcript.squeezeN(outputVars)
+        let r0 = transcript.squeezeN(outputVars)
 
         let outputMLE = MultilinearPoly(numVars: outputVars, values: output)
         var claim = outputMLE.evaluate(at: r0)
 
-        // First layer: single point with weight 1
         var rPoints: [([Fr], Fr)] = [(r0, Fr.one)]
 
         for layerIdx in stride(from: d - 1, through: 0, by: -1) {
@@ -315,7 +298,6 @@ public class GKREngine {
             let totalVars = 2 * nIn
             guard layerProof.sumcheckMsgs.count == totalVars else { return false }
 
-            // Verify sumcheck rounds
             var currentClaim = claim
             var challenges = [Fr]()
             challenges.reserveCapacity(totalVars)
@@ -342,8 +324,7 @@ public class GKREngine {
             let vx = layerProof.claimedVx
             let vy = layerProof.claimedVy
 
-            // Verify final sumcheck claim against batched wiring predicates:
-            // expected = sum_k w_k * [add(r_k, rx, ry)*(vx+vy) + mul(r_k, rx, ry)*vx*vy]
+            // Verify: expected = sum_k w_k * [add(r_k, rx, ry)*(vx+vy) + mul(r_k, rx, ry)*vx*vy]
             let addMLE = circuit.addMLEForLayer(layerIdx)
             let mulMLE = circuit.mulMLEForLayer(layerIdx)
 
@@ -364,16 +345,14 @@ public class GKREngine {
             transcript.absorb(vy)
             transcript.absorbLabel("gkr-layer-\(layerIdx)")
 
-            // Get batching coefficients (must match prover)
             let alpha = transcript.squeeze()
             let beta = transcript.squeeze()
 
-            // New claim = alpha * vx + beta * vy
             claim = frAdd(frMul(alpha, vx), frMul(beta, vy))
             rPoints = [(rx, alpha), (ry, beta)]
         }
 
-        // Final check: claim = alpha * V_input(rx) + beta * V_input(ry)
+        // Final check: claim = sum_k w_k * V_input(r_k)
         let inputMLE = MultilinearPoly(numVars: rPoints[0].0.count, values: inputs)
         var inputExpected = Fr.zero
         for (rk, wk) in rPoints {

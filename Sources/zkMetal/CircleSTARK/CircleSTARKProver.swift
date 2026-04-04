@@ -86,6 +86,7 @@ public class CircleSTARKProver {
 
     private var nttEng: CircleNTTEngine?
     private var friEng: CircleFRIEngine?
+    private var merkleEng: KeccakMerkleEngine?
     private var cstPipeline: MTLComputePipelineState?
 
     public init(logBlowup: Int = 4, numQueries: Int = 30) {
@@ -104,6 +105,13 @@ public class CircleSTARKProver {
         if let e = friEng { return e }
         let e = try CircleFRIEngine()
         friEng = e
+        return e
+    }
+
+    private func ensureMerkle() throws -> KeccakMerkleEngine {
+        if let e = merkleEng { return e }
+        let e = try KeccakMerkleEngine()
+        merkleEng = e
         return e
     }
 
@@ -144,6 +152,8 @@ public class CircleSTARKProver {
         return "./Sources/Shaders"
     }
 
+    public var profileProve = false
+
     /// Prove that the given AIR is satisfied. GPU-accelerated.
     public func prove<A: CircleAIR>(air: A) throws -> CircleSTARKProof {
         let traceLen = air.traceLength
@@ -151,10 +161,12 @@ public class CircleSTARKProver {
         let logEval = logTrace + logBlowup
         let evalLen = 1 << logEval
 
+        let proveT0 = CFAbsoluteTimeGetCurrent()
         // Step 1: Generate trace
         let trace = air.generateTrace()
         precondition(trace.count == air.numColumns)
         for col in trace { precondition(col.count == traceLen) }
+        let traceT = CFAbsoluteTimeGetCurrent()
 
         // Step 2: LDE via GPU Circle NTT
         let ntt = try ensureNTT()
@@ -168,15 +180,20 @@ public class CircleSTARKProver {
             traceLDEs.append(evals)
         }
 
-        // Step 3: Commit trace columns via Keccak Merkle trees
-        var traceTrees = [[[UInt8]]]()
+        let ldeT = CFAbsoluteTimeGetCurrent()
+
+        // Step 3: Commit trace columns via GPU Keccak Merkle trees
+        let merkle = try ensureMerkle()
+        var traceFlatTrees = [[UInt8]]()
         var traceCommitments = [[UInt8]]()
         for col in traceLDEs {
-            let leafHashes = col.map { keccak256(m31ToBytes($0)) }
-            let tree = buildKeccakMerkle(leafHashes)
-            traceCommitments.append(tree[1])
-            traceTrees.append(tree)
+            let vals = col.map { $0.v }
+            let flatTree = try merkle.buildTreeFromM31(vals, count: evalLen)
+            traceCommitments.append(KeccakMerkleEngine.rootFromFlat(flatTree, n: evalLen))
+            traceFlatTrees.append(flatTree)
         }
+
+        let commitTraceT = CFAbsoluteTimeGetCurrent()
 
         // Step 4: Fiat-Shamir
         var transcript = CircleSTARKTranscript()
@@ -184,16 +201,22 @@ public class CircleSTARKProver {
         for root in traceCommitments { transcript.absorbBytes(root) }
         let alpha = transcript.squeezeM31()
 
+        let fsT = CFAbsoluteTimeGetCurrent()
+
         // Step 5: GPU constraint evaluation
         let compositionEvals = try gpuConstraintEval(
             air: air, traceLDEs: traceLDEs, alpha: alpha,
             logTrace: logTrace, logEval: logEval
         )
 
-        // Step 6: Commit composition polynomial
-        let compLeafHashes = compositionEvals.map { keccak256(m31ToBytes($0)) }
-        let compTree = buildKeccakMerkle(compLeafHashes)
-        let compositionCommitment = compTree[1]
+        let constraintT = CFAbsoluteTimeGetCurrent()
+
+        // Step 6: Commit composition polynomial (GPU Merkle)
+        let compVals = compositionEvals.map { $0.v }
+        let compFlatTree = try merkle.buildTreeFromM31(compVals, count: evalLen)
+        let compositionCommitment = KeccakMerkleEngine.rootFromFlat(compFlatTree, n: evalLen)
+
+        let commitCompT = CFAbsoluteTimeGetCurrent()
 
         // Step 7: CPU FRI (matches verifier's fold formula exactly)
         transcript.absorbBytes(compositionCommitment)
@@ -202,7 +225,9 @@ public class CircleSTARKProver {
             numQueries: numQueries, transcript: &transcript
         )
 
-        // Step 8: Query phase
+        let friT = CFAbsoluteTimeGetCurrent()
+
+        // Step 8: Query phase (using flat GPU tree layout)
         var queryResponses = [CircleSTARKQueryResponse]()
         for qi in friProof.queryIndices {
             guard qi < evalLen else { continue }
@@ -210,14 +235,32 @@ public class CircleSTARKProver {
             var tracePaths = [[[UInt8]]]()
             for colIdx in 0..<traceLDEs.count {
                 traceVals.append(traceLDEs[colIdx][qi])
-                tracePaths.append(merkleProof(tree: traceTrees[colIdx], index: qi))
+                tracePaths.append(KeccakMerkleEngine.merkleProofFlat(traceFlatTrees[colIdx], n: evalLen, index: qi))
             }
             queryResponses.append(CircleSTARKQueryResponse(
                 traceValues: traceVals, tracePaths: tracePaths,
                 compositionValue: compositionEvals[qi],
-                compositionPath: merkleProof(tree: compTree, index: qi),
+                compositionPath: KeccakMerkleEngine.merkleProofFlat(compFlatTree, n: evalLen, index: qi),
                 queryIndex: qi
             ))
+        }
+
+        let queryT = CFAbsoluteTimeGetCurrent()
+
+        if profileProve {
+            let fmt = { (label: String, t0: Double, t1: Double) -> String in
+                String(format: "  %-20s %7.1f ms", (label as NSString).utf8String!, (t1 - t0) * 1000)
+            }
+            fputs("Circle STARK prove profile (2^\(logTrace)):\n", stderr)
+            fputs(fmt("trace gen", proveT0, traceT) + "\n", stderr)
+            fputs(fmt("LDE (NTT)", traceT, ldeT) + "\n", stderr)
+            fputs(fmt("commit trace", ldeT, commitTraceT) + "\n", stderr)
+            fputs(fmt("Fiat-Shamir", commitTraceT, fsT) + "\n", stderr)
+            fputs(fmt("constraint eval", fsT, constraintT) + "\n", stderr)
+            fputs(fmt("commit comp", constraintT, commitCompT) + "\n", stderr)
+            fputs(fmt("CPU FRI", commitCompT, friT) + "\n", stderr)
+            fputs(fmt("query phase", friT, queryT) + "\n", stderr)
+            fputs(String(format: "  %-20s %7.1f ms\n", ("TOTAL" as NSString).utf8String!, (queryT - proveT0) * 1000), stderr)
         }
 
         return CircleSTARKProof(
@@ -323,26 +366,43 @@ public class CircleSTARKProver {
                 for i in 0..<half { twiddles[i] = domain[i].x }
             }
 
+            // Batch-invert twiddles using Montgomery's trick: O(n) muls + 1 inv
+            var invTwiddles = [M31](repeating: M31.zero, count: half)
+            if half > 0 {
+                var partials = [M31](repeating: M31.zero, count: half)
+                partials[0] = twiddles[0]
+                for i in 1..<half {
+                    partials[i] = m31Mul(partials[i - 1], twiddles[i])
+                }
+                var acc = m31Inverse(partials[half - 1])
+                for i in stride(from: half - 1, through: 1, by: -1) {
+                    invTwiddles[i] = m31Mul(acc, partials[i - 1])
+                    acc = m31Mul(acc, twiddles[i])
+                }
+                invTwiddles[0] = acc
+            }
+
             var folded = [M31](repeating: M31.zero, count: half)
             for i in 0..<half {
                 let fi = currentEvals[i]
                 let fih = currentEvals[i + half]
                 let sum = m31Mul(m31Add(fi, fih), inv2)
-                let invTw2 = m31Mul(inv2, m31Inverse(twiddles[i]))
+                let invTw2 = m31Mul(inv2, invTwiddles[i])
                 let diff = m31Mul(m31Sub(fi, fih), invTw2)
                 folded[i] = m31Add(sum, m31Mul(foldAlpha, diff))
             }
 
-            let foldedLeaves = folded.map { keccak256(m31ToBytes($0)) }
-            let foldedTree = buildKeccakMerkle(foldedLeaves)
-            let commitment = foldedTree[1]
+            let merkle = try ensureMerkle()
+            let foldedVals = folded.map { $0.v }
+            let foldedFlatTree = try merkle.buildTreeFromM31(foldedVals, count: half)
+            let commitment = KeccakMerkleEngine.rootFromFlat(foldedFlatTree, n: half)
             transcript.absorbBytes(commitment)
 
             var roundQueries = [(M31, M31, [[UInt8]])]()
             for qi in currentQueryIndices {
                 let idx = qi % half
                 roundQueries.append((currentEvals[idx], currentEvals[idx + half],
-                                     merkleProof(tree: foldedTree, index: idx)))
+                                     KeccakMerkleEngine.merkleProofFlat(foldedFlatTree, n: half, index: idx)))
             }
 
             rounds.append(CircleFRIRound(commitment: commitment, queryResponses: roundQueries))

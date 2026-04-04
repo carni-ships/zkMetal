@@ -138,67 +138,71 @@ public class PlonkProver {
         // The quotient polynomial satisfies:
         //   t(x) * Z_H(x) = gate_constraint(x) + alpha * perm_constraint(x) + alpha^2 * boundary_constraint(x)
         //
-        // We compute t in evaluation form on a coset of size 4n, then split into 3 degree-n chunks.
-        //
-        // For efficiency, we compute on the evaluation domain and use the relation:
-        //   t(omega^i) = [gate(omega^i) + alpha * perm(omega^i) + alpha^2 * boundary(omega^i)] / Z_H(omega^i)
-        //
-        // But Z_H(omega^i) = 0 on the domain! So we must work on a larger coset.
-        // Instead, we compute the numerator polynomial and divide by Z_H in coefficient form.
+        // The numerator has degree > n (from polynomial products), so we must compute it
+        // in coefficient form using polynomial multiplication, NOT via evaluation on the
+        // size-n domain (which aliases to zero since all constraints are satisfied on-domain).
 
-        // Gate constraint: qL*a + qR*b + qO*c + qM*a*b + qC (in eval form)
-        var gateEvals = [Fr](repeating: Fr.zero, count: n)
-        for i in 0..<n {
-            let g = circuit.gates[min(i, circuit.numGates - 1)]
-            var val = frMul(g.qL, aEvals[i])
-            val = frAdd(val, frMul(g.qR, bEvals[i]))
-            val = frAdd(val, frMul(g.qO, cEvals[i]))
-            val = frAdd(val, frMul(g.qM, frMul(aEvals[i], bEvals[i])))
-            val = frAdd(val, g.qC)
-            gateEvals[i] = val
-        }
+        let qLCoeffsR3 = setup.selectorPolys[0]
+        let qRCoeffsR3 = setup.selectorPolys[1]
+        let qOCoeffsR3 = setup.selectorPolys[2]
+        let qMCoeffsR3 = setup.selectorPolys[3]
+        let qCCoeffsR3 = setup.selectorPolys[4]
+        let sigma1CoeffsR3 = setup.permutationPolys[0]
+        let sigma2CoeffsR3 = setup.permutationPolys[1]
+        let sigma3CoeffsR3 = setup.permutationPolys[2]
 
-        // Permutation constraint (in eval form):
-        // (a + beta*id1 + gamma)(b + beta*id2 + gamma)(c + beta*id3 + gamma) * z(x)
-        // - (a + beta*sigma1 + gamma)(b + beta*sigma2 + gamma)(c + beta*sigma3 + gamma) * z(omega*x)
-        var permEvals = [Fr](repeating: Fr.zero, count: n)
-        for i in 0..<n {
-            let nextI = (i + 1) % n
+        // Gate constraint: qL*a + qR*b + qO*c + qM*a*b + qC
+        var gateCoeffs = polyMulCoeffs(qLCoeffsR3, aCoeffs)
+        gateCoeffs = polyAddCoeffs(gateCoeffs, polyMulCoeffs(qRCoeffsR3, bCoeffs))
+        gateCoeffs = polyAddCoeffs(gateCoeffs, polyMulCoeffs(qOCoeffsR3, cCoeffs))
+        gateCoeffs = polyAddCoeffs(gateCoeffs, polyMulCoeffs(qMCoeffsR3, polyMulCoeffs(aCoeffs, bCoeffs)))
+        gateCoeffs = polyAddCoeffs(gateCoeffs, qCCoeffsR3)
 
-            let num1 = frAdd(frAdd(aEvals[i], frMul(beta, domain[i])), gamma)
-            let num2 = frAdd(frAdd(bEvals[i], frMul(beta, frMul(k1, domain[i]))), gamma)
-            let num3 = frAdd(frAdd(cEvals[i], frMul(beta, frMul(k2, domain[i]))), gamma)
-            let numProd = frMul(frMul(frMul(num1, num2), num3), zEvals[i])
+        // Build id_k(x) polynomials: id1(x) = x (identity), id2(x) = k1*x, id3(x) = k2*x
+        // On domain omega^i: id1(omega^i) = omega^i = domain[i]
+        // id1(x) has coefficients [0, 1, 0, ...], id2(x) = [0, k1, 0, ...], id3(x) = [0, k2, 0, ...]
+        var id1Coeffs = [Fr](repeating: Fr.zero, count: n)
+        id1Coeffs[1] = Fr.one
+        var id2Coeffs = [Fr](repeating: Fr.zero, count: n)
+        id2Coeffs[1] = k1
+        var id3Coeffs = [Fr](repeating: Fr.zero, count: n)
+        id3Coeffs[1] = k2
 
-            let den1 = frAdd(frAdd(aEvals[i], frMul(beta, sigma1Evals[i])), gamma)
-            let den2 = frAdd(frAdd(bEvals[i], frMul(beta, sigma2Evals[i])), gamma)
-            let den3 = frAdd(frAdd(cEvals[i], frMul(beta, sigma3Evals[i])), gamma)
-            let denProd = frMul(frMul(frMul(den1, den2), den3), zEvals[nextI])
+        // betaConst(x) = beta (constant poly), gammaConst(x) = gamma (constant poly)
+        let betaConst = [beta]
+        let gammaConst = [gamma]
 
-            permEvals[i] = frSub(numProd, denProd)
-        }
+        // Permutation numerator: (a + beta*id1 + gamma)(b + beta*id2 + gamma)(c + beta*id3 + gamma) * z
+        let permN1 = polyAddCoeffs(polyAddCoeffs(aCoeffs, polyScaleCoeffs(id1Coeffs, beta)), gammaConst)
+        let permN2 = polyAddCoeffs(polyAddCoeffs(bCoeffs, polyScaleCoeffs(id2Coeffs, beta)), gammaConst)
+        let permN3 = polyAddCoeffs(polyAddCoeffs(cCoeffs, polyScaleCoeffs(id3Coeffs, beta)), gammaConst)
+        let permNumPoly = polyMulCoeffs(polyMulCoeffs(polyMulCoeffs(permN1, permN2), permN3), zCoeffs)
 
-        // Boundary constraint: (z(x) - 1) * L_1(x) where L_1(omega^i) = n if i==0, else 0
-        // Actually L_1(omega^0) = 1 in the normalized Lagrange basis
-        // L_1(x) = (x^n - 1) / (n * (x - 1)). At omega^i: L_1(omega^0) = 1, L_1(omega^i) = 0 for i>0
-        var boundaryEvals = [Fr](repeating: Fr.zero, count: n)
-        // z(omega^0) - 1 should be 0, enforce via L_1
-        // In eval form: boundary[0] = (z[0] - 1) * 1 = z[0] - 1, boundary[i] = 0
-        boundaryEvals[0] = frSub(zEvals[0], Fr.one)
+        // Permutation denominator: (a + beta*sigma1 + gamma)(b + beta*sigma2 + gamma)(c + beta*sigma3 + gamma) * z(omega*x)
+        let permD1 = polyAddCoeffs(polyAddCoeffs(aCoeffs, polyScaleCoeffs(sigma1CoeffsR3, beta)), gammaConst)
+        let permD2 = polyAddCoeffs(polyAddCoeffs(bCoeffs, polyScaleCoeffs(sigma2CoeffsR3, beta)), gammaConst)
+        let permD3 = polyAddCoeffs(polyAddCoeffs(cCoeffs, polyScaleCoeffs(sigma3CoeffsR3, beta)), gammaConst)
+        // z(omega*x) has coefficients z[i] * omega^i
+        let zOmegaCoeffs = polyShift(zCoeffs, omega: omega)
+        let permDenPoly = polyMulCoeffs(polyMulCoeffs(polyMulCoeffs(permD1, permD2), permD3), zOmegaCoeffs)
+
+        let permCoeffs = polySubCoeffs(permNumPoly, permDenPoly)
+
+        // Boundary constraint: (z(x) - 1) * L_1(x)
+        // L_1(x) = (x^n - 1) / (n * (x - 1))
+        // In coefficient form: L_1 has coefficients from iNTT of [1, 0, 0, ..., 0]
+        var l1Evals = [Fr](repeating: Fr.zero, count: n)
+        l1Evals[0] = Fr.one
+        let l1Coeffs = try ntt.intt(l1Evals)
+        var zMinus1Coeffs = zCoeffs
+        zMinus1Coeffs[0] = frSub(zMinus1Coeffs[0], Fr.one)
+        let boundaryCoeffs = polyMulCoeffs(zMinus1Coeffs, l1Coeffs)
 
         // Combine: numerator = gate + alpha * perm + alpha^2 * boundary
         let alpha2 = frSqr(alpha)
-        var numCoeffs: [Fr]
-        do {
-            var numEvals = [Fr](repeating: Fr.zero, count: n)
-            for i in 0..<n {
-                var val = gateEvals[i]
-                val = frAdd(val, frMul(alpha, permEvals[i]))
-                val = frAdd(val, frMul(alpha2, boundaryEvals[i]))
-                numEvals[i] = val
-            }
-            numCoeffs = try ntt.intt(numEvals)
-        }
+        var numCoeffs = gateCoeffs
+        numCoeffs = polyAddCoeffs(numCoeffs, polyScaleCoeffs(permCoeffs, alpha))
+        numCoeffs = polyAddCoeffs(numCoeffs, polyScaleCoeffs(boundaryCoeffs, alpha2))
 
         // Divide by Z_H(x) = x^n - 1 in coefficient form
         // Since the numerator vanishes on the domain, it is divisible by Z_H
@@ -407,6 +411,53 @@ func syntheticDivide(_ coeffs: [Fr], root: Fr) -> [Fr] {
         q[i - 1] = frAdd(coeffs[i], frMul(root, q[i]))
     }
     return q
+}
+
+/// Multiply two polynomials (coefficient form) naively in O(n*m).
+func polyMulCoeffs(_ a: [Fr], _ b: [Fr]) -> [Fr] {
+    if a.isEmpty || b.isEmpty { return [] }
+    let n = a.count + b.count - 1
+    var result = [Fr](repeating: Fr.zero, count: n)
+    for i in 0..<a.count {
+        for j in 0..<b.count {
+            result[i + j] = frAdd(result[i + j], frMul(a[i], b[j]))
+        }
+    }
+    return result
+}
+
+/// Add two polynomials (coefficient form).
+func polyAddCoeffs(_ a: [Fr], _ b: [Fr]) -> [Fr] {
+    let n = max(a.count, b.count)
+    var result = [Fr](repeating: Fr.zero, count: n)
+    for i in 0..<a.count { result[i] = a[i] }
+    for i in 0..<b.count { result[i] = frAdd(result[i], b[i]) }
+    return result
+}
+
+/// Subtract two polynomials (coefficient form): a - b.
+func polySubCoeffs(_ a: [Fr], _ b: [Fr]) -> [Fr] {
+    let n = max(a.count, b.count)
+    var result = [Fr](repeating: Fr.zero, count: n)
+    for i in 0..<a.count { result[i] = a[i] }
+    for i in 0..<b.count { result[i] = frSub(result[i], b[i]) }
+    return result
+}
+
+/// Scale polynomial by a scalar.
+func polyScaleCoeffs(_ a: [Fr], _ s: Fr) -> [Fr] {
+    return a.map { frMul($0, s) }
+}
+
+/// Compute f(omega * x) from f(x): coefficient i becomes c_i * omega^i.
+func polyShift(_ coeffs: [Fr], omega: Fr) -> [Fr] {
+    var result = [Fr](repeating: Fr.zero, count: coeffs.count)
+    var omegaPow = Fr.one
+    for i in 0..<coeffs.count {
+        result[i] = frMul(coeffs[i], omegaPow)
+        omegaPow = frMul(omegaPow, omega)
+    }
+    return result
 }
 
 /// Absorb a projective point into transcript (convert to affine, absorb x and y coordinates)

@@ -44,7 +44,7 @@ public func runCircleSTARKBench() {
     }
 
     // --- Benchmark at various sizes ---
-    let sizes = [8, 10, 12]
+    let sizes = [8, 10, 12, 14]
     fputs("\n  logN  |  Prove (ms)  |  Verify (ms)  |  Proof (bytes)\n", stderr)
     fputs("  ------|-------------|--------------|---------------\n", stderr)
 
@@ -52,6 +52,7 @@ public func runCircleSTARKBench() {
         do {
             let air = FibonacciAIR(logTraceLength: logN)
             let prover = CircleSTARKProver(logBlowup: 2, numQueries: 16)
+            prover.profileProve = (logN == sizes.last!)
             let verifier = CircleSTARKVerifier()
 
             let t0 = CFAbsoluteTimeGetCurrent()
