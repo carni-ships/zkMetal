@@ -61,7 +61,6 @@ GPU-accelerated zero-knowledge cryptography library for Apple Silicon, written i
 | **Streaming Verify** | GPU/CPU | Task-queue streaming proof verification |
 | **Incremental Merkle** | GPU | Append/update without full rebuild |
 | **Batch Field Ops** | CPU | C-optimized vectorized field arithmetic |
-
 | **STIR** | GPU | Shift-based proximity testing (FRI alternative) |
 | **Marlin** | GPU | Preprocessed SNARK with algebraic holographic proof + KZG |
 | **Spartan** | GPU | Transparent SNARK (no trusted setup) via multilinear extensions + sumcheck |
