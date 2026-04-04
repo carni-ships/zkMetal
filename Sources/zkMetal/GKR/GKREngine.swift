@@ -176,9 +176,9 @@ public class GKREngine {
             let halfSize = currentTableSize / 2
             let isXPhase = round < nIn
 
-            // Pair sparse entries by their low-half index.
-            // For index j in low half (j < halfSize): paired with j + halfSize in high half.
+            // Pair sparse entries by their low-half index
             var paired = [Int: (Fr, Fr, Fr, Fr)]()  // lowIdx -> (a0, a1, m0, m1)
+            paired.reserveCapacity(sparseWiring.count)
             for (idx, addCoeff, mulCoeff) in sparseWiring {
                 let lowIdx = idx % halfSize
                 let isHigh = idx >= halfSize
@@ -206,19 +206,15 @@ public class GKREngine {
                     let (a0, a1, m0, m1) = coeffs
                     let yIdx = j & yMask
                     let xIdx = j >> nIn
-
                     let vx0 = xIdx < vxHalf ? curVx[xIdx] : Fr.zero
                     let vx1 = (xIdx + vxHalf) < curVx.count ? curVx[xIdx + vxHalf] : Fr.zero
                     let vyVal = yIdx < curVy.count ? curVy[yIdx] : Fr.zero
 
                     let g0 = frAdd(frMul(a0, frAdd(vx0, vyVal)), frMul(m0, frMul(vx0, vyVal)))
                     s0 = frAdd(s0, g0)
-
                     let g1 = frAdd(frMul(a1, frAdd(vx1, vyVal)), frMul(m1, frMul(vx1, vyVal)))
                     s1 = frAdd(s1, g1)
-
-                    let a2 = frSub(frAdd(a1, a1), a0)
-                    let m2 = frSub(frAdd(m1, m1), m0)
+                    let a2 = frSub(frAdd(a1, a1), a0); let m2 = frSub(frAdd(m1, m1), m0)
                     let vx2 = frSub(frAdd(vx1, vx1), vx0)
                     let g2 = frAdd(frMul(a2, frAdd(vx2, vyVal)), frMul(m2, frMul(vx2, vyVal)))
                     s2 = frAdd(s2, g2)
@@ -229,18 +225,14 @@ public class GKREngine {
 
                 for (j, coeffs) in paired {
                     let (a0, a1, m0, m1) = coeffs
-
                     let vy0 = j < vyHalf ? curVy[j] : Fr.zero
                     let vy1 = (j + vyHalf) < curVy.count ? curVy[j + vyHalf] : Fr.zero
 
                     let g0 = frAdd(frMul(a0, frAdd(vxScalar, vy0)), frMul(m0, frMul(vxScalar, vy0)))
                     s0 = frAdd(s0, g0)
-
                     let g1 = frAdd(frMul(a1, frAdd(vxScalar, vy1)), frMul(m1, frMul(vxScalar, vy1)))
                     s1 = frAdd(s1, g1)
-
-                    let a2 = frSub(frAdd(a1, a1), a0)
-                    let m2 = frSub(frAdd(m1, m1), m0)
+                    let a2 = frSub(frAdd(a1, a1), a0); let m2 = frSub(frAdd(m1, m1), m0)
                     let vy2 = frSub(frAdd(vy1, vy1), vy0)
                     let g2 = frAdd(frMul(a2, frAdd(vxScalar, vy2)), frMul(m2, frMul(vxScalar, vy2)))
                     s2 = frAdd(s2, g2)

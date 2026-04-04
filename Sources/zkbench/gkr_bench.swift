@@ -50,7 +50,7 @@ public func runGKRBench() {
     }
 
     let quick = CommandLine.arguments.contains("--quick")
-    let configs: [(Int, Int)] = quick ? [(3, 2), (4, 4), (5, 4)] : [(4, 4), (5, 4), (6, 4), (6, 8)]
+    let configs: [(Int, Int)] = quick ? [(3, 2), (4, 4), (5, 4)] : [(4, 4), (5, 4), (6, 4), (6, 8), (8, 4), (8, 8), (10, 4)]
     let active = configs
 
     fputs("\n  Hash circuits:\n", stderr)
