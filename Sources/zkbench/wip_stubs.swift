@@ -2,7 +2,6 @@
 import Foundation
 import zkMetal
 
-public func runBatchVerifyBench() { fputs("[stub] BatchVerify bench not yet available\n", stderr) }
 public func runJoltBench() { fputs("[stub] Jolt bench not yet available\n", stderr) }
 
 public func runAccumulationBench() {

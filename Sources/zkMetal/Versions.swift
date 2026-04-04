@@ -80,7 +80,7 @@ public enum Versions {
     public static let kyber          = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let dilithium      = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let streamVerify   = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
-    public static let batchVerify    = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
+    public static let batchVerify    = PrimitiveVersion(version: "2.0.0", updated: "2026-04-04")
     public static let marlin         = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let spartan           = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let tensorCompressor  = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
