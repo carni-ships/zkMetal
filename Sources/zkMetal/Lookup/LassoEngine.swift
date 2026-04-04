@@ -528,37 +528,72 @@ public class LassoEngine {
     }
 
     /// Verify a Lasso proof.
+    /// Optimized: C batch inverse (Montgomery's trick), C MLE eval, precomputed constants.
     public func verify(proof: LassoProof, lookups: [Fr], table: LassoTable) throws -> Bool {
+        let _tTotal = profileLasso ? CFAbsoluteTimeGetCurrent() : 0
+        var _tPhase = profileLasso ? CFAbsoluteTimeGetCurrent() : 0
         let m = lookups.count
         guard proof.numChunks == table.numChunks else { return false }
         guard proof.subtableProofs.count == table.numChunks else { return false }
         guard proof.indices.count == table.numChunks else { return false }
 
         // Verify decomposition: compose(subtable[k][indices[k][i]]) == lookups[i]
-        for i in 0..<m {
-            var components = [Fr]()
-            components.reserveCapacity(table.numChunks)
+        // Optimized: for range-check tables, use batchDecompose to recompute indices
+        // and compare directly, avoiding per-element compose() closure calls.
+        if let batchDec = table.batchDecompose {
+            // Fast path: recompute decomposition and compare index arrays
+            let recomputed = batchDec(lookups, m)
             for k in 0..<table.numChunks {
-                guard proof.indices[k][i] >= 0 && proof.indices[k][i] < table.subtables[k].count else {
-                    return false
+                let S = table.subtables[k].count
+                for i in 0..<m {
+                    let idx = proof.indices[k][i]
+                    guard idx >= 0 && idx < S else { return false }
+                    guard idx == recomputed[k][i] else { return false }
                 }
-                components.append(table.subtables[k][proof.indices[k][i]])
             }
-            let reconstructed = table.compose(components)
-            if !frEqual(reconstructed, lookups[i]) { return false }
+        } else {
+            // Fallback: per-element compose check
+            for i in 0..<m {
+                var components = [Fr]()
+                components.reserveCapacity(table.numChunks)
+                for k in 0..<table.numChunks {
+                    guard proof.indices[k][i] >= 0 && proof.indices[k][i] < table.subtables[k].count else {
+                        return false
+                    }
+                    components.append(table.subtables[k][proof.indices[k][i]])
+                }
+                let reconstructed = table.compose(components)
+                if !frEqual(reconstructed, lookups[i]) { return false }
+            }
         }
+
+        if profileLasso { let _t = CFAbsoluteTimeGetCurrent(); fputs(String(format: "  [verify] decomposition check: %.2f ms\n", (_t - _tPhase) * 1000), stderr); _tPhase = _t }
 
         // Reconstruct transcript (must match prover)
         var transcript = [UInt8]()
+        transcript.reserveCapacity(1024)
         appendUInt64(&transcript, UInt64(m))
         appendUInt64(&transcript, UInt64(table.numChunks))
 
-        // Verify each subtable proof
+        // Precompute inv2 once (used in evaluateQuadratic, avoids repeated field inversion)
+        let two = frAdd(Fr.one, Fr.one)
+        let inv2 = frInverse(two)
+        let negOne = frSub(Fr.zero, Fr.one)
+
+        let logM = Int(log2(Double(m)))
+
+        // Phase 1: Sequential transcript reconstruction + lightweight checks.
+        // Derive all challenges, verify sumcheck round consistency.
+        // This is fast (<2ms) since it only involves hashing + field adds.
+        var allReadChallenges = [[Fr]]()
+        var allTableChallenges = [[Fr]]()
+        allReadChallenges.reserveCapacity(table.numChunks)
+        allTableChallenges.reserveCapacity(table.numChunks)
+
         for k in 0..<table.numChunks {
             let sp = proof.subtableProofs[k]
             let subtable = table.subtables[k]
             let S = subtable.count
-            let logM = Int(log2(Double(m)))
             let logS = Int(log2(Double(S)))
 
             guard sp.readSumcheckRounds.count == logM else { return false }
@@ -570,18 +605,23 @@ public class LassoEngine {
             guard frEqual(sp.beta, expectedBeta) else { return false }
             appendFr(&transcript, sp.beta)
 
-            // Verify read_counts consistency: sum of read_counts must equal m
-            var totalReads = Fr.zero
-            for j in 0..<S {
-                totalReads = frAdd(totalReads, sp.readCounts[j])
+            // Verify read_counts consistency: sum must equal m
+            var totalReadsLimbs = [UInt64](repeating: 0, count: 4)
+            sp.readCounts.withUnsafeBytes { ptr in
+                bn254_fr_vector_sum(
+                    ptr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(S),
+                    &totalReadsLimbs
+                )
             }
+            let totalReads = Fr.from64(totalReadsLimbs)
             if !frEqual(totalReads, frFromInt(UInt64(m))) { return false }
 
             // Verify read_counts match the claimed indices
             var expectedCounts = [UInt64](repeating: 0, count: S)
             for idx in proof.indices[k] {
                 guard idx >= 0 && idx < S else { return false }
-                expectedCounts[idx] += 1
+                expectedCounts[idx] &+= 1
             }
             for j in 0..<S {
                 if !frEqual(sp.readCounts[j], frFromInt(expectedCounts[j])) { return false }
@@ -589,19 +629,17 @@ public class LassoEngine {
 
             appendFr(&transcript, sp.claimedSum)
 
-            // Verify read-side sumcheck
-            let readChallenges: [Fr]
+            // Derive read-side challenges
             let useGPURead = m >= 256
+            var rc = [Fr]()
+            rc.reserveCapacity(logM)
             if useGPURead {
-                var rc = [Fr]()
                 for _ in 0..<logM {
                     let c = deriveChallenge(transcript)
                     rc.append(c)
                     appendFr(&transcript, c)
                 }
-                readChallenges = rc
             } else {
-                var rc = [Fr]()
                 for round in 0..<logM {
                     let (s0, s1, s2) = sp.readSumcheckRounds[round]
                     appendFr(&transcript, s0)
@@ -611,44 +649,32 @@ public class LassoEngine {
                     rc.append(c)
                     appendFr(&transcript, c)
                 }
-                readChallenges = rc
             }
+            allReadChallenges.append(rc)
 
-            // Check round 0
+            // Check sumcheck read rounds
             let (rs0, rs1, _) = sp.readSumcheckRounds[0]
             if !frEqual(frAdd(rs0, rs1), sp.claimedSum) { return false }
-
-            // Check subsequent rounds
             for round in 1..<logM {
                 let (s0, s1, _) = sp.readSumcheckRounds[round]
-                let prevEval = evaluateQuadratic(sp.readSumcheckRounds[round - 1], at: readChallenges[round - 1])
+                let prevEval = evaluateQuadraticFast(sp.readSumcheckRounds[round - 1], at: rc[round - 1], inv2: inv2, negOne: negOne)
                 if !frEqual(frAdd(s0, s1), prevEval) { return false }
             }
-
-            // Check final eval
-            let lastReadEval = evaluateQuadratic(
-                sp.readSumcheckRounds[logM - 1], at: readChallenges[logM - 1])
+            let lastReadEval = evaluateQuadraticFast(
+                sp.readSumcheckRounds[logM - 1], at: rc[logM - 1], inv2: inv2, negOne: negOne)
             if !frEqual(lastReadEval, sp.readFinalEval) { return false }
 
-            // Verify read final eval against actual polynomial
-            let lookupValues: [Fr] = proof.indices[k].map { subtable[$0] }
-            let hReadEvals = try computeInverseEvals(values: lookupValues, beta: sp.beta)
-            let hReadAtR = evaluateMLE(hReadEvals, at: readChallenges)
-            if !frEqual(hReadAtR, sp.readFinalEval) { return false }
-
-            // Verify table-side sumcheck
-            let tableChallenges: [Fr]
+            // Derive table-side challenges
             let useGPUTable = S >= 256
+            var tc = [Fr]()
+            tc.reserveCapacity(logS)
             if useGPUTable {
-                var tc = [Fr]()
                 for _ in 0..<logS {
                     let c = deriveChallenge(transcript)
                     tc.append(c)
                     appendFr(&transcript, c)
                 }
-                tableChallenges = tc
             } else {
-                var tc = [Fr]()
                 for round in 0..<logS {
                     let (s0, s1, s2) = sp.tableSumcheckRounds[round]
                     appendFr(&transcript, s0)
@@ -658,28 +684,108 @@ public class LassoEngine {
                     tc.append(c)
                     appendFr(&transcript, c)
                 }
-                tableChallenges = tc
             }
+            allTableChallenges.append(tc)
 
+            // Check sumcheck table rounds
             let (ts0, ts1, _) = sp.tableSumcheckRounds[0]
             if !frEqual(frAdd(ts0, ts1), sp.claimedSum) { return false }
-
             for round in 1..<logS {
                 let (s0, s1, _) = sp.tableSumcheckRounds[round]
-                let prevEval = evaluateQuadratic(sp.tableSumcheckRounds[round - 1], at: tableChallenges[round - 1])
+                let prevEval = evaluateQuadraticFast(sp.tableSumcheckRounds[round - 1], at: tc[round - 1], inv2: inv2, negOne: negOne)
                 if !frEqual(frAdd(s0, s1), prevEval) { return false }
             }
-
-            let lastTableEval = evaluateQuadratic(
-                sp.tableSumcheckRounds[logS - 1], at: tableChallenges[logS - 1])
+            let lastTableEval = evaluateQuadraticFast(
+                sp.tableSumcheckRounds[logS - 1], at: tc[logS - 1], inv2: inv2, negOne: negOne)
             if !frEqual(lastTableEval, sp.tableFinalEval) { return false }
-
-            // Verify table final eval
-            let hTableEvals = try computeWeightedInverseEvals(
-                values: subtable, weights: sp.readCounts, beta: sp.beta)
-            let hTableAtR = evaluateMLE(hTableEvals, at: tableChallenges)
-            if !frEqual(hTableAtR, sp.tableFinalEval) { return false }
         }
+
+        if profileLasso { let _t = CFAbsoluteTimeGetCurrent(); fputs(String(format: "  [verify] phase 1 (transcript+sumcheck): %.2f ms\n", (_t - _tPhase) * 1000), stderr); _tPhase = _t }
+
+        // Phase 2: Parallel polynomial evaluation across all chunks.
+        // Each chunk's inverse_evals + MLE is independent and compute-intensive.
+        var chunkResults = [Bool](repeating: true, count: table.numChunks)
+
+        DispatchQueue.concurrentPerform(iterations: table.numChunks) { k in
+            let sp = proof.subtableProofs[k]
+            let subtable = table.subtables[k]
+            let S = subtable.count
+            let logS = Int(log2(Double(S)))
+            let rc = allReadChallenges[k]
+            let tc = allTableChallenges[k]
+
+            // Read-side: gather + batch inverse + MLE
+            var hReadEvals = [Fr](repeating: Fr.zero, count: m)
+            let idx32: [Int32] = proof.indices[k].map { Int32($0) }
+            subtable.withUnsafeBytes { stPtr in
+                withUnsafeBytes(of: sp.beta) { betaPtr in
+                    idx32.withUnsafeBufferPointer { idxPtr in
+                        hReadEvals.withUnsafeMutableBytes { outPtr in
+                            bn254_fr_inverse_evals_indexed(
+                                betaPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                stPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                UnsafePointer<Int32>(OpaquePointer(idxPtr.baseAddress!)),
+                                Int32(m),
+                                outPtr.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                            )
+                        }
+                    }
+                }
+            }
+            var hReadResult = [UInt64](repeating: 0, count: 4)
+            hReadEvals.withUnsafeBytes { evPtr in
+                rc.withUnsafeBytes { ptPtr in
+                    bn254_fr_mle_eval(
+                        evPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(logM),
+                        ptPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        &hReadResult
+                    )
+                }
+            }
+            let hReadAtR = Fr.from64(hReadResult)
+            if !frEqual(hReadAtR, sp.readFinalEval) { chunkResults[k] = false; return }
+
+            // Table-side: weighted inverse + MLE
+            var hTableEvals = [Fr](repeating: Fr.zero, count: S)
+            subtable.withUnsafeBytes { valPtr in
+                withUnsafeBytes(of: sp.beta) { betaPtr in
+                    sp.readCounts.withUnsafeBytes { wPtr in
+                        hTableEvals.withUnsafeMutableBytes { outPtr in
+                            bn254_fr_weighted_inverse_evals(
+                                betaPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                valPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                wPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                Int32(S),
+                                outPtr.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                            )
+                        }
+                    }
+                }
+            }
+            var hTableResult = [UInt64](repeating: 0, count: 4)
+            hTableEvals.withUnsafeBytes { evPtr in
+                tc.withUnsafeBytes { ptPtr in
+                    bn254_fr_mle_eval(
+                        evPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(logS),
+                        ptPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        &hTableResult
+                    )
+                }
+            }
+            let hTableAtR = Fr.from64(hTableResult)
+            if !frEqual(hTableAtR, sp.tableFinalEval) { chunkResults[k] = false }
+        }
+
+        // Check all chunks passed
+        for k in 0..<table.numChunks {
+            if !chunkResults[k] { return false }
+        }
+
+        if profileLasso { let _t = CFAbsoluteTimeGetCurrent(); fputs(String(format: "  [verify] phase 2 (parallel poly eval): %.2f ms\n", (_t - _tPhase) * 1000), stderr); _tPhase = _t }
+
+        if profileLasso { fputs(String(format: "  [verify] total: %.2f ms\n", (CFAbsoluteTimeGetCurrent() - _tTotal) * 1000), stderr) }
 
         return true
     }
@@ -756,6 +862,20 @@ public class LassoEngine {
         let xm2 = frSub(x, two)
         let inv2 = frInverse(two)
         let negOne = frSub(Fr.zero, one)
+
+        let l0 = frMul(frMul(xm1, xm2), inv2)
+        let l1 = frMul(frMul(x, xm2), negOne)
+        let l2 = frMul(frMul(x, xm1), inv2)
+
+        return frAdd(frAdd(frMul(s0, l0), frMul(s1, l1)), frMul(s2, l2))
+    }
+
+    /// Fast evaluateQuadratic with precomputed constants (avoids frInverse per call).
+    private func evaluateQuadraticFast(_ triple: (Fr, Fr, Fr), at x: Fr, inv2: Fr, negOne: Fr) -> Fr {
+        let (s0, s1, s2) = triple
+        let xm1 = frSub(x, Fr.one)
+        let two = frAdd(Fr.one, Fr.one)
+        let xm2 = frSub(x, two)
 
         let l0 = frMul(frMul(xm1, xm2), inv2)
         let l1 = frMul(frMul(x, xm2), negOne)

@@ -17,6 +17,7 @@
 // by building a combined sumcheck table using both output points.
 
 import Foundation
+import NeonFieldOps
 
 // MARK: - GKR Proof Types
 
@@ -44,14 +45,6 @@ public struct GKRLayerProof {
 /// Complete GKR proof for an entire circuit.
 public struct GKRProof {
     public let layerProofs: [GKRLayerProof]
-}
-
-// MARK: - Sparse wiring entry (contiguous struct for cache-friendly iteration)
-
-private struct WiringEntry {
-    var idx: Int
-    var addCoeff: Fr
-    var mulCoeff: Fr
 }
 
 // MARK: - GKR Engine
@@ -82,8 +75,8 @@ public class GKREngine {
         let outputVars = circuit.outputVars(layer: d - 1)
         let r0 = transcript.squeezeN(outputVars)
 
-        let outputMLE = MultilinearPoly(numVars: outputVars, values: outputValues)
-        _ = outputMLE.evaluate(at: r0)  // claim absorbed via transcript consistency
+        let outputEvals = MultilinearPoly(numVars: outputVars, values: outputValues).evals
+        _ = cMleEval(evals: outputEvals, point: r0, numVars: outputVars)
 
         // For the first layer, we have a single claim at one point with weight 1.
         var rPoints: [([Fr], Fr)] = [(r0, Fr.one)]
@@ -103,8 +96,8 @@ public class GKREngine {
                 transcript: transcript
             )
 
-            let vx = prevMLE.evaluate(at: rx)
-            let vy = prevMLE.evaluate(at: ry)
+            let vx = cMleEval(evals: prevMLE.evals, point: rx, numVars: nIn)
+            let vy = cMleEval(evals: prevMLE.evals, point: ry, numVars: nIn)
 
             transcript.absorb(vx)
             transcript.absorb(vy)
@@ -123,15 +116,8 @@ public class GKREngine {
     }
 
     /// Batched sumcheck for one GKR layer using sparse wiring predicates.
-    ///
-    /// Given multiple (output-point, weight) pairs, the function being summed is:
-    ///   g(a, b) = sum_k w_k * [add_k(a,b) * (V(a)+V(b)) + mul_k(a,b) * V(a)*V(b)]
-    ///
-    /// Key optimization: wiring predicates are extremely sparse (numGates nonzero entries
-    /// out of 2^(2*nIn) total). We track only nonzero entries in a sorted contiguous array,
-    /// reducing each sumcheck round from O(2^(2*nIn)) to O(numGates) field operations.
-    /// Uses sorted-array merge instead of Dictionary for cache-friendly access and zero
-    /// hashing overhead. Pairing, evaluation, and reduction are fused into a single pass.
+    /// C-accelerated: eq polynomial, sumcheck rounds, wiring reduction, and MLE folding
+    /// all use CIOS Montgomery C code, eliminating Swift to64/from64 overhead.
     private func proverBatchedSumcheck(
         rPoints: [([Fr], Fr)],  // [(output_point, weight)]
         layer: CircuitLayer,
@@ -142,19 +128,44 @@ public class GKREngine {
 
         let totalVars = 2 * nIn
         let inSize = 1 << nIn
+        let numGates = layer.gates.count
+        let eqSize = 1 << nOut
 
-        // Build sparse wiring from gate structure -- O(numGates) not O(2^(nOut+2*nIn)).
-        // Use dictionary only once for initial construction, then convert to sorted array.
+        // Build sparse wiring using C-accelerated eq polynomial + Swift Dictionary.
+        // Dictionary is O(numGates) space; eq polynomial computed in C.
         var sparseWiringDict = [Int: (Fr, Fr)]()
-        sparseWiringDict.reserveCapacity(layer.gates.count)
+        sparseWiringDict.reserveCapacity(numGates)
 
         for (rk, wk) in rPoints {
-            let eqVals = MultilinearPoly.eqPoly(point: rk)
+            // Compute eq polynomial using C, then batch-multiply by weight
+            var eqVals = [Fr](repeating: Fr.zero, count: eqSize)
+            rk.withUnsafeBytes { rkBuf in
+                eqVals.withUnsafeMutableBytes { eqBuf in
+                    gkr_eq_poly(
+                        rkBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(nOut),
+                        eqBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    )
+                }
+            }
+            // Batch multiply all eq values by weight using C (avoids per-element frMul)
+            var coeffs = [Fr](repeating: Fr.zero, count: eqSize)
+            eqVals.withUnsafeBytes { eqBuf in
+                withUnsafeBytes(of: wk) { wkBuf in
+                    coeffs.withUnsafeMutableBytes { outBuf in
+                        bn254_fr_batch_mul_scalar_neon(
+                            outBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            eqBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            wkBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(eqSize)
+                        )
+                    }
+                }
+            }
 
             for (gIdx, gate) in layer.gates.enumerated() {
-                let eqVal = gIdx < eqVals.count ? eqVals[gIdx] : Fr.zero
-                if eqVal.isZero { continue }
-                let coeff = frMul(wk, eqVal)
+                let coeff = gIdx < coeffs.count ? coeffs[gIdx] : Fr.zero
+                if coeff.isZero { continue }
                 let xyIdx = gate.leftInput * inSize + gate.rightInput
 
                 var entry = sparseWiringDict[xyIdx] ?? (Fr.zero, Fr.zero)
@@ -166,222 +177,115 @@ public class GKREngine {
             }
         }
 
-        // Convert to sorted array for cache-friendly merge-based operations
-        var wiring = [WiringEntry]()
-        wiring.reserveCapacity(sparseWiringDict.count)
+        // Convert to sorted C wiring format: [idx(1), addCoeff(4), mulCoeff(4)] per entry
+        var entries = [(Int, Fr, Fr)]()
+        entries.reserveCapacity(sparseWiringDict.count)
         for (idx, coeffs) in sparseWiringDict {
             if !coeffs.0.isZero || !coeffs.1.isZero {
-                wiring.append(WiringEntry(idx: idx, addCoeff: coeffs.0, mulCoeff: coeffs.1))
+                entries.append((idx, coeffs.0, coeffs.1))
             }
         }
-        wiring.sort { $0.idx < $1.idx }
+        entries.sort { $0.0 < $1.0 }
 
-        // In-place reduction: we overwrite the first half each round, tracking effective size.
-        var curVx = prevMLE.evals
-        var curVy = prevMLE.evals
-        var vxSize = curVx.count
-        var vySize = curVy.count
+        let numEntries = entries.count
+        var cWiring = [UInt64](repeating: 0, count: numEntries * 9)
+        for (i, entry) in entries.enumerated() {
+            let base = i * 9
+            cWiring[base] = UInt64(entry.0)
+            withUnsafeBytes(of: entry.1) { src in
+                for j in 0..<4 {
+                    cWiring[base + 1 + j] = src.load(fromByteOffset: j * 8, as: UInt64.self)
+                }
+            }
+            withUnsafeBytes(of: entry.2) { src in
+                for j in 0..<4 {
+                    cWiring[base + 5 + j] = src.load(fromByteOffset: j * 8, as: UInt64.self)
+                }
+            }
+        }
+        var numWiringEntries = numEntries
+
+        // Convert MLE evaluations to flat UInt64 arrays for C functions
+        let evalCount = prevMLE.evals.count
+        var curVx = [UInt64](repeating: 0, count: evalCount * 4)
+        var curVy = [UInt64](repeating: 0, count: evalCount * 4)
+        prevMLE.evals.withUnsafeBytes { src in
+            curVx.withUnsafeMutableBytes { dst in
+                dst.copyMemory(from: UnsafeRawBufferPointer(src))
+            }
+            curVy.withUnsafeMutableBytes { dst in
+                dst.copyMemory(from: UnsafeRawBufferPointer(src))
+            }
+        }
+        var vxSize = Int32(evalCount)
+        var vySize = Int32(evalCount)
 
         var msgs = [SumcheckRoundMsg]()
         msgs.reserveCapacity(totalVars)
         var challenges = [Fr]()
         challenges.reserveCapacity(totalVars)
 
-        var currentTableSize = 1 << totalVars
-        var newWiring = [WiringEntry]()
-        newWiring.reserveCapacity(wiring.count)
+        var currentTableSize = Int32(1 << totalVars)
+        var cWiringAlt = [UInt64](repeating: 0, count: numEntries * 9)
 
         for round in 0..<totalVars {
             let halfSize = currentTableSize / 2
-            let isXPhase = round < nIn
 
-            // Fused pair + eval: single pass over sorted wiring array using two-pointer merge.
-            let splitPos = gkrLowerBound(wiring, halfSize)
+            // Compute s0, s1, s2 using C
+            var s0 = [UInt64](repeating: 0, count: 4)
+            var s1 = [UInt64](repeating: 0, count: 4)
+            var s2 = [UInt64](repeating: 0, count: 4)
 
-            var s0 = Fr.zero
-            var s1 = Fr.zero
-            var s2 = Fr.zero
+            gkr_sumcheck_step(
+                cWiring, Int32(numWiringEntries),
+                curVx, vxSize,
+                curVy, vySize,
+                Int32(round), Int32(nIn), currentTableSize,
+                &s0, &s1, &s2
+            )
 
-            var li = 0
-            var hi = splitPos
+            // Convert s0, s1, s2 back to Fr for transcript
+            let frS0 = s0.withUnsafeBytes { Fr(v: $0.load(as: (UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32).self)) }
+            let frS1 = s1.withUnsafeBytes { Fr(v: $0.load(as: (UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32).self)) }
+            let frS2 = s2.withUnsafeBytes { Fr(v: $0.load(as: (UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32).self)) }
 
-            if isXPhase {
-                // X-phase: vy is fixed per entry, vx varies with low/high.
-                // Optimization: g = a*(vx+vy) + m*(vx*vy) = (a + m*vy)*vx + a*vy
-                // Precompute combined = a + m*vy and avy = a*vy per coeff level,
-                // then g = combined*vx + avy (1 frMul instead of 3).
-                let vxHalf = vxSize / 2
+            msgs.append(SumcheckRoundMsg(s0: frS0, s1: frS1, s2: frS2))
 
-                curVx.withUnsafeBufferPointer { vxBuf in
-                    curVy.withUnsafeBufferPointer { vyBuf in
-                        let yMask = vySize - 1
-                        while li < splitPos || hi < wiring.count {
-                            let lowIdx = li < splitPos ? wiring[li].idx : Int.max
-                            let highIdx = hi < wiring.count ? wiring[hi].idx &- halfSize : Int.max
-
-                            var a0 = Fr.zero, a1 = Fr.zero, m0 = Fr.zero, m1 = Fr.zero
-                            let mergedIdx: Int
-
-                            if lowIdx <= highIdx {
-                                mergedIdx = lowIdx
-                                a0 = wiring[li].addCoeff
-                                m0 = wiring[li].mulCoeff
-                                li += 1
-                                if lowIdx == highIdx {
-                                    a1 = wiring[hi].addCoeff
-                                    m1 = wiring[hi].mulCoeff
-                                    hi += 1
-                                }
-                            } else {
-                                mergedIdx = highIdx
-                                a1 = wiring[hi].addCoeff
-                                m1 = wiring[hi].mulCoeff
-                                hi += 1
-                            }
-
-                            let yIdx = mergedIdx & yMask
-                            let xIdx = mergedIdx >> nIn
-                            let vx0 = xIdx < vxHalf ? vxBuf[xIdx] : Fr.zero
-                            let vx1 = (xIdx &+ vxHalf) < vxSize ? vxBuf[xIdx &+ vxHalf] : Fr.zero
-                            let vyVal = yIdx < vySize ? vyBuf[yIdx] : Fr.zero
-
-                            // Precompute: combined_i = a_i + m_i*vy, avy_i = a_i*vy
-                            let m0vy = frMul(m0, vyVal)
-                            let m1vy = frMul(m1, vyVal)
-                            let c0 = frAdd(a0, m0vy)      // a0 + m0*vy
-                            let c1 = frAdd(a1, m1vy)      // a1 + m1*vy
-                            let a0vy = frMul(a0, vyVal)
-                            let a1vy = frMul(a1, vyVal)
-
-                            // g0 = c0*vx0 + a0vy  (7 frMul total instead of 9)
-                            s0 = frAdd(s0, frAdd(frMul(c0, vx0), a0vy))
-                            // g1 = c1*vx1 + a1vy
-                            s1 = frAdd(s1, frAdd(frMul(c1, vx1), a1vy))
-                            // g2 via extrapolation: c2=2c1-c0, a2vy=2*a1vy-a0vy, vx2=2vx1-vx0
-                            let c2 = frSub(frAdd(c1, c1), c0)
-                            let a2vy = frSub(frAdd(a1vy, a1vy), a0vy)
-                            let vx2 = frSub(frAdd(vx1, vx1), vx0)
-                            s2 = frAdd(s2, frAdd(frMul(c2, vx2), a2vy))
-                        }
-                    }
-                }
-            } else {
-                // Y-phase: vx is a single scalar, vy varies.
-                // Optimization: g = a*(vx+vy) + m*(vx*vy) = (a + m*vx)*vy + a*vx
-                // Precompute combined = a + m*vx and avx = a*vx, then g = combined*vy + avx
-                let vxScalar = vxSize > 0 ? curVx[0] : Fr.zero
-                let vyHalf = vySize / 2
-
-                curVy.withUnsafeBufferPointer { vyBuf in
-                    while li < splitPos || hi < wiring.count {
-                        let lowIdx = li < splitPos ? wiring[li].idx : Int.max
-                        let highIdx = hi < wiring.count ? wiring[hi].idx &- halfSize : Int.max
-
-                        var a0 = Fr.zero, a1 = Fr.zero, m0 = Fr.zero, m1 = Fr.zero
-                        let mergedIdx: Int
-
-                        if lowIdx <= highIdx {
-                            mergedIdx = lowIdx
-                            a0 = wiring[li].addCoeff
-                            m0 = wiring[li].mulCoeff
-                            li += 1
-                            if lowIdx == highIdx {
-                                a1 = wiring[hi].addCoeff
-                                m1 = wiring[hi].mulCoeff
-                                hi += 1
-                            }
-                        } else {
-                            mergedIdx = highIdx
-                            a1 = wiring[hi].addCoeff
-                            m1 = wiring[hi].mulCoeff
-                            hi += 1
-                        }
-
-                        let vy0 = mergedIdx < vyHalf ? vyBuf[mergedIdx] : Fr.zero
-                        let vy1 = (mergedIdx &+ vyHalf) < vySize ? vyBuf[mergedIdx &+ vyHalf] : Fr.zero
-
-                        // Precompute: combined_i = a_i + m_i*vx, avx_i = a_i*vx
-                        let m0vx = frMul(m0, vxScalar)
-                        let m1vx = frMul(m1, vxScalar)
-                        let c0 = frAdd(a0, m0vx)
-                        let c1 = frAdd(a1, m1vx)
-                        let a0vx = frMul(a0, vxScalar)
-                        let a1vx = frMul(a1, vxScalar)
-
-                        // g0 = c0*vy0 + a0vx
-                        s0 = frAdd(s0, frAdd(frMul(c0, vy0), a0vx))
-                        // g1 = c1*vy1 + a1vx
-                        s1 = frAdd(s1, frAdd(frMul(c1, vy1), a1vx))
-                        // g2: c2=2c1-c0, a2vx=2*a1vx-a0vx, vy2=2vy1-vy0
-                        let c2 = frSub(frAdd(c1, c1), c0)
-                        let a2vx = frSub(frAdd(a1vx, a1vx), a0vx)
-                        let vy2 = frSub(frAdd(vy1, vy1), vy0)
-                        s2 = frAdd(s2, frAdd(frMul(c2, vy2), a2vx))
-                    }
-                }
-            }
-
-            let msg = SumcheckRoundMsg(s0: s0, s1: s1, s2: s2)
-            msgs.append(msg)
-
-            transcript.absorb(s0)
-            transcript.absorb(s1)
-            transcript.absorb(s2)
+            transcript.absorb(frS0)
+            transcript.absorb(frS1)
+            transcript.absorb(frS2)
             let challenge = transcript.squeeze()
             challenges.append(challenge)
 
-            // Reduce sparse wiring: merge low/high with challenge into newWiring (sorted)
-            let oneMinusC = frSub(Fr.one, challenge)
-
-            li = 0
-            hi = splitPos
-            newWiring.removeAll(keepingCapacity: true)
-
-            while li < splitPos || hi < wiring.count {
-                let lowIdx = li < splitPos ? wiring[li].idx : Int.max
-                let highIdx = hi < wiring.count ? wiring[hi].idx &- halfSize : Int.max
-
-                if lowIdx < highIdx {
-                    newWiring.append(WiringEntry(
-                        idx: lowIdx,
-                        addCoeff: frMul(oneMinusC, wiring[li].addCoeff),
-                        mulCoeff: frMul(oneMinusC, wiring[li].mulCoeff)))
-                    li += 1
-                } else if highIdx < lowIdx {
-                    newWiring.append(WiringEntry(
-                        idx: highIdx,
-                        addCoeff: frMul(challenge, wiring[hi].addCoeff),
-                        mulCoeff: frMul(challenge, wiring[hi].mulCoeff)))
-                    hi += 1
-                } else {
-                    newWiring.append(WiringEntry(
-                        idx: lowIdx,
-                        addCoeff: frAdd(frMul(oneMinusC, wiring[li].addCoeff),
-                                        frMul(challenge, wiring[hi].addCoeff)),
-                        mulCoeff: frAdd(frMul(oneMinusC, wiring[li].mulCoeff),
-                                        frMul(challenge, wiring[hi].mulCoeff))))
-                    li += 1
-                    hi += 1
+            // Convert challenge to UInt64[4]
+            var chal = [UInt64](repeating: 0, count: 4)
+            withUnsafeBytes(of: challenge) { src in
+                chal.withUnsafeMutableBytes { dst in
+                    dst.copyMemory(from: UnsafeRawBufferPointer(src))
                 }
             }
-            swap(&wiring, &newWiring)
+
+            // Reduce wiring using C
+            let newCount = gkr_wiring_reduce(
+                cWiring, Int32(numWiringEntries),
+                chal, halfSize,
+                &cWiringAlt
+            )
+            swap(&cWiring, &cWiringAlt)
+            numWiringEntries = Int(newCount)
             currentTableSize = halfSize
 
-            // In-place reduction: overwrite first half, update size tracker
-            if isXPhase {
+            // MLE fold using C
+            if round < nIn {
                 let vxHalf = vxSize / 2
                 if vxHalf > 0 {
-                    for j in 0..<vxHalf {
-                        curVx[j] = frAdd(frMul(oneMinusC, curVx[j]), frMul(challenge, curVx[j + vxHalf]))
-                    }
+                    gkr_mle_fold(&curVx, Int32(vxHalf), chal)
                     vxSize = vxHalf
                 }
             } else {
                 let vyHalf = vySize / 2
                 if vyHalf > 0 {
-                    for j in 0..<vyHalf {
-                        curVy[j] = frAdd(frMul(oneMinusC, curVy[j]), frMul(challenge, curVy[j + vyHalf]))
-                    }
+                    gkr_mle_fold(&curVy, Int32(vyHalf), chal)
                     vySize = vyHalf
                 }
             }
@@ -405,8 +309,8 @@ public class GKREngine {
         let outputVars = circuit.outputVars(layer: d - 1)
         let r0 = transcript.squeezeN(outputVars)
 
-        let outputMLE = MultilinearPoly(numVars: outputVars, values: output)
-        var claim = outputMLE.evaluate(at: r0)
+        var claim = cMleEval(evals: output.count == (1 << outputVars) ? output :
+            MultilinearPoly(numVars: outputVars, values: output).evals, point: r0, numVars: outputVars)
 
         var rPoints: [([Fr], Fr)] = [(r0, Fr.one)]
 
@@ -444,16 +348,15 @@ public class GKREngine {
             let vy = layerProof.claimedVy
 
             // Verify: expected = sum_k w_k * [add(r_k, rx, ry)*(vx+vy) + mul(r_k, rx, ry)*vx*vy]
-            // Sparse evaluation: for each gate g at gIdx with inputs (left, right),
-            // wiring(rk, rx, ry) = eq(rk, gIdx) * eq(rx, left) * eq(ry, right)
-            let eqRx = MultilinearPoly.eqPoly(point: rx)
-            let eqRy = MultilinearPoly.eqPoly(point: ry)
+            // C-accelerated eq polynomial computation
+            let eqRx = cEqPoly(point: rx)
+            let eqRy = cEqPoly(point: ry)
             let sumVxVy = frAdd(vx, vy)
             let prodVxVy = frMul(vx, vy)
 
             var expected = Fr.zero
             for (rk, wk) in rPoints {
-                let eqRk = MultilinearPoly.eqPoly(point: rk)
+                let eqRk = cEqPoly(point: rk)
                 for (gIdx, gate) in circuit.layers[layerIdx].gates.enumerated() {
                     let eqZ = gIdx < eqRk.count ? eqRk[gIdx] : Fr.zero
                     if eqZ.isZero { continue }
@@ -485,10 +388,12 @@ public class GKREngine {
         }
 
         // Final check: claim = sum_k w_k * V_input(r_k)
-        let inputMLE = MultilinearPoly(numVars: rPoints[0].0.count, values: inputs)
+        let inputNumVars = rPoints[0].0.count
+        let inputEvals = MultilinearPoly(numVars: inputNumVars, values: inputs).evals
         var inputExpected = Fr.zero
         for (rk, wk) in rPoints {
-            inputExpected = frAdd(inputExpected, frMul(wk, inputMLE.evaluate(at: rk)))
+            let val = cMleEval(evals: inputEvals, point: rk, numVars: inputNumVars)
+            inputExpected = frAdd(inputExpected, frMul(wk, val))
         }
         return gkrFrEqual(claim, inputExpected)
     }
@@ -496,37 +401,59 @@ public class GKREngine {
 
 // MARK: - Helpers
 
-/// Binary search: find first index in sorted wiring where idx >= target.
-@inline(__always)
-private func gkrLowerBound(_ wiring: [WiringEntry], _ target: Int) -> Int {
-    var lo = 0, hi = wiring.count
-    while lo < hi {
-        let mid = (lo + hi) / 2
-        if wiring[mid].idx < target { lo = mid + 1 } else { hi = mid }
-    }
-    return lo
+/// Compare two Fr elements for equality (direct Montgomery comparison, no reduction).
+private func gkrFrEqual(_ a: Fr, _ b: Fr) -> Bool {
+    return a.v.0 == b.v.0 && a.v.1 == b.v.1 && a.v.2 == b.v.2 && a.v.3 == b.v.3 &&
+           a.v.4 == b.v.4 && a.v.5 == b.v.5 && a.v.6 == b.v.6 && a.v.7 == b.v.7
 }
 
-/// Compare two Fr elements for equality.
-private func gkrFrEqual(_ a: Fr, _ b: Fr) -> Bool {
-    let diff = frSub(a, b)
-    let limbs = frToInt(diff)
-    return limbs[0] == 0 && limbs[1] == 0 && limbs[2] == 0 && limbs[3] == 0
-}
+/// Precomputed inverse of 2 in Montgomery form (avoids frInverse per call).
+private let gkrInv2: Fr = frInverse(frAdd(Fr.one, Fr.one))
 
 /// Evaluate the degree-2 polynomial passing through (0, s0), (1, s1), (2, s2) at point x.
 private func lagrangeEval3(s0: Fr, s1: Fr, s2: Fr, at x: Fr) -> Fr {
-    let one = Fr.one
-    let two = frAdd(one, one)
-    let inv2 = frInverse(two)
+    let xm1 = frSub(x, Fr.one)
+    let xm2 = frSub(x, frAdd(Fr.one, Fr.one))
+    let negOne = frSub(Fr.zero, Fr.one)
 
-    let xm1 = frSub(x, one)
-    let xm2 = frSub(x, two)
-    let negOne = frSub(Fr.zero, one)
-
-    let l0 = frMul(frMul(xm1, xm2), inv2)
+    let l0 = frMul(frMul(xm1, xm2), gkrInv2)
     let l1 = frMul(frMul(x, xm2), negOne)
-    let l2 = frMul(frMul(x, xm1), inv2)
+    let l2 = frMul(frMul(x, xm1), gkrInv2)
 
     return frAdd(frAdd(frMul(s0, l0), frMul(s1, l1)), frMul(s2, l2))
+}
+
+/// C-accelerated MLE evaluation.
+private func cMleEval(evals: [Fr], point: [Fr], numVars: Int) -> Fr {
+    var result = Fr.zero
+    evals.withUnsafeBytes { evalBuf in
+        point.withUnsafeBytes { ptBuf in
+            withUnsafeMutableBytes(of: &result) { resBuf in
+                bn254_fr_mle_eval(
+                    evalBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(numVars),
+                    ptBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    resBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                )
+            }
+        }
+    }
+    return result
+}
+
+/// C-accelerated eq polynomial computation.
+private func cEqPoly(point: [Fr]) -> [Fr] {
+    let n = point.count
+    let size = 1 << n
+    var eq = [Fr](repeating: Fr.zero, count: size)
+    point.withUnsafeBytes { ptBuf in
+        eq.withUnsafeMutableBytes { eqBuf in
+            gkr_eq_poly(
+                ptBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                Int32(n),
+                eqBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+            )
+        }
+    }
+    return eq
 }

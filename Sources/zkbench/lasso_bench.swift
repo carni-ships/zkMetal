@@ -93,6 +93,31 @@ public func runLassoBench() {
         fputs("  Profile ERROR: \(error)\n", stderr)
     }
 
+    // --- Profile verify at 2^18 ---
+    fputs("\n--- Profile Verify (2^18) ---\n", stderr)
+    do {
+        let profEngine = try LassoEngine()
+        let profM = 1 << 18
+        var rngV: UInt64 = 0xDEAD_BEEF_1234
+        var profValues = [UInt64]()
+        profValues.reserveCapacity(profM)
+        for _ in 0..<profM {
+            rngV = rngV &* 6364136223846793005 &+ 1442695040888963407
+            profValues.append(rngV >> 32)
+        }
+        let profLookups: [Fr] = profValues.map { frFromInt($0) }
+        let profTable = LassoTable.rangeCheck(bits: 32, chunks: 4)
+        let proof = try profEngine.prove(lookups: profLookups, table: profTable)
+        // Warmup verify
+        let _ = try profEngine.verify(proof: proof, lookups: profLookups, table: profTable)
+        fputs("  --- profiled verify run ---\n", stderr)
+        profEngine.profileLasso = true
+        let _ = try profEngine.verify(proof: proof, lookups: profLookups, table: profTable)
+        profEngine.profileLasso = false
+    } catch {
+        fputs("  Profile verify ERROR: \(error)\n", stderr)
+    }
+
     // --- Performance: Lasso vs LogUp ---
     fputs("\n--- Performance: Lasso vs LogUp ---\n", stderr)
     do {

@@ -597,6 +597,10 @@ static const uint64_t FR_P[4] = {
     0xb85045b68181585dULL, 0x30644e72e131a029ULL
 };
 static const uint64_t FR_INV = 0xc2e1f593efffffffULL;
+static const uint64_t FR_ONE[4] = {  // R mod r (Montgomery form of 1)
+    0xac96341c4ffffffbULL, 0x36fc76959f60cd29ULL,
+    0x666ea36f7879462eULL, 0x0e0a77c19a07df2fULL
+};
 
 static inline void fr_mul(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]) {
     // Reuse fp_mul structure with Fr constants
@@ -638,6 +642,35 @@ static inline void fr_add(const uint64_t a[4], const uint64_t b[4], uint64_t r[4
     d=(uint128_t)r[2]-FR_P[2]-borrow; r2=(uint64_t)d; borrow=(d>>127)&1;
     d=(uint128_t)r[3]-FR_P[3]-borrow; r3=(uint64_t)d; borrow=(d>>127)&1;
     if(c||!borrow){r[0]=r0;r[1]=r1;r[2]=r2;r[3]=r3;}
+}
+
+static inline void fr_sub(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]) {
+    uint128_t d; uint64_t borrow=0;
+    d=(uint128_t)a[0]-b[0]; r[0]=(uint64_t)d; borrow=(d>>127)&1;
+    d=(uint128_t)a[1]-b[1]-borrow; r[1]=(uint64_t)d; borrow=(d>>127)&1;
+    d=(uint128_t)a[2]-b[2]-borrow; r[2]=(uint64_t)d; borrow=(d>>127)&1;
+    d=(uint128_t)a[3]-b[3]-borrow; r[3]=(uint64_t)d; borrow=(d>>127)&1;
+    if(borrow){
+        uint64_t c=0;
+        d=(uint128_t)r[0]+FR_P[0]; r[0]=(uint64_t)d; c=(uint64_t)(d>>64);
+        d=(uint128_t)r[1]+FR_P[1]+c; r[1]=(uint64_t)d; c=(uint64_t)(d>>64);
+        d=(uint128_t)r[2]+FR_P[2]+c; r[2]=(uint64_t)d; c=(uint64_t)(d>>64);
+        d=(uint128_t)r[3]+FR_P[3]+c; r[3]=(uint64_t)d;
+    }
+}
+
+static void fr_inv(const uint64_t a[4], uint64_t result[4]) {
+    uint64_t pm2[4];
+    pm2[0] = FR_P[0] - 2; pm2[1] = FR_P[1]; pm2[2] = FR_P[2]; pm2[3] = FR_P[3];
+    memcpy(result, FR_ONE, 32);
+    uint64_t b[4]; memcpy(b, a, 32);
+    for (int i = 0; i < 4; i++) {
+        for (int bit = 0; bit < 64; bit++) {
+            if ((pm2[i] >> bit) & 1)
+                fr_mul(result, b, result);
+            fr_mul(b, b, b);
+        }
+    }
 }
 
 // ============================================================
@@ -1054,4 +1087,204 @@ void bn254_fr_synthetic_div(const uint64_t *coeffs, const uint64_t z[4],
         fr_mul(z, quotient + (i + 1) * 4, tmp);
         fr_add(coeffs + (i + 1) * 4, tmp, quotient + i * 4);
     }
+}
+
+// Batch inverse using Montgomery's trick: O(3n) muls + 1 inversion.
+// out[i] = a[i]^(-1) for i=0..n-1.
+void bn254_fr_batch_inverse(const uint64_t *a, int n, uint64_t *out) {
+    if (n == 0) return;
+    if (n == 1) {
+        fr_inv(a, out);
+        return;
+    }
+    // Phase 1: prefix products. out[i] = a[0]*a[1]*...*a[i]
+    memcpy(out, a, 32);
+    for (int i = 1; i < n; i++) {
+        fr_mul(out + (i - 1) * 4, a + i * 4, out + i * 4);
+    }
+    // Phase 2: invert the total product
+    uint64_t inv[4];
+    fr_inv(out + (n - 1) * 4, inv);
+    // Phase 3: back-propagate inverses
+    for (int i = n - 1; i >= 1; i--) {
+        // out[i] = inv * prefix[i-1]
+        uint64_t tmp[4];
+        fr_mul(inv, out + (i - 1) * 4, tmp);
+        // update inv = inv * a[i]
+        uint64_t new_inv[4];
+        fr_mul(inv, a + i * 4, new_inv);
+        memcpy(inv, new_inv, 32);
+        memcpy(out + i * 4, tmp, 32);
+    }
+    memcpy(out, inv, 32);
+}
+
+// Evaluate multilinear extension at a point.
+// evals: 2^numVars Fr elements. point: numVars Fr elements.
+// Returns single Fr in result.
+// Uses bn254_fr_vector_fold for the inner loop (same operation pattern).
+void bn254_fr_mle_eval(const uint64_t *evals, int numVars,
+                        const uint64_t *point, uint64_t result[4]) {
+    int n = 1 << numVars;
+    uint64_t *buf = (uint64_t *)malloc(n * 32);
+    memcpy(buf, evals, n * 32);
+
+    for (int v = 0; v < numVars; v++) {
+        int half = n >> 1;
+        const uint64_t *r = point + v * 4;
+        uint64_t one_minus_r[4];
+        fr_sub(FR_ONE, r, one_minus_r);
+        // buf[i] = (1-r)*buf[i] + r*buf[half+i]
+        // This is vector_fold(a=buf, b=buf+half, x=(1-r), xInv=r, n=half)
+        bn254_fr_vector_fold(buf, buf + half * 4, one_minus_r, r, half, buf);
+        n = half;
+    }
+    memcpy(result, buf, 32);
+    free(buf);
+}
+
+// Fused: gather subtable values by index, add beta, batch inverse.
+// out[i] = 1/(beta + subtable[indices[i]])
+// Avoids separate gather step by combining with beta-add.
+void bn254_fr_inverse_evals_indexed(const uint64_t beta[4], const uint64_t *subtable,
+                                     const int *indices, int n, uint64_t *out) {
+    if (n == 0) return;
+    // Phase 1: gather + beta-add in one pass
+    for (int i = 0; i < n; i++) {
+        fr_add(beta, subtable + indices[i] * 4, out + i * 4);
+    }
+    if (n == 1) {
+        fr_inv(out, out);
+        return;
+    }
+    // Phase 2: batch inverse via Montgomery's trick
+    uint64_t *prefix = (uint64_t *)malloc(n * 32);
+    memcpy(prefix, out, 32);
+    for (int i = 1; i < n; i++) {
+        fr_mul(prefix + (i - 1) * 4, out + i * 4, prefix + i * 4);
+    }
+    uint64_t inv[4];
+    fr_inv(prefix + (n - 1) * 4, inv);
+    for (int i = n - 1; i >= 1; i--) {
+        uint64_t tmp[4];
+        fr_mul(inv, prefix + (i - 1) * 4, tmp);
+        uint64_t new_inv[4];
+        fr_mul(inv, out + i * 4, new_inv);
+        memcpy(inv, new_inv, 32);
+        memcpy(out + i * 4, tmp, 32);
+    }
+    memcpy(out, inv, 32);
+    free(prefix);
+}
+
+// Compute beta+values and then batch inverse: out[i] = 1/(beta + values[i])
+void bn254_fr_inverse_evals(const uint64_t beta[4], const uint64_t *values,
+                             int n, uint64_t *out) {
+    if (n == 0) return;
+    for (int i = 0; i < n; i++) {
+        fr_add(beta, values + i * 4, out + i * 4);
+    }
+    if (n == 1) {
+        fr_inv(out, out);
+        return;
+    }
+    uint64_t *prefix = (uint64_t *)malloc(n * 32);
+    memcpy(prefix, out, 32);
+    for (int i = 1; i < n; i++) {
+        fr_mul(prefix + (i - 1) * 4, out + i * 4, prefix + i * 4);
+    }
+    uint64_t inv[4];
+    fr_inv(prefix + (n - 1) * 4, inv);
+    for (int i = n - 1; i >= 1; i--) {
+        uint64_t tmp[4];
+        fr_mul(inv, prefix + (i - 1) * 4, tmp);
+        uint64_t new_inv[4];
+        fr_mul(inv, out + i * 4, new_inv);
+        memcpy(inv, new_inv, 32);
+        memcpy(out + i * 4, tmp, 32);
+    }
+    memcpy(out, inv, 32);
+    free(prefix);
+}
+
+// Compute weighted inverse evals: out[j] = weights[j] / (beta + values[j])
+void bn254_fr_weighted_inverse_evals(const uint64_t beta[4], const uint64_t *values,
+                                      const uint64_t *weights, int n, uint64_t *out) {
+    bn254_fr_inverse_evals(beta, values, n, out);
+    for (int i = 0; i < n; i++) {
+        uint64_t tmp[4];
+        fr_mul(out + i * 4, weights + i * 4, tmp);
+        memcpy(out + i * 4, tmp, 32);
+    }
+}
+
+// Fused: compute MLE(1/(beta + subtable[indices[x]]))(point) in a single pass.
+// Avoids materializing the full inverse array, better cache behavior.
+// Returns result = sum_x eq(x, point) / (beta + subtable[indices[x]])
+void bn254_fr_inverse_mle_eval(const uint64_t beta[4], const uint64_t *subtable,
+                                const int *indices, int n, int numVars,
+                                const uint64_t *point, uint64_t result[4]) {
+    if (n == 0) { memset(result, 0, 32); return; }
+
+    // Step 1: Build eq polynomial eq[x] = prod_i ((1-r_i)(1-x_i) + r_i*x_i)
+    // Start with eq[0] = 1, then for each variable, double the table size
+    uint64_t *eq = (uint64_t *)malloc(n * 32);
+    memcpy(eq, FR_ONE, 32);
+    int cur_size = 1;
+    for (int v = 0; v < numVars; v++) {
+        const uint64_t *r = point + v * 4;
+        uint64_t one_minus_r[4];
+        fr_sub(FR_ONE, r, one_minus_r);
+        // Expand: eq[i + cur_size] = eq[i] * r, eq[i] = eq[i] * (1-r)
+        for (int i = cur_size - 1; i >= 0; i--) {
+            fr_mul(eq + i * 4, r, eq + (i + cur_size) * 4);
+            uint64_t tmp[4];
+            fr_mul(eq + i * 4, one_minus_r, tmp);
+            memcpy(eq + i * 4, tmp, 32);
+        }
+        cur_size *= 2;
+    }
+
+    // Step 2: Compute d[i] = beta + subtable[indices[i]]
+    uint64_t *d = (uint64_t *)malloc(n * 32);
+    for (int i = 0; i < n; i++) {
+        fr_add(beta, subtable + indices[i] * 4, d + i * 4);
+    }
+
+    // Step 3: Batch inverse with fused inner product during back-propagation
+    // 3a: prefix products
+    uint64_t *prefix = (uint64_t *)malloc(n * 32);
+    memcpy(prefix, d, 32);
+    for (int i = 1; i < n; i++) {
+        fr_mul(prefix + (i - 1) * 4, d + i * 4, prefix + i * 4);
+    }
+
+    // 3b: single Fermat inversion
+    uint64_t inv[4];
+    fr_inv(prefix + (n - 1) * 4, inv);
+
+    // 3c: back-propagation + accumulation
+    uint64_t acc[4] = {0, 0, 0, 0};
+    for (int i = n - 1; i >= 1; i--) {
+        // inv_i = inv * prefix[i-1]
+        uint64_t inv_i[4];
+        fr_mul(inv, prefix + (i - 1) * 4, inv_i);
+        // update inv = inv * d[i]
+        uint64_t new_inv[4];
+        fr_mul(inv, d + i * 4, new_inv);
+        memcpy(inv, new_inv, 32);
+        // Accumulate: acc += eq[i] * inv_i
+        uint64_t prod[4];
+        fr_mul(eq + i * 4, inv_i, prod);
+        fr_add(acc, prod, acc);
+    }
+    // i=0: inv_0 = inv (the updated inv is d[0]^{-1} after all updates)
+    uint64_t prod0[4];
+    fr_mul(eq, inv, prod0);
+    fr_add(acc, prod0, acc);
+
+    memcpy(result, acc, 32);
+    free(eq);
+    free(d);
+    free(prefix);
 }

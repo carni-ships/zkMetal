@@ -148,6 +148,8 @@ Stark252 stark252_double(Stark252 a) {
 }
 
 // Montgomery multiplication (CIOS with 32-bit limbs)
+// Specialized reduction: P = {1, 0, 0, 0, 0, 0, 0x11, 0x08000000}
+// Only limbs 0, 6, 7 are nonzero, so we skip 5 multiply-adds per iteration.
 Stark252 stark252_mul(Stark252 a, Stark252 b) {
     uint t[10];
     #pragma unroll
@@ -166,15 +168,29 @@ Stark252 stark252_mul(Stark252 a, Stark252 b) {
         t[8] = uint(ext & 0xFFFFFFFF);
         t[9] = uint(ext >> 32);
 
+        // m = t[0] * (-p^{-1} mod 2^32) = t[0] * 0xFFFFFFFF = -t[0] mod 2^32
         uint m = t[0] * STARK252_INV;
-        carry = ulong(t[0]) + ulong(m) * ulong(STARK252_P[0]);
+
+        // Reduction: add m * P, but P has only 3 nonzero limbs
+        // P[0] = 1: carry = (t[0] + m*1) >> 32
+        carry = ulong(t[0]) + ulong(m);
         carry >>= 32;
+        // P[1..5] = 0: just propagate carry through t[1..5]
         #pragma unroll
-        for (int j = 1; j < 8; j++) {
-            carry += ulong(t[j]) + ulong(m) * ulong(STARK252_P[j]);
+        for (int j = 1; j < 6; j++) {
+            carry += ulong(t[j]);
             t[j - 1] = uint(carry & 0xFFFFFFFF);
             carry >>= 32;
         }
+        // P[6] = 0x11
+        carry += ulong(t[6]) + ulong(m) * 0x11u;
+        t[5] = uint(carry & 0xFFFFFFFF);
+        carry >>= 32;
+        // P[7] = 0x08000000
+        carry += ulong(t[7]) + ulong(m) * 0x08000000u;
+        t[6] = uint(carry & 0xFFFFFFFF);
+        carry >>= 32;
+
         ext = ulong(t[8]) + carry;
         t[7] = uint(ext & 0xFFFFFFFF);
         t[8] = t[9] + uint(ext >> 32);
@@ -222,15 +238,27 @@ Stark252 stark252_sqr(Stark252 a) {
         carry >>= 32;
     }
 
+    // Sparse reduction: P = {1, 0, 0, 0, 0, 0, 0x11, 0x08000000}
     for (int i = 0; i < 8; i++) {
         uint m = t[i] * STARK252_INV;
-        ulong c = ulong(t[i]) + ulong(m) * ulong(STARK252_P[0]);
+        // P[0] = 1
+        ulong c = ulong(t[i]) + ulong(m);
         c >>= 32;
-        for (int j = 1; j < 8; j++) {
-            c += ulong(t[i + j]) + ulong(m) * ulong(STARK252_P[j]);
+        // P[1..5] = 0: propagate carry
+        for (int j = 1; j < 6; j++) {
+            c += ulong(t[i + j]);
             t[i + j] = uint(c & 0xFFFFFFFF);
             c >>= 32;
         }
+        // P[6] = 0x11
+        c += ulong(t[i + 6]) + ulong(m) * 0x11u;
+        t[i + 6] = uint(c & 0xFFFFFFFF);
+        c >>= 32;
+        // P[7] = 0x08000000
+        c += ulong(t[i + 7]) + ulong(m) * 0x08000000u;
+        t[i + 7] = uint(c & 0xFFFFFFFF);
+        c >>= 32;
+        // Propagate remaining carry
         for (int j = i + 8; j < 16; j++) {
             c += ulong(t[j]);
             t[j] = uint(c & 0xFFFFFFFF);

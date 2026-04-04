@@ -267,4 +267,88 @@ void bn254_fr_batch_decompose(const uint64_t *lookups, int m,
                                int numChunks, int bitsPerChunk,
                                int *indices);
 
+/// Batch inverse using Montgomery's trick: out[i] = a[i]^(-1).
+/// O(3n) muls + 1 Fermat inversion. Much faster than n individual inversions.
+void bn254_fr_batch_inverse(const uint64_t *a, int n, uint64_t *out);
+
+/// Evaluate multilinear extension at a point.
+/// evals: 2^numVars Fr elements. point: numVars Fr elements. result: single Fr.
+void bn254_fr_mle_eval(const uint64_t *evals, int numVars,
+                        const uint64_t *point, uint64_t result[4]);
+
+/// Compute inverse evaluations: out[i] = 1/(beta + values[i]).
+/// Fused beta-add + batch inverse via Montgomery's trick.
+void bn254_fr_inverse_evals(const uint64_t beta[4], const uint64_t *values,
+                             int n, uint64_t *out);
+
+/// Fused gather + beta-add + batch inverse: out[i] = 1/(beta + subtable[indices[i]]).
+/// Avoids separate gather allocation.
+void bn254_fr_inverse_evals_indexed(const uint64_t beta[4], const uint64_t *subtable,
+                                     const int *indices, int n, uint64_t *out);
+
+/// Compute weighted inverse evaluations: out[j] = weights[j]/(beta + values[j]).
+void bn254_fr_weighted_inverse_evals(const uint64_t beta[4], const uint64_t *values,
+                                      const uint64_t *weights, int n, uint64_t *out);
+
+/// Fused: compute MLE(1/(beta + subtable[indices[x]]))(point) without materializing inverses.
+/// result = sum_x eq(x, point) / (beta + subtable[indices[x]])
+void bn254_fr_inverse_mle_eval(const uint64_t beta[4], const uint64_t *subtable,
+                                const int *indices, int n, int numVars,
+                                const uint64_t *point, uint64_t result[4]);
+
+// ============================================================
+// GKR-specific accelerated operations
+// ============================================================
+
+/// Compute eq polynomial evaluations for GKR.
+/// point: n Fr elements (4 uint64 each). eq: output 2^n Fr elements.
+void gkr_eq_poly(const uint64_t *point, int n, uint64_t *eq);
+
+/// Accumulate wiring entries from gates with eq polynomial values.
+/// gates: numGates * 3 int32 [type(0=add,1=mul), left, right].
+/// eqVals: numGates Fr elements. weight: scaling Fr element.
+/// accum: direct-indexed accumulator (9 uint64 per slot: [valid, add[4], mul[4]]).
+/// nonzeroIndices: tracks populated slots. numNonzero: in/out count.
+void gkr_accumulate_wiring(
+    const int32_t *gates, int numGates,
+    const uint64_t *eqVals, const uint64_t weight[4],
+    int inSize,
+    uint64_t *accum, int accumCapacity,
+    int32_t *nonzeroIndices, int *numNonzero);
+
+/// In-place MLE fold: v[j] = (1-c)*v[j] + c*v[j+half].
+void gkr_mle_fold(uint64_t *v, int half, const uint64_t challenge[4]);
+
+/// GKR sumcheck round evaluation (X-phase).
+/// wiring: sorted entries (9 uint64 per entry: [idx, add[4], mul[4]]).
+void gkr_sumcheck_round_x(
+    const uint64_t *wiring, int numEntries,
+    const uint64_t *vx, int vxSize,
+    const uint64_t *vy, int vySize,
+    int nIn, int halfSize,
+    uint64_t s0[4], uint64_t s1[4], uint64_t s2[4]);
+
+/// GKR sumcheck round evaluation (Y-phase).
+void gkr_sumcheck_round_y(
+    const uint64_t *wiring, int numEntries,
+    const uint64_t vxScalar[4],
+    const uint64_t *vy, int vySize,
+    int halfSize,
+    uint64_t s0[4], uint64_t s1[4], uint64_t s2[4]);
+
+/// Reduce sparse wiring after a sumcheck round. Returns number of output entries.
+int gkr_wiring_reduce(
+    const uint64_t *wiring, int numEntries,
+    const uint64_t challenge[4],
+    int halfSize,
+    uint64_t *outWiring);
+
+/// Single-round step for GKR sumcheck (dispatches to X or Y phase).
+void gkr_sumcheck_step(
+    const uint64_t *wiring, int numEntries,
+    const uint64_t *curVx, int vxSize,
+    const uint64_t *curVy, int vySize,
+    int round, int nIn, int currentTableSize,
+    uint64_t s0[4], uint64_t s1[4], uint64_t s2[4]);
+
 #endif // NEON_FIELD_OPS_H

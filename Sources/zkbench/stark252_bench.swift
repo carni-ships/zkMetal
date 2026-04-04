@@ -146,9 +146,34 @@ public func runStark252Bench() {
         }
         print("  NTT Round-trip (2^16): \(correct2 ? "PASS" : "FAIL") (\(mismatches2) mismatches)")
 
+        // Round-trip at 2^20 (four-step path)
+        let testN3 = 1 << 20
+        var testInput3 = [Stark252](repeating: Stark252.zero, count: testN3)
+        rng = 0xFACE_CAFE
+        for i in 0..<testN3 {
+            rng = rng &* 6364136223846793005 &+ 1442695040888963407
+            testInput3[i] = stark252FromInt(rng >> 32)
+        }
+        let gpuNTT3 = try engine.ntt(testInput3)
+        let gpuRecovered3 = try engine.intt(gpuNTT3)
+        var correct3 = true
+        var mismatches3 = 0
+        for i in 0..<testN3 {
+            let expected = stark252ToInt(testInput3[i])
+            let got = stark252ToInt(gpuRecovered3[i])
+            if expected != got {
+                if mismatches3 < 3 {
+                    print("  RT MISMATCH at \(i): expected \(expected[0]), got \(got[0])")
+                }
+                correct3 = false
+                mismatches3 += 1
+            }
+        }
+        print("  NTT Round-trip (2^20, four-step): \(correct3 ? "PASS" : "FAIL") (\(mismatches3) mismatches)")
+
         // Performance benchmark
         print("\n--- Stark252 NTT Performance ---")
-        let sizes = [10, 12, 14, 16, 18, 20]
+        let sizes = [10, 12, 14, 16, 18, 20, 22]
 
         for logN in sizes {
             let n = 1 << logN

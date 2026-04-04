@@ -514,3 +514,434 @@ int mont_mul_asm_test(void) {
     }
     return 0;
 }
+
+// ============================================================
+// GKR-specific accelerated operations
+// ============================================================
+
+// Fr element is 4 x uint64_t = 32 bytes
+#define FR_LIMBS 4
+#define FR_BYTES 32
+
+static inline int fr_is_zero(const uint64_t a[4]) {
+    return (a[0] | a[1] | a[2] | a[3]) == 0;
+}
+
+static inline void fr_copy(uint64_t dst[4], const uint64_t src[4]) {
+    dst[0] = src[0]; dst[1] = src[1]; dst[2] = src[2]; dst[3] = src[3];
+}
+
+static inline void fr_zero(uint64_t dst[4]) {
+    dst[0] = 0; dst[1] = 0; dst[2] = 0; dst[3] = 0;
+}
+
+/// Compute eq polynomial evaluations: eq[i] for i in {0,1}^n given point r.
+/// eq[0] = 1, then for each variable r_i, split: eq[2j+1] = eq[j]*r_i, eq[2j] = eq[j]*(1-r_i).
+/// point: n Fr elements (4 uint64 each). eq: output 2^n Fr elements.
+void gkr_eq_poly(const uint64_t *point, int n, uint64_t *eq) {
+    static const uint64_t ZERO[4] = {0,0,0,0};
+    int size = 1 << n;
+    // Initialize eq[0] = 1 (Montgomery)
+    memset(eq, 0, (size_t)size * FR_BYTES);
+    memcpy(eq, BN254_FR_ONE, FR_BYTES);
+
+    for (int i = 0; i < n; i++) {
+        int half = 1 << i;
+        const uint64_t *ri = point + i * FR_LIMBS;
+        uint64_t oneMinusRi[4];
+        mont_sub_4limb(BN254_FR_ONE, ri, BN254_FR_P, oneMinusRi);
+
+        // Process in reverse to avoid overwriting
+        for (int j = half - 1; j >= 0; j--) {
+            uint64_t *ej = eq + j * FR_LIMBS;
+            uint64_t *e2j1 = eq + (2*j+1) * FR_LIMBS;
+            uint64_t *e2j = eq + (2*j) * FR_LIMBS;
+            uint64_t tmp[4];
+            mont_mul_4limb(ej, ri, BN254_FR_P, BN254_FR_INV, e2j1);
+            mont_mul_4limb(ej, oneMinusRi, BN254_FR_P, BN254_FR_INV, tmp);
+            fr_copy(e2j, tmp);
+        }
+    }
+}
+
+/// In-place MLE fold: v[j] = (1-challenge)*v[j] + challenge*v[j+half] for j in 0..<half.
+/// v: array of at least 2*half Fr elements. half: number of output elements.
+void gkr_mle_fold(uint64_t *v, int half, const uint64_t challenge[4]) {
+    uint64_t oneMinusC[4];
+    mont_sub_4limb(BN254_FR_ONE, challenge, BN254_FR_P, oneMinusC);
+
+    for (int j = 0; j < half; j++) {
+        uint64_t *vj = v + j * FR_LIMBS;
+        const uint64_t *vjh = v + (j + half) * FR_LIMBS;
+        uint64_t t1[4], t2[4];
+        mont_mul_4limb(oneMinusC, vj, BN254_FR_P, BN254_FR_INV, t1);
+        mont_mul_4limb(challenge, vjh, BN254_FR_P, BN254_FR_INV, t2);
+        mont_add_4limb(t1, t2, BN254_FR_P, vj);
+    }
+}
+
+/// Sparse wiring entry for GKR sumcheck: (index, addCoeff[4], mulCoeff[4])
+/// Layout: [idx as uint64_t, addCoeff[4], mulCoeff[4]] = 9 uint64_t per entry
+#define WENTRY_STRIDE 9
+#define WENTRY_IDX(base, i) ((base)[(i)*WENTRY_STRIDE])
+#define WENTRY_ADD(base, i) ((base) + (i)*WENTRY_STRIDE + 1)
+#define WENTRY_MUL(base, i) ((base) + (i)*WENTRY_STRIDE + 5)
+
+/// Build sparse wiring from gate list with eq polynomial evaluations.
+/// Gates: array of (gateType, leftInput, rightInput) as 3 x int32 per gate.
+/// eqVals: eq polynomial evaluations (numGates Fr elements).
+/// weight: Fr element to scale eq values.
+/// wiring: output sparse wiring dict as flat array.
+/// Returns number of nonzero entries written to wiring.
+/// wiringDict: working buffer of 9 uint64_t per possible index.
+///
+/// This builds the sparse wiring for one (rPoint, weight) pair and merges into
+/// the provided accumulator.
+void gkr_accumulate_wiring(
+    const int32_t *gates,   // numGates * 3: [type, left, right] per gate
+    int numGates,
+    const uint64_t *eqVals, // numGates Fr elements
+    const uint64_t weight[4],
+    int inSize,
+    // Accumulator: hashtable stored as flat array indexed by xyIdx
+    // Each slot: [valid, addCoeff[4], mulCoeff[4]] = 9 uint64_t
+    uint64_t *accum,
+    int accumCapacity,
+    int32_t *nonzeroIndices,  // track which indices are populated
+    int *numNonzero)
+{
+    static const uint64_t ZERO[4] = {0,0,0,0};
+
+    for (int g = 0; g < numGates; g++) {
+        const uint64_t *eqVal = eqVals + g * FR_LIMBS;
+        if (fr_is_zero(eqVal)) continue;
+
+        uint64_t coeff[4];
+        mont_mul_4limb(weight, eqVal, BN254_FR_P, BN254_FR_INV, coeff);
+
+        int gateType = gates[g * 3];
+        int left = gates[g * 3 + 1];
+        int right = gates[g * 3 + 2];
+        int xyIdx = left * inSize + right;
+
+        uint64_t *slot = accum + xyIdx * WENTRY_STRIDE;
+        if (slot[0] == 0) {
+            // New entry
+            slot[0] = 1;
+            memset(slot + 1, 0, 4 * FR_BYTES);  // clear add+mul
+            nonzeroIndices[*numNonzero] = (int32_t)xyIdx;
+            (*numNonzero)++;
+        }
+
+        if (gateType == 0) { // add
+            uint64_t tmp[4];
+            mont_add_4limb(slot + 1, coeff, BN254_FR_P, tmp);
+            memcpy(slot + 1, tmp, FR_BYTES);
+        } else { // mul
+            uint64_t tmp[4];
+            mont_add_4limb(slot + 5, coeff, BN254_FR_P, tmp);
+            memcpy(slot + 5, tmp, FR_BYTES);
+        }
+    }
+}
+
+// Comparison function for qsort of int32_t
+static int cmp_int32(const void *a, const void *b) {
+    int32_t va = *(const int32_t *)a;
+    int32_t vb = *(const int32_t *)b;
+    return (va > vb) - (va < vb);
+}
+
+/// GKR sumcheck X-phase round evaluation.
+/// Processes sorted wiring entries and computes s0, s1, s2.
+/// wiring: flat array of entries (WENTRY_STRIDE uint64_t each, sorted by idx).
+/// numEntries: number of wiring entries.
+/// vx: MLE x-evaluations (vxSize elements).
+/// vy: MLE y-evaluations (vySize elements).
+/// nIn: log2 of input layer size.
+/// halfSize: currentTableSize / 2.
+/// s0, s1, s2: output accumulators (initialized to zero by caller).
+void gkr_sumcheck_round_x(
+    const uint64_t *wiring, int numEntries,
+    const uint64_t *vx, int vxSize,
+    const uint64_t *vy, int vySize,
+    int nIn, int halfSize,
+    uint64_t s0[4], uint64_t s1[4], uint64_t s2[4])
+{
+    static const uint64_t ZERO[4] = {0,0,0,0};
+    int yMask = vySize - 1;
+    int vxHalf = vxSize / 2;
+
+    // Find split position (first entry with idx >= halfSize)
+    int splitPos = 0;
+    {
+        int lo = 0, hi = numEntries;
+        while (lo < hi) {
+            int mid = (lo + hi) / 2;
+            if ((int64_t)WENTRY_IDX(wiring, mid) < halfSize) lo = mid + 1;
+            else hi = mid;
+        }
+        splitPos = lo;
+    }
+
+    int li = 0, hi_ptr = splitPos;
+
+    while (li < splitPos || hi_ptr < numEntries) {
+        int64_t lowIdx = li < splitPos ? (int64_t)WENTRY_IDX(wiring, li) : INT64_MAX;
+        int64_t highIdx = hi_ptr < numEntries ? (int64_t)WENTRY_IDX(wiring, hi_ptr) - halfSize : INT64_MAX;
+
+        const uint64_t *a0, *m0, *a1, *m1;
+        int mergedIdx;
+
+        if (lowIdx <= highIdx) {
+            mergedIdx = (int)lowIdx;
+            a0 = WENTRY_ADD(wiring, li);
+            m0 = WENTRY_MUL(wiring, li);
+            li++;
+            if (lowIdx == highIdx) {
+                a1 = WENTRY_ADD(wiring, hi_ptr);
+                m1 = WENTRY_MUL(wiring, hi_ptr);
+                hi_ptr++;
+            } else {
+                a1 = ZERO; m1 = ZERO;
+            }
+        } else {
+            mergedIdx = (int)highIdx;
+            a0 = ZERO; m0 = ZERO;
+            a1 = WENTRY_ADD(wiring, hi_ptr);
+            m1 = WENTRY_MUL(wiring, hi_ptr);
+            hi_ptr++;
+        }
+
+        int yIdx = mergedIdx & yMask;
+        int xIdx = mergedIdx >> nIn;
+        const uint64_t *vx0 = (xIdx < vxHalf) ? vx + xIdx * FR_LIMBS : ZERO;
+        const uint64_t *vx1 = (xIdx + vxHalf < vxSize) ? vx + (xIdx + vxHalf) * FR_LIMBS : ZERO;
+        const uint64_t *vyVal = (yIdx < vySize) ? vy + yIdx * FR_LIMBS : ZERO;
+
+        // c0 = a0 + m0*vy, c1 = a1 + m1*vy
+        uint64_t m0vy[4], m1vy[4], c0[4], c1[4], a0vy[4], a1vy[4];
+        mont_mul_4limb(m0, vyVal, BN254_FR_P, BN254_FR_INV, m0vy);
+        mont_mul_4limb(m1, vyVal, BN254_FR_P, BN254_FR_INV, m1vy);
+        mont_add_4limb(a0, m0vy, BN254_FR_P, c0);
+        mont_add_4limb(a1, m1vy, BN254_FR_P, c1);
+        mont_mul_4limb(a0, vyVal, BN254_FR_P, BN254_FR_INV, a0vy);
+        mont_mul_4limb(a1, vyVal, BN254_FR_P, BN254_FR_INV, a1vy);
+
+        // g0 = c0*vx0 + a0vy
+        uint64_t g0[4], g1[4];
+        mont_mul_4limb(c0, vx0, BN254_FR_P, BN254_FR_INV, g0);
+        mont_add_4limb(g0, a0vy, BN254_FR_P, g0);
+        mont_add_4limb(s0, g0, BN254_FR_P, s0);
+
+        // g1 = c1*vx1 + a1vy
+        mont_mul_4limb(c1, vx1, BN254_FR_P, BN254_FR_INV, g1);
+        mont_add_4limb(g1, a1vy, BN254_FR_P, g1);
+        mont_add_4limb(s1, g1, BN254_FR_P, s1);
+
+        // g2: c2=2c1-c0, a2vy=2*a1vy-a0vy, vx2=2vx1-vx0
+        uint64_t c2[4], a2vy[4], vx2[4], g2[4];
+        mont_add_4limb(c1, c1, BN254_FR_P, c2);
+        mont_sub_4limb(c2, c0, BN254_FR_P, c2);
+        mont_add_4limb(a1vy, a1vy, BN254_FR_P, a2vy);
+        mont_sub_4limb(a2vy, a0vy, BN254_FR_P, a2vy);
+        mont_add_4limb(vx1, vx1, BN254_FR_P, vx2);
+        mont_sub_4limb(vx2, vx0, BN254_FR_P, vx2);
+        mont_mul_4limb(c2, vx2, BN254_FR_P, BN254_FR_INV, g2);
+        mont_add_4limb(g2, a2vy, BN254_FR_P, g2);
+        mont_add_4limb(s2, g2, BN254_FR_P, s2);
+    }
+}
+
+/// GKR sumcheck Y-phase round evaluation.
+void gkr_sumcheck_round_y(
+    const uint64_t *wiring, int numEntries,
+    const uint64_t vxScalar[4],
+    const uint64_t *vy, int vySize,
+    int halfSize,
+    uint64_t s0[4], uint64_t s1[4], uint64_t s2[4])
+{
+    static const uint64_t ZERO[4] = {0,0,0,0};
+    int vyHalf = vySize / 2;
+
+    int splitPos = 0;
+    {
+        int lo = 0, hi2 = numEntries;
+        while (lo < hi2) {
+            int mid = (lo + hi2) / 2;
+            if ((int64_t)WENTRY_IDX(wiring, mid) < halfSize) lo = mid + 1;
+            else hi2 = mid;
+        }
+        splitPos = lo;
+    }
+
+    int li = 0, hi_ptr = splitPos;
+
+    while (li < splitPos || hi_ptr < numEntries) {
+        int64_t lowIdx = li < splitPos ? (int64_t)WENTRY_IDX(wiring, li) : INT64_MAX;
+        int64_t highIdx = hi_ptr < numEntries ? (int64_t)WENTRY_IDX(wiring, hi_ptr) - halfSize : INT64_MAX;
+
+        const uint64_t *a0, *m0, *a1, *m1;
+        int mergedIdx;
+
+        if (lowIdx <= highIdx) {
+            mergedIdx = (int)lowIdx;
+            a0 = WENTRY_ADD(wiring, li);
+            m0 = WENTRY_MUL(wiring, li);
+            li++;
+            if (lowIdx == highIdx) {
+                a1 = WENTRY_ADD(wiring, hi_ptr);
+                m1 = WENTRY_MUL(wiring, hi_ptr);
+                hi_ptr++;
+            } else {
+                a1 = ZERO; m1 = ZERO;
+            }
+        } else {
+            mergedIdx = (int)highIdx;
+            a0 = ZERO; m0 = ZERO;
+            a1 = WENTRY_ADD(wiring, hi_ptr);
+            m1 = WENTRY_MUL(wiring, hi_ptr);
+            hi_ptr++;
+        }
+
+        const uint64_t *vy0 = (mergedIdx < vyHalf) ? vy + mergedIdx * FR_LIMBS : ZERO;
+        const uint64_t *vy1 = (mergedIdx + vyHalf < vySize) ? vy + (mergedIdx + vyHalf) * FR_LIMBS : ZERO;
+
+        // c0 = a0 + m0*vx, c1 = a1 + m1*vx
+        uint64_t m0vx[4], m1vx[4], c0[4], c1[4], a0vx[4], a1vx[4];
+        mont_mul_4limb(m0, vxScalar, BN254_FR_P, BN254_FR_INV, m0vx);
+        mont_mul_4limb(m1, vxScalar, BN254_FR_P, BN254_FR_INV, m1vx);
+        mont_add_4limb(a0, m0vx, BN254_FR_P, c0);
+        mont_add_4limb(a1, m1vx, BN254_FR_P, c1);
+        mont_mul_4limb(a0, vxScalar, BN254_FR_P, BN254_FR_INV, a0vx);
+        mont_mul_4limb(a1, vxScalar, BN254_FR_P, BN254_FR_INV, a1vx);
+
+        uint64_t g0[4], g1[4];
+        mont_mul_4limb(c0, vy0, BN254_FR_P, BN254_FR_INV, g0);
+        mont_add_4limb(g0, a0vx, BN254_FR_P, g0);
+        mont_add_4limb(s0, g0, BN254_FR_P, s0);
+
+        mont_mul_4limb(c1, vy1, BN254_FR_P, BN254_FR_INV, g1);
+        mont_add_4limb(g1, a1vx, BN254_FR_P, g1);
+        mont_add_4limb(s1, g1, BN254_FR_P, s1);
+
+        uint64_t c2[4], a2vx[4], vy2[4], g2[4];
+        mont_add_4limb(c1, c1, BN254_FR_P, c2);
+        mont_sub_4limb(c2, c0, BN254_FR_P, c2);
+        mont_add_4limb(a1vx, a1vx, BN254_FR_P, a2vx);
+        mont_sub_4limb(a2vx, a0vx, BN254_FR_P, a2vx);
+        mont_add_4limb(vy1, vy1, BN254_FR_P, vy2);
+        mont_sub_4limb(vy2, vy0, BN254_FR_P, vy2);
+        mont_mul_4limb(c2, vy2, BN254_FR_P, BN254_FR_INV, g2);
+        mont_add_4limb(g2, a2vx, BN254_FR_P, g2);
+        mont_add_4limb(s2, g2, BN254_FR_P, s2);
+    }
+}
+
+/// Reduce sparse wiring after a sumcheck round.
+/// Merges low/high halves using challenge value.
+/// Input wiring: numEntries entries (WENTRY_STRIDE each, sorted by idx).
+/// Output wiring: written to outWiring, returns number of output entries.
+/// halfSize: the split threshold.
+int gkr_wiring_reduce(
+    const uint64_t *wiring, int numEntries,
+    const uint64_t challenge[4],
+    int halfSize,
+    uint64_t *outWiring)
+{
+    uint64_t oneMinusC[4];
+    mont_sub_4limb(BN254_FR_ONE, challenge, BN254_FR_P, oneMinusC);
+
+    int splitPos = 0;
+    {
+        int lo = 0, hi2 = numEntries;
+        while (lo < hi2) {
+            int mid = (lo + hi2) / 2;
+            if ((int64_t)WENTRY_IDX(wiring, mid) < halfSize) lo = mid + 1;
+            else hi2 = mid;
+        }
+        splitPos = lo;
+    }
+
+    int li = 0, hi_ptr = splitPos;
+    int outCount = 0;
+
+    while (li < splitPos || hi_ptr < numEntries) {
+        int64_t lowIdx = li < splitPos ? (int64_t)WENTRY_IDX(wiring, li) : INT64_MAX;
+        int64_t highIdx = hi_ptr < numEntries ? (int64_t)WENTRY_IDX(wiring, hi_ptr) - halfSize : INT64_MAX;
+
+        uint64_t *out = outWiring + outCount * WENTRY_STRIDE;
+
+        if (lowIdx < highIdx) {
+            out[0] = (uint64_t)lowIdx;
+            mont_mul_4limb(oneMinusC, WENTRY_ADD(wiring, li), BN254_FR_P, BN254_FR_INV, out + 1);
+            mont_mul_4limb(oneMinusC, WENTRY_MUL(wiring, li), BN254_FR_P, BN254_FR_INV, out + 5);
+            li++;
+        } else if (highIdx < lowIdx) {
+            out[0] = (uint64_t)highIdx;
+            mont_mul_4limb(challenge, WENTRY_ADD(wiring, hi_ptr), BN254_FR_P, BN254_FR_INV, out + 1);
+            mont_mul_4limb(challenge, WENTRY_MUL(wiring, hi_ptr), BN254_FR_P, BN254_FR_INV, out + 5);
+            hi_ptr++;
+        } else {
+            out[0] = (uint64_t)lowIdx;
+            uint64_t t1[4], t2[4];
+            mont_mul_4limb(oneMinusC, WENTRY_ADD(wiring, li), BN254_FR_P, BN254_FR_INV, t1);
+            mont_mul_4limb(challenge, WENTRY_ADD(wiring, hi_ptr), BN254_FR_P, BN254_FR_INV, t2);
+            mont_add_4limb(t1, t2, BN254_FR_P, out + 1);
+            mont_mul_4limb(oneMinusC, WENTRY_MUL(wiring, li), BN254_FR_P, BN254_FR_INV, t1);
+            mont_mul_4limb(challenge, WENTRY_MUL(wiring, hi_ptr), BN254_FR_P, BN254_FR_INV, t2);
+            mont_add_4limb(t1, t2, BN254_FR_P, out + 5);
+            li++;
+            hi_ptr++;
+        }
+        outCount++;
+    }
+    return outCount;
+}
+
+/// Complete GKR sumcheck for one layer.
+/// This fuses wiring construction, all rounds, and MLE reduction into one C call.
+///
+/// gates: numGates * 3 int32_t [type, left, right].
+/// rPoints: numRPoints * (point[nOut * 4 uint64] + weight[4 uint64]).
+/// prevEvals: 2^nIn Fr elements (MLE of previous layer).
+/// nOut, nIn: log2 sizes.
+/// challenges_out: output 2*nIn Fr elements (random challenges, filled by caller after each round).
+/// msgs_out: output 2*nIn * 3 Fr elements (s0, s1, s2 per round).
+/// curVx_out, curVy_out: output folded MLE values.
+///
+/// Returns through pointers. The transcript interaction must still happen in Swift
+/// between rounds, so we expose a per-round stepping interface instead.
+
+/// Single-round step for GKR sumcheck.
+/// Call this for each of the 2*nIn rounds.
+/// wiring/numEntries: current sparse wiring (WENTRY_STRIDE layout).
+/// curVx/curVy: current MLE folds.
+/// round: 0..2*nIn-1.
+/// nIn: log2 input size.
+/// currentTableSize: starts at 2^(2*nIn), halves each round.
+/// s0,s1,s2: output round polynomial values.
+void gkr_sumcheck_step(
+    const uint64_t *wiring, int numEntries,
+    const uint64_t *curVx, int vxSize,
+    const uint64_t *curVy, int vySize,
+    int round, int nIn, int currentTableSize,
+    uint64_t s0[4], uint64_t s1[4], uint64_t s2[4])
+{
+    int halfSize = currentTableSize / 2;
+    int isXPhase = (round < nIn);
+
+    fr_zero(s0);
+    fr_zero(s1);
+    fr_zero(s2);
+
+    if (isXPhase) {
+        gkr_sumcheck_round_x(wiring, numEntries, curVx, vxSize, curVy, vySize,
+                              nIn, halfSize, s0, s1, s2);
+    } else {
+        // Y-phase: vx is a single scalar
+        const uint64_t *vxScalar = (vxSize > 0) ? curVx : (const uint64_t[]){0,0,0,0};
+        gkr_sumcheck_round_y(wiring, numEntries, vxScalar, curVy, vySize,
+                              halfSize, s0, s1, s2);
+    }
+}

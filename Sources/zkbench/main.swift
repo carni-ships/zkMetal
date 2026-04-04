@@ -147,12 +147,16 @@ if cmd == "calibrate" {
     runWHIRBench()
 } else if cmd == "sumcheck" || cmd == "sc" {
     runSumcheckBench()
+} else if cmd == "hdsumcheck" || cmd == "hdsc" {
+    runHighDegSumcheckBench()
 } else if cmd == "usumcheck" || cmd == "usc" {
     runUnivariateSumcheckBench()
 } else if cmd == "kzg" {
     runKZGBench()
 } else if cmd == "kzg-batch" {
     runKZGBatchBench()
+} else if cmd == "kzg-fused" {
+    runKZGFusedBench()
 } else if cmd == "bls377" || cmd == "bls12377" {
     runBLS12377NTTBench()
 } else if cmd == "bls377msm" || cmd == "bls12377msm" {
@@ -183,6 +187,8 @@ if cmd == "calibrate" {
     runEd25519Bench()
 } else if cmd == "babyjubjub" || cmd == "bjj" || cmd == "pedersen-bjj" {
     runBabyJubjubBench()
+} else if cmd == "jubjub" {
+    runJubjubBench()
 } else if cmd == "ipa" {
     runIPABench()
 } else if cmd == "verkle" {
@@ -306,6 +312,7 @@ if cmd == "calibrate" {
     runLookupBench()
     runLassoBench()
     runSparseSumcheckBench()
+    runHighDegSumcheckBench()
     runSortBench()
     runECDSABench()
     runCircleBench()

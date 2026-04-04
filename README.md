@@ -72,6 +72,7 @@ GPU-accelerated zero-knowledge cryptography library for Apple Silicon, written i
 | **Stark252** | GPU/CPU | StarkNet/Cairo native field (p=2^251+17·2^192+1), TWO_ADICITY=192, NTT |
 | **Schnorr** | CPU | BIP 340 Bitcoin Taproot signatures (x-only pubkeys, tagged hashing) |
 | **Poseidon2 BB** | GPU | Poseidon2 BabyBear width-16 (SP1/Plonky3 config, x^7 S-box) |
+| **Jubjub** | CPU | Twisted Edwards over BLS12-381 Fr (Zcash Sapling compatible) |
 
 ## Performance
 
@@ -276,15 +277,15 @@ Previous version (naive O(n^2) poly mul): 7365ms at n=1024 -- GPU NTT gives **43
 
 | Circuit | Prove | Verify |
 |---------|-------|--------|
-| 2^4 width, d=4 | 1.8ms | 2.7ms |
-| 2^5 width, d=4 | 4.2ms | 3.6ms |
-| 2^6 width, d=4 | 9.5ms | 4.7ms |
-| 2^6 width, d=8 | 19ms | 9.3ms |
-| 2^8 width, d=4 | 46ms | 8.8ms |
-| 2^8 width, d=8 | 93ms | 17ms |
-| 2^10 width, d=4 | 241ms | 23ms |
+| 2^4 width, d=4 | 0.20ms | 0.31ms |
+| 2^5 width, d=4 | 0.35ms | 0.49ms |
+| 2^6 width, d=4 | 0.62ms | 0.76ms |
+| 2^6 width, d=8 | 1.2ms | 1.6ms |
+| 2^8 width, d=4 | 2.5ms | 2.3ms |
+| 2^8 width, d=8 | 5.0ms | 4.7ms |
+| 2^10 width, d=4 | 11ms | 8.2ms |
 
-Sparse wiring predicate evaluation: previous dense implementation 3728ms at 2^6 d=8 -- **190x** improvement.
+C CIOS Montgomery acceleration: eq polynomial, sumcheck rounds, wiring reduction, MLE fold all in C. Previous Swift-only: 241ms at 2^10 d=4 -- **22x** improvement.
 
 ### GPU Radix Sort
 
@@ -347,7 +348,7 @@ Sparse wiring predicate evaluation: previous dense implementation 3728ms at 2^6 
 | IPA Accumulation (Pallas) | 7.3ms accumulate (n=4) | Halo-style, batch decide 2.7x |
 | Tensor compress 2^18 | 229ms compress, 39ms verify | **460.7x** compression ratio |
 | WHIR 2^14 | 53ms prove, 16ms verify | 28.2 KB proof size |
-| Lasso 2^18 | 59ms prove, 1.6s verify | C-accelerated decompose, fused GPU CB, **8.2x** from 481ms |
+| Lasso 2^18 | 56ms prove, 31ms verify | C-accelerated: prove **8.2x** (481→56ms), verify **52x** (1.6s→31ms) |
 | LogUp 2^12 | 15ms prove, 16ms verify | Optimal for small-medium tables |
 | cq | Correctness passes | Crashes at larger benchmark sizes |
 | Binius FFT 2^16 | 21ms (CPU) | Binary tower GF(2^32) GPU batch: 0.67ms mul at 2^18 |
@@ -387,8 +388,8 @@ Methodology: Compute-bound = total_ops / 3.6T flops (BN254 mul = ~64 32-bit muls
 | Rank | Primitive | Current | Theoretical Floor | Bottleneck | Headroom |
 |------|-----------|---------|-------------------|------------|----------|
 | 1 | Groth16 prove 256 | 1.5s | ~60ms | MSM dominated (3 large MSMs + NTT) | ~25x |
-| 2 | Lasso prove 2^18 | 59ms | ~30ms | C-accelerated decompose + fused GPU CB | ~2x |
-| 3 | GKR 2^10 d=4 | 241ms | ~17ms | Sumcheck dominated (10 rounds x 2^10 vars) | ~14x |
+| 2 | Lasso prove 2^18 | 56ms | ~30ms | Near floor — C-accelerated + fused GPU | ~2x |
+| 3 | GKR 2^10 d=4 | 11ms | ~5ms | C CIOS sumcheck + wiring (near compute floor) | ~2x |
 | 4 | Plonk prove 1024 | 86ms | ~15ms | NTT + MSM (batch inversion 2.1x from 179ms) | ~6x |
 | 5 | NTT BN254 2^22 | 26ms | ~2.9ms | Compute + strided BW (256-bit: 64 muls/elem) | ~9x |
 | 6 | MSM BN254 2^18 | 45ms | ~5ms | Random-access BW (scatter bucket accumulation) | ~9x |
