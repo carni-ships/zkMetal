@@ -94,7 +94,7 @@ How zkMetal maps to the major ZK stacks deployed in production today.
 |-----------------|---------|-------------------|-----------------|
 | **Plonky3 / SP1** | Succinct SP1 zkVM, Valida | BabyBear NTT, Poseidon2 (width-16 BB), FRI, AIR constraints | **90%** — BabyBear NTT, P2 (BN254/M31), FRI, Circle STARK. Gap: P2 width-16 over BabyBear |
 | **Halo2 (PSE)** | Scroll, Taiko, PSE circuits | Pasta (Pallas/Vesta), IPA, Plonk + lookups | **95%** — Pallas/Vesta, IPA, Plonk, LogUp all shipped |
-| **Cairo / Stwo** | StarkNet, StarkWare | Stark252 field, Circle STARK over M31, Poseidon | **70%** — Circle STARK + M31 yes. **Gap: Stark252 field** |
+| **Cairo / Stwo** | StarkNet, StarkWare | Stark252 field, Circle STARK over M31, Poseidon | **95%** — Circle STARK + M31 + Stark252 field + NTT all shipped |
 | **RISC Zero** | RISC Zero zkVM | BabyBear, FRI, STARK, Poseidon2 | **95%** — all core primitives present |
 | **Jolt / Lasso** | a16z Labs | BN254 pairing, Lasso lookups, sumcheck | **95%** — pairing, Lasso, sumcheck, batch FFI all shipped |
 | **Barretenberg** | Aztec Network | BN254, Grumpkin, Plonk (UltraHonk), KZG | **95%** — BN254+Plonk+KZG+Grumpkin all shipped |
@@ -108,15 +108,17 @@ How zkMetal maps to the major ZK stacks deployed in production today.
 
 | Gap | Blocks | Status |
 |-----|--------|--------|
-| **Stark252 field** | StarkNet/Cairo | In progress (agent running) |
+| **Stark252 field** | StarkNet/Cairo | SHIPPED |
 | **BLS Signatures** | Ethereum consensus | In progress (agent running) |
 | **Poseidon2 width-16 BabyBear** | SP1/Plonky3 exact config | Backlog (config change) |
 
 ### Recently Closed Gaps
 
+- **Stark252 field + NTT** — shipped (StarkNet native field, TWO_ADICITY=192, 238M elem/s)
 - **BabyJubjub** — shipped (twisted Edwards over BN254 Fr, Pedersen hash, EdDSA)
 - **SHA-256** — shipped (GPU batch hash 119M/s, fused Merkle subtree)
 - **Grumpkin curve** — shipped (BN254 inner curve, GPU MSM with signed-digit)
+- **Ed25519** — shipped (Curve25519, EdDSA with RFC 8032 test vectors, GPU MSM)
 
 ### What Full Coverage Looks Like
 
