@@ -251,6 +251,8 @@ if cmd == "calibrate" {
     runPlonkBench()
 } else if cmd == "marlin" || cmd == "ahp" {
     fputs("Marlin bench: stub\n", stderr)
+} else if cmd == "tensor" || cmd == "tc" {
+    runTensorBench()
 } else if cmd == "spartan" {
     fputs("Spartan bench: stub\n", stderr)
 } else if cmd == "groth16" || cmd == "g16" {
