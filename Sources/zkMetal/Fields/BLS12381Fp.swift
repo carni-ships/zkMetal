@@ -483,14 +483,183 @@ public func fp12_381Conjugate(_ a: Fp12_381) -> Fp12_381 {
     Fp12_381(c0: a.c0, c1: fp6_381Neg(a.c1))
 }
 
-/// Frobenius endomorphism on Fp12
-/// For BLS12-381, Frobenius(a0 + a1*w) uses the p-th power Frobenius
-/// Since Fp2 Frobenius is conjugation (p ≡ 3 mod 4):
-/// frob(a + b*u) = a - b*u
+// MARK: - Fp2 Exponentiation (needed for Frobenius computation)
+
+/// Exponentiate Fp2 element by a big integer given as [UInt64] limbs (little-endian).
+private func fp2_381Pow(_ base: Fp2_381, _ exp: [UInt64]) -> Fp2_381 {
+    var result = Fp2_381.one
+    var b = base
+    for limb in exp {
+        var w = limb
+        for _ in 0..<64 {
+            if w & 1 == 1 {
+                result = fp2_381Mul(result, b)
+            }
+            b = fp2_381Sqr(b)
+            w >>= 1
+        }
+    }
+    return result
+}
+
+// MARK: - Frobenius Coefficients for BLS12-381
+// Computed at first use from (1+u)^((p^i-1)/k) using Fp2 exponentiation.
+// This avoids hardcoded constants that are error-prone.
+
+/// p = 0x1a0111ea397fe69a4b1ba7b6434bacd764774b84f38512bf6730d2a0f6b0f6241eabfffeb153ffffb9feffffffffaaab
+/// (p-1)/3 in little-endian 64-bit limbs
+private let pMinus1Over3: [UInt64] = {
+    // (p-1) = p - 1
+    // p-1 = 0x1a0111ea397fe69a4b1ba7b6434bacd764774b84f38512bf6730d2a0f6b0f6241eabfffeb153ffffb9feffffffffaaaa
+    // (p-1)/3 = 0x08b0a9e4b08d2538d6090b44ed80e6e2c01e1d4c07ba5aa8cee1d4cc9c3274fe0dab943d0b12f8a2e2eb92f03f5f69c87600000015555
+    // Computed: (p-1)/3
+    var pM1: [UInt64] = Fp381.P
+    pM1[0] -= 1  // p-1
+    // Divide by 3
+    return div384by3(pM1)
+}()
+
+/// Divide a 384-bit number (6 x UInt64, little-endian) by 3.
+/// Assumes the number is divisible by 3.
+private func div384by3(_ a: [UInt64]) -> [UInt64] {
+    var result = [UInt64](repeating: 0, count: 6)
+    var remainder: UInt64 = 0
+    for i in stride(from: 5, through: 0, by: -1) {
+        // We need to divide (remainder * 2^64 + a[i]) by 3.
+        // remainder is at most 2 (since we're dividing by 3).
+        // Use bit-by-bit division to avoid needing 128-bit arithmetic.
+        var word: UInt64 = 0
+        var r = remainder
+        for bit in stride(from: 63, through: 0, by: -1) {
+            r = r << 1 | ((a[i] >> bit) & 1)
+            if r >= 3 {
+                word |= 1 << bit
+                r -= 3
+            }
+        }
+        result[i] = word
+        remainder = r
+    }
+    return result
+}
+
+/// Compute (p-1)/6 as [UInt64] limbs (little-endian)
+private let pMinus1Over6: [UInt64] = {
+    div384by3(div384by2(pMinus1()))
+}()
+
+private func pMinus1() -> [UInt64] {
+    var result = Fp381.P
+    result[0] -= 1
+    return result
+}
+
+private func div384by2(_ a: [UInt64]) -> [UInt64] {
+    var result = [UInt64](repeating: 0, count: 6)
+    for i in 0..<6 {
+        result[i] = a[i] >> 1
+        if i < 5 {
+            result[i] |= (a[i + 1] & 1) << 63
+        }
+    }
+    return result
+}
+
+/// The non-residue (1 + u) in Fp2
+private let fp2_381NonResidue = Fp2_381(c0: .one, c1: .one)
+
+/// Frobenius coefficients, computed at first use.
+/// gamma_{1,1} = (1+u)^((p-1)/3)
+private let FROBENIUS_COEFF_FP6_C1_1: Fp2_381 = fp2_381Pow(fp2_381NonResidue, pMinus1Over3)
+/// gamma_{2,1} = (1+u)^(2(p-1)/3) = gamma_{1,1}^2
+private let FROBENIUS_COEFF_FP6_C2_1: Fp2_381 = fp2_381Sqr(FROBENIUS_COEFF_FP6_C1_1)
+
+/// For Frobenius^2: (1+u)^((p^2-1)/3)
+/// = (1+u)^((p-1)(p+1)/3) = [(1+u)^((p-1)/3)]^(p+1) = gamma_{1,1}^p * gamma_{1,1}
+/// Since Frobenius on Fp2 is conjugation: gamma_{1,1}^p = conj(gamma_{1,1})
+private let FROBENIUS_COEFF_FP6_C1_2: Fp2_381 = fp2_381Mul(fp2_381Conjugate(FROBENIUS_COEFF_FP6_C1_1), FROBENIUS_COEFF_FP6_C1_1)
+/// (1+u)^(2(p^2-1)/3) = C1_2^2
+private let FROBENIUS_COEFF_FP6_C2_2: Fp2_381 = fp2_381Sqr(FROBENIUS_COEFF_FP6_C1_2)
+
+/// For Frobenius^3: (1+u)^((p^3-1)/3)
+/// = (1+u)^((p-1)(p^2+p+1)/3) = [(1+u)^((p-1)/3)]^(p^2+p+1)
+/// = gamma_{1,1}^(p^2) * gamma_{1,1}^p * gamma_{1,1}
+/// = conj(conj(gamma_{1,1})) * conj(gamma_{1,1}) * gamma_{1,1}  [since frob^2 on Fp2 = identity]
+/// = gamma_{1,1} * conj(gamma_{1,1}) * gamma_{1,1}
+/// = |gamma_{1,1}|^2 * gamma_{1,1}  ... hmm, this isn't right
+/// Actually: gamma_{1,1}^(p^2) = gamma_{1,1} (since p^2 acts as identity on Fp2)
+/// So: C1_3 = gamma_{1,1}^(p^2+p+1) = gamma_{1,1} * conj(gamma_{1,1}) * gamma_{1,1}
+///         = |gamma_{1,1}|^2 * gamma_{1,1}
+/// Wait, p^2 on Fp2 IS identity (since [Fp2:Fp]=2 and p^2 ≡ 1 on Fp2).
+/// So: C1_3 = gamma_{1,1}^(1+p+1) = gamma_{1,1}^(p+2)  ... no, (p^3-1)/3 = (p-1)(p^2+p+1)/3
+/// Since (p^2+p+1) = (p^2+p+1), and we know gamma_{1,1}^(p-1) is in Fp (norm of gamma_{1,1}),
+/// this gets complicated. Let me just compute it directly.
+private let FROBENIUS_COEFF_FP6_C1_3: Fp2_381 = {
+    // (1+u)^((p^3-1)/3) = [(1+u)^((p-1)/3)]^(p^2+p+1)
+    let g = FROBENIUS_COEFF_FP6_C1_1
+    let gp = fp2_381Conjugate(g)  // g^p
+    let gp2 = g  // g^(p^2) = g since p^2 acts as identity on Fp2
+    return fp2_381Mul(fp2_381Mul(gp2, gp), g)
+}()
+private let FROBENIUS_COEFF_FP6_C2_3: Fp2_381 = fp2_381Sqr(FROBENIUS_COEFF_FP6_C1_3)
+
+/// For Fp12 Frobenius: (1+u)^((p-1)/6)
+private let FROBENIUS_COEFF_FP12_C1_1: Fp2_381 = fp2_381Pow(fp2_381NonResidue, pMinus1Over6)
+/// (1+u)^((p^2-1)/6) = [(1+u)^((p-1)/6)]^(p+1) = conj(C12_1) * C12_1
+private let FROBENIUS_COEFF_FP12_C1_2: Fp2_381 = fp2_381Mul(fp2_381Conjugate(FROBENIUS_COEFF_FP12_C1_1), FROBENIUS_COEFF_FP12_C1_1)
+/// (1+u)^((p^3-1)/6) = [(1+u)^((p-1)/6)]^(p^2+p+1) = C12_1^(p^2) * C12_1^p * C12_1
+/// = C12_1 * conj(C12_1) * C12_1 = |C12_1|^2 * C12_1
+private let FROBENIUS_COEFF_FP12_C1_3: Fp2_381 = {
+    let g = FROBENIUS_COEFF_FP12_C1_1
+    let gp = fp2_381Conjugate(g)
+    return fp2_381Mul(fp2_381Mul(g, gp), g)
+}()
+
+/// Frobenius on Fp6: frob_p(c0 + c1*v + c2*v^2) = conj(c0) + conj(c1)*gamma1 * v + conj(c2)*gamma2 * v^2
+private func fp6_381Frobenius(_ a: Fp6_381) -> Fp6_381 {
+    let c0 = fp2_381Conjugate(a.c0)
+    let c1 = fp2_381Mul(fp2_381Conjugate(a.c1), FROBENIUS_COEFF_FP6_C1_1)
+    let c2 = fp2_381Mul(fp2_381Conjugate(a.c2), FROBENIUS_COEFF_FP6_C2_1)
+    return Fp6_381(c0: c0, c1: c1, c2: c2)
+}
+
+/// Frobenius^2 on Fp6
+private func fp6_381Frobenius2(_ a: Fp6_381) -> Fp6_381 {
+    let c0 = a.c0  // conj(conj(x)) = x for Fp2 Frobenius applied twice
+    let c1 = fp2_381Mul(a.c1, FROBENIUS_COEFF_FP6_C1_2)
+    let c2 = fp2_381Mul(a.c2, FROBENIUS_COEFF_FP6_C2_2)
+    return Fp6_381(c0: c0, c1: c1, c2: c2)
+}
+
+/// Frobenius^3 on Fp6
+private func fp6_381Frobenius3(_ a: Fp6_381) -> Fp6_381 {
+    let c0 = fp2_381Conjugate(a.c0)
+    let c1 = fp2_381Mul(fp2_381Conjugate(a.c1), FROBENIUS_COEFF_FP6_C1_3)
+    let c2 = fp2_381Mul(fp2_381Conjugate(a.c2), FROBENIUS_COEFF_FP6_C2_3)
+    return Fp6_381(c0: c0, c1: c1, c2: c2)
+}
+
+/// Frobenius endomorphism on Fp12 (p-th power)
+/// frob(a0 + a1*w) = frob_fp6(a0) + frob_fp6(a1) * gamma_w * w
+/// where gamma_w = (1+u)^((p-1)/6) is FROBENIUS_COEFF_FP12_C1_1
 public func fp12_381Frobenius(_ a: Fp12_381) -> Fp12_381 {
-    // This is a simplified stub -- full Frobenius requires precomputed coefficients
-    // For the easy part of final exponentiation, we use p^6 Frobenius = conjugation
-    fp12_381Conjugate(a)
+    let c0 = fp6_381Frobenius(a.c0)
+    let c1 = fp6_381MulByFp2(fp6_381Frobenius(a.c1), FROBENIUS_COEFF_FP12_C1_1)
+    return Fp12_381(c0: c0, c1: c1)
+}
+
+/// Frobenius^2 on Fp12
+public func fp12_381Frobenius2(_ a: Fp12_381) -> Fp12_381 {
+    let c0 = fp6_381Frobenius2(a.c0)
+    let c1 = fp6_381MulByFp2(fp6_381Frobenius2(a.c1), FROBENIUS_COEFF_FP12_C1_2)
+    return Fp12_381(c0: c0, c1: c1)
+}
+
+/// Frobenius^3 on Fp12
+public func fp12_381Frobenius3(_ a: Fp12_381) -> Fp12_381 {
+    let c0 = fp6_381Frobenius3(a.c0)
+    let c1 = fp6_381MulByFp2(fp6_381Frobenius3(a.c1), FROBENIUS_COEFF_FP12_C1_3)
+    return Fp12_381(c0: c0, c1: c1)
 }
 
 /// Exponentiation by the BLS parameter x = 0xd201000000010000

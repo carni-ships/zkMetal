@@ -78,11 +78,64 @@ SecpPointProjective secp_point_add_mixed(SecpPointProjective p, SecpPointAffine 
     return result;
 }
 
+// Fast mixed addition: no identity/doubling checks.
+// Use only when p is guaranteed non-identity and p != ±q.
+// Saves branch overhead in tight MSM bucket reduction loops.
+SecpPointProjective secp_point_add_mixed_unsafe(SecpPointProjective p, SecpPointAffine q) {
+    SecpFp z1z1 = secp_mul(p.z, p.z);
+    SecpFp u2 = secp_mul(q.x, z1z1);
+    SecpFp s2 = secp_mul(q.y, secp_mul(p.z, z1z1));
+    SecpFp h = secp_sub(u2, p.x);
+    SecpPointProjective result;
+    result.z = secp_double(secp_mul(p.z, h));
+    SecpFp hh = secp_mul(h, h);
+    SecpFp i = secp_double(secp_double(hh));
+    SecpFp v = secp_mul(p.x, i);
+    SecpFp j = secp_mul(h, i);
+    SecpFp rr = secp_double(secp_sub(s2, p.y));
+    result.x = secp_sub(secp_sub(secp_mul(rr, rr), j), secp_double(v));
+    result.y = secp_sub(secp_mul(rr, secp_sub(v, result.x)),
+                        secp_double(secp_mul(p.y, j)));
+    return result;
+}
+
 // Full addition: projective + projective
 SecpPointProjective secp_point_add(SecpPointProjective p, SecpPointProjective q) {
     if (secp_point_is_identity(p)) return q;
     if (secp_point_is_identity(q)) return p;
 
+    SecpFp z1z1 = secp_mul(p.z, p.z);
+    SecpFp z2z2 = secp_mul(q.z, q.z);
+    SecpFp u1 = secp_mul(p.x, z2z2);
+    SecpFp u2 = secp_mul(q.x, z1z1);
+    SecpFp s1 = secp_mul(p.y, secp_mul(q.z, z2z2));
+    SecpFp s2 = secp_mul(q.y, secp_mul(p.z, z1z1));
+
+    SecpFp h = secp_sub(u2, u1);
+    SecpFp rr = secp_double(secp_sub(s2, s1));
+
+    if (secp_is_zero(h)) {
+        if (secp_is_zero(rr)) return secp_point_double(p);
+        return secp_point_identity();
+    }
+
+    SecpPointProjective result;
+    result.z = secp_mul(secp_double(secp_mul(p.z, q.z)), h);
+
+    SecpFp dh = secp_double(h);
+    SecpFp i = secp_mul(dh, dh);
+    SecpFp v = secp_mul(u1, i);
+    SecpFp j = secp_mul(h, i);
+
+    result.x = secp_sub(secp_sub(secp_mul(rr, rr), j), secp_double(v));
+    result.y = secp_sub(secp_mul(rr, secp_sub(v, result.x)),
+                        secp_double(secp_mul(s1, j)));
+    return result;
+}
+
+// Fast projective addition: no identity checks.
+// Use only when both p and q are guaranteed non-identity.
+SecpPointProjective secp_point_add_unsafe(SecpPointProjective p, SecpPointProjective q) {
     SecpFp z1z1 = secp_mul(p.z, p.z);
     SecpFp z2z2 = secp_mul(q.z, q.z);
     SecpFp u1 = secp_mul(p.x, z2z2);

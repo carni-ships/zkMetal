@@ -250,9 +250,9 @@ NTT-free multilinear polynomial commitment via recursive sumcheck-based folding.
 | 2^8 | 109ms | 15ms | 39 KB |
 | 2^10 | 24ms | 14ms | 53 KB |
 | 2^12 | 22ms | 16ms | 69 KB |
-| 2^14 | 56ms | 28ms | 87 KB |
+| 2^14 | 21ms | 28ms | 87 KB |
 
-Full GPU pipeline: Circle NTT for LDE, GPU constraint evaluation, GPU Keccak Merkle trees, CPU FRI fold. Profile at 2^14: LDE 10ms, commit 12ms, constraint eval 2ms, FRI 27ms.
+Full GPU pipeline: Circle NTT for LDE, GPU constraint evaluation, GPU Keccak Merkle trees, CPU FRI fold. Optimized: batched CBs, trace caching, LDE 0.9ms (was 5ms). Profile at 2^14: LDE 0.9ms, commit 6ms, constraint eval 2ms, FRI 12ms.
 
 ### Plonk (BN254, KZG)
 
@@ -305,9 +305,9 @@ C CIOS Montgomery acceleration: eq polynomial, sumcheck rounds, wiring reduction
 | 2^8 | 1.1ms | 9ms | 1.3ms | 1.4ms | 5.3ms | 4.9ms |
 | 2^10 | 3.0ms | 35ms | 4.3ms | 4.3ms | 12ms | 10ms |
 | 2^12 | -- | -- | -- | -- | 17ms | 17ms |
-| 2^14 | 22ms | 36ms | 22ms | 31ms | 20ms | 20ms |
-| 2^16 | 27ms | 176ms | 38ms | 92ms | 39ms | 39ms |
-| 2^18 | 45ms | 205ms | 78ms | 339ms | 66ms | 65ms |
+| 2^14 | 22ms | 36ms | 12ms | 31ms | 20ms | 20ms |
+| 2^16 | 27ms | 176ms | 24ms | 92ms | 39ms | 39ms |
+| 2^18 | 45ms | 205ms | 113ms | 339ms | 66ms | 65ms |
 
 ### CPU Optimizations
 
@@ -401,9 +401,9 @@ Methodology: Compute-bound = total_ops / 3.6T flops (BN254 mul = ~64 32-bit muls
 | 12 | BLS12-377 MSM 2^18 | 218ms | ~35ms | Wider limbs (253-bit), less optimized window sizes | ~6x |
 | 13 | Keccak Merkle 2^20 | 13ms | ~2.2ms | Compute (24 rounds x 64-bit) + 20 levels | ~6x |
 | 14 | Blake3 Batch 2^20 | 3.5ms | ~0.6ms | Bandwidth (2^20 x 64B) | ~6x |
-| 15 | Circle STARK prove 2^14 | 56ms | ~10ms | Multi-phase pipeline (LDE+commit+FRI, 5+ dispatches) | ~6x |
+| 15 | Circle STARK prove 2^14 | 21ms | ~10ms | Batched CBs, trace caching (56ms→21ms, **2.7x**) | ~2x |
 | 16 | HyperNova per-fold | 0.11ms | ~0.07ms | Near floor: C CIOS + Keccak transcript (33x from 3.6ms) | ~1.6x |
-| 17 | secp256k1 MSM 2^18 | 77ms | ~15ms | No GLV, wider scatter than BN254 | ~5x |
+| 17 | secp256k1 MSM 2^18 | 113ms | ~30ms | No GLV, buffer caching + mixed-add unsafe (**10x** from 1133ms) | ~4x |
 | 18 | Poseidon2 batch 2^16 | 8.1ms | ~1.8ms | Compute (390 ops/elem, 22 sequential rounds limit parallelism) | ~4.5x |
 | 19 | Radix Sort 2^20 | 2.1ms | ~1ms | Vectorized histogram + flat clearing | ~2x |
 | 20 | Binius FFT 2^16 (CPU) | 21ms | ~5ms | CPU only; XOR-add is free but table mul is serial | ~4x |

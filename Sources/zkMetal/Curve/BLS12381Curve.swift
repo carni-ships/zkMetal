@@ -367,3 +367,8 @@ public func bls12381G2SimplePoint() -> G2Affine381 {
     ]), Fp381.from64(Fp381.R2_MOD_P))
     return G2Affine381(x: Fp2_381(c0: xc0, c1: xc1), y: Fp2_381(c0: yc0, c1: yc1))
 }
+
+/// Alias for the standard G2 generator point on BLS12-381
+public func bls12381G2Generator() -> G2Affine381 {
+    return bls12381G2SimplePoint()
+}

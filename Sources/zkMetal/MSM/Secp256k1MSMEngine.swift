@@ -465,6 +465,16 @@ public class Secp256k1MSM {
             let nWLocal = nWindows
             let eN = effectiveN
 
+            // Flatten scalars into contiguous buffer for better cache/pointer performance
+            let flatBuf = UnsafeMutablePointer<UInt32>.allocate(capacity: eN * 8)
+            activeScalars.withUnsafeBufferPointer { scalarsArrayBuf in
+                for i in 0..<eN {
+                    scalarsArrayBuf[i].withUnsafeBufferPointer { sp in
+                        memcpy(flatBuf + i * 8, sp.baseAddress!, 32)
+                    }
+                }
+            }
+
             let chunkSize = 4096
             let nChunks = (effectiveN + chunkSize - 1) / chunkSize
             DispatchQueue.concurrentPerform(iterations: nChunks) { chunk in
@@ -472,7 +482,45 @@ public class Secp256k1MSM {
                 let end = min(start + chunkSize, eN)
                 for i in start..<end {
                     var carry: UInt32 = 0
-                    activeScalars[i].withUnsafeBufferPointer { sp in
+                    let sp = flatBuf + (i * 8)
+                    if wbLocal == 16 {
+                        // Unrolled wb=16 path: each window is a 16-bit half-limb
+                        let s0 = sp[0]; let s1 = sp[1]; let s2 = sp[2]; let s3 = sp[3]
+                        let s4 = sp[4]; let s5 = sp[5]; let s6 = sp[6]; let s7 = sp[7]
+                        var d: UInt32
+                        d = (s0 & 0xFFFF) &+ carry; carry = 0
+                        if d > halfBk { d = fullBk &- d; carry = 1; signedDigitBuf[i] = d | 0x80000000 } else { signedDigitBuf[i] = d }
+                        d = (s0 >> 16) &+ carry; carry = 0
+                        if d > halfBk { d = fullBk &- d; carry = 1; signedDigitBuf[eN + i] = d | 0x80000000 } else { signedDigitBuf[eN + i] = d }
+                        d = (s1 & 0xFFFF) &+ carry; carry = 0
+                        if d > halfBk { d = fullBk &- d; carry = 1; signedDigitBuf[2*eN + i] = d | 0x80000000 } else { signedDigitBuf[2*eN + i] = d }
+                        d = (s1 >> 16) &+ carry; carry = 0
+                        if d > halfBk { d = fullBk &- d; carry = 1; signedDigitBuf[3*eN + i] = d | 0x80000000 } else { signedDigitBuf[3*eN + i] = d }
+                        d = (s2 & 0xFFFF) &+ carry; carry = 0
+                        if d > halfBk { d = fullBk &- d; carry = 1; signedDigitBuf[4*eN + i] = d | 0x80000000 } else { signedDigitBuf[4*eN + i] = d }
+                        d = (s2 >> 16) &+ carry; carry = 0
+                        if d > halfBk { d = fullBk &- d; carry = 1; signedDigitBuf[5*eN + i] = d | 0x80000000 } else { signedDigitBuf[5*eN + i] = d }
+                        d = (s3 & 0xFFFF) &+ carry; carry = 0
+                        if d > halfBk { d = fullBk &- d; carry = 1; signedDigitBuf[6*eN + i] = d | 0x80000000 } else { signedDigitBuf[6*eN + i] = d }
+                        d = (s3 >> 16) &+ carry; carry = 0
+                        if d > halfBk { d = fullBk &- d; carry = 1; signedDigitBuf[7*eN + i] = d | 0x80000000 } else { signedDigitBuf[7*eN + i] = d }
+                        d = (s4 & 0xFFFF) &+ carry; carry = 0
+                        if d > halfBk { d = fullBk &- d; carry = 1; signedDigitBuf[8*eN + i] = d | 0x80000000 } else { signedDigitBuf[8*eN + i] = d }
+                        d = (s4 >> 16) &+ carry; carry = 0
+                        if d > halfBk { d = fullBk &- d; carry = 1; signedDigitBuf[9*eN + i] = d | 0x80000000 } else { signedDigitBuf[9*eN + i] = d }
+                        d = (s5 & 0xFFFF) &+ carry; carry = 0
+                        if d > halfBk { d = fullBk &- d; carry = 1; signedDigitBuf[10*eN + i] = d | 0x80000000 } else { signedDigitBuf[10*eN + i] = d }
+                        d = (s5 >> 16) &+ carry; carry = 0
+                        if d > halfBk { d = fullBk &- d; carry = 1; signedDigitBuf[11*eN + i] = d | 0x80000000 } else { signedDigitBuf[11*eN + i] = d }
+                        d = (s6 & 0xFFFF) &+ carry; carry = 0
+                        if d > halfBk { d = fullBk &- d; carry = 1; signedDigitBuf[12*eN + i] = d | 0x80000000 } else { signedDigitBuf[12*eN + i] = d }
+                        d = (s6 >> 16) &+ carry; carry = 0
+                        if d > halfBk { d = fullBk &- d; carry = 1; signedDigitBuf[13*eN + i] = d | 0x80000000 } else { signedDigitBuf[13*eN + i] = d }
+                        d = (s7 & 0xFFFF) &+ carry; carry = 0
+                        if d > halfBk { d = fullBk &- d; carry = 1; signedDigitBuf[14*eN + i] = d | 0x80000000 } else { signedDigitBuf[14*eN + i] = d }
+                        d = (s7 >> 16) &+ carry; carry = 0
+                        if d > halfBk { d = fullBk &- d; carry = 1; signedDigitBuf[15*eN + i] = d | 0x80000000 } else { signedDigitBuf[15*eN + i] = d }
+                    } else {
                         for w in 0..<nWLocal {
                             let bitOff = w * Int(wbLocal)
                             let limbIdx = bitOff / 32
@@ -498,22 +546,58 @@ public class Secp256k1MSM {
                     }
                 }
             }
+            flatBuf.deallocate()
         }
 
-        // Count-sort per window
+        // Compute CV2 (coefficient of variation squared) of bucket distribution
+        // for a single window. When < 0.5, distribution is uniform enough that
+        // CSM reordering provides negligible SIMD coherence benefit.
         let signedDigitBufFinal = signedDigitPtr!
+        let scratchStride = nBuckets
+        func computeBucketCV2(windowIndex: Int) -> Double {
+            let sdBuf = signedDigitBufFinal + windowIndex * effectiveN
+            let counts = countsBase + windowIndex * scratchStride
+            for i in 0..<nBuckets { counts[i] = 0 }
+            for i in 0..<effectiveN {
+                counts[Int(sdBuf[i] & 0x7FFFFFFF)] += 1
+            }
+            let activeBuckets = nBuckets - 1
+            guard activeBuckets > 0 else { return 0.0 }
+            var sum: Int = 0
+            for i in 1..<nBuckets { sum += counts[i] }
+            let mean = Double(sum) / Double(activeBuckets)
+            guard mean > 0 else { return 0.0 }
+            var variance: Double = 0.0
+            for i in 1..<nBuckets {
+                let diff = Double(counts[i]) - mean
+                variance += diff * diff
+            }
+            variance /= Double(activeBuckets)
+            return variance / (mean * mean)
+        }
+
+        // Adaptive bucket sort: compute CV2 to decide whether CSM reordering is worth it
+        var skipCSM = false
+        if effectiveN >= 8192 {
+            let cv2 = computeBucketCV2(windowIndex: 0)
+            skipCSM = cv2 < 0.5
+        }
+
+        // Count-sort per window with adaptive CSM
         DispatchQueue.concurrentPerform(iterations: nWindows) { w in
             let wOff = w * nBuckets
             let idxBase = w * effectiveN
-            let counts = countsBase + w * nBuckets
-            let positions = positionsBase + w * nBuckets
+            let counts = countsBase + w * scratchStride
+            let positions = positionsBase + w * scratchStride
             let sdBuf = signedDigitBufFinal + w * effectiveN
 
+            // Count buckets
             for i in 0..<nBuckets { counts[i] = 0 }
             for i in 0..<effectiveN {
                 counts[Int(sdBuf[i] & 0x7FFFFFFF)] += 1
             }
 
+            // Prefix sum
             var runningOffset = 0
             for i in 0..<nBuckets {
                 allOffsets[wOff + i] = UInt32(runningOffset)
@@ -522,6 +606,7 @@ public class Secp256k1MSM {
                 runningOffset += counts[i]
             }
 
+            // Scatter into sorted array
             for i in 0..<effectiveN {
                 let raw = sdBuf[i]
                 let digit = Int(raw & 0x7FFFFFFF)
@@ -532,26 +617,33 @@ public class Secp256k1MSM {
                 positions[digit] += 1
             }
 
-            // Build count-sorted map
-            var maxCount: Int = 0
-            for i in 0..<nBuckets {
-                let c = Int(allCounts[wOff + i])
-                if c > maxCount { maxCount = c }
-            }
-            for i in 0...maxCount { counts[i] = 0 }
-            for i in 0..<nBuckets {
-                counts[Int(allCounts[wOff + i])] += 1
-            }
-            var running = 0
-            for c in stride(from: maxCount, through: 0, by: -1) {
-                positions[c] = running
-                running += counts[c]
-            }
-            for i in 0..<nBuckets {
-                let c = Int(allCounts[wOff + i])
-                let dest = positions[c]
-                positions[c] = dest + 1
-                countSortedMap[wOff + dest] = UInt32(w << 16) | UInt32(i)
+            if skipCSM {
+                // Identity CSM: buckets in natural order (uniform distribution)
+                for i in 0..<nBuckets {
+                    countSortedMap[wOff + i] = UInt32(w << 16) | UInt32(i)
+                }
+            } else {
+                // Build count-sorted map (buckets ordered by descending count for SIMD coherence)
+                var maxCount: Int = 0
+                for i in 0..<nBuckets {
+                    let c = Int(allCounts[wOff + i])
+                    if c > maxCount { maxCount = c }
+                }
+                for i in 0...maxCount { counts[i] = 0 }
+                for i in 0..<nBuckets {
+                    counts[Int(allCounts[wOff + i])] += 1
+                }
+                var running = 0
+                for c in stride(from: maxCount, through: 0, by: -1) {
+                    positions[c] = running
+                    running += counts[c]
+                }
+                for i in 0..<nBuckets {
+                    let c = Int(allCounts[wOff + i])
+                    let dest = positions[c]
+                    positions[c] = dest + 1
+                    countSortedMap[wOff + dest] = UInt32(w << 16) | UInt32(i)
+                }
             }
         }
 

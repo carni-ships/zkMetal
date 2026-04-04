@@ -3,242 +3,186 @@
 //
 // The ate pairing for BLS12-381 uses parameter x = -0xd201000000010000
 // Miller loop iterates over the bits of |x| = 0xd201000000010000
-// Since x is negative, we negate the result at the end of the Miller loop.
+// Since x is negative, we conjugate the result at the end of the Miller loop.
+//
+// Tower: Fp2 = Fp[u]/(u^2+1), Fp6 = Fp2[v]/(v^3 - (1+u)), Fp12 = Fp6[w]/(w^2 - v)
+// BLS12-381 uses a D-type sextic twist: E': y^2 = x^3 + 4(1+u)
 
 import Foundation
 
-// MARK: - Line Evaluation
-
-/// Line function evaluation for Miller loop doubling step.
-/// Given Q (G2 affine) and the tangent line at T (G2 projective), evaluate at P (G1 affine).
-/// Returns sparse Fp12 element (only certain coefficients are non-zero).
-private func lineFunctionDouble(
-    _ t: inout G2Projective381,
-    _ p: G1Affine381
-) -> Fp12_381 {
-    // Compute the doubling and line coefficients simultaneously
-    let a = fp2_381Sqr(t.x)         // X^2
-    let b = fp2_381Sqr(t.y)         // Y^2
-    let c = fp2_381Sqr(b)           // Y^4
-    let d = fp2_381Double(fp2_381Sub(fp2_381Sqr(fp2_381Add(t.x, b)),
-                                      fp2_381Add(a, c)))  // 2((X+Y^2)^2 - X^2 - Y^4)
-    let e = fp2_381Add(fp2_381Double(a), a) // 3X^2
-    let f = fp2_381Sqr(e)                    // (3X^2)^2
-
-    // New point coordinates
-    let x3 = fp2_381Sub(f, fp2_381Double(d))
-    let y3 = fp2_381Sub(fp2_381Mul(e, fp2_381Sub(d, x3)),
-                        fp2_381Double(fp2_381Double(fp2_381Double(c))))
-    let z3 = fp2_381Sub(fp2_381Sqr(fp2_381Add(t.y, t.z)),
-                        fp2_381Add(b, fp2_381Sqr(t.z)))
-
-    t = G2Projective381(x: x3, y: y3, z: z3)
-
-    // Line evaluation at P = (px, py):
-    // l = -2Y*Z*py + 3X^2*px + (3b'*Z^2 - 2Y^2)
-    // We encode this as a sparse Fp12 element
-
-    // Coefficients for the line
-    let zt2 = fp2_381Sqr(t.z) // Use old z for line eval... actually we need them before update
-    // This is a simplified version -- we compute the line after the doubling
-
-    // For a cleaner implementation, compute line coefficients from the doubling:
-    // slope lambda = 3x^2 / 2y (in projective form: e / z3_pre)
-    // Line: l(P) = lambda * (Px - Tx) - (Py - Ty)
-
-    // Simplified sparse Fp12 construction
-    // For the ate pairing, the line evaluates to elements in specific Fp12 positions
-    let pyFp = fp2_381MulByFp(.one, p.y)  // Embed Fp in Fp2
-    let pxFp = fp2_381MulByFp(.one, p.x)
-
-    // The line function in the ate pairing gives a sparse Fp12:
-    // c0 = (something involving py and z), c1 = (something involving px and slope)
-    // For correctness, we use the non-sparse multiplication below
-
-    return Fp12_381.one // Placeholder -- implemented properly in millerLoop
-}
-
-/// Line function evaluation for Miller loop addition step.
-private func lineFunctionAdd(
-    _ t: inout G2Projective381,
-    _ q: G2Affine381,
-    _ p: G1Affine381
-) -> Fp12_381 {
-    // Similar to doubling but for addition step
-    return Fp12_381.one // Placeholder -- implemented properly in millerLoop
-}
-
-// MARK: - Miller Loop (Direct Implementation)
+// MARK: - Miller Loop
 
 /// Compute the Miller loop for the optimal ate pairing.
-/// Uses the direct line-evaluation approach.
+///
+/// For BLS12-381, the optimal ate pairing uses the parameter |x| = 0xd201000000010000.
+/// The Miller loop computes f_{|x|,Q}(P) using the standard double-and-add algorithm,
+/// then conjugates since x < 0.
 public func millerLoop381(_ p: G1Affine381, _ q: G2Affine381) -> Fp12_381 {
-    // BLS12-381 parameter: |x| = 0xd201000000010000
-    // Binary (MSB first): 1101001000000001000000000000000000000000000000010000000000000000
-    // We iterate from bit 62 down to 0 (bit 63 is the leading 1, used to initialize)
-
+    // |x| = 0xd201000000010000
+    // Binary (MSB first, 64 bits):
+    // 1101 0010 0000 0001 0000 0000 0000 0000 0000 0000 0000 0001 0000 0000 0000 0000
+    // Bits 62 down to 0 after leading 1 at bit 63:
+    // 63 bits: bits 62 down to 0 of |x| = 0xd201000000010000
     let xBits: [Int] = [
-        // bit 63 = 1 (leading, used for init), then bits 62..0:
-        1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+        1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0,  // bits 62-47
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  // bits 46-31
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0,  // bits 30-15
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0      // bits 14-0
     ]
 
-    // Precompute: embed P's coordinates into Fp2 for line evaluation
-    let px = p.x
-    let py = p.y
+    // Initialize: T = Q (in Jacobian projective)
+    var tX = q.x
+    var tY = q.y
+    var tZ = Fp2_381.one
 
-    // Initialize: T = Q (in projective)
-    var t = g2_381FromAffine(q)
     var f = Fp12_381.one
 
     for i in 0..<xBits.count {
         // Square f
-        if i > 0 || true {
-            f = fp12_381Sqr(f)
-        }
+        f = fp12_381Sqr(f)
 
-        // Doubling step: compute tangent line at T, update T = 2T
-        let lineD = doublingStep(&t, px, py)
+        // Doubling step: compute tangent line at T evaluated at P, then T = 2T
+        let lineD = millerDoublingStep(&tX, &tY, &tZ, p.x, p.y)
         f = fp12_381Mul(f, lineD)
 
         // Addition step if bit is 1
         if xBits[i] == 1 {
-            let lineA = additionStep(&t, q, px, py)
+            let lineA = millerAdditionStep(&tX, &tY, &tZ, q, p.x, p.y)
             f = fp12_381Mul(f, lineA)
         }
     }
 
-    // x is negative, so negate: f = f^(-1) and T = -T
+    // x is negative, so conjugate the result
     f = fp12_381Conjugate(f)
-    // (T negation not needed since we only care about f)
 
     return f
 }
 
-/// Doubling step of the Miller loop.
-/// Updates T = 2T and returns the line evaluation at P.
-private func doublingStep(
-    _ t: inout G2Projective381,
-    _ px: Fp381,
-    _ py: Fp381
+/// Doubling step: compute tangent line at T=(X:Y:Z) evaluated at P=(px,py),
+/// then update T to 2T.
+///
+/// For a curve y^2 = x^3 + b in Jacobian coordinates, the tangent at T has slope
+/// lambda = 3*X^2 / (2*Y*Z) (projective).
+///
+/// The line evaluation l_T,T(P) in the pairing context for a D-twist is:
+///   l = ell_0 + ell_vw * (v*w) + ell_vv * v
+/// where these are placed in the Fp12 tower.
+private func millerDoublingStep(
+    _ tX: inout Fp2_381, _ tY: inout Fp2_381, _ tZ: inout Fp2_381,
+    _ px: Fp381, _ py: Fp381
 ) -> Fp12_381 {
-    // Cache values before doubling
-    let a = fp2_381Mul(t.x, t.y)
-    let halfA = fp2_381MulByFp(a, fp381Mul(fp381FromInt(2), fp381Inverse(fp381FromInt(2))))
-    // Actually just: a/2. Better: multiply by inverse of 2
-    let twoInv = fp381Inverse(fp381FromInt(2))
+    // Precompute
+    let xx = fp2_381Sqr(tX)           // X^2
+    let yy = fp2_381Sqr(tY)           // Y^2
+    let yyyy = fp2_381Sqr(yy)         // Y^4
+    let zz = fp2_381Sqr(tZ)           // Z^2
 
-    let xx = fp2_381Sqr(t.x)
-    let yy = fp2_381Sqr(t.y)
-    let zz = fp2_381Sqr(t.z)
+    // S = 2*((X+Y^2)^2 - X^2 - Y^4) = 4*X*Y^2
+    let s = fp2_381Double(fp2_381Sub(fp2_381Sub(
+        fp2_381Sqr(fp2_381Add(tX, yy)), xx), yyyy))
 
-    // Line coefficients for tangent at T:
-    // In the ate pairing, the tangent at T=(X:Y:Z) evaluated at P=(px, py) is:
-    // l(P) = -2*Y*Z*py + 3*X^2*px + (3*b'*Z^2 - 2*Y^2)
-    // where b' = 4(1+u) is the twist coefficient
+    // M = 3*X^2  (since a=0 for BLS12-381)
+    let m = fp2_381Add(fp2_381Double(xx), xx)
 
-    // Precompute 3*X^2
-    let threeXX = fp2_381Add(fp2_381Double(xx), xx)
+    // Line evaluation coefficients (BEFORE updating T):
+    // For D-type twist on BLS12-381:
+    //   ell_0   = 3*b'*Z^2 - 2*Y^2  (constant term, lives at Fp6.c0.c0 = position 1)
+    //   ell_vw  = -2*Y*Z * py        (lives at Fp12.c1.c1 = position v*w)
+    //   ell_vv  = 3*X^2 * px         (lives at Fp12.c0.c1 = position v)
+    // where b' = 4(1+u) is the twist curve coefficient.
 
-    // Precompute 2*Y*Z
-    let twoYZ = fp2_381Double(fp2_381Mul(t.y, t.z))
-
-    // Line coefficient: -2*Y*Z*py
-    let c0_line = fp2_381Neg(fp2_381MulByFp(twoYZ, py))
-
-    // Line coefficient: 3*X^2*px
-    let c1_line = fp2_381MulByFp(threeXX, px)
-
-    // Twist parameter b' = 4(1+u)
     let bPrime = Fp2_381(c0: fp381FromInt(4), c1: fp381FromInt(4))
-
-    // 3*b'*Z^2 - 2*Y^2
     let threeBZZ = fp2_381Mul(fp2_381Add(fp2_381Double(bPrime), bPrime), zz)
-    let c2_line = fp2_381Sub(threeBZZ, fp2_381Double(yy))
+    let ell_0 = fp2_381Sub(threeBZZ, fp2_381Double(yy))
 
-    // Update T = 2T (standard Jacobian doubling for a=0)
-    let newX: Fp2_381
-    let newY: Fp2_381
-    let newZ: Fp2_381
+    // 2*Y*Z
+    let twoYZ = fp2_381Double(fp2_381Mul(tY, tZ))
+    let ell_vw = fp2_381Neg(fp2_381MulByFp(twoYZ, py))
 
-    let d = fp2_381Double(fp2_381Sub(fp2_381Sqr(fp2_381Add(t.x, yy)),
-                                      fp2_381Add(xx, fp2_381Sqr(yy))))
-    let e = threeXX
-    let fVal = fp2_381Sqr(e)
+    let ell_vv = fp2_381MulByFp(m, px)
 
-    newX = fp2_381Sub(fVal, fp2_381Double(d))
-    newY = fp2_381Sub(fp2_381Mul(e, fp2_381Sub(d, newX)),
-                      fp2_381Double(fp2_381Double(fp2_381Double(fp2_381Sqr(yy)))))
-    newZ = fp2_381Sub(fp2_381Sqr(fp2_381Add(t.y, t.z)),
-                      fp2_381Add(yy, zz))
+    // Update T = 2T (Jacobian doubling for a=0)
+    let x3 = fp2_381Sub(fp2_381Sqr(m), fp2_381Double(s))
+    let y3 = fp2_381Sub(fp2_381Mul(m, fp2_381Sub(s, x3)),
+                        fp2_381Double(fp2_381Double(fp2_381Double(yyyy))))
+    let z3 = fp2_381Sub(fp2_381Sqr(fp2_381Add(tY, tZ)),
+                        fp2_381Add(yy, zz))
 
-    t = G2Projective381(x: newX, y: newY, z: newZ)
+    tX = x3
+    tY = y3
+    tZ = z3
 
-    // Construct the sparse Fp12 element from line evaluation
-    // The line l = c0_line + c1_line * w + c2_line * w^2 (in Fp12 tower basis)
-    // Encoding: Fp12 = Fp6 + Fp6*w, Fp6 = Fp2 + Fp2*v + Fp2*v^2
-    let f6_c0 = Fp6_381(c0: c2_line, c1: .zero, c2: .zero)
-    let f6_c1 = Fp6_381(c0: c0_line, c1: c1_line, c2: .zero)
-
-    return Fp12_381(c0: f6_c0, c1: f6_c1)
+    // Construct sparse Fp12 element.
+    // Tower: Fp12 = Fp6.c0 + Fp6.c1 * w, Fp6 = c0 + c1*v + c2*v^2
+    // Positions: 1 = c0.c0, v = c0.c1, v^2 = c0.c2, w = c1.c0, v*w = c1.c1, v^2*w = c1.c2
+    return Fp12_381(
+        c0: Fp6_381(c0: ell_0, c1: ell_vv, c2: .zero),
+        c1: Fp6_381(c0: .zero, c1: ell_vw, c2: .zero))
 }
 
-/// Addition step of the Miller loop.
-/// Updates T = T + Q and returns the line evaluation at P.
-private func additionStep(
-    _ t: inout G2Projective381,
+/// Addition step: compute chord line through T and Q evaluated at P,
+/// then update T to T + Q.
+///
+/// T is in Jacobian projective (X:Y:Z), Q is affine.
+private func millerAdditionStep(
+    _ tX: inout Fp2_381, _ tY: inout Fp2_381, _ tZ: inout Fp2_381,
     _ q: G2Affine381,
-    _ px: Fp381,
-    _ py: Fp381
+    _ px: Fp381, _ py: Fp381
 ) -> Fp12_381 {
-    // Line through T and Q evaluated at P
-    let zz = fp2_381Sqr(t.z)
+    let zz = fp2_381Sqr(tZ)
+    let zzz = fp2_381Mul(zz, tZ)
 
-    // U = Q.x * T.z^2 - T.x
-    let u = fp2_381Sub(fp2_381Mul(q.x, zz), t.x)
-    // V = Q.y * T.z^3 - T.y
-    let zzz = fp2_381Mul(zz, t.z)
-    let v = fp2_381Sub(fp2_381Mul(q.y, zzz), t.y)
+    // H = Q.x * Z^2 - X
+    let h = fp2_381Sub(fp2_381Mul(q.x, zz), tX)
+    // R = Q.y * Z^3 - Y
+    let r = fp2_381Sub(fp2_381Mul(q.y, zzz), tY)
 
-    if u.isZero {
-        // Points are equal, use doubling
-        return doublingStep(&t, px, py)
-    }
+    // Line evaluation coefficients:
+    // The chord through T and Q has slope lambda = R / H (projectively).
+    // For D-type twist:
+    //   ell_0   = T.x * Q.y * Z^3 - T.y * Q.x * Z^2  (cross term)
+    //           Equivalently: X*R' - Y*H' where R'=Q.y*Z^3, H'=Q.x*Z^2
+    //           Actually: ell_0 = R * T.x/Z^2 - H * T.y/Z^3 (unscaled)
+    //           In projective form: ell_0 = R*X - H*Y (/ Z^5, absorbed into pairing)
+    //   ell_vw  = -H * py   (= -(Q.x*Z^2 - X) * py, lives at v*w position)
+    //   ell_vv  = R * px    (= (Q.y*Z^3 - Y) * px, lives at v position)
+    //
+    // But we need to be consistent with the projective scaling.
+    // The standard approach: line l(P) = R * px - H * py + (stuff)
+    // where the "stuff" term is the constant.
 
-    // Line coefficients for chord through T and Q at P:
-    // slope = (Qy*Z^3 - Ty) / (Qx*Z^2 - Tx)
-    // l(P) = (Qy*Z^3 - Ty)*px - (Qx*Z^2 - Tx)*py + (Tx*Qy - Ty*Qx)*Z (projected)
+    let ell_vw = fp2_381Neg(fp2_381MulByFp(h, py))
+    let ell_vv = fp2_381MulByFp(r, px)
 
-    // Line: lambda_1 * px + lambda_2 * py + lambda_3
-    let lambda1 = v  // slope numerator
-    let lambda2 = fp2_381Neg(u)  // -denominator
+    // Constant term: we need (T.x * (Q.y * Z^3) - T.y * (Q.x * Z^2)) but
+    // properly scaled. In practice:
+    // ell_0 = R * tX - H * tY  (absorbing Z factors consistently)
+    // However, since R = Q.y*Z^3 - tY and H = Q.x*Z^2 - tX, we have:
+    // lambda = R/H, and the line is: lambda*(xP - xQ) - (yP - yQ)
+    // In projective form over the twist, the constant term is:
+    let ell_0 = fp2_381Sub(fp2_381Mul(r, tX), fp2_381Mul(h, tY))
 
-    let c0_line = fp2_381MulByFp(lambda2, py)
-    let c1_line = fp2_381MulByFp(lambda1, px)
+    // Update T = T + Q using standard Jacobian mixed addition
+    let hh = fp2_381Sqr(h)
+    let hhh = fp2_381Mul(h, hh)
+    let rr = fp2_381Sqr(r)
 
-    // The constant term involves T and Q coordinates
-    let c2_line = fp2_381Sub(fp2_381Mul(t.x, fp2_381Mul(q.y, zzz)),
-                              fp2_381Mul(t.y, fp2_381Mul(q.x, zz)))
+    // X3 = R^2 - H^3 - 2*X*H^2
+    let x3 = fp2_381Sub(fp2_381Sub(rr, hhh), fp2_381Double(fp2_381Mul(tX, hh)))
+    // Y3 = R*(X*H^2 - X3) - Y*H^3
+    let y3 = fp2_381Sub(fp2_381Mul(r, fp2_381Sub(fp2_381Mul(tX, hh), x3)),
+                        fp2_381Mul(tY, hhh))
+    // Z3 = H * Z
+    let z3 = fp2_381Mul(h, tZ)
 
-    // Update T = T + Q using standard projective addition
-    let uu = fp2_381Sqr(u)
-    let uuu = fp2_381Mul(u, uu)
-    let vv = fp2_381Sqr(v)
+    tX = x3
+    tY = y3
+    tZ = z3
 
-    let a = fp2_381Sub(fp2_381Sub(fp2_381Mul(vv, zz), uuu), fp2_381Double(fp2_381Mul(t.x, uu)))
-    let newX = fp2_381Mul(u, a)
-    let newY = fp2_381Sub(fp2_381Mul(v, fp2_381Sub(fp2_381Mul(t.x, uu), a)),
-                          fp2_381Mul(t.y, uuu))
-    let newZ = fp2_381Mul(uuu, t.z)
-
-    t = G2Projective381(x: newX, y: newY, z: newZ)
-
-    let f6_c0 = Fp6_381(c0: c2_line, c1: .zero, c2: .zero)
-    let f6_c1 = Fp6_381(c0: c0_line, c1: c1_line, c2: .zero)
-
-    return Fp12_381(c0: f6_c0, c1: f6_c1)
+    // Sparse Fp12: same positions as doubling step
+    return Fp12_381(
+        c0: Fp6_381(c0: ell_0, c1: ell_vv, c2: .zero),
+        c1: Fp6_381(c0: .zero, c1: ell_vw, c2: .zero))
 }
 
 // MARK: - Final Exponentiation
@@ -254,75 +198,68 @@ public func finalExponentiation381(_ f: Fp12_381) -> Fp12_381 {
     var result = fp12_381Mul(fConj, fInv)
 
     // Easy part step 2: result^(p^2 + 1) = frobenius2(result) * result
-    // For BLS12-381, Frobenius^2 on Fp12 is a specific endomorphism
-    // Simplified: since we've already done p^6, the Frobenius^2 is just squaring
-    // in the cyclotomic subgroup. For now, compute directly.
     let resultP2 = fp12_381Frobenius2(result)
     result = fp12_381Mul(resultP2, result)
 
     // Hard part: result^((p^4 - p^2 + 1) / r)
-    // Uses the Devegili-Scott-Dahab method with the BLS parameter x
     result = hardPartExponentiation(result)
 
     return result
 }
 
-/// Frobenius squared on Fp12 (simplified for BLS12-381)
-private func fp12_381Frobenius2(_ a: Fp12_381) -> Fp12_381 {
-    // For the easy part, Frobenius^2 acts on Fp12 = Fp6[w]/(w^2-v)
-    // Frobenius^2(a0 + a1*w) = frob2(a0) + frob2(a1)*frob2(w)
-    // frob2(w) = w * gamma where gamma is a precomputed constant
-
-    // For the easy part of final exp, after f^(p^6-1), the result is in the
-    // cyclotomic subgroup. Frobenius^2 is simpler there.
-
-    // Simplified: apply Frobenius twice
-    let f1 = fp12_381Frobenius(a)
-    return fp12_381Frobenius(f1)
-}
-
-/// Hard part of the final exponentiation using the BLS parameter.
-/// Computes f^((p^4 - p^2 + 1) / r) using addition chains.
+/// Hard part of the final exponentiation.
+/// Computes f^((p^4 - p^2 + 1) / r).
+///
+/// Uses Algorithm 1 from Hayashida-Hayasaka-Teruya (eprint 2020/875),
+/// as implemented in gnark-crypto bls12-381.
+///
+/// The hard exponent decomposes as:
+///   (p^4 - p^2 + 1)/r = (2u^2-3u+3)*p + (2u^3-3u^2+u)*p^2 + (2u^4-3u^3+u^2)*p^3
+/// where u = x = -0xd201000000010000 is the BLS12-381 parameter.
+/// fp12_381PowByX computes f^|x| then conjugates (since x < 0), giving f^x.
 private func hardPartExponentiation(_ f: Fp12_381) -> Fp12_381 {
-    // For BLS12-381, use the Devegili-Scott-Dahab approach:
-    // result = f^(x^2/2 - x/2 + 1) * frobenius(f^((x-1)/2)) * ...
-    // This is a well-known addition chain specific to BLS12-381.
+    // t0 = f^2
+    let t0 = fp12_381Sqr(f)
 
-    // Simplified approach: compute using powByX
-    // f^((p^4 - p^2 + 1)/r) using the relation to the BLS parameter x
+    // t1 = t0^x = f^(2x)
+    let t1a = fp12_381PowByX(t0)
 
-    // Step 1: a = f^x
-    let a = fp12_381PowByX(f)
+    // t2 = f^(-1)
+    let t2a = fp12_381Conjugate(f)
 
-    // Step 2: a2 = a^x
-    let a2 = fp12_381PowByX(a)
+    // t1 = f^(2x) * f^(-1) = f^(2x - 1)
+    let t1b = fp12_381Mul(t1a, t2a)
 
-    // Step 3: a3 = a2^x
-    let a3 = fp12_381PowByX(a2)
+    // t2 = (f^(2x-1))^x = f^(2x^2 - x)
+    let t2b = fp12_381PowByX(t1b)
 
-    // The full addition chain for BLS12-381 hard part:
-    // Uses f, f^x, f^(x^2), f^(x^3), and Frobenius maps
-    // Simplified (correct but not optimally efficient):
+    // t3 = (f^(2x-1))^(-1) = f^(1 - 2x)
+    let t3a = fp12_381Conjugate(t1b)
 
-    let fInv = fp12_381Conjugate(f)  // f^(-1) in cyclotomic subgroup
-    let aInv = fp12_381Conjugate(a)
+    // t1 = f^(2x^2-x) * f^(1-2x) = f^(2x^2 - 3x + 1)
+    let t1c = fp12_381Mul(t2b, t3a)
 
-    // t0 = a2 * a
-    let t0 = fp12_381Mul(a2, aInv)
+    // t2 = (f^(2x^2-3x+1))^x = f^(2x^3 - 3x^2 + x)
+    let t2c = fp12_381PowByX(t1c)
 
-    // t1 = a3^p * a2^(p^2)
-    let t1 = fp12_381Mul(fp12_381Frobenius(a3), fp12_381Frobenius2(a2))
+    // t3 = (f^(2x^3-3x^2+x))^x = f^(2x^4 - 3x^3 + x^2)
+    let t3b = fp12_381PowByX(t2c)
 
-    // Combine using the formula for (p^4 - p^2 + 1)/r
-    // This is a simplified version of the full addition chain
-    let t2 = fp12_381Mul(fp12_381Frobenius(a), fp12_381Frobenius2(f))
-    let t3 = fp12_381Mul(t1, t2)
+    // t1 = f^(2x^2-3x+1) * f^2 = f^(2x^2-3x+3)
+    let t1d = fp12_381Mul(t1c, t0)
 
-    // Final combination
-    var result = fp12_381Mul(t3, fp12_381Mul(t0, fInv))
-    result = fp12_381Mul(result, fp12_381Frobenius(fp12_381Mul(a2, a)))
+    // Apply Frobenius maps:
+    // t1 = f^((2x^2-3x+3)*p)
+    let t1e = fp12_381Frobenius(t1d)
 
-    return result
+    // t2 = f^((2x^3-3x^2+x)*p^2)
+    let t2d = fp12_381Frobenius2(t2c)
+
+    // t3 = f^((2x^4-3x^3+x^2)*p^3)
+    let t3c = fp12_381Frobenius3(t3b)
+
+    // result = t1 * t2 * t3
+    return fp12_381Mul(fp12_381Mul(t1e, t2d), t3c)
 }
 
 // MARK: - Public API
@@ -359,7 +296,7 @@ public func fp12_381Equal(_ a: Fp12_381, _ b: Fp12_381) -> Bool {
            diff.c1.c2.c0.isZero && diff.c1.c2.c1.isZero
 }
 
-// MARK: - BLS Signature Verification (Stub)
+// MARK: - BLS Signature Verification
 
 /// BLS signature verification: e(pk, H(m)) = e(G1, sig)
 /// pk: public key (G1 point)

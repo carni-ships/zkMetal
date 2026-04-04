@@ -229,27 +229,77 @@ public class CircleSTARKProver {
         for col in trace { precondition(col.count == traceLen) }
         let traceT = CFAbsoluteTimeGetCurrent()
 
-        // Step 2: LDE via GPU Circle NTT
+        // Step 2: LDE via GPU Circle NTT (batched: INTT + pad + NTT in single CB)
         let ntt = try ensureNTT()
-        var traceLDEs = [[M31]]()
-        traceLDEs.reserveCapacity(air.numColumns)
-        for col in trace {
-            let coeffs = try ntt.intt(col)
-            var padded = [M31](repeating: M31.zero, count: evalLen)
-            for i in 0..<traceLen { padded[i] = coeffs[i] }
-            let evals = try ntt.ntt(padded)
-            traceLDEs.append(evals)
+        let dev = ntt.device
+        let queue = ntt.commandQueue
+        let sz = MemoryLayout<UInt32>.stride
+
+        // Allocate GPU buffers at eval domain size
+        guard let bufA = dev.makeBuffer(length: evalLen * sz, options: .storageModeShared),
+              let bufB = dev.makeBuffer(length: evalLen * sz, options: .storageModeShared) else {
+            throw MSMError.gpuError("Failed to allocate LDE buffers")
         }
+        let pA = bufA.contents().bindMemory(to: UInt32.self, capacity: evalLen)
+        let pB = bufB.contents().bindMemory(to: UInt32.self, capacity: evalLen)
+        for i in 0..<traceLen { pA[i] = trace[0][i].v; pB[i] = trace[1][i].v }
+
+        // INTT both columns (single CB)
+        guard let cbIntt = queue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
+        ntt.encodeINTT(data: bufA, logN: logTrace, cmdBuf: cbIntt)
+        ntt.encodeINTT(data: bufB, logN: logTrace, cmdBuf: cbIntt)
+        cbIntt.commit()
+        cbIntt.waitUntilCompleted()
+        if let err = cbIntt.error { throw MSMError.gpuError("INTT error: \(err.localizedDescription)") }
+
+        // Zero-pad to eval domain
+        for i in traceLen..<evalLen { pA[i] = 0; pB[i] = 0 }
+
+        // NTT both columns (single CB)
+        guard let cbNtt = queue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
+        ntt.encodeNTT(data: bufA, logN: logEval, cmdBuf: cbNtt)
+        ntt.encodeNTT(data: bufB, logN: logEval, cmdBuf: cbNtt)
+        cbNtt.commit()
+        cbNtt.waitUntilCompleted()
+        if let err = cbNtt.error { throw MSMError.gpuError("NTT error: \(err.localizedDescription)") }
+
+        // Read back LDE results
+        var traceLDEs = [[M31]](repeating: [M31](repeating: M31.zero, count: evalLen), count: 2)
+        for i in 0..<evalLen { traceLDEs[0][i] = M31(v: pA[i]); traceLDEs[1][i] = M31(v: pB[i]) }
 
         let ldeT = CFAbsoluteTimeGetCurrent()
 
-        // Step 3: Commit trace columns via GPU Keccak Merkle trees
+        // Step 3: Commit trace columns via GPU Keccak Merkle trees (batched: 2 trees in 1 CB)
         let merkle = try ensureMerkle()
+        let keccak = merkle.engine
+        let treeSize = 2 * evalLen - 1
+        guard let treeBufA = dev.makeBuffer(length: treeSize * 32, options: .storageModeShared),
+              let treeBufB = dev.makeBuffer(length: treeSize * 32, options: .storageModeShared) else {
+            throw MSMError.gpuError("Failed to allocate trace Merkle tree buffers")
+        }
+
+        guard let cbMerkle = queue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
+        let encMerkle = cbMerkle.makeComputeCommandEncoder()!
+        // Build tree A from bufA (trace column 0 LDE)
+        encodeMerkleTreeFromM31(encoder: encMerkle, keccak: keccak,
+                                 inputBuf: bufA, inputOffset: 0,
+                                 treeBuf: treeBufA, treeOffset: 0, n: evalLen)
+        encMerkle.memoryBarrier(scope: .buffers)
+        // Build tree B from bufB (trace column 1 LDE)
+        encodeMerkleTreeFromM31(encoder: encMerkle, keccak: keccak,
+                                 inputBuf: bufB, inputOffset: 0,
+                                 treeBuf: treeBufB, treeOffset: 0, n: evalLen)
+        encMerkle.endEncoding()
+        cbMerkle.commit()
+        cbMerkle.waitUntilCompleted()
+        if let err = cbMerkle.error { throw MSMError.gpuError("Merkle commit error: \(err.localizedDescription)") }
+
+        // Read flat trees back to Swift arrays for query phase
         var traceFlatTrees = [[UInt8]]()
         var traceCommitments = [[UInt8]]()
-        for col in traceLDEs {
-            let vals = col.map { $0.v }
-            let flatTree = try merkle.buildTreeFromM31(vals, count: evalLen)
+        for treeBuf in [treeBufA, treeBufB] {
+            let ptr = treeBuf.contents().assumingMemoryBound(to: UInt8.self)
+            let flatTree = Array(UnsafeBufferPointer(start: ptr, count: treeSize * 32))
             traceCommitments.append(KeccakMerkleEngine.rootFromFlat(flatTree, n: evalLen))
             traceFlatTrees.append(flatTree)
         }
@@ -319,7 +369,7 @@ public class CircleSTARKProver {
             fputs(fmt("Fiat-Shamir", commitTraceT, fsT) + "\n", stderr)
             fputs(fmt("constraint eval", fsT, constraintT) + "\n", stderr)
             fputs(fmt("commit comp", constraintT, commitCompT) + "\n", stderr)
-            fputs(fmt("CPU FRI", commitCompT, friT) + "\n", stderr)
+            fputs(fmt("FRI", commitCompT, friT) + "\n", stderr)
             fputs(fmt("query phase", friT, queryT) + "\n", stderr)
             fputs(String(format: "  %-20s %7.1f ms\n", ("TOTAL" as NSString).utf8String!, (queryT - proveT0) * 1000), stderr)
         }
@@ -625,7 +675,7 @@ public class CircleSTARKProver {
         let compositionCommitment = KeccakMerkleEngine.rootFromFlat(compFlatTree, n: evalLen)
         let commitCompT = CFAbsoluteTimeGetCurrent()
 
-        // Step 7: CPU FRI
+        // Step 7: GPU FRI
         transcript.absorbBytes(compositionCommitment)
         let friProof = try cpuFRI(
             evals: compositionEvals, logN: logEval,
@@ -663,7 +713,7 @@ public class CircleSTARKProver {
             fputs(fmt("Fiat-Shamir", commitTraceT, fsT) + "\n", stderr)
             fputs(fmt("constraint eval", fsT, constraintT) + " [FUSED]\n", stderr)
             fputs(fmt("commit comp", constraintT, commitCompT) + "\n", stderr)
-            fputs(fmt("CPU FRI", commitCompT, friT) + "\n", stderr)
+            fputs(fmt("FRI", commitCompT, friT) + "\n", stderr)
             fputs(fmt("query phase", friT, queryT) + "\n", stderr)
             fputs(String(format: "  %-20s %7.1f ms\n", ("TOTAL" as NSString).utf8String!, (queryT - proveT0) * 1000), stderr)
         }
@@ -687,6 +737,7 @@ public class CircleSTARKProver {
         var currentLogN = logN
         var rounds = [CircleFRIRound]()
         var friProfileFold = 0.0, friProfileMerkle = 0.0, friProfileQuery = 0.0
+        var friPerRound: [(Int, Double, Double)] = []  // (n, foldTime, merkleTime)
 
         transcript.absorbLabel("fri-queries")
         var queryIndices = [Int]()
@@ -698,13 +749,19 @@ public class CircleSTARKProver {
         var currentQueryIndices = queryIndices
         let inv2 = m31Inverse(M31(v: 2))
 
+        // Pre-compute all domains (avoids per-round domain recomputation)
+        var domainCache: [Int: [CirclePoint]] = [:]
+        for k in 2...logN {
+            domainCache[k] = circleCosetDomain(logN: k)
+        }
+
         while currentLogN > 1 {
             let foldT0 = CFAbsoluteTimeGetCurrent()
             let n = 1 << currentLogN
             let half = n / 2
             let foldAlpha = transcript.squeezeM31()
 
-            let domain = circleCosetDomain(logN: currentLogN)
+            let domain = domainCache[currentLogN]!
             var twiddles = [M31](repeating: M31.zero, count: half)
             if rounds.isEmpty {
                 for i in 0..<half { twiddles[i] = domain[i].y }
@@ -741,12 +798,24 @@ public class CircleSTARKProver {
             friProfileFold += foldT1 - foldT0
 
             let merkleT0 = CFAbsoluteTimeGetCurrent()
-            let merkle = try ensureMerkle()
-            let foldedVals = folded.map { $0.v }
-            let foldedFlatTree = try merkle.buildTreeFromM31(foldedVals, count: half)
-            let commitment = KeccakMerkleEngine.rootFromFlat(foldedFlatTree, n: half)
+            let foldedFlatTree: [UInt8]
+            let commitment: [UInt8]
+            if half >= 16 {
+                // GPU Merkle for large rounds (amortizes CB overhead)
+                let merkle = try ensureMerkle()
+                let foldedVals = folded.map { $0.v }
+                foldedFlatTree = try merkle.buildTreeFromM31(foldedVals, count: half)
+                commitment = KeccakMerkleEngine.rootFromFlat(foldedFlatTree, n: half)
+            } else {
+                // CPU Merkle for small rounds (avoids CB overhead)
+                foldedFlatTree = cpuBuildFlatTreeFromM31(folded, count: half)
+                let rootIdx = 2 * half - 2
+                commitment = Array(foldedFlatTree[(rootIdx * 32)..<(rootIdx * 32 + 32)])
+            }
             transcript.absorbBytes(commitment)
-            friProfileMerkle += CFAbsoluteTimeGetCurrent() - merkleT0
+            let merkleT1 = CFAbsoluteTimeGetCurrent()
+            friProfileMerkle += merkleT1 - merkleT0
+            friPerRound.append((n, foldT1 - foldT0, merkleT1 - merkleT0))
 
             let queryT0 = CFAbsoluteTimeGetCurrent()
             var roundQueries = [(M31, M31, [[UInt8]])]()
@@ -764,12 +833,247 @@ public class CircleSTARKProver {
         }
 
         if profileProve {
-            fputs(String(format: "  FRI breakdown: fold %.1fms, merkle %.1fms, query %.1fms\n",
-                        friProfileFold * 1000, friProfileMerkle * 1000, friProfileQuery * 1000), stderr)
+            fputs(String(format: "  FRI breakdown: fold %.1fms, merkle %.1fms, query %.1fms (%d rounds)\n",
+                        friProfileFold * 1000, friProfileMerkle * 1000, friProfileQuery * 1000,
+                        friPerRound.count), stderr)
         }
 
         return CircleFRIProofData(
             rounds: rounds, finalValue: currentEvals[0], queryIndices: queryIndices
+        )
+    }
+
+    // MARK: - GPU FRI (GPU fold + batched Merkle, single CB per round)
+
+    private var friGPUInputBuf: MTLBuffer?
+    private var friGPUInputBufElements: Int = 0
+    private var friGPUFoldBufs: [MTLBuffer] = []
+    private var friGPUTreeBufs: [MTLBuffer] = []
+    private var friGPUAlphaBuf: MTLBuffer?
+    private var friGPUTwiddleCacheY: [Int: MTLBuffer] = [:]
+    private var friGPUTwiddleCacheX: [Int: [MTLBuffer]] = [:]
+
+    private func friGetInv2y(logN: Int, dev: MTLDevice) -> MTLBuffer {
+        if let cached = friGPUTwiddleCacheY[logN] { return cached }
+        let n = 1 << logN
+        let half = n / 2
+        let domain = circleCosetDomain(logN: logN)
+        let two = M31(v: 2)
+        var inv2y = [M31](repeating: M31.zero, count: half)
+        for i in 0..<half {
+            inv2y[i] = m31Inverse(m31Mul(two, domain[i].y))
+        }
+        let buf = dev.makeBuffer(bytes: &inv2y, length: half * MemoryLayout<M31>.stride, options: .storageModeShared)!
+        friGPUTwiddleCacheY[logN] = buf
+        return buf
+    }
+
+    /// Precompute inv(2*twiddle) for FRI x-folds.
+    /// Each round r (r >= 1) uses circleCosetDomain(logN: logN - r) to get twiddles,
+    /// matching the verifier's per-round domain computation.
+    private func friGetInv2x(logN: Int, dev: MTLDevice) -> [MTLBuffer] {
+        if let cached = friGPUTwiddleCacheX[logN] { return cached }
+        let two = M31(v: 2)
+        var bufs: [MTLBuffer] = []
+        var currentLogN = logN - 1  // after first y-fold, domain size halves
+        while currentLogN > 0 {
+            let domain = circleCosetDomain(logN: currentLogN)
+            let half = (1 << currentLogN) / 2
+            var inv2x = [M31](repeating: M31.zero, count: half)
+            for i in 0..<half {
+                inv2x[i] = m31Inverse(m31Mul(two, domain[i].x))
+            }
+            bufs.append(dev.makeBuffer(bytes: &inv2x, length: half * MemoryLayout<M31>.stride, options: .storageModeShared)!)
+            currentLogN -= 1
+        }
+        friGPUTwiddleCacheX[logN] = bufs
+        return bufs
+    }
+
+    /// Encode Merkle tree build from M31 data into an existing compute encoder.
+    private func encodeMerkleTreeFromM31(
+        encoder: MTLComputeCommandEncoder,
+        keccak: Keccak256Engine,
+        inputBuf: MTLBuffer, inputOffset: Int,
+        treeBuf: MTLBuffer, treeOffset: Int,
+        n: Int
+    ) {
+        keccak.encodeHashM31(encoder: encoder,
+                              inputBuffer: inputBuf, inputOffset: inputOffset,
+                              outputBuffer: treeBuf, outputOffset: treeOffset,
+                              count: n)
+        encoder.memoryBarrier(scope: .buffers)
+        var levelStart = 0
+        var levelSize = n
+        while levelSize > 1 {
+            let parentCount = levelSize / 2
+            let inputOff = treeOffset + levelStart * 32
+            let outputOff = treeOffset + (levelStart + levelSize) * 32
+            keccak.encodeHash64(encoder: encoder, buffer: treeBuf,
+                                inputOffset: inputOff, outputOffset: outputOff,
+                                count: parentCount)
+            levelStart += levelSize
+            levelSize = parentCount
+            if levelSize > 1 { encoder.memoryBarrier(scope: .buffers) }
+        }
+    }
+
+    private func gpuFRI(
+        evals: [M31], logN: Int, numQueries: Int,
+        transcript: inout CircleSTARKTranscript
+    ) throws -> CircleFRIProofData {
+        let fri = try ensureFRI()
+        let merkle = try ensureMerkle()
+        let dev = fri.device
+        let queue = fri.commandQueue
+        let keccak = merkle.engine
+        let sz = MemoryLayout<M31>.stride
+
+        var currentLogN = logN
+        var rounds = [CircleFRIRound]()
+        var friProfileFoldMerkle = 0.0, friProfileQuery = 0.0
+
+        transcript.absorbLabel("fri-queries")
+        var queryIndices = [Int]()
+        let evalLen = 1 << logN
+        for _ in 0..<numQueries {
+            queryIndices.append(Int(transcript.squeezeM31().v) % (evalLen / 2))
+        }
+        var currentQueryIndices = queryIndices
+
+        let maxHalf = evalLen / 2
+        if friGPUInputBufElements < evalLen {
+            friGPUInputBuf = dev.makeBuffer(length: evalLen * sz, options: .storageModeShared)
+            friGPUInputBufElements = evalLen
+        }
+        if friGPUFoldBufs.count < 2 || friGPUFoldBufs[0].length < maxHalf * sz {
+            friGPUFoldBufs = [
+                dev.makeBuffer(length: maxHalf * sz, options: .storageModeShared)!,
+                dev.makeBuffer(length: maxHalf * sz, options: .storageModeShared)!
+            ]
+        }
+        if friGPUAlphaBuf == nil {
+            friGPUAlphaBuf = dev.makeBuffer(length: sz, options: .storageModeShared)
+        }
+        let maxTreeBytes = (2 * maxHalf - 1) * 32
+        if friGPUTreeBufs.isEmpty || friGPUTreeBufs[0].length < maxTreeBytes {
+            friGPUTreeBufs = [
+                dev.makeBuffer(length: maxTreeBytes, options: .storageModeShared)!
+            ]
+        }
+
+        let inv2yBuf = friGetInv2y(logN: logN, dev: dev)
+        let inv2xBufs = friGetInv2x(logN: logN, dev: dev)
+
+        let inputBuf = friGPUInputBuf!
+        evals.withUnsafeBytes { src in
+            memcpy(inputBuf.contents(), src.baseAddress!, evalLen * sz)
+        }
+
+        var currentBuf = inputBuf
+        var useA = true
+        let tg = min(256, Int(fri.foldFirstFunction.maxTotalThreadsPerThreadgroup))
+
+        var roundIdx = 0
+        while currentLogN > 1 {
+            let n = 1 << currentLogN
+            let half = n / 2
+            let foldAlpha = transcript.squeezeM31()
+
+            let foldT0 = CFAbsoluteTimeGetCurrent()
+
+            let alphaPtr = friGPUAlphaBuf!.contents().bindMemory(to: M31.self, capacity: 1)
+            alphaPtr[0] = foldAlpha
+
+            let outputBuf = useA ? friGPUFoldBufs[0] : friGPUFoldBufs[1]
+            let treeBuf = friGPUTreeBufs[0]
+            let treeSize = 2 * half - 1
+
+            guard let cmdBuf = queue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
+            let enc = cmdBuf.makeComputeCommandEncoder()!
+
+            var nVal = UInt32(n)
+            if roundIdx == 0 {
+                enc.setComputePipelineState(fri.foldFirstFunction)
+                enc.setBuffer(currentBuf, offset: 0, index: 0)
+                enc.setBuffer(outputBuf, offset: 0, index: 1)
+                enc.setBuffer(inv2yBuf, offset: 0, index: 2)
+                enc.setBuffer(friGPUAlphaBuf!, offset: 0, index: 3)
+                enc.setBytes(&nVal, length: 4, index: 4)
+            } else {
+                enc.setComputePipelineState(fri.foldFunction)
+                enc.setBuffer(currentBuf, offset: 0, index: 0)
+                enc.setBuffer(outputBuf, offset: 0, index: 1)
+                enc.setBuffer(inv2xBufs[roundIdx - 1], offset: 0, index: 2)
+                enc.setBuffer(friGPUAlphaBuf!, offset: 0, index: 3)
+                enc.setBytes(&nVal, length: 4, index: 4)
+            }
+            enc.dispatchThreads(MTLSize(width: half, height: 1, depth: 1),
+                               threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+            enc.memoryBarrier(scope: .buffers)
+
+            // Merkle tree build inline (fold output -> hash leaves -> tree)
+            encodeMerkleTreeFromM31(encoder: enc, keccak: keccak,
+                                     inputBuf: outputBuf, inputOffset: 0,
+                                     treeBuf: treeBuf, treeOffset: 0, n: half)
+
+            enc.endEncoding()
+            cmdBuf.commit()
+            cmdBuf.waitUntilCompleted()
+            if let err = cmdBuf.error { throw MSMError.gpuError("GPU FRI round error: \(err.localizedDescription)") }
+
+            friProfileFoldMerkle += CFAbsoluteTimeGetCurrent() - foldT0
+
+            // Read back only the 32-byte root
+            let rootOffset = (treeSize - 1) * 32
+            let rootPtr = treeBuf.contents().advanced(by: rootOffset).assumingMemoryBound(to: UInt8.self)
+            let commitment = Array(UnsafeBufferPointer(start: rootPtr, count: 32))
+            transcript.absorbBytes(commitment)
+
+            // Extract query responses from GPU buffers
+            let queryT0 = CFAbsoluteTimeGetCurrent()
+            let curPtr = currentBuf.contents().bindMemory(to: M31.self, capacity: n)
+            let treeBytePtr = treeBuf.contents().assumingMemoryBound(to: UInt8.self)
+            var roundQueries = [(M31, M31, [[UInt8]])]()
+            roundQueries.reserveCapacity(currentQueryIndices.count)
+            for qi in currentQueryIndices {
+                let idx = qi % half
+                let evalLo = curPtr[idx]
+                let evalHi = curPtr[idx + half]
+                var path = [[UInt8]]()
+                var levelStart = 0
+                var levelSize = half
+                var mIdx = idx
+                while levelSize > 1 {
+                    let sibIdx = mIdx ^ 1
+                    let nodeOffset = (levelStart + sibIdx) * 32
+                    path.append(Array(UnsafeBufferPointer(start: treeBytePtr + nodeOffset, count: 32)))
+                    levelStart += levelSize
+                    levelSize /= 2
+                    mIdx /= 2
+                }
+                roundQueries.append((evalLo, evalHi, path))
+            }
+            friProfileQuery += CFAbsoluteTimeGetCurrent() - queryT0
+
+            rounds.append(CircleFRIRound(commitment: commitment, queryResponses: roundQueries))
+            currentBuf = outputBuf
+            useA = !useA
+            currentLogN -= 1
+            currentQueryIndices = currentQueryIndices.map { $0 % max(half / 2, 1) }
+            roundIdx += 1
+        }
+
+        let finalPtr = currentBuf.contents().bindMemory(to: M31.self, capacity: 2)
+        let finalValue = finalPtr[0]
+
+        if profileProve {
+            fputs(String(format: "  FRI breakdown (GPU): fold+merkle %.1fms, query %.1fms\n",
+                        friProfileFoldMerkle * 1000, friProfileQuery * 1000), stderr)
+        }
+
+        return CircleFRIProofData(
+            rounds: rounds, finalValue: finalValue, queryIndices: queryIndices
         )
     }
 }
@@ -782,6 +1086,40 @@ public func circleVanishing(point: CirclePoint, logDomainSize: Int) -> M31 {
         v = m31Sub(m31Add(m31Sqr(v), m31Sqr(v)), M31.one)
     }
     return v
+}
+
+// MARK: - CPU Merkle for small trees (avoids GPU CB overhead)
+
+/// Build a flat Merkle tree from M31 values using CPU Keccak.
+/// Same layout as KeccakMerkleEngine.buildTreeFromM31: leaves at [0..n-1], internal at [n..2n-2].
+func cpuBuildFlatTreeFromM31(_ values: [M31], count n: Int) -> [UInt8] {
+    let treeSize = 2 * n - 1
+    var tree = [UInt8](repeating: 0, count: treeSize * 32)
+
+    // Hash M31 values to 32-byte leaves
+    for i in 0..<n {
+        let leaf = keccak256(m31ToBytes(values[i]))
+        tree.replaceSubrange((i * 32)..<(i * 32 + 32), with: leaf)
+    }
+
+    // Build tree level-by-level
+    var levelStart = 0
+    var levelSize = n
+    while levelSize > 1 {
+        let parentCount = levelSize / 2
+        let outputStart = levelStart + levelSize
+        for j in 0..<parentCount {
+            let leftStart = (levelStart + 2 * j) * 32
+            let rightStart = (levelStart + 2 * j + 1) * 32
+            let input = Array(tree[leftStart..<leftStart + 32]) + Array(tree[rightStart..<rightStart + 32])
+            let hash = keccak256(input)
+            tree.replaceSubrange(((outputStart + j) * 32)..<((outputStart + j) * 32 + 32), with: hash)
+        }
+        levelStart += levelSize
+        levelSize = parentCount
+    }
+
+    return tree
 }
 
 // MARK: - Keccak Merkle Tree Utilities

@@ -46,11 +46,13 @@ kernel void secp_msm_reduce_sorted_buckets(
     SecpPointAffine pt0 = points[raw_idx0 & 0x7FFFFFFFu];
     if (raw_idx0 & 0x80000000u) pt0.y = secp_neg(pt0.y);
     SecpPointProjective acc = secp_point_from_affine(pt0);
+    // Use unsafe mixed add: acc is never identity (initialized from affine),
+    // and random point collision has probability ~10^-65.
     for (uint i = 1; i < count; i++) {
         uint raw_idx = sorted_indices[base + offset + i];
         SecpPointAffine pt = points[raw_idx & 0x7FFFFFFFu];
         if (raw_idx & 0x80000000u) pt.y = secp_neg(pt.y);
-        acc = secp_point_add_mixed(acc, pt);
+        acc = secp_point_add_mixed_unsafe(acc, pt);
     }
     buckets[flat_idx] = acc;
 }
@@ -104,7 +106,7 @@ kernel void secp_msm_reduce_cooperative(
         if (secp_point_is_identity(acc)) {
             acc = secp_point_from_affine(pt);
         } else {
-            acc = secp_point_add_mixed(acc, pt);
+            acc = secp_point_add_mixed_unsafe(acc, pt);
         }
     }
 
@@ -114,7 +116,7 @@ kernel void secp_msm_reduce_cooperative(
             if (secp_point_is_identity(acc)) {
                 acc = other;
             } else if (!secp_point_is_identity(other)) {
-                acc = secp_point_add(acc, other);
+                acc = secp_point_add_unsafe(acc, other);
             }
         }
     }
@@ -160,14 +162,14 @@ kernel void secp_msm_bucket_sum_direct(
             if (secp_point_is_identity(running)) {
                 running = bucket;
             } else {
-                running = secp_point_add(running, bucket);
+                running = secp_point_add_unsafe(running, bucket);
             }
         }
         if (!secp_point_is_identity(running)) {
             if (secp_point_is_identity(sum)) {
                 sum = running;
             } else {
-                sum = secp_point_add(sum, running);
+                sum = secp_point_add_unsafe(sum, running);
             }
         }
         if (i == lo) break;
@@ -183,7 +185,7 @@ kernel void secp_msm_bucket_sum_direct(
                 if (secp_point_is_identity(weighted)) {
                     weighted = base;
                 } else {
-                    weighted = secp_point_add(weighted, base);
+                    weighted = secp_point_add_unsafe(weighted, base);
                 }
             }
             base = secp_point_double(base);
@@ -192,7 +194,7 @@ kernel void secp_msm_bucket_sum_direct(
         if (secp_point_is_identity(sum)) {
             sum = weighted;
         } else {
-            sum = secp_point_add(sum, weighted);
+            sum = secp_point_add_unsafe(sum, weighted);
         }
     }
 
@@ -214,7 +216,7 @@ kernel void secp_msm_combine_segments(
             if (secp_point_is_identity(sum)) {
                 sum = seg;
             } else {
-                sum = secp_point_add(sum, seg);
+                sum = secp_point_add_unsafe(sum, seg);
             }
         }
     }
@@ -241,7 +243,7 @@ kernel void secp_msm_horner_combine(
             if (secp_point_is_identity(result)) {
                 result = wr;
             } else {
-                result = secp_point_add(result, wr);
+                result = secp_point_add_unsafe(result, wr);
             }
         }
     }

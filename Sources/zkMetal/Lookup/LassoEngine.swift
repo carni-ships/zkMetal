@@ -358,69 +358,61 @@ public class LassoEngine {
             if profileLasso { let _t = CFAbsoluteTimeGetCurrent(); fputs(String(format: "  [lasso] chunk %d counts+beta: %.2f ms\n", k, (_t - _tPhase) * 1000), stderr); _tPhase = _t }
 
             // Compute read-side evaluations: h_read[i] = 1/(β + subtable[indices[k][i]])
-            // Use C batch_beta_add for cache-friendly gather+add (avoids Swift frAdd overhead)
-            let readBytes = m * frStride
-            let readBuf = getCachedBuffer(&cachedReadBuf, minBytes: readBytes)
+            // and table-side: h_table[j] = read_counts[j]/(β + Tk[j])
+            // Use C functions: faster than GPU for this size (no command buffer overhead)
             let chunkIndices32: [Int32] = indices[k].map { Int32($0) }
-            withUnsafeBytes(of: beta) { betaPtr in
-                subtable.withUnsafeBytes { valPtr in
-                    chunkIndices32.withUnsafeBufferPointer { idxPtr in
-                        bn254_fr_batch_beta_add(
-                            betaPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            valPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            idxPtr.baseAddress!,
-                            Int32(m),
-                            readBuf.contents().assumingMemoryBound(to: UInt64.self)
-                        )
+            var hRead = [Fr](repeating: Fr.zero, count: m)
+            var hTable = [Fr](repeating: Fr.zero, count: S)
+
+            // Run read-side and table-side in parallel (read is 262K, table is 256)
+            let readPtr = UnsafeMutablePointer<Fr>(&hRead)
+            let tablePtr = UnsafeMutablePointer<Fr>(&hTable)
+            DispatchQueue.concurrentPerform(iterations: 2) { side in
+                if side == 0 {
+                    // Read-side: gather + beta_add + batch_inverse (262144 elements)
+                    withUnsafeBytes(of: beta) { betaPtr in
+                        subtable.withUnsafeBytes { stPtr in
+                            chunkIndices32.withUnsafeBufferPointer { idxPtr in
+                                bn254_fr_inverse_evals_indexed(
+                                    betaPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                    stPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                    UnsafePointer<Int32>(OpaquePointer(idxPtr.baseAddress!)),
+                                    Int32(m),
+                                    UnsafeMutableRawPointer(readPtr).assumingMemoryBound(to: UInt64.self)
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    // Table-side: beta_add + batch_inverse + hadamard with readCounts (256 elements)
+                    withUnsafeBytes(of: beta) { betaPtr in
+                        subtable.withUnsafeBytes { stPtr in
+                            readCounts.withUnsafeBytes { wPtr in
+                                bn254_fr_weighted_inverse_evals(
+                                    betaPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                    stPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                    wPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                    Int32(S),
+                                    UnsafeMutableRawPointer(tablePtr).assumingMemoryBound(to: UInt64.self)
+                                )
+                            }
+                        }
                     }
                 }
             }
-
-            // Prepare table-side: compute β + Tk[j] for all j, write to GPU buffer
-            let tableBytes = S * frStride
-            let tableBuf = getCachedBuffer(&cachedTableBuf, minBytes: tableBytes)
-            let seqIndices: [Int32] = (0..<S).map { Int32($0) }
-            withUnsafeBytes(of: beta) { betaPtr in
-                subtable.withUnsafeBytes { valPtr in
-                    seqIndices.withUnsafeBufferPointer { idxPtr in
-                        bn254_fr_batch_beta_add(
-                            betaPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            valPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            idxPtr.baseAddress!,
-                            Int32(S),
-                            tableBuf.contents().assumingMemoryBound(to: UInt64.self)
-                        )
-                    }
-                }
-            }
-
-            // Prepare hadamard input buffer (readCounts)
-            let hadInBuf = getCachedBuffer(&cachedHadamardInBuf, minBytes: tableBytes)
-            readCounts.withUnsafeBytes { src in memcpy(hadInBuf.contents(), src.baseAddress!, tableBytes) }
-
-            // Single command buffer: batchInverse(read) + batchInverse(table) + hadamard(table)
-            let readOutBuf = getCachedBuffer(&cachedReadOutBuf, minBytes: readBytes)
-            let tableOutBuf = getCachedBuffer(&cachedTableOutBuf, minBytes: tableBytes)
-            let hadOutBuf = getCachedBuffer(&cachedHadamardOutBuf, minBytes: tableBytes)
-            try encodeFusedInverseAndHadamard(
-                readIn: readBuf, readOut: readOutBuf, readN: m,
-                tableIn: tableBuf, tableOut: tableOutBuf, tableN: S,
-                hadA: hadInBuf, hadB: tableOutBuf, hadOut: hadOutBuf, hadN: S
-            )
-
-            let hRead = Array(UnsafeBufferPointer(start: readOutBuf.contents().bindMemory(to: Fr.self, capacity: m), count: m))
-            let hTable = Array(UnsafeBufferPointer(start: hadOutBuf.contents().bindMemory(to: Fr.self, capacity: S), count: S))
 
             if profileLasso { let _t = CFAbsoluteTimeGetCurrent(); fputs(String(format: "  [lasso] chunk %d fused GPU (%d+%d): %.2f ms\n", k, m, S, (_t - _tPhase) * 1000), stderr); _tPhase = _t }
 
             // Compute claimed sum S = Σ h_read[i] using fast C vector sum
             var sum: Fr = Fr.zero
             var sumLimbs = [UInt64](repeating: 0, count: 4)
-            bn254_fr_vector_sum(
-                readOutBuf.contents().assumingMemoryBound(to: UInt64.self),
-                Int32(m),
-                &sumLimbs
-            )
+            hRead.withUnsafeBytes { ptr in
+                bn254_fr_vector_sum(
+                    ptr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(m),
+                    &sumLimbs
+                )
+            }
             sum = Fr.from64(sumLimbs)
 
             // Sanity check: table side should match (small array, use C sum too)
@@ -809,9 +801,31 @@ public class LassoEngine {
                 challenges.append(c)
                 appendFr(&transcript, c)
             }
-            let (gpuRounds, finalEval) = try sumcheckEngine.fullSumcheck(
-                evals: evals, challenges: challenges)
-            return (gpuRounds, finalEval, challenges)
+            // Use C sumcheck (faster than GPU: no command buffer overhead)
+            var roundsRaw = [UInt64](repeating: 0, count: numVars * 12)
+            var finalEvalRaw = [UInt64](repeating: 0, count: 4)
+            evals.withUnsafeBytes { evPtr in
+                challenges.withUnsafeBytes { chPtr in
+                    bn254_fr_full_sumcheck(
+                        evPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(numVars),
+                        chPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        &roundsRaw,
+                        &finalEvalRaw
+                    )
+                }
+            }
+            let finalEval = Fr.from64(finalEvalRaw)
+            var cRounds = [(Fr, Fr, Fr)]()
+            cRounds.reserveCapacity(numVars)
+            for r in 0..<numVars {
+                let base = r * 12
+                let s0 = Fr.from64(Array(roundsRaw[base..<base+4]))
+                let s1 = Fr.from64(Array(roundsRaw[base+4..<base+8]))
+                let s2 = Fr.from64(Array(roundsRaw[base+8..<base+12]))
+                cRounds.append((s0, s1, s2))
+            }
+            return (cRounds, finalEval, challenges)
         } else {
             var current = evals
             for _ in 0..<numVars {

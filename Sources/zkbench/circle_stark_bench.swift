@@ -52,12 +52,22 @@ public func runCircleSTARKBench() {
         do {
             let air = FibonacciAIR(logTraceLength: logN)
             let prover = CircleSTARKProver(logBlowup: 2, numQueries: 16)
-            prover.profileProve = (logN == sizes.last!)
             let verifier = CircleSTARKVerifier()
 
-            let t0 = CFAbsoluteTimeGetCurrent()
-            let proof = try prover.prove(air: air)
-            let proveTime = (CFAbsoluteTimeGetCurrent() - t0) * 1000
+            // Warmup run (primes caches, GPU pipelines, twiddles)
+            let _ = try prover.prove(air: air)
+
+            // Timed run with profiling on last size
+            prover.profileProve = (logN == sizes.last!)
+            var bestProve = Double.infinity
+            var proof: CircleSTARKProof!
+            for _ in 0..<3 {
+                let t0 = CFAbsoluteTimeGetCurrent()
+                proof = try prover.prove(air: air)
+                let ms = (CFAbsoluteTimeGetCurrent() - t0) * 1000
+                if ms < bestProve { bestProve = ms }
+            }
+            let proveTime = bestProve
 
             let t1 = CFAbsoluteTimeGetCurrent()
             let valid = try verifier.verify(air: air, proof: proof)

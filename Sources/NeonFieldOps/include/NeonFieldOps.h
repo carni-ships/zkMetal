@@ -271,6 +271,14 @@ void bn254_fr_batch_decompose(const uint64_t *lookups, int m,
 /// O(3n) muls + 1 Fermat inversion. Much faster than n individual inversions.
 void bn254_fr_batch_inverse(const uint64_t *a, int n, uint64_t *out);
 
+/// Full sumcheck protocol for a single multilinear polynomial.
+/// Input: evals[2^numVars], challenges[numVars] (pre-derived).
+/// Output: rounds[numVars * 12] = (S(0), S(1), S(2)) per round as 3 Fr each,
+///         finalEval[4] = final evaluation. Parallelized for large rounds.
+void bn254_fr_full_sumcheck(const uint64_t *evals, int numVars,
+                             const uint64_t *challenges,
+                             uint64_t *rounds, uint64_t *finalEval);
+
 /// Evaluate multilinear extension at a point.
 /// evals: 2^numVars Fr elements. point: numVars Fr elements. result: single Fr.
 void bn254_fr_mle_eval(const uint64_t *evals, int numVars,

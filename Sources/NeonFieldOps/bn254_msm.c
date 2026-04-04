@@ -1119,6 +1119,117 @@ void bn254_fr_batch_inverse(const uint64_t *a, int n, uint64_t *out) {
     memcpy(out, inv, 32);
 }
 
+// Full sumcheck for a single multilinear polynomial.
+// Input: evals[0..2^numVars], pre-derived challenges[0..numVars].
+// Output: rounds[round][0..2] = (S(0), S(1), S(2)) stored as round*3*4 uint64_t,
+//         finalEval[4] = final evaluation.
+// Parallel: uses threads for large round sizes.
+typedef struct {
+    const uint64_t *evals;
+    int halfN;
+    uint64_t s0[4], s1[4], s2[4]; // partial sums for this thread
+    int start, end;
+} SumcheckRoundChunk;
+
+static void *sumcheck_round_worker(void *arg) {
+    SumcheckRoundChunk *c = (SumcheckRoundChunk *)arg;
+    uint64_t s0[4] = {0,0,0,0};
+    uint64_t s1[4] = {0,0,0,0};
+    uint64_t s2[4] = {0,0,0,0};
+    const uint64_t *ev = c->evals;
+    int halfN = c->halfN;
+    for (int i = c->start; i < c->end; i++) {
+        const uint64_t *a = ev + i * 4;
+        const uint64_t *b = ev + (halfN + i) * 4;
+        uint64_t tmp[4];
+        fr_add(s0, a, tmp); memcpy(s0, tmp, 32);
+        fr_add(s1, b, tmp); memcpy(s1, tmp, 32);
+        uint64_t twoB[4];
+        fr_add(b, b, twoB);
+        uint64_t f2[4];
+        fr_sub(twoB, a, f2);
+        fr_add(s2, f2, tmp); memcpy(s2, tmp, 32);
+    }
+    memcpy(c->s0, s0, 32);
+    memcpy(c->s1, s1, 32);
+    memcpy(c->s2, s2, 32);
+    return NULL;
+}
+
+void bn254_fr_full_sumcheck(const uint64_t *evals, int numVars,
+                             const uint64_t *challenges,
+                             uint64_t *rounds, uint64_t *finalEval) {
+    int n = 1 << numVars;
+    uint64_t *buf = (uint64_t *)malloc(n * 32);
+    memcpy(buf, evals, n * 32);
+
+    for (int round = 0; round < numVars; round++) {
+        int halfN = n / 2;
+        uint64_t *rout = rounds + round * 12; // 3 Fr per round
+
+        if (halfN >= 8192) {
+            // Parallel round
+            int nT = 8;
+            if (halfN / 1024 < nT) nT = halfN / 1024;
+            if (nT < 1) nT = 1;
+            int perT = (halfN + nT - 1) / nT;
+            pthread_t threads[8];
+            SumcheckRoundChunk chunks[8];
+            for (int t = 0; t < nT; t++) {
+                chunks[t].evals = buf;
+                chunks[t].halfN = halfN;
+                chunks[t].start = t * perT;
+                chunks[t].end = (t + 1) * perT;
+                if (chunks[t].end > halfN) chunks[t].end = halfN;
+                pthread_create(&threads[t], NULL, sumcheck_round_worker, &chunks[t]);
+            }
+            for (int t = 0; t < nT; t++) pthread_join(threads[t], NULL);
+            // Reduce partial sums
+            memcpy(rout, chunks[0].s0, 32);
+            memcpy(rout + 4, chunks[0].s1, 32);
+            memcpy(rout + 8, chunks[0].s2, 32);
+            for (int t = 1; t < nT; t++) {
+                uint64_t tmp[4];
+                fr_add(rout, chunks[t].s0, tmp); memcpy(rout, tmp, 32);
+                fr_add(rout + 4, chunks[t].s1, tmp); memcpy(rout + 4, tmp, 32);
+                fr_add(rout + 8, chunks[t].s2, tmp); memcpy(rout + 8, tmp, 32);
+            }
+        } else {
+            // Single-threaded round
+            uint64_t s0[4] = {0,0,0,0};
+            uint64_t s1[4] = {0,0,0,0};
+            uint64_t s2[4] = {0,0,0,0};
+            for (int i = 0; i < halfN; i++) {
+                uint64_t *a = buf + i * 4;
+                uint64_t *b = buf + (halfN + i) * 4;
+                uint64_t tmp[4];
+                fr_add(s0, a, tmp); memcpy(s0, tmp, 32);
+                fr_add(s1, b, tmp); memcpy(s1, tmp, 32);
+                uint64_t twoB[4]; fr_add(b, b, twoB);
+                uint64_t f2[4]; fr_sub(twoB, a, f2);
+                fr_add(s2, f2, tmp); memcpy(s2, tmp, 32);
+            }
+            memcpy(rout, s0, 32);
+            memcpy(rout + 4, s1, 32);
+            memcpy(rout + 8, s2, 32);
+        }
+
+        // Reduce: buf[i] = buf[i] + challenge * (buf[halfN+i] - buf[i])
+        const uint64_t *ch = challenges + round * 4;
+        for (int i = 0; i < halfN; i++) {
+            uint64_t *a = buf + i * 4;
+            uint64_t *b = buf + (halfN + i) * 4;
+            uint64_t diff[4]; fr_sub(b, a, diff);
+            uint64_t rd[4]; fr_mul(ch, diff, rd);
+            uint64_t res[4]; fr_add(a, rd, res);
+            memcpy(a, res, 32);
+        }
+        n = halfN;
+    }
+    memcpy(finalEval, buf, 32);
+    free(buf);
+}
+
 // Evaluate multilinear extension at a point.
 // evals: 2^numVars Fr elements. point: numVars Fr elements.
 // Returns single Fr in result.
@@ -1146,6 +1257,43 @@ void bn254_fr_mle_eval(const uint64_t *evals, int numVars,
 // Fused: gather subtable values by index, add beta, batch inverse.
 // out[i] = 1/(beta + subtable[indices[i]])
 // Avoids separate gather step by combining with beta-add.
+// Single-chunk batch inverse on a contiguous range [base, base+chunk) of out[].
+// Assumes out[] already contains beta+values; writes inverses in-place.
+static void batch_inverse_chunk(uint64_t *out, int base, int chunk) {
+    if (chunk == 0) return;
+    if (chunk == 1) { fr_inv(out + base * 4, out + base * 4); return; }
+    // Prefix products in-place using a temp buffer on stack/heap
+    uint64_t *prefix = (uint64_t *)malloc(chunk * 32);
+    memcpy(prefix, out + base * 4, 32);
+    for (int i = 1; i < chunk; i++) {
+        fr_mul(prefix + (i - 1) * 4, out + (base + i) * 4, prefix + i * 4);
+    }
+    uint64_t inv[4];
+    fr_inv(prefix + (chunk - 1) * 4, inv);
+    for (int i = chunk - 1; i > 0; i--) {
+        uint64_t tmp[4];
+        fr_mul(inv, prefix + (i - 1) * 4, tmp);
+        uint64_t new_inv[4];
+        fr_mul(inv, out + (base + i) * 4, new_inv);
+        memcpy(inv, new_inv, 32);
+        memcpy(out + (base + i) * 4, tmp, 32);
+    }
+    memcpy(out + base * 4, inv, 32);
+    free(prefix);
+}
+
+typedef struct {
+    uint64_t *out;
+    int base;
+    int chunk;
+} BatchInvChunk;
+
+static void *batch_inv_worker(void *arg) {
+    BatchInvChunk *c = (BatchInvChunk *)arg;
+    batch_inverse_chunk(c->out, c->base, c->chunk);
+    return NULL;
+}
+
 void bn254_fr_inverse_evals_indexed(const uint64_t beta[4], const uint64_t *subtable,
                                      const int *indices, int n, uint64_t *out) {
     if (n == 0) return;
@@ -1157,24 +1305,30 @@ void bn254_fr_inverse_evals_indexed(const uint64_t beta[4], const uint64_t *subt
         fr_inv(out, out);
         return;
     }
-    // Phase 2: batch inverse via Montgomery's trick
-    uint64_t *prefix = (uint64_t *)malloc(n * 32);
-    memcpy(prefix, out, 32);
-    for (int i = 1; i < n; i++) {
-        fr_mul(prefix + (i - 1) * 4, out + i * 4, prefix + i * 4);
+    // Phase 2: parallel chunked batch inverse
+    int CHUNK = 4096;  // elements per thread
+    int nChunks = (n + CHUNK - 1) / CHUNK;
+    if (nChunks <= 1) {
+        batch_inverse_chunk(out, 0, n);
+        return;
     }
-    uint64_t inv[4];
-    fr_inv(prefix + (n - 1) * 4, inv);
-    for (int i = n - 1; i >= 1; i--) {
-        uint64_t tmp[4];
-        fr_mul(inv, prefix + (i - 1) * 4, tmp);
-        uint64_t new_inv[4];
-        fr_mul(inv, out + i * 4, new_inv);
-        memcpy(inv, new_inv, 32);
-        memcpy(out + i * 4, tmp, 32);
+    int nThreads = nChunks;
+    if (nThreads > 10) nThreads = 10;
+    int perThread = (n + nThreads - 1) / nThreads;
+
+    pthread_t threads[10];
+    BatchInvChunk chunks[10];
+    for (int t = 0; t < nThreads; t++) {
+        int base = t * perThread;
+        int end = base + perThread;
+        if (end > n) end = n;
+        chunks[t].out = out;
+        chunks[t].base = base;
+        chunks[t].chunk = end - base;
+        pthread_create(&threads[t], NULL, batch_inv_worker, &chunks[t]);
     }
-    memcpy(out, inv, 32);
-    free(prefix);
+    for (int t = 0; t < nThreads; t++)
+        pthread_join(threads[t], NULL);
 }
 
 // Compute beta+values and then batch inverse: out[i] = 1/(beta + values[i])
@@ -1188,23 +1342,30 @@ void bn254_fr_inverse_evals(const uint64_t beta[4], const uint64_t *values,
         fr_inv(out, out);
         return;
     }
-    uint64_t *prefix = (uint64_t *)malloc(n * 32);
-    memcpy(prefix, out, 32);
-    for (int i = 1; i < n; i++) {
-        fr_mul(prefix + (i - 1) * 4, out + i * 4, prefix + i * 4);
+    // Use parallel chunked batch inverse for large n
+    int CHUNK = 4096;
+    int nChunks = (n + CHUNK - 1) / CHUNK;
+    if (nChunks <= 1) {
+        batch_inverse_chunk(out, 0, n);
+        return;
     }
-    uint64_t inv[4];
-    fr_inv(prefix + (n - 1) * 4, inv);
-    for (int i = n - 1; i >= 1; i--) {
-        uint64_t tmp[4];
-        fr_mul(inv, prefix + (i - 1) * 4, tmp);
-        uint64_t new_inv[4];
-        fr_mul(inv, out + i * 4, new_inv);
-        memcpy(inv, new_inv, 32);
-        memcpy(out + i * 4, tmp, 32);
+    int nThreads = nChunks;
+    if (nThreads > 10) nThreads = 10;
+    int perThread = (n + nThreads - 1) / nThreads;
+
+    pthread_t threads[10];
+    BatchInvChunk chunks[10];
+    for (int t = 0; t < nThreads; t++) {
+        int base = t * perThread;
+        int end = base + perThread;
+        if (end > n) end = n;
+        chunks[t].out = out;
+        chunks[t].base = base;
+        chunks[t].chunk = end - base;
+        pthread_create(&threads[t], NULL, batch_inv_worker, &chunks[t]);
     }
-    memcpy(out, inv, 32);
-    free(prefix);
+    for (int t = 0; t < nThreads; t++)
+        pthread_join(threads[t], NULL);
 }
 
 // Compute weighted inverse evals: out[j] = weights[j] / (beta + values[j])
