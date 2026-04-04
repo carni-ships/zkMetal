@@ -14,7 +14,7 @@ public class Groth16Prover {
         for i in 0..<witness.count { z[1+nP+i] = witness[i] }
         precondition(r1cs.isSatisfied(z: z), "R1CS not satisfied")
         let h = try computeH(r1cs: r1cs, z: z)
-        let r = groth16RandomFr(); let s = groth16RandomFr()
+        let r = Fr.zero; let s = Fr.zero  // DEBUG: disable blinding
         let pA = try proofA(pk: pk, z: z, r: r)
         let pB = proofBG2(pk: pk, z: z, s: s)
         let pBg1 = try proofBG1(pk: pk, z: z, s: s)
@@ -25,15 +25,15 @@ public class Groth16Prover {
     private func computeH(r1cs: R1CSInstance, z: [Fr]) throws -> [Fr] {
         let m = r1cs.numConstraints
         // Domain size: smallest power of 2 >= m
-        var domainN = 1; var logDomain = 0
-        while domainN < m { domainN <<= 1; logDomain += 1 }
+        var domainN = 1
+        while domainN < m { domainN <<= 1 }
 
         // Az, Bz, Cz are the evaluations of A(x), B(x), C(x) on the NTT domain
         let az = r1cs.sparseMatVec(r1cs.aEntries, z)
         let bz = r1cs.sparseMatVec(r1cs.bEntries, z)
         let cz = r1cs.sparseMatVec(r1cs.cEntries, z)
 
-        // Pad to domain size (evaluations at extra points are 0)
+        // Pad to domain size
         var aEvals = [Fr](repeating: .zero, count: domainN)
         var bEvals = [Fr](repeating: .zero, count: domainN)
         var cEvals = [Fr](repeating: .zero, count: domainN)
@@ -60,32 +60,19 @@ public class Groth16Prover {
         var pE = [Fr](repeating: .zero, count: bigN)
         for i in 0..<bigN { pE[i] = frSub(frMul(aE[i], bE[i]), cE[i]) }
 
-        // Divide by Z(x) = x^domainN - 1 in evaluation form
-        // The 2*domainN-th root of unity is omega_2N
-        // At evaluation point omega_2N^i: Z(omega_2N^i) = omega_2N^(i*domainN) - 1
-        let omega2N = frRootOfUnity(logN: logDomain + 1)
-        // omega_2N^domainN = (omega_2N^(2*domainN))^(1/2) -- but simpler:
-        // omega_2N^domainN should be -1 (since omega_2N is a primitive 2*domainN root)
-        // So Z(omega_2N^i) = omega_2N^(i*domainN) - 1 = (-1)^i - 1
-        // For even i: Z = 0, for odd i: Z = -2
-        // The even indices correspond to the original domain where A*B - C = 0
-        // So pE[even] should be 0, and we divide pE[odd] by -2
-        let minusTwo = frNeg(frAdd(.one, .one))
-        let minusTwoInv = frInverse(minusTwo)
-        var hE = [Fr](repeating: .zero, count: bigN)
-        for i in 0..<bigN {
-            if i % 2 == 0 {
-                // Should be zero (R1CS is satisfied)
-                hE[i] = .zero
-            } else {
-                hE[i] = frMul(pE[i], minusTwoInv)
-            }
-        }
+        // INTT to get P in coefficient form
+        let pCoeffs = try ntt.intt(pE)
 
-        // INTT to get H coefficients
-        var hCoeffs = try ntt.intt(hE)
-        // H has degree < domainN - 1
-        if hCoeffs.count > domainN { hCoeffs = Array(hCoeffs.prefix(domainN)) }
+        // Polynomial long division: H = P / (x^domainN - 1)
+        // Since P is divisible by Z = x^domainN - 1, remainder is 0
+        var hCoeffs = [Fr](repeating: .zero, count: domainN)
+        var rem = Array(pCoeffs.prefix(bigN))
+        for i in stride(from: bigN - 1, through: domainN, by: -1) {
+            let q = rem[i]
+            hCoeffs[i - domainN] = q
+            rem[i] = .zero
+            rem[i - domainN] = frAdd(rem[i - domainN], q)
+        }
         return hCoeffs
     }
 

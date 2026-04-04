@@ -56,8 +56,8 @@ public class Groth16Setup {
                 // tau happens to equal omega^i (vanishingly unlikely with random tau)
                 lagrangeAtTau[i] = .one
             } else {
-                // L_i(tau) = Z(tau) / (domainN * omega^i * (tau - omega^i))
-                lagrangeAtTau[i] = frMul(zOverN, frInverse(frMul(omegaPow[i], diff)))
+                // L_i(tau) = omega^i * (tau^n - 1) / (n * (tau - omega^i))
+                lagrangeAtTau[i] = frMul(frMul(zOverN, omegaPow[i]), frInverse(diff))
             }
         }
 

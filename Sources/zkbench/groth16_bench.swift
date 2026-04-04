@@ -24,161 +24,12 @@ public func runGroth16Bench() {
         let vt = CFAbsoluteTimeGetCurrent()
         let valid = verifier.verify(proof: proof, vk: vk, publicInputs: pub)
         fputs("  Verify: \(String(format: "%.1f", (CFAbsoluteTimeGetCurrent()-vt)*1000))ms -- \(valid ? "VALID" : "INVALID")\n", stderr)
-        // Debug: check NTT round-trip and H polynomial
-        fputs("  [Debug] Checking NTT round-trip and H...\n", stderr)
-        do {
-            let prover2 = try Groth16Prover()
-            // NTT round-trip test
-            let testVec: [Fr] = [frFromInt(1), frFromInt(2), frFromInt(3), frFromInt(4)]
-            let fwd = try prover2.ntt.ntt(testVec)
-            let back = try prover2.ntt.intt(fwd)
-            var nttOk = true
-            for i in 0..<4 { if !frSub(testVec[i], back[i]).isZero { nttOk = false } }
-            fputs("  [Debug] NTT round-trip: \(nttOk)\n", stderr)
 
-            // Check R1CS evaluations
-            let nP2 = r1cs.numPublic
-            var zz = [Fr](repeating: .zero, count: r1cs.numVars)
-            zz[0] = .one; for ii in 0..<nP2 { zz[1+ii] = pub[ii] }
-            for ii in 0..<wit.count { zz[1+nP2+ii] = wit[ii] }
-            let az = r1cs.sparseMatVec(r1cs.aEntries, zz)
-            let bz = r1cs.sparseMatVec(r1cs.bEntries, zz)
-            let cz = r1cs.sparseMatVec(r1cs.cEntries, zz)
-            var pointwiseOk = true
-            for ii in 0..<r1cs.numConstraints {
-                if !frSub(frMul(az[ii], bz[ii]), cz[ii]).isZero { pointwiseOk = false }
-            }
-            fputs("  [Debug] Az*Bz==Cz pointwise: \(pointwiseOk)\n", stderr)
-
-            // Check H: compute H and verify A*B - C = H*Z at a random point
-            let m = r1cs.numConstraints
-            var domN2 = 1; var logD2 = 0
-            while domN2 < m { domN2 <<= 1; logD2 += 1 }
-
-            // Get A,B,C coefficients via INTT of evaluations
-            var aEv = [Fr](repeating: .zero, count: domN2)
-            var bEv = [Fr](repeating: .zero, count: domN2)
-            var cEv = [Fr](repeating: .zero, count: domN2)
-            for ii in 0..<m { aEv[ii] = az[ii]; bEv[ii] = bz[ii]; cEv[ii] = cz[ii] }
-            let aCo = try prover2.ntt.intt(aEv)
-            let bCo = try prover2.ntt.intt(bEv)
-            let cCo = try prover2.ntt.intt(cEv)
-
-            // Evaluate A, B, C at test point x=7
-            let testX = frFromInt(7)
-            func evalPoly(_ coeffs: [Fr], _ x: Fr) -> Fr {
-                var result = Fr.zero; var xpow = Fr.one
-                for c in coeffs { result = frAdd(result, frMul(c, xpow)); xpow = frMul(xpow, x) }
-                return result
-            }
-            let aAt7 = evalPoly(aCo, testX)
-            let bAt7 = evalPoly(bCo, testX)
-            let cAt7 = evalPoly(cCo, testX)
-            let pAt7 = frSub(frMul(aAt7, bAt7), cAt7)
-
-            // Z(7) = 7^domN - 1
-            var z7 = Fr.one; for _ in 0..<domN2 { z7 = frMul(z7, testX) }
-            z7 = frSub(z7, .one)
-
-            // Compute H using the same code as prover
-            // Replicate computeH logic
-            let bigN = domN2 * 2
-            var aPad = [Fr](repeating: .zero, count: bigN)
-            var bPad = [Fr](repeating: .zero, count: bigN)
-            var cPad = [Fr](repeating: .zero, count: bigN)
-            for ii in 0..<domN2 { aPad[ii] = aCo[ii]; bPad[ii] = bCo[ii]; cPad[ii] = cCo[ii] }
-            let aEE = try prover2.ntt.ntt(aPad)
-            let bEE = try prover2.ntt.ntt(bPad)
-            let cEE = try prover2.ntt.ntt(cPad)
-            var pEE = [Fr](repeating: .zero, count: bigN)
-            for ii in 0..<bigN { pEE[ii] = frSub(frMul(aEE[ii], bEE[ii]), cEE[ii]) }
-            let minusTwo = frNeg(frAdd(.one, .one))
-            let minusTwoInv = frInverse(minusTwo)
-            var hEE = [Fr](repeating: .zero, count: bigN)
-            for ii in 0..<bigN {
-                if ii % 2 == 0 { hEE[ii] = .zero }
-                else { hEE[ii] = frMul(pEE[ii], minusTwoInv) }
-            }
-            let hCo = try prover2.ntt.intt(hEE)
-            let hAt7 = evalPoly(Array(hCo.prefix(domN2)), testX)
-
-            // Check: P(7) == H(7) * Z(7)
-            let hz7 = frMul(hAt7, z7)
-            fputs("  [Debug] P(7)==H(7)*Z(7): \(frSub(pAt7, hz7).isZero)\n", stderr)
-            fputs("  [Debug] P(7) nonzero: \(!pAt7.isZero)\n", stderr)
-            fputs("  [Debug] H(7) nonzero: \(!hAt7.isZero)\n", stderr)
-
-            // Check even evaluations of P are zero
-            var evenZeroCount = 0; var evenNonzeroCount = 0
-            for ii in stride(from: 0, to: bigN, by: 2) {
-                if pEE[ii].isZero { evenZeroCount += 1 } else { evenNonzeroCount += 1 }
-            }
-            fputs("  [Debug] P evals at even indices: \(evenZeroCount) zero, \(evenNonzeroCount) nonzero\n", stderr)
-
-            // Check odd evaluations nonzero
-            var oddNonzero = 0
-            for ii in stride(from: 1, to: bigN, by: 2) {
-                if !pEE[ii].isZero { oddNonzero += 1 }
-            }
-            fputs("  [Debug] P evals at odd indices: \(oddNonzero) nonzero out of \(bigN/2)\n", stderr)
-
-            // Alternative: do polynomial long division of P by Z = x^domN - 1
-            // P has degree < 2*domN, Z has degree domN
-            // P = H * Z + R where deg(R) < domN
-            // Since P vanishes on the N-th roots, R should be 0
-            var pCoeffs = try prover2.ntt.intt(pEE)  // coefficients of P
-            // Long division: P / (x^domN - 1)
-            // H[i] = P[i + domN], and subtract: P[i] += H[i] (since Z = x^N - 1, so x^N * H[i] gives H[i] at position i+N, and -H[i] at position i)
-            var hLong = [Fr](repeating: .zero, count: domN2)
-            var rem = Array(pCoeffs.prefix(bigN))
-            for ii in stride(from: bigN - 1, through: domN2, by: -1) {
-                let q = rem[ii]  // quotient coefficient
-                hLong[ii - domN2] = q
-                rem[ii] = .zero
-                rem[ii - domN2] = frAdd(rem[ii - domN2], q)  // subtract -1 * q = add q
-            }
-            // Check remainder is zero
-            var remZero = true
-            for ii in 0..<domN2 { if !rem[ii].isZero { remZero = false; break } }
-            fputs("  [Debug] Long division remainder zero: \(remZero)\n", stderr)
-
-            // Evaluate H from long division at x=7
-            let hLongAt7 = evalPoly(hLong, testX)
-            let hzLong7 = frMul(hLongAt7, z7)
-            fputs("  [Debug] P(7)==H_longdiv(7)*Z(7): \(frSub(pAt7, hzLong7).isZero)\n", stderr)
-        } catch {
-            fputs("  [Debug] Error: \(error)\n", stderr)
+        // Debug: scalar-level Groth16 equation check
+        if !valid {
+            fputs("  [Debug] Scalar-level Groth16 check...\n", stderr)
+            scalarGroth16Check(r1cs: r1cs, publicInputs: pub, witness: wit)
         }
-        // Debug: manually check the pairing equation
-        fputs("  [Debug] Checking pairing equation manually...\n", stderr)
-        let pA = pointToAffine(proof.a)!
-        let pC = pointToAffine(proof.c)!
-        let pB = g2ToAffine(proof.b)!
-        let al = pointToAffine(vk.alpha_g1)!
-        let be = g2ToAffine(vk.beta_g2)!
-        let ga = g2ToAffine(vk.gamma_g2)!
-        let de = g2ToAffine(vk.delta_g2)!
-        var vkX = vk.ic[0]
-        for i in 0..<pub.count {
-            if !pub[i].isZero { vkX = pointAdd(vkX, pointScalarMul(vk.ic[i+1], pub[i])) }
-        }
-        let vx = pointToAffine(vkX)!
-        // Check each pairing individually
-        let negA = pointNegateAffine(pA)
-        let ml1 = bn254MillerLoop(negA, pB)
-        let ml2 = bn254MillerLoop(al, be)
-        let ml3 = bn254MillerLoop(vx, ga)
-        let ml4 = bn254MillerLoop(pC, de)
-        let prod = fp12Mul(fp12Mul(ml1, ml2), fp12Mul(ml3, ml4))
-        let result = bn254FinalExponentiation(prod)
-        fputs("  [Debug] Product of Miller loops -> final exp == 1: \(fp12Equal(result, .one))\n", stderr)
-        // Alternative: check e(A,B) == e(alpha,beta) * e(vkX,gamma) * e(C,delta)
-        let eAB = bn254Pairing(pA, pB)
-        let eAlBe = bn254Pairing(al, be)
-        let eVxGa = bn254Pairing(vx, ga)
-        let eCDe = bn254Pairing(pC, de)
-        let rhs2 = fp12Mul(fp12Mul(eAlBe, eVxGa), eCDe)
-        fputs("  [Debug] e(A,B) == e(al,be)*e(vx,ga)*e(C,de): \(fp12Equal(eAB, rhs2))\n", stderr)
     } catch { fputs("  Error: \(error)\n", stderr) }
     fputs("\n[2] Bench circuits\n", stderr)
     for sz in [8, 64, 256] {
@@ -203,101 +54,169 @@ public func runGroth16Bench() {
         } catch { fputs("  n=\(sz): \(error)\n", stderr) }
     }
     fputs("\n[3] BN254 Pairing Debug\n", stderr)
-    // Check G2 generator on curve: y^2 = x^3 + 3/xi, xi=9+u
-    let g2gen = bn254G2Generator()
-    let g2x = g2gen.x; let g2y = g2gen.y
-    let g2y2 = fp2Sqr(g2y)
-    let g2x3 = fp2Mul(fp2Sqr(g2x), g2x)
-    let xi = Fp2(c0: fpFromInt(9), c1: fpFromInt(1))
-    let xiInv = fp2Inverse(xi)
-    let bTwist = fp2Mul(Fp2(c0: fpFromInt(3), c1: .zero), xiInv)
-    let g2rhs = fp2Add(g2x3, bTwist)
-    let g2OnCurve = fp2Sub(g2y2, g2rhs)
-    fputs("  G2 on curve: c0=\(g2OnCurve.c0.isZero), c1=\(g2OnCurve.c1.isZero)\n", stderr)
-
-    // Check G1 on curve
     let g1gen = bn254G1Generator()
-    let g1y2 = fpSqr(g1gen.y)
-    let g1x3p3 = fpAdd(fpMul(fpSqr(g1gen.x), g1gen.x), fpFromInt(3))
-    fputs("  G1 on curve: \(fpSub(g1y2, g1x3p3).isZero)\n", stderr)
-
-    // Check 2*G2 works
-    let g2Proj = g2FromAffine(g2gen)
-    let g2Dbl = g2Double(g2Proj)
-    let g2DblA = g2ToAffine(g2Dbl)!
-    let g2DblY2 = fp2Sqr(g2DblA.y)
-    let g2DblRhs = fp2Add(fp2Mul(fp2Sqr(g2DblA.x), g2DblA.x), bTwist)
-    let g2DblCheck = fp2Sub(g2DblY2, g2DblRhs)
-    fputs("  2*G2 on curve: c0=\(g2DblCheck.c0.isZero), c1=\(g2DblCheck.c1.isZero)\n", stderr)
-
+    let g2gen = bn254G2Generator()
     let pT0 = CFAbsoluteTimeGetCurrent()
-    let pair = bn254Pairing(bn254G1Generator(), bn254G2Generator())
+    let pair = bn254Pairing(g1gen, g2gen)
     fputs("  e(G1,G2) in \(String(format: "%.1f", (CFAbsoluteTimeGetCurrent()-pT0)*1000))ms, ==1: \(fp12Equal(pair, .one))\n", stderr)
-
-    // Check e(G1,G2)^r == 1 (where r is the group order)
-    // If pairing works, e(G1,G2) should be non-trivial (not 1) but have order r
 
     // Bilinearity check: e(aP, Q) == e(P, aQ)
     let a = frFromInt(7)
-    let aG1 = pointToAffine(pointScalarMul(pointFromAffine(bn254G1Generator()), a))!
-    let aG2 = g2ToAffine(g2ScalarMul(g2FromAffine(bn254G2Generator()), frToInt(a)))!
-    let lhs = bn254Pairing(aG1, bn254G2Generator())
-    let rhs = bn254Pairing(bn254G1Generator(), aG2)
+    let aG1 = pointToAffine(pointScalarMul(pointFromAffine(g1gen), a))!
+    let aG2 = g2ToAffine(g2ScalarMul(g2FromAffine(g2gen), frToInt(a)))!
+    let lhs = bn254Pairing(aG1, g2gen)
+    let rhs = bn254Pairing(g1gen, aG2)
     fputs("  Bilinear e(7G,H)==e(G,7H): \(fp12Equal(lhs, rhs) ? "PASS" : "FAIL")\n", stderr)
 
-    // Simple check: e(G, -H) * e(G, H) == 1 ?
-    let negH = g2NegateAffine(bn254G2Generator())
-    let eProd = fp12Mul(bn254MillerLoop(bn254G1Generator(), bn254G2Generator()),
-                         bn254MillerLoop(bn254G1Generator(), negH))
+    // e(G, -H) * e(G, H) == 1
+    let negH = g2NegateAffine(g2gen)
+    let eProd = fp12Mul(bn254MillerLoop(g1gen, g2gen), bn254MillerLoop(g1gen, negH))
     let eProdFinal = bn254FinalExponentiation(eProd)
     fputs("  e(G,H)*e(G,-H)==1: \(fp12Equal(eProdFinal, .one) ? "PASS" : "FAIL")\n", stderr)
 
-    // Debug G2 scalar mul
-    let g2P = g2FromAffine(bn254G2Generator())
-    let g2_7a = g2ToAffine(g2ScalarMul(g2P, frToInt(frFromInt(7))))!
-    var g2_7b = g2P
-    for _ in 1..<7 { g2_7b = g2Add(g2_7b, g2P) }
-    let g2_7bA = g2ToAffine(g2_7b)!
-    let xMatch = fp2Sub(g2_7a.x, g2_7bA.x)
-    let yMatch = fp2Sub(g2_7a.y, g2_7bA.y)
-    fputs("  G2: 7*G==G+G+...+G: x=\(xMatch.c0.isZero && xMatch.c1.isZero), y=\(yMatch.c0.isZero && yMatch.c1.isZero)\n", stderr)
-
-    // Check: e(2G, H) == e(G, H)^2
-    let g1_2 = pointToAffine(pointDouble(pointFromAffine(bn254G1Generator())))!
-    let e2g_h = bn254Pairing(g1_2, bn254G2Generator())
-    let eg_h = bn254Pairing(bn254G1Generator(), bn254G2Generator())
-    let eg_h_sq = fp12Mul(eg_h, eg_h)
+    // e(2G, H) == e(G, H)^2
+    let g1_2 = pointToAffine(pointDouble(pointFromAffine(g1gen)))!
+    let e2g_h = bn254Pairing(g1_2, g2gen)
+    let eg_h_sq = fp12Mul(pair, pair)
     fputs("  e(2G,H)==e(G,H)^2: \(fp12Equal(e2g_h, eg_h_sq) ? "PASS" : "FAIL")\n", stderr)
 
-    // Check: e(G, 2H) == e(G, H)^2
-    let h2 = g2ToAffine(g2Double(g2FromAffine(bn254G2Generator())))!
-    let eg_2h = bn254Pairing(bn254G1Generator(), h2)
+    // e(G, 2H) == e(G, H)^2
+    let h2 = g2ToAffine(g2Double(g2FromAffine(g2gen)))!
+    let eg_2h = bn254Pairing(g1gen, h2)
     fputs("  e(G,2H)==e(G,H)^2: \(fp12Equal(eg_2h, eg_h_sq) ? "PASS" : "FAIL")\n", stderr)
+}
 
-    // Check Miller without correction: e_raw(2G,H) vs e_raw(G,H)^2
-    let rawMiller = bn254MillerLoopNoCorrection(bn254G1Generator(), bn254G2Generator())
-    let rawMillerFinal = bn254FinalExponentiation(rawMiller)
-    let rawMiller2 = bn254MillerLoopNoCorrection(g1_2, bn254G2Generator())
-    let rawMiller2Final = bn254FinalExponentiation(rawMiller2)
-    let rawSq = fp12Mul(rawMillerFinal, rawMillerFinal)
-    fputs("  e_noCorr(2G,H)==e_noCorr(G,H)^2: \(fp12Equal(rawMiller2Final, rawSq) ? "PASS" : "FAIL")\n", stderr)
+/// Scalar-level check of the Groth16 equation (no pairings, just Fr arithmetic)
+func scalarGroth16Check(r1cs: R1CSInstance, publicInputs: [Fr], witness: [Fr]) {
+    let nPub = r1cs.numPublic; let m = r1cs.numConstraints; let numV = r1cs.numVars
+    var domN = 1; var logD = 0
+    while domN < m { domN <<= 1; logD += 1 }
 
-    // Sanity: Fp2 mul check: (1+2u)*(3+4u) = (1*3-2*4)+(1*4+2*3)u = -5+10u
-    let testA = Fp2(c0: fpFromInt(1), c1: fpFromInt(2))
-    let testB = Fp2(c0: fpFromInt(3), c1: fpFromInt(4))
-    let testC = fp2Mul(testA, testB)
-    let expectedC0 = fpFromHex("0x30644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd42")  // p-5
-    fputs("  Fp2 mul c0==(-5): \(fpSub(testC.c0, expectedC0).isZero)\n", stderr)
-    fputs("  Fp2 mul c1==(10): \(fpSub(testC.c1, fpFromInt(10)).isZero)\n", stderr)
+    // Build z vector
+    var zz = [Fr](repeating: .zero, count: numV)
+    zz[0] = .one; for i in 0..<nPub { zz[1+i] = publicInputs[i] }
+    for i in 0..<witness.count { zz[1+nPub+i] = witness[i] }
 
-    // Trace: check if Q1 is on the twist curve
-    let g2gen2 = bn254G2Generator()
-    let q1x = fp2Mul(fp2Conjugate(g2gen2.x), bn254_gamma_1_2_pub())
-    let q1y = fp2Mul(fp2Conjugate(g2gen2.y), bn254_gamma_1_3_pub())
-    let q1 = G2AffinePoint(x: q1x, y: q1y)
-    let q1y2 = fp2Sqr(q1.y)
-    let q1x3 = fp2Mul(fp2Sqr(q1.x), q1.x)
-    let q1rhs = fp2Add(q1x3, bTwist)
-    let q1check = fp2Sub(q1y2, q1rhs)
-    fputs("  Q1=pi(G2) on twist: c0=\(q1check.c0.isZero), c1=\(q1check.c1.isZero)\n", stderr)
+    // Use deterministic toxic waste for reproducibility
+    let tau = frFromInt(13); let alpha = frFromInt(5); let beta = frFromInt(7)
+    let gamma = frFromInt(11); let delta = frFromInt(3)
+    let gammaInv = frInverse(gamma); let deltaInv = frInverse(delta)
+
+    // Compute omega and Lagrange basis at tau
+    let omega = frRootOfUnity(logN: logD)
+    var omegaPow = [Fr](repeating: .one, count: domN)
+    for i in 1..<domN { omegaPow[i] = frMul(omegaPow[i-1], omega) }
+
+    var zTau = Fr.one; for _ in 0..<domN { zTau = frMul(zTau, tau) }
+    zTau = frSub(zTau, .one)
+    let nFr = frFromInt(UInt64(domN))
+    let zOverN = frMul(zTau, frInverse(nFr))
+    var lagAtTau = [Fr](repeating: .zero, count: domN)
+    for i in 0..<domN {
+        lagAtTau[i] = frMul(frMul(zOverN, omegaPow[i]), frInverse(frSub(tau, omegaPow[i])))
+    }
+
+    // u_j(tau), v_j(tau), w_j(tau)
+    var uT = [Fr](repeating: .zero, count: numV)
+    var vT = [Fr](repeating: .zero, count: numV)
+    var wT = [Fr](repeating: .zero, count: numV)
+    for e in r1cs.aEntries { uT[e.col] = frAdd(uT[e.col], frMul(e.val, lagAtTau[e.row])) }
+    for e in r1cs.bEntries { vT[e.col] = frAdd(vT[e.col], frMul(e.val, lagAtTau[e.row])) }
+    for e in r1cs.cEntries { wT[e.col] = frAdd(wT[e.col], frMul(e.val, lagAtTau[e.row])) }
+
+    // Scalar sums
+    var sumU = Fr.zero; var sumV = Fr.zero; var sumW = Fr.zero
+    for j in 0..<numV {
+        sumU = frAdd(sumU, frMul(zz[j], uT[j]))
+        sumV = frAdd(sumV, frMul(zz[j], vT[j]))
+        sumW = frAdd(sumW, frMul(zz[j], wT[j]))
+    }
+
+    // Compute H(tau) via polynomial manipulation
+    do {
+        let prover2 = try Groth16Prover()
+        let az = r1cs.sparseMatVec(r1cs.aEntries, zz)
+        let bz = r1cs.sparseMatVec(r1cs.bEntries, zz)
+        let cz = r1cs.sparseMatVec(r1cs.cEntries, zz)
+        var aEv = [Fr](repeating: .zero, count: domN)
+        var bEv = [Fr](repeating: .zero, count: domN)
+        var cEv = [Fr](repeating: .zero, count: domN)
+        for i in 0..<m { aEv[i] = az[i]; bEv[i] = bz[i]; cEv[i] = cz[i] }
+        let aCo = try prover2.ntt.intt(aEv)
+        let bCo = try prover2.ntt.intt(bEv)
+        let cCo = try prover2.ntt.intt(cEv)
+        let bigN = domN * 2
+        var aPad = [Fr](repeating: .zero, count: bigN)
+        var bPad = [Fr](repeating: .zero, count: bigN)
+        var cPad = [Fr](repeating: .zero, count: bigN)
+        for i in 0..<domN { aPad[i] = aCo[i]; bPad[i] = bCo[i]; cPad[i] = cCo[i] }
+        let aEE = try prover2.ntt.ntt(aPad)
+        let bEE = try prover2.ntt.ntt(bPad)
+        let cEE = try prover2.ntt.ntt(cPad)
+        var pEE = [Fr](repeating: .zero, count: bigN)
+        for i in 0..<bigN { pEE[i] = frSub(frMul(aEE[i], bEE[i]), cEE[i]) }
+        let pCoeffs = try prover2.ntt.intt(pEE)
+        var hCoeffs = [Fr](repeating: .zero, count: domN)
+        var rem2 = Array(pCoeffs.prefix(bigN))
+        for i in stride(from: bigN - 1, through: domN, by: -1) {
+            let q = rem2[i]; hCoeffs[i - domN] = q; rem2[i] = .zero
+            rem2[i - domN] = frAdd(rem2[i - domN], q)
+        }
+        // Evaluate H at tau
+        func evalPoly(_ coeffs: [Fr], _ x: Fr) -> Fr {
+            var result = Fr.zero; var xpow = Fr.one
+            for c in coeffs { result = frAdd(result, frMul(c, xpow)); xpow = frMul(xpow, x) }
+            return result
+        }
+        let hAtTau = evalPoly(hCoeffs, tau)
+
+        // Check Lagrange basis: sum L_i(tau) should be 1
+        var lagSum = Fr.zero
+        for i in 0..<domN { lagSum = frAdd(lagSum, lagAtTau[i]) }
+        fputs("    sum L_i(tau) == 1: \(frSub(lagSum, .one).isZero)\n", stderr)
+
+        // Check A(tau) via Lagrange vs coefficient evaluation
+        let aAtTauCoeff = evalPoly(aCo, tau)
+        fputs("    A(tau) Lagrange==Coeff: \(frSub(sumU, aAtTauCoeff).isZero)\n", stderr)
+        fputs("    sumU (Lagrange): nonzero=\(!sumU.isZero)\n", stderr)
+        fputs("    A(tau) (Coeff): nonzero=\(!aAtTauCoeff.isZero)\n", stderr)
+
+        // Check: sumU * sumV - sumW == H(tau) * Z(tau)
+        let uvMinusW = frSub(frMul(sumU, sumV), sumW)
+        let hzCheck = frMul(hAtTau, zTau)
+        fputs("    sumU*sumV - sumW == H*Z: \(frSub(uvMinusW, hzCheck).isZero)\n", stderr)
+
+        // Also check with coefficient-evaluated A, B, C
+        let bAtTauCoeff = evalPoly(bCo, tau)
+        let cAtTauCoeff = evalPoly(cCo, tau)
+        let abMinusCCoeff = frSub(frMul(aAtTauCoeff, bAtTauCoeff), cAtTauCoeff)
+        fputs("    A(t)*B(t)-C(t) [coeff] == H*Z: \(frSub(abMinusCCoeff, hzCheck).isZero)\n", stderr)
+
+        // Check full Groth16 equation (r=0, s=0):
+        // A = alpha + sumU, B = beta + sumV
+        // C = sum_witness(z_j * (beta*u_j + alpha*v_j + w_j)/delta) + H*Z/delta
+        // vkX = sum_public(z_j * (beta*u_j + alpha*v_j + w_j)/gamma)
+        // A*B == alpha*beta + vkX*gamma + C*delta
+        let aScalar = frAdd(alpha, sumU)
+        let bScalar = frAdd(beta, sumV)
+
+        var cScalar = Fr.zero
+        for j in (nPub+1)..<numV {
+            let coeff = frMul(frAdd(frAdd(frMul(beta, uT[j]), frMul(alpha, vT[j])), wT[j]), deltaInv)
+            cScalar = frAdd(cScalar, frMul(zz[j], coeff))
+        }
+        cScalar = frAdd(cScalar, frMul(hAtTau, frMul(zTau, deltaInv)))
+
+        var vkxScalar = Fr.zero
+        for j in 0...(nPub) {
+            let coeff = frMul(frAdd(frAdd(frMul(beta, uT[j]), frMul(alpha, vT[j])), wT[j]), gammaInv)
+            vkxScalar = frAdd(vkxScalar, frMul(zz[j], coeff))
+        }
+
+        let lhsS = frMul(aScalar, bScalar)
+        let rhsS = frAdd(frAdd(frMul(alpha, beta), frMul(vkxScalar, gamma)), frMul(cScalar, delta))
+        fputs("    Scalar A*B == a*b + vkX*g + C*d: \(frSub(lhsS, rhsS).isZero)\n", stderr)
+    } catch {
+        fputs("    Error: \(error)\n", stderr)
+    }
 }
