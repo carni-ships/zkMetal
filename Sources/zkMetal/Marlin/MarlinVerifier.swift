@@ -185,15 +185,16 @@ public class MarlinVerifier {
         let etaB = transcript.squeeze()
         let etaC = transcript.squeeze()
 
-        // Round 2: absorb t commitment and sumcheck messages, squeeze alpha and beta
+        // Round 2: absorb t commitment, squeeze alpha (before sumcheck)
         marlinAbsorbPointImpl(transcript, proof.tCommit)
+        let alpha = transcript.squeeze()
+
+        // Absorb sumcheck round polynomials, squeeze beta
         for coeffs in proof.sumcheckPolyCoeffs {
             for c in coeffs {
                 transcript.absorb(c)
             }
         }
-
-        let alpha = transcript.squeeze()
         let beta = transcript.squeeze()
 
         // Round 3: absorb g, h commitments, squeeze gamma
@@ -445,11 +446,11 @@ public class MarlinVerifier {
             let etaC = transcript.squeeze()
 
             marlinAbsorbPointImpl(transcript, proof.tCommit)
+            let alpha = transcript.squeeze()
+
             for coeffs in proof.sumcheckPolyCoeffs {
                 for c in coeffs { transcript.absorb(c) }
             }
-
-            let alpha = transcript.squeeze()
             let beta = transcript.squeeze()
 
             marlinAbsorbPointImpl(transcript, proof.gCommit)
@@ -673,10 +674,10 @@ public class MarlinTestProver {
             let etaB = ts.squeeze()
             let etaC = ts.squeeze()
             marlinAbsorbPointImpl(ts, tCommit)
+            let alpha = ts.squeeze()
             for coeffs in sumcheckPolys {
                 for c in coeffs { ts.absorb(c) }
             }
-            let alpha = ts.squeeze()
             let beta = ts.squeeze()
             marlinAbsorbPointImpl(ts, gCommit)
             marlinAbsorbPointImpl(ts, hCommit)
