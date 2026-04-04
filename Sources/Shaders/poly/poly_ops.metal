@@ -394,3 +394,84 @@ kernel void batch_inverse(
     }
     out[base] = inv;
 }
+
+// ============================================================
+// Fused parallel quotient accumulation for Shplonk-style
+// multi-point KZG batch openings.
+// ============================================================
+//
+// Two-phase approach in a single command buffer:
+//
+// Phase 1 (fused_quotient_syndiv): N threadgroups, one per polynomial.
+//   Each does sequential synthetic division q_i(X) = (f_i(X) - v_i) / (X - z_i).
+//   All N divisions run in parallel on the GPU.
+//   Quotients written to a scratch buffer at stride max_quotient_deg.
+//
+// Phase 2 (fused_quotient_combine): one thread per output coefficient.
+//   Accumulates h[j] = sum_i gamma^i * q_i[j].
+//   O(num_polys) work per thread — very lightweight.
+
+// Phase 1: Parallel synthetic division — one threadgroup per polynomial.
+// Writes quotient of polynomial i to scratch[i * max_q_deg .. (i+1) * max_q_deg).
+// Coefficients outside the polynomial's quotient degree are left as zero.
+kernel void fused_quotient_syndiv(
+    device const Fr* all_coeffs       [[buffer(0)]],   // concatenated poly coefficients
+    device const uint* poly_offsets    [[buffer(1)]],   // start offset per poly
+    device const uint* poly_degrees    [[buffer(2)]],   // degree+1 per poly
+    device const Fr* points            [[buffer(3)]],   // z_i per poly
+    device Fr* scratch                 [[buffer(4)]],   // N * max_q_deg output slots
+    constant uint& num_polys           [[buffer(5)]],
+    constant uint& max_q_deg           [[buffer(6)]],   // max quotient degree
+    uint tgid                          [[threadgroup_position_in_grid]],
+    uint tid                           [[thread_index_in_threadgroup]]
+) {
+    if (tid != 0 || tgid >= num_polys) return;
+
+    uint i = tgid;
+    uint deg = poly_degrees[i];
+    if (deg < 2) return;
+
+    uint offset = poly_offsets[i];
+    uint q_deg = deg - 1;          // number of quotient coefficients
+    Fr z = points[i];
+
+    // Output base for this polynomial's quotient
+    uint out_base = i * max_q_deg;
+
+    // Synthetic division (right to left):
+    //   q[n-2] = f[n-1]
+    //   q[k] = f[k+1] + z * q[k+1]
+    Fr acc = all_coeffs[offset + deg - 1];
+    scratch[out_base + q_deg - 1] = acc;
+    for (uint k = q_deg - 1; k > 0; k--) {
+        acc = fr_add(all_coeffs[offset + k], fr_mul(z, acc));
+        scratch[out_base + k - 1] = acc;
+    }
+}
+
+// Phase 2: Combine quotients — one thread per output coefficient.
+// h[j] = sum_i gamma^i * scratch[i * max_q_deg + j]
+kernel void fused_quotient_combine(
+    device const Fr* scratch          [[buffer(0)]],   // N * max_q_deg quotient slots
+    device const Fr* gamma_powers     [[buffer(1)]],   // gamma^i per poly
+    device const uint* poly_degrees   [[buffer(2)]],   // degree+1 per poly
+    device Fr* out                    [[buffer(3)]],   // output: max_q_deg coefficients
+    constant uint& num_polys          [[buffer(4)]],
+    constant uint& max_q_deg          [[buffer(5)]],
+    uint gid                          [[thread_position_in_grid]]
+) {
+    if (gid >= max_q_deg) return;
+
+    uint j = gid;
+    Fr acc = fr_zero();
+
+    for (uint i = 0; i < num_polys; i++) {
+        uint q_deg = poly_degrees[i] - 1;  // quotient degree for poly i
+        if (j >= q_deg) continue;
+
+        Fr q_ij = scratch[i * max_q_deg + j];
+        acc = fr_add(acc, fr_mul(gamma_powers[i], q_ij));
+    }
+
+    out[j] = acc;
+}

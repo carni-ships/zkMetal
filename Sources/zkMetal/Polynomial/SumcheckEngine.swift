@@ -18,6 +18,16 @@ public class SumcheckEngine {
     let fused4CoalescedFunction: MTLComputePipelineState
     let fused2CoalescedFunction: MTLComputePipelineState
     let fused2StridedFunction: MTLComputePipelineState
+    let highDegRoundReduceFunction: MTLComputePipelineState
+    let highDegRoundReduceSmallFunction: MTLComputePipelineState
+
+    // Cached buffers for high-degree sumcheck
+    private var hdEvalPointsBuf: MTLBuffer?
+    private var hdEvalPointsCount: Int = 0
+    private var hdPolyBufs: [MTLBuffer] = []  // ping-pong poly buffers
+    private var hdPolyBufSize: Int = 0
+    private var hdPartialBuf: MTLBuffer?
+    private var hdPartialBufSize: Int = 0
 
     // Cached ping-pong buffers for full sumcheck
     private var scEvalBufA: MTLBuffer?
@@ -46,6 +56,7 @@ public class SumcheckEngine {
         self.commandQueue = queue
 
         let library = try SumcheckEngine.compileShaders(device: device)
+        let hdLibrary = try SumcheckEngine.compileHighDegShaders(device: device)
 
         guard let reduceFn = library.makeFunction(name: "sumcheck_reduce"),
               let roundFn = library.makeFunction(name: "sumcheck_round_partial"),
@@ -58,6 +69,10 @@ public class SumcheckEngine {
               let fused2StridedFn = library.makeFunction(name: "sumcheck_fused2_strided") else {
             throw MSMError.missingKernel
         }
+        guard let hdRoundReduceFn = hdLibrary.makeFunction(name: "sumcheck_highdeg_round_reduce"),
+              let hdRoundReduceSmallFn = hdLibrary.makeFunction(name: "sumcheck_highdeg_round_reduce_small") else {
+            throw MSMError.missingKernel
+        }
 
         self.reduceFunction = try device.makeComputePipelineState(function: reduceFn)
         self.roundPartialFunction = try device.makeComputePipelineState(function: roundFn)
@@ -68,21 +83,40 @@ public class SumcheckEngine {
         self.fused4CoalescedFunction = try device.makeComputePipelineState(function: fused4Fn)
         self.fused2CoalescedFunction = try device.makeComputePipelineState(function: fused2Fn)
         self.fused2StridedFunction = try device.makeComputePipelineState(function: fused2StridedFn)
+        self.highDegRoundReduceFunction = try device.makeComputePipelineState(function: hdRoundReduceFn)
+        self.highDegRoundReduceSmallFunction = try device.makeComputePipelineState(function: hdRoundReduceSmallFn)
         self.tuning = TuningManager.shared.config(device: device)
+    }
+
+    private static func cleanFrSource(_ shaderDir: String) throws -> String {
+        let frSource = try String(contentsOfFile: shaderDir + "/fields/bn254_fr.metal", encoding: .utf8)
+        return frSource
+            .replacingOccurrences(of: "#ifndef BN254_FR_METAL", with: "")
+            .replacingOccurrences(of: "#define BN254_FR_METAL", with: "")
+            .replacingOccurrences(of: "#endif // BN254_FR_METAL", with: "")
     }
 
     private static func compileShaders(device: MTLDevice) throws -> MTLLibrary {
         let shaderDir = findShaderDir()
-        let frSource = try String(contentsOfFile: shaderDir + "/fields/bn254_fr.metal", encoding: .utf8)
+        let cleanFr = try cleanFrSource(shaderDir)
         let scSource = try String(contentsOfFile: shaderDir + "/sumcheck/sumcheck_kernels.metal", encoding: .utf8)
 
         let cleanSC = scSource.split(separator: "\n").filter { !$0.contains("#include") }.joined(separator: "\n")
-        let cleanFr = frSource
-            .replacingOccurrences(of: "#ifndef BN254_FR_METAL", with: "")
-            .replacingOccurrences(of: "#define BN254_FR_METAL", with: "")
-            .replacingOccurrences(of: "#endif // BN254_FR_METAL", with: "")
 
         let combined = cleanFr + "\n" + cleanSC
+        let options = MTLCompileOptions()
+        options.fastMathEnabled = true
+        return try device.makeLibrary(source: combined, options: options)
+    }
+
+    private static func compileHighDegShaders(device: MTLDevice) throws -> MTLLibrary {
+        let shaderDir = findShaderDir()
+        let cleanFr = try cleanFrSource(shaderDir)
+        let hdSource = try String(contentsOfFile: shaderDir + "/sumcheck/sumcheck_highdeg_kernels.metal", encoding: .utf8)
+
+        let cleanHD = hdSource.split(separator: "\n").filter { !$0.contains("#include") }.joined(separator: "\n")
+
+        let combined = cleanFr + "\n" + cleanHD
         let options = MTLCompileOptions()
         options.fastMathEnabled = true
         return try device.makeLibrary(source: combined, options: options)
@@ -516,6 +550,281 @@ public class SumcheckEngine {
             s2 = frAdd(s2, f2)
         }
         return (s0, s1, s2)
+    }
+
+    // MARK: - High-Degree Sumcheck
+
+    /// Precompute evaluation points [0, 1, 2, ..., degree] in Montgomery form.
+    private static func evalPoints(degree: Int) -> [Fr] {
+        return (0...degree).map { frFromInt(UInt64($0)) }
+    }
+
+    /// Run high-degree sumcheck protocol for k multilinear polynomials.
+    /// The round polynomial has degree k (= numPolys) and is evaluated at k+1 points.
+    ///
+    /// Parameters:
+    ///   - polynomials: array of k polynomial evaluation vectors, each of length 2^numVars
+    ///   - challenges: numVars Fiat-Shamir challenges (one per round)
+    ///
+    /// Returns: array of round polynomial evaluations [S(0), S(1), ..., S(degree)] per round,
+    ///          plus the final evaluation (product of the single remaining values).
+    public func proveHighDegree(
+        polynomials: [[Fr]],
+        challenges: [Fr]
+    ) throws -> (rounds: [[Fr]], finalEval: Fr) {
+        let numPolys = polynomials.count
+        precondition(numPolys >= 2 && numPolys <= 32, "Supported: 2-32 polynomials")
+        let numVars = challenges.count
+        let n = polynomials[0].count
+        precondition(n == (1 << numVars), "Polynomial length must be 2^numVars")
+        for p in polynomials {
+            precondition(p.count == n, "All polynomials must have same length")
+        }
+
+        let degree = numPolys  // degree of round polynomial
+        let numEvalPts = degree + 1
+        let stride = MemoryLayout<Fr>.stride
+
+        // Precompute eval points in Montgomery form
+        let evalPts = SumcheckEngine.evalPoints(degree: degree)
+        if hdEvalPointsCount < numEvalPts {
+            guard let buf = createFrBuffer(evalPts) else {
+                throw MSMError.gpuError("Failed to create eval points buffer")
+            }
+            hdEvalPointsBuf = buf
+            hdEvalPointsCount = numEvalPts
+        } else {
+            evalPts.withUnsafeBytes { src in
+                memcpy(hdEvalPointsBuf!.contents(), src.baseAddress!, numEvalPts * stride)
+            }
+        }
+
+        // Create interleaved poly buffer: poly0_evals || poly1_evals || ... || polyk_evals
+        let totalElements = numPolys * n
+        let polyBufBytes = totalElements * stride
+
+        // Ensure ping-pong buffers are large enough
+        if hdPolyBufSize < polyBufBytes {
+            guard let a = device.makeBuffer(length: polyBufBytes, options: .storageModeShared),
+                  let b = device.makeBuffer(length: polyBufBytes, options: .storageModeShared) else {
+                throw MSMError.gpuError("Failed to allocate high-degree poly buffers")
+            }
+            hdPolyBufs = [a, b]
+            hdPolyBufSize = polyBufBytes
+        }
+
+        // Copy polynomial data into input buffer
+        let inputBuf = hdPolyBufs[0]
+        for (j, poly) in polynomials.enumerated() {
+            poly.withUnsafeBytes { src in
+                memcpy(inputBuf.contents() + j * n * stride, src.baseAddress!, n * stride)
+            }
+        }
+
+        let tgSize = min(256, Int(highDegRoundReduceFunction.maxTotalThreadsPerThreadgroup))
+        var currentN = n
+        var rounds: [[Fr]] = []
+        var useFirst = true
+
+        for round in 0..<numVars {
+            let halfN = currentN / 2
+            let numGroups = max(1, (halfN + tgSize - 1) / tgSize)
+
+            // Ensure partial buffer is large enough
+            let partialBytes = numGroups * numEvalPts * stride
+            if hdPartialBufSize < partialBytes {
+                guard let buf = device.makeBuffer(length: partialBytes, options: .storageModeShared) else {
+                    throw MSMError.gpuError("Failed to allocate high-degree partial buffer")
+                }
+                hdPartialBuf = buf
+                hdPartialBufSize = partialBytes
+            }
+
+            let srcBuf = useFirst ? hdPolyBufs[0] : hdPolyBufs[1]
+            let dstBuf = useFirst ? hdPolyBufs[1] : hdPolyBufs[0]
+
+            guard let chalBuf = createFrBuffer([challenges[round]]),
+                  let cmdBuf = commandQueue.makeCommandBuffer() else {
+                throw MSMError.noCommandBuffer
+            }
+
+            var halfNVal = UInt32(halfN)
+            var numPolysVal = UInt32(numPolys)
+            var numEvalPtsVal = UInt32(numEvalPts)
+
+            let pipelineState = numPolys <= 8 ? highDegRoundReduceSmallFunction : highDegRoundReduceFunction
+
+            let enc = cmdBuf.makeComputeCommandEncoder()!
+            enc.setComputePipelineState(pipelineState)
+            enc.setBuffer(srcBuf, offset: 0, index: 0)
+            enc.setBuffer(dstBuf, offset: 0, index: 1)
+            enc.setBuffer(hdPartialBuf, offset: 0, index: 2)
+            enc.setBuffer(hdEvalPointsBuf, offset: 0, index: 3)
+            enc.setBuffer(chalBuf, offset: 0, index: 4)
+            enc.setBytes(&halfNVal, length: 4, index: 5)
+            enc.setBytes(&numPolysVal, length: 4, index: 6)
+            enc.setBytes(&numEvalPtsVal, length: 4, index: 7)
+            enc.dispatchThreadgroups(MTLSize(width: numGroups, height: 1, depth: 1),
+                                    threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
+            enc.endEncoding()
+
+            cmdBuf.commit()
+            cmdBuf.waitUntilCompleted()
+            if let error = cmdBuf.error {
+                throw MSMError.gpuError(error.localizedDescription)
+            }
+
+            // CPU-side reduction of partial sums
+            let ptr = hdPartialBuf!.contents().bindMemory(to: Fr.self, capacity: numGroups * numEvalPts)
+            var roundEvals = [Fr](repeating: Fr.zero, count: numEvalPts)
+            for g in 0..<numGroups {
+                for t in 0..<numEvalPts {
+                    roundEvals[t] = frAdd(roundEvals[t], ptr[g * numEvalPts + t])
+                }
+            }
+            rounds.append(roundEvals)
+
+            currentN = halfN
+            useFirst = !useFirst
+        }
+
+        // Final evaluation: product of the single remaining value from each polynomial
+        let finalBuf = useFirst ? hdPolyBufs[0] : hdPolyBufs[1]
+        let finalPtr = finalBuf.contents().bindMemory(to: Fr.self, capacity: numPolys)
+        var finalEval = Fr.one
+        for j in 0..<numPolys {
+            finalEval = frMul(finalEval, finalPtr[j])
+        }
+
+        return (rounds, finalEval)
+    }
+
+    // MARK: - High-Degree CPU Reference
+
+    /// CPU reference for high-degree sumcheck reduce step.
+    /// Fixes one variable to challenge r for all k polynomials.
+    public static func cpuReduceHighDegree(polynomials: [[Fr]], challenge: Fr) -> [[Fr]] {
+        let k = polynomials.count
+        let n = polynomials[0].count
+        let halfN = n / 2
+        var result = [[Fr]](repeating: [Fr](repeating: Fr.zero, count: halfN), count: k)
+        for j in 0..<k {
+            for i in 0..<halfN {
+                let a = polynomials[j][i]
+                let b = polynomials[j][i + halfN]
+                let diff = frSub(b, a)
+                result[j][i] = frAdd(a, frMul(challenge, diff))
+            }
+        }
+        return result
+    }
+
+    /// CPU reference for high-degree round polynomial evaluation.
+    /// Returns evaluations [S(0), S(1), ..., S(degree)] where degree = number of polynomials.
+    public static func cpuRoundPolyHighDegree(polynomials: [[Fr]]) -> [Fr] {
+        let k = polynomials.count
+        let n = polynomials[0].count
+        let halfN = n / 2
+        let numEvalPts = k + 1
+        let evalPts = evalPoints(degree: k)
+
+        var sums = [Fr](repeating: Fr.zero, count: numEvalPts)
+        for i in 0..<halfN {
+            for t in 0..<numEvalPts {
+                var product = Fr.one
+                for j in 0..<k {
+                    let a = polynomials[j][i]
+                    let b = polynomials[j][i + halfN]
+                    let diff = frSub(b, a)
+                    let pjt = frAdd(a, frMul(evalPts[t], diff))
+                    product = frMul(product, pjt)
+                }
+                sums[t] = frAdd(sums[t], product)
+            }
+        }
+        return sums
+    }
+
+    /// CPU reference: full high-degree sumcheck protocol.
+    public static func cpuFullHighDegree(
+        polynomials: [[Fr]],
+        challenges: [Fr]
+    ) -> (rounds: [[Fr]], finalEval: Fr) {
+        let numVars = challenges.count
+        var currentPolys = polynomials
+        var rounds: [[Fr]] = []
+
+        for round in 0..<numVars {
+            let roundPoly = cpuRoundPolyHighDegree(polynomials: currentPolys)
+            rounds.append(roundPoly)
+            currentPolys = cpuReduceHighDegree(polynomials: currentPolys, challenge: challenges[round])
+        }
+
+        // Final eval: product of single remaining values
+        var finalEval = Fr.one
+        for j in 0..<polynomials.count {
+            finalEval = frMul(finalEval, currentPolys[j][0])
+        }
+
+        return (rounds, finalEval)
+    }
+
+    /// Verify high-degree sumcheck: checks that S(0) + S(1) = running sum for each round.
+    /// For degree-d sumcheck, the sum of round poly at 0 and 1 equals the claimed sum.
+    public static func verifyHighDegree(
+        claimedSum: Fr,
+        rounds: [[Fr]],
+        challenges: [Fr],
+        finalEval: Fr
+    ) -> Bool {
+        let numRounds = rounds.count
+        guard numRounds == challenges.count else { return false }
+        let degree = rounds[0].count - 1  // number of eval points - 1
+
+        var currentSum = claimedSum
+
+        for i in 0..<numRounds {
+            let roundPoly = rounds[i]
+            // Verify: S(0) + S(1) = currentSum
+            let s01 = frAdd(roundPoly[0], roundPoly[1])
+            let s01Limbs = frToInt(s01)
+            let curLimbs = frToInt(currentSum)
+            if s01Limbs != curLimbs {
+                return false
+            }
+
+            // Compute S(r) using Lagrange interpolation over points 0,1,...,degree
+            let r = challenges[i]
+            currentSum = lagrangeInterpolateEval(
+                points: evalPoints(degree: degree),
+                values: roundPoly,
+                at: r
+            )
+        }
+
+        // Final check: S(r_last) should equal the final evaluation
+        let finalLimbs = frToInt(currentSum)
+        let expectedLimbs = frToInt(finalEval)
+        return finalLimbs == expectedLimbs
+    }
+
+    /// Lagrange interpolation: given (x_i, y_i) pairs, evaluate the polynomial at point z.
+    private static func lagrangeInterpolateEval(points: [Fr], values: [Fr], at z: Fr) -> Fr {
+        let n = points.count
+        var result = Fr.zero
+        for i in 0..<n {
+            // Compute Lagrange basis L_i(z) = product_{j != i} (z - x_j) / (x_i - x_j)
+            var num = Fr.one
+            var den = Fr.one
+            for j in 0..<n {
+                if j == i { continue }
+                num = frMul(num, frSub(z, points[j]))
+                den = frMul(den, frSub(points[i], points[j]))
+            }
+            let basis = frMul(num, frInverse(den))
+            result = frAdd(result, frMul(values[i], basis))
+        }
+        return result
     }
 
     // MARK: - Internal

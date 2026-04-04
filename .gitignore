@@ -8,3 +8,12 @@ bindings/lib/
 
 # OS
 .DS_Store
+
+# WIP / disabled files
+.wip/
+*.bak
+*.disabled
+*.wip
+gkr_test.swift
+pairing_out.txt
+stderr.txt

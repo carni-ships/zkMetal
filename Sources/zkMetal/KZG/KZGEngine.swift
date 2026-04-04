@@ -320,6 +320,48 @@ public class KZGEngine {
                                      evaluations: evaluations, points: points)
     }
 
+    /// Fused multi-point batch open: single GPU pass for quotient accumulation.
+    /// Replaces N sequential divideByLinear + CPU accumulation with one fused kernel.
+    /// Produces the same result as batchOpenMultiPoint but with fewer GPU dispatches.
+    public func batchOpenMultiPointFused(polynomials: [[Fr]], points: [Fr], gamma: Fr) throws -> MultiPointBatchProof {
+        guard !polynomials.isEmpty, polynomials.count == points.count else { throw MSMError.invalidInput }
+
+        let n = polynomials.count
+
+        // 1. Compute individual commitments and evaluations
+        var commitments = [PointProjective]()
+        commitments.reserveCapacity(n)
+        var evaluations = [Fr]()
+        evaluations.reserveCapacity(n)
+
+        for i in 0..<n {
+            commitments.append(try commit(polynomials[i]))
+            let evals = try polyEngine.evaluate(polynomials[i], at: [points[i]])
+            evaluations.append(evals[0])
+        }
+
+        // 2. Fused quotient accumulation: single GPU pass
+        let combined = try polyEngine.fusedQuotientAccumulate(
+            polynomials: polynomials,
+            evaluations: evaluations,
+            points: points,
+            gamma: gamma
+        )
+
+        // 3. Single MSM: proof = commit(combined quotient)
+        let proof: PointProjective
+        if combined.isEmpty || combined.allSatisfy({ frToInt($0) == frToInt(Fr.zero) }) {
+            proof = pointIdentity()
+        } else {
+            let srsSlice = Array(srs.prefix(combined.count))
+            let scalars = combined.map { frToLimbs($0) }
+            proof = try msmEngine.msm(points: srsSlice, scalars: scalars)
+        }
+
+        return MultiPointBatchProof(commitments: commitments, proof: proof,
+                                     evaluations: evaluations, points: points)
+    }
+
     /// Verify multi-point batch opening by re-computing proof from scratch.
     public func verifyMultiPointByReopen(polynomials: [[Fr]], points: [Fr], evaluations: [Fr],
                                           proof: PointProjective, gamma: Fr) throws -> Bool {

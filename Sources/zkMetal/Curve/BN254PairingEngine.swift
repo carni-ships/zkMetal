@@ -6,6 +6,12 @@
 //
 // The Miller loop is the bottleneck (~65% of pairing time) and parallelizes well.
 // Final exponentiation is done once on the product (shared across all pairings).
+//
+// Optimizations:
+// - Projective Miller loop: eliminates all fp2_inverse calls (~85 per loop)
+// - Grow-only buffer caching: avoids per-call Metal buffer allocation
+// - Single command buffer: all dispatches in one CB
+// - Sparse Fp12 multiplication for line evaluations
 
 import Foundation
 import Metal
@@ -24,6 +30,31 @@ public class BN254PairingEngine {
 
     private let batchMillerFunction: MTLComputePipelineState
 
+    // Grow-only cached buffers to avoid per-call allocation
+    private var g1Buffer: MTLBuffer?
+    private var g1BufferSize: Int = 0
+    private var g2Buffer: MTLBuffer?
+    private var g2BufferSize: Int = 0
+    private var resultBuffer: MTLBuffer?
+    private var resultBufferSize: Int = 0
+    private var countBuffer: MTLBuffer?
+
+    // Profiling counters (accumulated across calls, reset manually)
+    public var profilingEnabled: Bool = false
+    public private(set) var profileMillerGPUMs: Double = 0
+    public private(set) var profileFinalExpMs: Double = 0
+    public private(set) var profileDataPackMs: Double = 0
+    public private(set) var profileDataUnpackMs: Double = 0
+    public private(set) var profileCallCount: Int = 0
+
+    public func resetProfiling() {
+        profileMillerGPUMs = 0
+        profileFinalExpMs = 0
+        profileDataPackMs = 0
+        profileDataUnpackMs = 0
+        profileCallCount = 0
+    }
+
     public init() throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw PairingError.noGPU
@@ -41,6 +72,9 @@ public class BN254PairingEngine {
             throw PairingError.missingKernel("batch_miller_loop")
         }
         self.batchMillerFunction = try device.makeComputePipelineState(function: fn)
+
+        // Pre-allocate count buffer (always 4 bytes)
+        self.countBuffer = device.makeBuffer(length: 4, options: .storageModeShared)
     }
 
     private static func compileShaders(device: MTLDevice) throws -> MTLLibrary {
@@ -69,34 +103,49 @@ public class BN254PairingEngine {
         }
     }
 
+    // MARK: - Grow-only buffer management
+
+    private func ensureG1Buffer(size: Int) {
+        if g1BufferSize < size {
+            g1Buffer = device.makeBuffer(length: size, options: .storageModeShared)
+            g1BufferSize = size
+        }
+    }
+
+    private func ensureG2Buffer(size: Int) {
+        if g2BufferSize < size {
+            g2Buffer = device.makeBuffer(length: size, options: .storageModeShared)
+            g2BufferSize = size
+        }
+    }
+
+    private func ensureResultBuffer(size: Int) {
+        if resultBufferSize < size {
+            resultBuffer = device.makeBuffer(length: size, options: .storageModeShared)
+            resultBufferSize = size
+        }
+    }
+
     // MARK: - GPU Data Layout
 
-    private func packG1(_ p: PointAffine) -> [UInt8] {
-        var data = [UInt8]()
-        data.append(contentsOf: fpToRawBytes(p.x))
-        data.append(contentsOf: fpToRawBytes(p.y))
-        return data
+    private func packG1Into(_ p: PointAffine, buffer: UnsafeMutableRawPointer, offset: Int) {
+        let limbs = [p.x.v.0, p.x.v.1, p.x.v.2, p.x.v.3, p.x.v.4, p.x.v.5, p.x.v.6, p.x.v.7,
+                     p.y.v.0, p.y.v.1, p.y.v.2, p.y.v.3, p.y.v.4, p.y.v.5, p.y.v.6, p.y.v.7]
+        let dst = buffer.advanced(by: offset).bindMemory(to: UInt32.self, capacity: 16)
+        for i in 0..<16 { dst[i] = limbs[i] }
     }
 
-    private func packG2(_ q: G2AffinePoint) -> [UInt8] {
-        var data = [UInt8]()
-        data.append(contentsOf: fpToRawBytes(q.x.c0))
-        data.append(contentsOf: fpToRawBytes(q.x.c1))
-        data.append(contentsOf: fpToRawBytes(q.y.c0))
-        data.append(contentsOf: fpToRawBytes(q.y.c1))
-        return data
-    }
-
-    private func fpToRawBytes(_ a: Fp) -> [UInt8] {
-        let limbs = [a.v.0, a.v.1, a.v.2, a.v.3, a.v.4, a.v.5, a.v.6, a.v.7]
-        var bytes = [UInt8](repeating: 0, count: 32)
-        for i in 0..<8 {
-            bytes[i*4+0] = UInt8(limbs[i] & 0xFF)
-            bytes[i*4+1] = UInt8((limbs[i] >> 8) & 0xFF)
-            bytes[i*4+2] = UInt8((limbs[i] >> 16) & 0xFF)
-            bytes[i*4+3] = UInt8((limbs[i] >> 24) & 0xFF)
-        }
-        return bytes
+    private func packG2Into(_ q: G2AffinePoint, buffer: UnsafeMutableRawPointer, offset: Int) {
+        let limbs = [q.x.c0.v.0, q.x.c0.v.1, q.x.c0.v.2, q.x.c0.v.3,
+                     q.x.c0.v.4, q.x.c0.v.5, q.x.c0.v.6, q.x.c0.v.7,
+                     q.x.c1.v.0, q.x.c1.v.1, q.x.c1.v.2, q.x.c1.v.3,
+                     q.x.c1.v.4, q.x.c1.v.5, q.x.c1.v.6, q.x.c1.v.7,
+                     q.y.c0.v.0, q.y.c0.v.1, q.y.c0.v.2, q.y.c0.v.3,
+                     q.y.c0.v.4, q.y.c0.v.5, q.y.c0.v.6, q.y.c0.v.7,
+                     q.y.c1.v.0, q.y.c1.v.1, q.y.c1.v.2, q.y.c1.v.3,
+                     q.y.c1.v.4, q.y.c1.v.5, q.y.c1.v.6, q.y.c1.v.7]
+        let dst = buffer.advanced(by: offset).bindMemory(to: UInt32.self, capacity: 32)
+        for i in 0..<32 { dst[i] = limbs[i] }
     }
 
     private func unpackFp12(data: UnsafeRawPointer) -> Fp12 {
@@ -121,22 +170,38 @@ public class BN254PairingEngine {
         let n = pairs.count
         if n == 0 { return [] }
 
-        var g1Data = [UInt8]()
-        var g2Data = [UInt8]()
-        for (p, q) in pairs {
-            g1Data.append(contentsOf: packG1(p))
-            g2Data.append(contentsOf: packG2(q))
-        }
+        let g1Size = n * 64   // 2 Fp = 64 bytes per G1 point
+        let g2Size = n * 128  // 4 Fp = 128 bytes per G2 point
+        let resSize = n * 384 // 12 Fp = 384 bytes per Fp12
 
-        guard let g1Buf = device.makeBuffer(bytes: g1Data, length: g1Data.count, options: .storageModeShared),
-              let g2Buf = device.makeBuffer(bytes: g2Data, length: g2Data.count, options: .storageModeShared),
-              let resultBuf = device.makeBuffer(length: n * 384, options: .storageModeShared),
-              let countBuf = device.makeBuffer(length: 4, options: .storageModeShared) else {
+        var t0 = CFAbsoluteTimeGetCurrent()
+
+        // Ensure cached buffers are large enough
+        ensureG1Buffer(size: g1Size)
+        ensureG2Buffer(size: g2Size)
+        ensureResultBuffer(size: resSize)
+
+        guard let g1Buf = g1Buffer, let g2Buf = g2Buffer,
+              let resBuf = resultBuffer, let cntBuf = countBuffer else {
             throw PairingError.executionFailed("Failed to allocate buffers")
         }
 
-        countBuf.contents().storeBytes(of: UInt32(n), as: UInt32.self)
+        // Pack data directly into cached buffers
+        let g1Ptr = g1Buf.contents()
+        let g2Ptr = g2Buf.contents()
+        for i in 0..<n {
+            packG1Into(pairs[i].0, buffer: g1Ptr, offset: i * 64)
+            packG2Into(pairs[i].1, buffer: g2Ptr, offset: i * 128)
+        }
+        cntBuf.contents().storeBytes(of: UInt32(n), as: UInt32.self)
 
+        if profilingEnabled {
+            profileDataPackMs += (CFAbsoluteTimeGetCurrent() - t0) * 1000
+        }
+
+        t0 = CFAbsoluteTimeGetCurrent()
+
+        // Single command buffer for the dispatch
         guard let cmdBuf = commandQueue.makeCommandBuffer(),
               let encoder = cmdBuf.makeComputeCommandEncoder() else {
             throw PairingError.executionFailed("Failed to create command buffer")
@@ -145,8 +210,8 @@ public class BN254PairingEngine {
         encoder.setComputePipelineState(batchMillerFunction)
         encoder.setBuffer(g1Buf, offset: 0, index: 0)
         encoder.setBuffer(g2Buf, offset: 0, index: 1)
-        encoder.setBuffer(resultBuf, offset: 0, index: 2)
-        encoder.setBuffer(countBuf, offset: 0, index: 3)
+        encoder.setBuffer(resBuf, offset: 0, index: 2)
+        encoder.setBuffer(cntBuf, offset: 0, index: 3)
 
         let tgSize = MTLSize(width: min(n, batchMillerFunction.maxTotalThreadsPerThreadgroup), height: 1, depth: 1)
         let gridSize = MTLSize(width: n, height: 1, depth: 1)
@@ -156,33 +221,56 @@ public class BN254PairingEngine {
         cmdBuf.commit()
         cmdBuf.waitUntilCompleted()
 
+        if profilingEnabled {
+            profileMillerGPUMs += (CFAbsoluteTimeGetCurrent() - t0) * 1000
+        }
+
         if let error = cmdBuf.error {
             throw PairingError.executionFailed("GPU error: \(error)")
         }
 
+        t0 = CFAbsoluteTimeGetCurrent()
+
         var results = [Fp12]()
-        let ptr = resultBuf.contents()
+        results.reserveCapacity(n)
+        let ptr = resBuf.contents()
         for i in 0..<n {
             results.append(unpackFp12(data: ptr + i * 384))
         }
+
+        if profilingEnabled {
+            profileDataUnpackMs += (CFAbsoluteTimeGetCurrent() - t0) * 1000
+            profileCallCount += 1
+        }
+
         return results
     }
 
     /// Compute N independent pairings: GPU parallel Miller loops + CPU final exp per result.
     public func batchPairing(pairs: [(PointAffine, G2AffinePoint)]) throws -> [Fp12] {
         let millerResults = try batchMillerLoop(pairs: pairs)
-        return millerResults.map { bn254FinalExponentiation($0) }
+        let t0 = CFAbsoluteTimeGetCurrent()
+        let results = millerResults.map { bn254FinalExponentiation($0) }
+        if profilingEnabled {
+            profileFinalExpMs += (CFAbsoluteTimeGetCurrent() - t0) * 1000
+        }
+        return results
     }
 
     /// Multi-Miller pairing: N parallel Miller loops on GPU, CPU product, single CPU final exp.
     /// Optimal for Groth16 verification where you need prod_i e(Pi, Qi).
     public func multiMillerPairing(pairs: [(PointAffine, G2AffinePoint)]) throws -> Fp12 {
         let millerResults = try batchMillerLoop(pairs: pairs)
+        let t0 = CFAbsoluteTimeGetCurrent()
         var product = Fp12.one
         for m in millerResults {
             product = fp12Mul(product, m)
         }
-        return bn254FinalExponentiation(product)
+        let result = bn254FinalExponentiation(product)
+        if profilingEnabled {
+            profileFinalExpMs += (CFAbsoluteTimeGetCurrent() - t0) * 1000
+        }
+        return result
     }
 
     /// Pairing check: verify prod_i e(Pi, Qi) == 1.
@@ -190,5 +278,19 @@ public class BN254PairingEngine {
     public func pairingCheck(pairs: [(PointAffine, G2AffinePoint)]) throws -> Bool {
         let result = try multiMillerPairing(pairs: pairs)
         return fp12Equal(result, .one)
+    }
+
+    /// Print profiling summary to stderr.
+    public func printProfile() {
+        guard profileCallCount > 0 else {
+            fputs("  No profiling data collected.\n", stderr)
+            return
+        }
+        let total = profileDataPackMs + profileMillerGPUMs + profileDataUnpackMs + profileFinalExpMs
+        fputs(String(format: "  Pairing profile (%d calls, %.1fms total):\n", profileCallCount, total), stderr)
+        fputs(String(format: "    Data pack:    %7.2fms (%4.1f%%)\n", profileDataPackMs, profileDataPackMs / total * 100), stderr)
+        fputs(String(format: "    Miller GPU:   %7.2fms (%4.1f%%)\n", profileMillerGPUMs, profileMillerGPUMs / total * 100), stderr)
+        fputs(String(format: "    Data unpack:  %7.2fms (%4.1f%%)\n", profileDataUnpackMs, profileDataUnpackMs / total * 100), stderr)
+        fputs(String(format: "    Final exp:    %7.2fms (%4.1f%%)\n", profileFinalExpMs, profileFinalExpMs / total * 100), stderr)
     }
 }

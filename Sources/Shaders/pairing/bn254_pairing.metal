@@ -472,40 +472,102 @@ struct G1AffineGPU {
     Fp y;
 };
 
-// Affine doubling: T = 2T, returns slope
-Fp2 g2_affine_double(thread G2AffineGPU &t) {
-    Fp2 xsq = fp2_sqr(t.x);
-    Fp2 num = fp2_add(fp2_double(xsq), xsq); // 3*x^2
-    Fp2 den = fp2_double(t.y);
-    Fp2 lam = fp2_mul(num, fp2_inverse(den));
-    Fp2 x3 = fp2_sub(fp2_sqr(lam), fp2_double(t.x));
-    Fp2 y3 = fp2_sub(fp2_mul(lam, fp2_sub(t.x, x3)), t.y);
-    t.x = x3; t.y = y3;
-    return lam;
+// ============================================================================
+// Projective G2 point for Miller loop (eliminates fp2_inverse per step)
+// ============================================================================
+
+struct G2ProjectiveGPU {
+    Fp2 x;
+    Fp2 y;
+    Fp2 z;
+};
+
+// Projective doubling: T = 2T, returns line coefficients (c0, c3, c4)
+// directly without any field inversion.
+// Uses Jacobian coordinates: (X:Y:Z) represents affine (X/Z^2, Y/Z^3).
+//
+// The tangent line at Jacobian T=(X,Y,Z) evaluated at affine P=(xP,yP),
+// scaled by 2*Y*Z^3 to avoid inversion:
+//   c0 = 2*Y*Z^3 * yP
+//   c3 = -(3*X^2 * Z^2) * xP
+//   c4 = 3*X^3 - 2*Y^2
+// This scaling factor is in the kernel of the final exponentiation.
+void g2_proj_double(thread G2ProjectiveGPU &t, Fp px, Fp py,
+                    thread Fp2 &out_c0, thread Fp2 &out_c3, thread Fp2 &out_c4) {
+    Fp2 A = fp2_sqr(t.x);                          // X^2
+    Fp2 B = fp2_sqr(t.y);                          // Y^2
+    Fp2 C = fp2_sqr(B);                            // Y^4
+    Fp2 D = fp2_sub(fp2_sqr(fp2_add(t.x, B)), fp2_add(A, C));
+    D = fp2_double(D);                             // 4*X*Y^2
+    Fp2 E = fp2_add(fp2_double(A), A);             // 3*X^2
+    Fp2 F = fp2_sqr(E);                            // 9*X^4
+
+    // Line coefficients (computed before updating T)
+    Fp2 zsq = fp2_sqr(t.z);                        // Z^2
+    Fp2 zcube = fp2_mul(zsq, t.z);                 // Z^3
+    Fp2 twoYZ3 = fp2_mul(fp2_double(t.y), zcube);  // 2*Y*Z^3
+    out_c0 = fp2_mul_by_fp(twoYZ3, py);            // 2*Y*Z^3 * yP
+
+    Fp2 Ezsq = fp2_mul(E, zsq);                    // 3*X^2 * Z^2
+    out_c3 = fp2_neg(fp2_mul_by_fp(Ezsq, px));     // -(3*X^2*Z^2) * xP
+
+    out_c4 = fp2_sub(fp2_mul(E, t.x), fp2_double(B)); // 3*X^3 - 2*Y^2
+
+    // New point coordinates
+    Fp2 X3 = fp2_sub(F, fp2_double(D));
+    Fp2 eightC = fp2_double(fp2_double(fp2_double(C)));
+    Fp2 Y3 = fp2_sub(fp2_mul(E, fp2_sub(D, X3)), eightC);
+    Fp2 Z3 = fp2_sub(fp2_sqr(fp2_add(t.y, t.z)), fp2_add(B, fp2_sqr(t.z)));
+
+    t.x = X3;
+    t.y = Y3;
+    t.z = Z3;
 }
 
-// Affine addition: T = T + Q, returns slope
-Fp2 g2_affine_add(thread G2AffineGPU &t, G2AffineGPU q) {
-    Fp2 dx = fp2_sub(q.x, t.x);
-    Fp2 dy = fp2_sub(q.y, t.y);
-    Fp2 lam = fp2_mul(dy, fp2_inverse(dx));
-    Fp2 x3 = fp2_sub(fp2_sub(fp2_sqr(lam), t.x), q.x);
-    Fp2 y3 = fp2_sub(fp2_mul(lam, fp2_sub(t.x, x3)), t.y);
-    t.x = x3; t.y = y3;
-    return lam;
-}
+// Projective mixed addition: T = T + Q (Q in affine), returns line coefficients.
+// No field inversion needed.
+//
+// T = (X1:Y1:Z1) Jacobian, Q = (xQ, yQ) affine on twist.
+// The chord line scaled by H*Z1^3 to avoid inversion:
+//   c0 = H * Z1^3 * yP
+//   c3 = -(R * Z1^2) * xP
+//   c4 = R * X1 - Y1 * H
+// where H = xQ*Z1^2 - X1, R = yQ*Z1^3 - Y1.
+void g2_proj_add(thread G2ProjectiveGPU &t, G2AffineGPU q, Fp px, Fp py,
+                 thread Fp2 &out_c0, thread Fp2 &out_c3, thread Fp2 &out_c4) {
+    Fp2 zsq = fp2_sqr(t.z);                        // Z1^2
+    Fp2 zcube = fp2_mul(zsq, t.z);                 // Z1^3
+    Fp2 U2 = fp2_mul(q.x, zsq);                    // xQ * Z1^2
+    Fp2 S2 = fp2_mul(q.y, zcube);                  // yQ * Z1^3
 
-// Line evaluation at G1 point P
-// Result is sparse Fp12: c0.c0 = yP, c1.c0 = -lam*xP, c1.c1 = lam*xT - yT
-void line_eval(Fp2 lam, Fp2 xT, Fp2 yT, Fp px, Fp py,
-               thread Fp2 &out_c0, thread Fp2 &out_c3, thread Fp2 &out_c4) {
-    out_c0.c0 = py; out_c0.c1 = fp_zero();
-    out_c3 = fp2_neg(fp2_mul_by_fp(lam, px));
-    out_c4 = fp2_sub(fp2_mul(lam, xT), yT);
+    Fp2 H = fp2_sub(U2, t.x);                      // xQ*Z1^2 - X1
+    Fp2 R = fp2_sub(S2, t.y);                      // yQ*Z1^3 - Y1
+
+    // Line coefficients (computed before updating T)
+    Fp2 HZ3 = fp2_mul(H, zcube);                   // H * Z1^3
+    out_c0 = fp2_mul_by_fp(HZ3, py);               // H * Z1^3 * yP
+
+    Fp2 Rzsq = fp2_mul(R, zsq);                    // R * Z1^2
+    out_c3 = fp2_neg(fp2_mul_by_fp(Rzsq, px));     // -(R * Z1^2) * xP
+
+    out_c4 = fp2_sub(fp2_mul(R, t.x), fp2_mul(t.y, H)); // R*X1 - Y1*H
+
+    // New point coordinates (mixed Jacobian addition)
+    Fp2 Hsq = fp2_sqr(H);                          // H^2
+    Fp2 Hcube = fp2_mul(Hsq, H);                   // H^3
+    Fp2 V = fp2_mul(t.x, Hsq);                     // X1 * H^2
+
+    Fp2 X3 = fp2_sub(fp2_sub(fp2_sqr(R), Hcube), fp2_double(V));
+    Fp2 Y3 = fp2_sub(fp2_mul(R, fp2_sub(V, X3)), fp2_mul(t.y, Hcube));
+    Fp2 Z3 = fp2_mul(t.z, H);                      // Z1 * H
+
+    t.x = X3;
+    t.y = Y3;
+    t.z = Z3;
 }
 
 // ============================================================================
-// Miller loop
+// Miller loop (projective — no fp2_inverse in hot path)
 // ============================================================================
 
 // NAF of 6x+2 where x = 4965661367071055936
@@ -519,7 +581,10 @@ constant int8_t SIX_X_PLUS_2_NAF[66] = {
 };
 
 Fp12 gpu_miller_loop(G1AffineGPU p, G2AffineGPU q) {
-    G2AffineGPU t = q;
+    // Initialize T in Jacobian projective coordinates (Z=1)
+    G2ProjectiveGPU t;
+    t.x = q.x; t.y = q.y; t.z = fp2_one();
+
     Fp12 f = fp12_one();
     G2AffineGPU negQ;
     negQ.x = q.x;
@@ -530,27 +595,22 @@ Fp12 gpu_miller_loop(G1AffineGPU p, G2AffineGPU q) {
     for (int i = 1; i < 66; i++) {
         f = fp12_sqr(f);
 
-        // Doubling step
-        G2AffineGPU oldT = t;
-        Fp2 lam = g2_affine_double(t);
-        line_eval(lam, oldT.x, oldT.y, p.x, p.y, c0val, c3val, c4val);
+        // Projective doubling step (no inversion)
+        g2_proj_double(t, p.x, p.y, c0val, c3val, c4val);
         f = fp12_mul_by_034(f, c0val, c3val, c4val);
 
-        // Addition step
+        // Projective addition step (no inversion)
         if (SIX_X_PLUS_2_NAF[i] == 1) {
-            G2AffineGPU oldT2 = t;
-            Fp2 lam2 = g2_affine_add(t, q);
-            line_eval(lam2, oldT2.x, oldT2.y, p.x, p.y, c0val, c3val, c4val);
+            g2_proj_add(t, q, p.x, p.y, c0val, c3val, c4val);
             f = fp12_mul_by_034(f, c0val, c3val, c4val);
         } else if (SIX_X_PLUS_2_NAF[i] == -1) {
-            G2AffineGPU oldT2 = t;
-            Fp2 lam2 = g2_affine_add(t, negQ);
-            line_eval(lam2, oldT2.x, oldT2.y, p.x, p.y, c0val, c3val, c4val);
+            g2_proj_add(t, negQ, p.x, p.y, c0val, c3val, c4val);
             f = fp12_mul_by_034(f, c0val, c3val, c4val);
         }
     }
 
-    // Frobenius correction
+    // Frobenius correction: Q1 = pi(Q), Q2 = -pi^2(Q)
+    // These use affine Q (not T), so no issue with projective coords.
     Fp2 g12 = bn254_gamma12();
     Fp2 g13 = bn254_gamma13();
     Fp g22 = bn254_gamma22();
@@ -561,9 +621,7 @@ Fp12 gpu_miller_loop(G1AffineGPU p, G2AffineGPU q) {
     q1.x = fp2_mul(fp2_conjugate(q.x), g12);
     q1.y = fp2_mul(fp2_conjugate(q.y), g13);
 
-    G2AffineGPU oldT3 = t;
-    Fp2 lam3 = g2_affine_add(t, q1);
-    line_eval(lam3, oldT3.x, oldT3.y, p.x, p.y, c0val, c3val, c4val);
+    g2_proj_add(t, q1, p.x, p.y, c0val, c3val, c4val);
     f = fp12_mul_by_034(f, c0val, c3val, c4val);
 
     // Q2 = -pi^2(Q)
@@ -571,9 +629,7 @@ Fp12 gpu_miller_loop(G1AffineGPU p, G2AffineGPU q) {
     q2.x = fp2_mul_by_fp(q.x, g22);
     q2.y = fp2_neg(fp2_mul_by_fp(q.y, g23));
 
-    G2AffineGPU oldT4 = t;
-    Fp2 lam4 = g2_affine_add(t, q2);
-    line_eval(lam4, oldT4.x, oldT4.y, p.x, p.y, c0val, c3val, c4val);
+    g2_proj_add(t, q2, p.x, p.y, c0val, c3val, c4val);
     f = fp12_mul_by_034(f, c0val, c3val, c4val);
 
     return f;

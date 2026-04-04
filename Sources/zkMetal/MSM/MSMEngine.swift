@@ -45,6 +45,7 @@ public class MetalMSM {
     private var cpuCountsPtr: UnsafeMutablePointer<Int>?
     private var cpuPositionsPtr: UnsafeMutablePointer<Int>?
     private var cpuScratchCapacity = 0
+    private var cpuScratchStride = 0
     private var signedDigitPtr: UnsafeMutablePointer<UInt32>?
     private var signedDigitCapacity = 0
     private var signedDigitBuffer: MTLBuffer?
@@ -257,7 +258,12 @@ public class MetalMSM {
             maxAllocatedBuckets = nb
             maxAllocatedWindows = nw
             maxAllocatedSegments = nSegments
-            let scratchSize = nw * nb
+            // Scratch arrays are reused for count-of-counts during CSM building,
+            // where indices go up to maxCount (which can be as large as n).
+            // Per-window stride must be max(nBuckets, n+1) to avoid overflow.
+            let scratchStride = max(nb, np + 1)
+            let scratchSize = nw * scratchStride
+            cpuScratchStride = scratchStride
             if scratchSize > cpuScratchCapacity {
                 cpuCountsPtr?.deallocate()
                 cpuPositionsPtr?.deallocate()
@@ -556,13 +562,41 @@ public class MetalMSM {
             }
         }
 
-        func sortWindows(_ windowRange: Range<Int>) {
+        /// Compute CV² (coefficient of variation squared) of the bucket distribution
+        /// for a single window. Uses the signed-digit buffer directly.
+        /// CV² = variance / mean². When < 0.5, distribution is uniform enough that
+        /// CSM reordering provides negligible SIMD coherence benefit.
+        let scratchStride = self.cpuScratchStride
+        func computeBucketCV2(windowIndex: Int) -> Double {
+            let sdBuf = signedDigitBuf + windowIndex * effectiveN
+            let counts = countsBase + windowIndex * scratchStride
+            for i in 0..<nBuckets { counts[i] = 0 }
+            for i in 0..<effectiveN {
+                counts[Int(sdBuf[i] & 0x7FFFFFFF)] += 1
+            }
+            // Skip bucket 0 (identity, always excluded from reduce)
+            let activeBuckets = nBuckets - 1
+            guard activeBuckets > 0 else { return 0.0 }
+            var sum: Int = 0
+            for i in 1..<nBuckets { sum += counts[i] }
+            let mean = Double(sum) / Double(activeBuckets)
+            guard mean > 0 else { return 0.0 }
+            var variance: Double = 0.0
+            for i in 1..<nBuckets {
+                let diff = Double(counts[i]) - mean
+                variance += diff * diff
+            }
+            variance /= Double(activeBuckets)
+            return variance / (mean * mean)
+        }
+
+        func sortWindows(_ windowRange: Range<Int>, skipCSM: Bool = false) {
             DispatchQueue.concurrentPerform(iterations: windowRange.count) { i in
                 let w = windowRange.lowerBound + i
                 let wOff = w * nBuckets
                 let idxBase = w * effectiveN
-                let counts = countsBase + w * nBuckets
-                let positions = positionsBase + w * nBuckets
+                let counts = countsBase + w * scratchStride
+                let positions = positionsBase + w * scratchStride
                 let sdBuf = signedDigitBuf + w * effectiveN
 
                 // Count buckets using pre-computed signed digits
@@ -591,27 +625,35 @@ public class MetalMSM {
                     positions[digit] += 1
                 }
 
-                // Build count-sorted map (buckets ordered by descending count for SIMD coherence)
-                var maxCount: Int = 0
-                for i in 0..<nBuckets {
-                    let c = Int(allCounts[wOff + i])
-                    if c > maxCount { maxCount = c }
-                }
-                for i in 0...maxCount { counts[i] = 0 }
-                for i in 0..<nBuckets {
-                    counts[Int(allCounts[wOff + i])] += 1
-                }
-                var running = 0
-                for c in stride(from: maxCount, through: 0, by: -1) {
-                    positions[c] = running
-                    running += counts[c]
-                }
-                for i in 0..<nBuckets {
-                    let c = Int(allCounts[wOff + i])
-                    let dest = positions[c]
-                    positions[c] = dest + 1
-                    // Pack: upper 16 bits = window, lower 16 bits = bucket index
-                    countSortedMap[wOff + dest] = UInt32(w << 16) | UInt32(i)
+                if skipCSM {
+                    // Identity CSM: buckets in natural order (uniform distribution,
+                    // CSM reordering provides no SIMD coherence benefit)
+                    for i in 0..<nBuckets {
+                        countSortedMap[wOff + i] = UInt32(w << 16) | UInt32(i)
+                    }
+                } else {
+                    // Build count-sorted map (buckets ordered by descending count for SIMD coherence)
+                    var maxCount: Int = 0
+                    for i in 0..<nBuckets {
+                        let c = Int(allCounts[wOff + i])
+                        if c > maxCount { maxCount = c }
+                    }
+                    for i in 0...maxCount { counts[i] = 0 }
+                    for i in 0..<nBuckets {
+                        counts[Int(allCounts[wOff + i])] += 1
+                    }
+                    var running = 0
+                    for c in stride(from: maxCount, through: 0, by: -1) {
+                        positions[c] = running
+                        running += counts[c]
+                    }
+                    for i in 0..<nBuckets {
+                        let c = Int(allCounts[wOff + i])
+                        let dest = positions[c]
+                        positions[c] = dest + 1
+                        // Pack: upper 16 bits = window, lower 16 bits = bucket index
+                        countSortedMap[wOff + dest] = UInt32(w << 16) | UInt32(i)
+                    }
                 }
             }
         }
@@ -721,8 +763,21 @@ public class MetalMSM {
                 sortCB.waitUntilCompleted()
             }
         } else {
-            // CPU fallback sort
-            sortWindows(0..<nWindows)
+            // Adaptive bucket sort: compute CV² of bucket distribution to decide
+            // whether CSM reordering is worth the overhead. When distribution is
+            // near-uniform (CV² < 0.5), skip CSM since all buckets have similar
+            // counts and SIMD coherence gain is negligible.
+            let cv2Threshold = 0.5
+            var skipCSM = false
+            if effectiveN >= 8192 {
+                // Sample window 0 to estimate distribution uniformity
+                let cv2 = computeBucketCV2(windowIndex: 0)
+                skipCSM = cv2 < cv2Threshold
+                if profileMSM {
+                    fputs(String(format: "  [profile] bucket CV²=%.4f, skipCSM=%d\n", cv2, skipCSM ? 1 : 0), stderr)
+                }
+            }
+            sortWindows(0..<nWindows, skipCSM: skipCSM)
         }
 
         if profileMSM { let _t2 = CFAbsoluteTimeGetCurrent(); fputs(String(format: "  [profile] sort: %.2f ms\n", (_t2 - _tStart) * 1000), stderr) }

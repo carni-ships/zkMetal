@@ -115,11 +115,11 @@ public func runSortBench() {
                     keys.append(UInt32(truncatingIfNeeded: rng >> 32))
                 }
 
-                // Warmup
-                let _ = try engine.sort(keys)
+                // Warmup (3 runs for stable GPU state)
+                for _ in 0..<3 { let _ = try engine.sort(keys) }
 
                 // GPU timed
-                let runs = 5
+                let runs = 9
                 var gpuTimes = [Double]()
                 for _ in 0..<runs {
                     let t0 = CFAbsoluteTimeGetCurrent()

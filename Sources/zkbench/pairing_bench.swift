@@ -173,6 +173,20 @@ public func runPairingBench() {
         fputs(String(format: "  GPU 4x Miller loop: %7.1fms (vs CPU 4x: %.1fms)\n",
                     gpuMLTimes[gpuMLTimes.count / 2], cpuMLTime * 4), stderr)
 
+        // [5] GPU Profiling Breakdown
+        fputs("\n[5] GPU Phase Profiling (16 pairings)\n", stderr)
+        let profPairs = makeTestPairs(n: 16)
+        engine.profilingEnabled = true
+        engine.resetProfiling()
+        // Warmup
+        _ = try engine.multiMillerPairing(pairs: profPairs)
+        engine.resetProfiling()
+        for _ in 0..<5 {
+            _ = try engine.multiMillerPairing(pairs: profPairs)
+        }
+        engine.printProfile()
+        engine.profilingEnabled = false
+
     } catch {
         fputs("  Error: \(error)\n", stderr)
     }

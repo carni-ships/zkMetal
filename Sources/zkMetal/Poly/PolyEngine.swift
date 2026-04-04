@@ -22,6 +22,9 @@ public class PolyEngine {
     let divCarryPropagateFunction: MTLComputePipelineState
     let divPrecomputePowersFunction: MTLComputePipelineState
     let divApplyCarryFunction: MTLComputePipelineState
+    // Fused quotient accumulation kernels (two-phase)
+    let fusedQuotientSyndivFunction: MTLComputePipelineState
+    let fusedQuotientCombineFunction: MTLComputePipelineState
     // Subproduct tree kernels
     let treeBuildLinearPairsFunction: MTLComputePipelineState?
     let treeBuildSchoolbookFunction: MTLComputePipelineState?
@@ -65,7 +68,9 @@ public class PolyEngine {
               let divChunkFn = library.makeFunction(name: "poly_div_chunk"),
               let divCarryFn = library.makeFunction(name: "poly_div_carry_propagate"),
               let divPowersFn = library.makeFunction(name: "poly_div_precompute_powers"),
-              let divApplyFn = library.makeFunction(name: "poly_div_apply_carry") else {
+              let divApplyFn = library.makeFunction(name: "poly_div_apply_carry"),
+              let fusedSyndivFn = library.makeFunction(name: "fused_quotient_syndiv"),
+              let fusedCombineFn = library.makeFunction(name: "fused_quotient_combine") else {
             throw MSMError.missingKernel
         }
         self.addFunction = try device.makeComputePipelineState(function: addFn)
@@ -79,6 +84,8 @@ public class PolyEngine {
         self.divCarryPropagateFunction = try device.makeComputePipelineState(function: divCarryFn)
         self.divPrecomputePowersFunction = try device.makeComputePipelineState(function: divPowersFn)
         self.divApplyCarryFunction = try device.makeComputePipelineState(function: divApplyFn)
+        self.fusedQuotientSyndivFunction = try device.makeComputePipelineState(function: fusedSyndivFn)
+        self.fusedQuotientCombineFunction = try device.makeComputePipelineState(function: fusedCombineFn)
 
         // Load tree kernels (optional — may not exist in all builds)
         let treeLib = try? PolyEngine.compileTreeShaders(device: device)
@@ -474,5 +481,124 @@ public class PolyEngine {
         if let error = cmdBuf.error { throw MSMError.gpuError(error.localizedDescription) }
 
         return readBuffer(resultsBuf, count: n)
+    }
+
+    // MARK: - Fused quotient accumulation for Shplonk-style multi-point openings
+
+    /// Fused quotient accumulation: computes h(X) = sum_i gamma^i * q_i(X) in a single
+    /// command buffer with two GPU phases, where q_i(X) = (f_i(X) - f_i(z_i)) / (X - z_i).
+    ///
+    /// Phase 1: N threadgroups run synthetic division in parallel (one per polynomial).
+    /// Phase 2: One thread per output coefficient accumulates gamma^i * q_i[j].
+    ///
+    /// This replaces N sequential divideByLinear GPU dispatches + CPU accumulation
+    /// with a single command buffer containing two back-to-back compute encoders.
+    ///
+    /// Parameters:
+    ///   - polynomials: array of N polynomials (coefficient arrays in ascending order)
+    ///   - evaluations: precomputed f_i(z_i) values (unused in quotient, kept for API clarity)
+    ///   - points: opening points z_i for each polynomial
+    ///   - gamma: random challenge for linear combination
+    /// Returns: coefficients of the combined quotient h(X)
+    public func fusedQuotientAccumulate(
+        polynomials: [[Fr]],
+        evaluations: [Fr],
+        points: [Fr],
+        gamma: Fr
+    ) throws -> [Fr] {
+        let numPolys = polynomials.count
+        guard numPolys > 0, numPolys == points.count else {
+            throw MSMError.invalidInput
+        }
+
+        // Compute max quotient degree (max(deg_i) - 1)
+        var maxQuotientDeg = 0
+        for poly in polynomials {
+            let qd = poly.count - 1
+            if qd > maxQuotientDeg { maxQuotientDeg = qd }
+        }
+        guard maxQuotientDeg > 0 else {
+            return []
+        }
+
+        // Flatten all polynomial coefficients into a single buffer
+        var allCoeffs = [Fr]()
+        var polyOffsets = [UInt32]()
+        var polyDegrees = [UInt32]()
+        var offset: UInt32 = 0
+
+        for poly in polynomials {
+            polyOffsets.append(offset)
+            polyDegrees.append(UInt32(poly.count))
+            allCoeffs.append(contentsOf: poly)
+            offset += UInt32(poly.count)
+        }
+
+        // Precompute gamma powers on CPU (only numPolys values, cheap)
+        var gammaPowers = [Fr]()
+        gammaPowers.reserveCapacity(numPolys)
+        var gPow = Fr.one
+        for i in 0..<numPolys {
+            gammaPowers.append(gPow)
+            if i < numPolys - 1 {
+                gPow = frMul(gPow, gamma)
+            }
+        }
+
+        // Create GPU buffers
+        let allCoeffsBuf = createBuffer(allCoeffs)
+        let offsetsBuf = device.makeBuffer(bytes: polyOffsets, length: polyOffsets.count * MemoryLayout<UInt32>.stride, options: .storageModeShared)!
+        let degreesBuf = device.makeBuffer(bytes: polyDegrees, length: polyDegrees.count * MemoryLayout<UInt32>.stride, options: .storageModeShared)!
+        let pointsBuf = createBuffer(points)
+        let gammaBuf = createBuffer(gammaPowers)
+
+        // Scratch buffer: N * maxQuotientDeg Fr elements (zero-initialized)
+        let scratchBytes = numPolys * maxQuotientDeg * MemoryLayout<Fr>.stride
+        let scratchBuf = getCachedBuffer(slot: "fused_quotient_scratch", minBytes: scratchBytes)
+        // Zero out the scratch buffer (quotients for shorter polys need zero padding)
+        memset(scratchBuf.contents(), 0, scratchBytes)
+
+        let outBuf = device.makeBuffer(length: maxQuotientDeg * MemoryLayout<Fr>.stride, options: .storageModeShared)!
+
+        guard let cmdBuf = commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
+        }
+
+        // Phase 1: Parallel synthetic division — N threadgroups, one per polynomial
+        var numPolysVal = UInt32(numPolys)
+        var maxQDegVal = UInt32(maxQuotientDeg)
+
+        let enc1 = cmdBuf.makeComputeCommandEncoder()!
+        enc1.setComputePipelineState(fusedQuotientSyndivFunction)
+        enc1.setBuffer(allCoeffsBuf, offset: 0, index: 0)
+        enc1.setBuffer(offsetsBuf, offset: 0, index: 1)
+        enc1.setBuffer(degreesBuf, offset: 0, index: 2)
+        enc1.setBuffer(pointsBuf, offset: 0, index: 3)
+        enc1.setBuffer(scratchBuf, offset: 0, index: 4)
+        enc1.setBytes(&numPolysVal, length: 4, index: 5)
+        enc1.setBytes(&maxQDegVal, length: 4, index: 6)
+        enc1.dispatchThreadgroups(MTLSize(width: numPolys, height: 1, depth: 1),
+                                 threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1))
+        enc1.endEncoding()
+
+        // Phase 2: Combine quotients — one thread per output coefficient
+        let enc2 = cmdBuf.makeComputeCommandEncoder()!
+        enc2.setComputePipelineState(fusedQuotientCombineFunction)
+        enc2.setBuffer(scratchBuf, offset: 0, index: 0)
+        enc2.setBuffer(gammaBuf, offset: 0, index: 1)
+        enc2.setBuffer(degreesBuf, offset: 0, index: 2)
+        enc2.setBuffer(outBuf, offset: 0, index: 3)
+        enc2.setBytes(&numPolysVal, length: 4, index: 4)
+        enc2.setBytes(&maxQDegVal, length: 4, index: 5)
+        let tg = min(tuning.nttThreadgroupSize, Int(fusedQuotientCombineFunction.maxTotalThreadsPerThreadgroup))
+        enc2.dispatchThreads(MTLSize(width: maxQuotientDeg, height: 1, depth: 1),
+                            threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+        enc2.endEncoding()
+
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+        if let error = cmdBuf.error { throw MSMError.gpuError(error.localizedDescription) }
+
+        return readBuffer(outBuf, count: maxQuotientDeg)
     }
 }

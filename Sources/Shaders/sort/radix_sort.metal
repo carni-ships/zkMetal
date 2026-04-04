@@ -14,7 +14,7 @@ using namespace metal;
 #define RADIX_SIZE 256
 #define TILE_SIZE 4096
 
-// --- Kernel 1: Per-threadgroup histogram ---
+// --- Kernel 1: Per-threadgroup histogram (vectorized 4-key loads) ---
 kernel void radix_histogram(
     device const uint* keys       [[buffer(0)]],
     device uint* histograms       [[buffer(1)]],
@@ -32,11 +32,29 @@ kernel void radix_histogram(
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
     uint base = tgid * TILE_SIZE;
-    for (uint i = tid; i < TILE_SIZE && (base + i) < n; i += tg_size) {
+    uint tile_end = min(base + TILE_SIZE, n);
+    uint tile_count = tile_end - base;
+
+    // Vectorized: process 4 keys per thread per iteration
+    device const uint4* keys4 = (device const uint4*)(keys + base);
+    uint vec_count = tile_count / 4;
+    for (uint i = tid; i < vec_count; i += tg_size) {
+        uint4 k = keys4[i];
+        uint d0 = (k.x >> shift) & 0xFF;
+        uint d1 = (k.y >> shift) & 0xFF;
+        uint d2 = (k.z >> shift) & 0xFF;
+        uint d3 = (k.w >> shift) & 0xFF;
+        atomic_fetch_add_explicit((threadgroup atomic_uint*)&local_hist[d0], 1, memory_order_relaxed);
+        atomic_fetch_add_explicit((threadgroup atomic_uint*)&local_hist[d1], 1, memory_order_relaxed);
+        atomic_fetch_add_explicit((threadgroup atomic_uint*)&local_hist[d2], 1, memory_order_relaxed);
+        atomic_fetch_add_explicit((threadgroup atomic_uint*)&local_hist[d3], 1, memory_order_relaxed);
+    }
+    // Handle remaining keys
+    uint remainder_start = vec_count * 4;
+    for (uint i = remainder_start + tid; i < tile_count; i += tg_size) {
         uint key = keys[base + i];
         uint digit = (key >> shift) & 0xFF;
-        atomic_fetch_add_explicit((threadgroup atomic_uint*)&local_hist[digit],
-                                 1, memory_order_relaxed);
+        atomic_fetch_add_explicit((threadgroup atomic_uint*)&local_hist[digit], 1, memory_order_relaxed);
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
@@ -120,9 +138,11 @@ kernel void radix_scatter(
             digit = (key >> shift) & 0xFF;
         }
 
-        // Clear per-SIMD counts
-        for (uint i = tid; i < num_simds * RADIX_SIZE; i += tg_size) {
-            sub_count[i / RADIX_SIZE][i % RADIX_SIZE] = 0;
+        // Clear per-SIMD counts — flat index avoids div/mod
+        threadgroup uint* sub_flat = (threadgroup uint*)sub_count;
+        uint sub_total = num_simds * RADIX_SIZE;
+        for (uint i = tid; i < sub_total; i += tg_size) {
+            sub_flat[i] = 0;
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
@@ -202,8 +222,11 @@ kernel void radix_scatter_kv(
             digit = (key >> shift) & 0xFF;
         }
 
-        for (uint i = tid; i < num_simds * RADIX_SIZE; i += tg_size) {
-            sub_count[i / RADIX_SIZE][i % RADIX_SIZE] = 0;
+        // Clear per-SIMD counts — flat index avoids div/mod
+        threadgroup uint* sub_flat = (threadgroup uint*)sub_count;
+        uint sub_total = num_simds * RADIX_SIZE;
+        for (uint i = tid; i < sub_total; i += tg_size) {
+            sub_flat[i] = 0;
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 

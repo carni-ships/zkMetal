@@ -1,6 +1,6 @@
 # zkMetal
 
-GPU-accelerated zero-knowledge cryptography library for Apple Silicon, written in Metal and Swift. 50+ primitives spanning field arithmetic, MSM, NTT, hash functions, polynomial commitments, proof protocols, post-quantum crypto, and homomorphic encryption across 15 fields and 7 elliptic curves.
+GPU-accelerated zero-knowledge cryptography library for Apple Silicon, written in Metal and Swift. 60+ primitives spanning field arithmetic, MSM, NTT, hash functions, polynomial commitments, proof protocols, signatures, post-quantum crypto, and homomorphic encryption across 18 fields and 10 elliptic curves.
 
 ## Contents
 
@@ -69,6 +69,9 @@ GPU-accelerated zero-knowledge cryptography library for Apple Silicon, written i
 | **Ed25519** | GPU/CPU | Curve25519 field, twisted Edwards curve, EdDSA, GPU MSM |
 | **BabyJubjub** | GPU/CPU | Twisted Edwards over BN254 Fr, Pedersen hash, EdDSA |
 | **Grumpkin** | GPU | BN254 inner curve (y²=x³-17), GPU MSM with signed-digit |
+| **Stark252** | GPU/CPU | StarkNet/Cairo native field (p=2^251+17·2^192+1), TWO_ADICITY=192, NTT |
+| **Schnorr** | CPU | BIP 340 Bitcoin Taproot signatures (x-only pubkeys, tagged hashing) |
+| **Poseidon2 BB** | GPU | Poseidon2 BabyBear width-16 (SP1/Plonky3 config, x^7 S-box) |
 
 ## Performance
 
@@ -287,10 +290,10 @@ Sparse wiring predicate evaluation: previous dense implementation 3728ms at 2^6 
 
 | Size | GPU | CPU | Speedup |
 |------|-----|-----|---------|
-| 2^16 | 0.6ms | 3.1ms | **5x** |
-| 2^18 | 1.4ms | 14ms | **10x** |
-| 2^20 | 4.1ms | 62ms | **15x** |
-| 2^22 | 7.9ms | 278ms | **35x** |
+| 2^16 | 0.7ms | 2.9ms | **4x** |
+| 2^18 | 1.3ms | 13ms | **10x** |
+| 2^20 | 2.1ms | 59ms | **28x** |
+| 2^22 | 6.4ms | 278ms | **43x** |
 
 ---
 
@@ -344,11 +347,15 @@ Sparse wiring predicate evaluation: previous dense implementation 3728ms at 2^6 
 | IPA Accumulation (Pallas) | 7.3ms accumulate (n=4) | Halo-style, batch decide 2.7x |
 | Tensor compress 2^18 | 229ms compress, 39ms verify | **460.7x** compression ratio |
 | WHIR 2^14 | 53ms prove, 16ms verify | 28.2 KB proof size |
-| Lasso 2^18 | 481ms prove, 1.6s verify | Tensor decomposition for large tables |
+| Lasso 2^18 | 59ms prove, 1.6s verify | C-accelerated decompose, fused GPU CB, **8.2x** from 481ms |
 | LogUp 2^12 | 15ms prove, 16ms verify | Optimal for small-medium tables |
 | cq | Correctness passes | Crashes at larger benchmark sizes |
 | Binius FFT 2^16 | 21ms (CPU) | Binary tower GF(2^32) GPU batch: 0.67ms mul at 2^18 |
-| BLS12-381 | Fp mul 339ns, G1 add 7.2us, pairing 35ms | Full tower Fp->Fp12 |
+| BLS12-381 | Fp mul 339ns, G1 add 7.2us, pairing 27ms | Full tower Fp->Fp12 |
+| BN254 GPU Pairing (n=16) | 51ms (vs 239ms CPU = **4.7x**) | Projective Miller loop, batched final exp |
+| Schnorr BIP 340 | Sign 0.30ms, Batch verify 0.20ms/sig | x-only pubkeys, SHA-256 tagged hashing |
+| Stark252 NTT 2^20 | 238M elem/s (GPU) | StarkNet/Cairo native field |
+| Poseidon2 BabyBear (width-16) | 104M hash/s (GPU) | SP1/Plonky3 exact config |
 | Pasta curves | Pallas/Vesta cycle | Field+curve ops, recursive composition ready |
 | Data-Parallel GKR | Experimental | Multi-instance correctness tests failing |
 | Incremental Merkle batch 256 | 13ms (vs 124ms full = **9.2x**) | Known regression on large sequential builds |
@@ -380,9 +387,9 @@ Methodology: Compute-bound = total_ops / 3.6T flops (BN254 mul = ~64 32-bit muls
 | Rank | Primitive | Current | Theoretical Floor | Bottleneck | Headroom |
 |------|-----------|---------|-------------------|------------|----------|
 | 1 | Groth16 prove 256 | 1.5s | ~60ms | MSM dominated (3 large MSMs + NTT) | ~25x |
-| 2 | Lasso prove 2^18 | 481ms | ~30ms | Tensor decomposition + 4 sumchecks + commitments | ~16x |
+| 2 | Lasso prove 2^18 | 59ms | ~30ms | C-accelerated decompose + fused GPU CB | ~2x |
 | 3 | GKR 2^10 d=4 | 241ms | ~17ms | Sumcheck dominated (10 rounds x 2^10 vars) | ~14x |
-| 4 | Plonk prove 1024 | 157ms | ~15ms | NTT + MSM dominated (6 NTTs + 3 MSMs) | ~10x |
+| 4 | Plonk prove 1024 | 86ms | ~15ms | NTT + MSM (batch inversion 2.1x from 179ms) | ~6x |
 | 5 | NTT BN254 2^22 | 26ms | ~2.9ms | Compute + strided BW (256-bit: 64 muls/elem) | ~9x |
 | 6 | MSM BN254 2^18 | 45ms | ~5ms | Random-access BW (scatter bucket accumulation) | ~9x |
 | 7 | KZG commit 2^10 | 4.6ms | ~0.5ms | MSM dominated (small N, dispatch overhead) | ~9x |
@@ -397,7 +404,7 @@ Methodology: Compute-bound = total_ops / 3.6T flops (BN254 mul = ~64 32-bit muls
 | 16 | HyperNova per-fold | 3.7ms | ~0.7ms | MSM dominated (commitment + cross-term) | ~5x |
 | 17 | secp256k1 MSM 2^18 | 77ms | ~15ms | No GLV, wider scatter than BN254 | ~5x |
 | 18 | Poseidon2 batch 2^16 | 8.1ms | ~1.8ms | Compute (390 ops/elem, 22 sequential rounds limit parallelism) | ~4.5x |
-| 19 | Radix Sort 2^20 | 4.1ms | ~1ms | Sequential 4-pass + BW | ~4x |
+| 19 | Radix Sort 2^20 | 2.1ms | ~1ms | Vectorized histogram + flat clearing | ~2x |
 | 20 | Binius FFT 2^16 (CPU) | 21ms | ~5ms | CPU only; XOR-add is free but table mul is serial | ~4x |
 | 21 | Constraint IR 2^16 | 5.3ms | ~1.5ms | Compute (20 constraints x 65K rows, pipeline compile overhead) | ~3.5x |
 | 22 | Witness Gen BN254 2^18 | 3.0ms | ~0.9ms | Memory bandwidth (10 cols x 262K x 32B = 84MB) | ~3.3x |
@@ -431,6 +438,9 @@ BabyBear/Goldilocks NTT and IPA are near-optimal (within 1-2x of hardware limits
 - **BLS12-381 Fp** -- 381-bit base field (12x32-bit limbs), Fp2/Fp6/Fp12 tower
 - **Pallas Fp** -- 255-bit base field for Pallas curve (cycle with Vesta)
 - **Vesta Fp** -- 255-bit base field for Vesta curve (cycle with Pallas)
+- **Stark252** (p = 2^251 + 17·2^192 + 1) -- StarkNet/Cairo native field, TWO_ADICITY=192
+- **Ed25519 Fp** (p = 2^255 - 19) -- Curve25519 base field, 4x64-bit CIOS
+- **Ed25519 Fq** -- Ed25519 scalar field for EdDSA
 - **Binary Tower** -- GF(2^8)->GF(2^16)->GF(2^32)->GF(2^64)->GF(2^128) (XOR addition)
 
 ## Architecture
@@ -568,16 +578,17 @@ Run `swift run -c release zkbench test`. All GPU kernels verified against CPU re
 | Category | Primitives | Verification |
 |----------|------------|-------------|
 | Field arithmetic | BN254, BLS12-377/381, secp256k1, Goldilocks, BabyBear, M31, Pallas/Vesta, Binary Tower | Unit tests + cross-checks (arithmetic properties, inverses, distributivity) |
-| MSM | BN254, BLS12-377, secp256k1, Pallas/Vesta | GPU vs CPU cross-check, on-curve, determinism |
-| NTT | BN254, BLS12-377, Goldilocks, BabyBear, Circle NTT | Round-trip + CPU cross-check (all fields, sizes 2^2 through 2^22) |
-| Hashing | Poseidon2 (BN254+M31), Keccak-256, Blake3 | Known-answer tests (NIST, HorizenLabs, BLAKE3 spec) + GPU vs CPU batch |
+| MSM | BN254, BLS12-377, secp256k1, Pallas/Vesta, Ed25519, Grumpkin | GPU vs CPU cross-check, on-curve, determinism |
+| NTT | BN254, BLS12-377, Goldilocks, BabyBear, Stark252, Circle NTT | Round-trip + CPU cross-check (all fields, sizes 2^2 through 2^22) |
+| Hashing | Poseidon2 (BN254+M31+BabyBear), Keccak-256, Blake3, SHA-256 | Known-answer tests (NIST, HorizenLabs, BLAKE3 spec) + GPU vs CPU batch |
 | Merkle trees | Poseidon2, Keccak, Blake3 backends | GPU vs CPU root comparison + parallel structure validation |
 | Polynomial protocols | FRI (fold-by-2/4/8), Sumcheck (dense+sparse), KZG, Batch KZG | S(0)+S(1)=sum, round-poly match, full protocol verify, tamper rejection |
 | PCS | Basefold, Tensor, WHIR | Fold correctness, compress+verify, proof verify+rejection |
 | Proof systems | Circle STARK, Plonk, Groth16, GKR | Prove+verify, tampered proof rejection, bilinearity |
 | Lookups | LogUp, Lasso, cq | Simple/repeated/multiplicities, tamper rejection |
 | CPU optimized | C BN254/Goldilocks NTT, NEON BabyBear/Keccak/Blake3 | Cross-checked against vanilla CPU + round-trip |
-| Protocols | IPA, Verkle (CPU), ECDSA (CPU), HyperNova, IPA Accumulation | Prove+verify, wrong-value rejection, batch verification |
+| Signatures | EdDSA (Ed25519+BabyJubjub), ECDSA (secp256k1), Schnorr (BIP 340) | RFC 8032, batch verification, tagged hashing |
+| Protocols | IPA, Verkle (CPU), HyperNova, IPA Accumulation | Prove+verify, wrong-value rejection, batch verification |
 | Infrastructure | Transcript, Serialization, Witness Gen, Constraint IR, Radix Sort | Determinism, roundtrip, domain/fork separation, tamper detection |
 | Applications | Kyber KEM, Dilithium signatures, Reed-Solomon, Streaming Verify | Shared secret agreement, signature verification, encode+decode |
 
