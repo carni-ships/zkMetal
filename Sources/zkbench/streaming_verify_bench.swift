@@ -1,6 +1,7 @@
 // Streaming Verification Benchmark
-// Compares sequential vs pipelined FRI proof verification
-// to measure speedup from CPU/GPU overlap on unified memory.
+// Compares sequential vs pipelined FRI proof verification and exercises
+// the unified-memory task-queue API (Merkle checks, EC on-curve checks).
+// Measures speedup from CPU/GPU overlap on unified memory.
 
 import Foundation
 import Metal
@@ -14,6 +15,11 @@ public func runStreamingVerifyBench() {
         let friEngine = try FRIEngine()
         let streamVerifier = try StreamingVerifier()
         let pipelinedVerifier = try PipelinedFRIVerifier()
+
+        // ========================================
+        // Part 1: FRI Proof Verification Pipeline
+        // ========================================
+        print("--- FRI Proof Verification Pipeline ---\n")
 
         // Test sizes from 2^10 to 2^18
         let logSizes = CommandLine.arguments.contains("--quick") ? [10, 14] : [10, 12, 14, 16, 18]
@@ -104,81 +110,140 @@ public func runStreamingVerifyBench() {
             dbTimes.sort()
             let dbMedian = dbTimes[dbRuns / 2]
 
-            // Benchmark: GPU batch Merkle verification only
-            let merkleVerifier = streamVerifier.merkleVerifier
-            var maxDepth = 0
-            var totalPaths = 0
-            for query in queries {
-                for layerPath in query.merklePaths {
-                    for siblings in layerPath {
-                        maxDepth = max(maxDepth, siblings.count)
-                    }
-                    totalPaths += layerPath.count
-                }
+            // Benchmark: Task-queue API (beginVerification/submit/finalize)
+            let tqRuns = 3
+            var tqTimes = [Double]()
+            let merkleEngine = try Poseidon2MerkleEngine()
+            let numLayers = commitment.layers.count - 1
+            var layerRoots = [Fr]()
+            for layer in 0..<numLayers {
+                let root = try merkleEngine.merkleRoot(commitment.layers[layer])
+                layerRoots.append(root)
             }
 
-            let merkleRuns = 3
-            var merkleTimes = [Double]()
-            if totalPaths > 0 && maxDepth > 0 {
-                // Build layer trees
-                let merkleEngine = try Poseidon2MerkleEngine()
-                let numLayers = commitment.layers.count - 1
-                var layerRoots = [Fr]()
-                for layer in 0..<numLayers {
-                    let root = try merkleEngine.merkleRoot(commitment.layers[layer])
-                    layerRoots.append(root)
-                }
+            for _ in 0..<tqRuns {
+                let t0 = CFAbsoluteTimeGetCurrent()
+                streamVerifier.beginVerification()
 
-                // Collect all paths
-                var allLeaves = [Fr]()
-                var allIndices = [UInt32]()
-                var allPaths = [[Fr]]()
-                var allRoots = [Fr]()
-
+                // Submit Merkle checks via task-queue API
                 for query in queries {
                     var idx = query.initialIndex
                     for layer in 0..<numLayers {
                         let nLayer = commitment.layers[layer].count
                         let halfN = UInt32(nLayer / 2)
-                        let leaf = commitment.layers[layer][Int(idx)]
                         if layer < query.merklePaths.count && !query.merklePaths[layer].isEmpty {
+                            let leaf = commitment.layers[layer][Int(idx)]
                             let path = query.merklePaths[layer][0]
-                            allLeaves.append(leaf)
-                            allIndices.append(idx)
-                            allPaths.append(path)
-                            allRoots.append(layerRoots[layer])
+                            streamVerifier.submitMerkleCheck(
+                                root: layerRoots[layer], leaf: leaf,
+                                path: path, index: idx)
                         }
                         idx = idx < halfN ? idx : idx - halfN
                     }
                 }
 
-                for _ in 0..<merkleRuns {
-                    let t0 = CFAbsoluteTimeGetCurrent()
-                    let _ = try merkleVerifier.batchVerify(
-                        leaves: allLeaves, indices: allIndices,
-                        paths: allPaths, roots: allRoots, maxDepth: maxDepth)
-                    let elapsed = (CFAbsoluteTimeGetCurrent() - t0) * 1000
-                    merkleTimes.append(elapsed)
+                let ok = try streamVerifier.finalize()
+                let elapsed = (CFAbsoluteTimeGetCurrent() - t0) * 1000
+                tqTimes.append(elapsed)
+                if !ok {
+                    print("  WARNING: Task-queue verification FAILED")
                 }
-                merkleTimes.sort()
             }
-
-            let merkleMedian = merkleTimes.isEmpty ? 0.0 : merkleTimes[merkleRuns / 2]
+            tqTimes.sort()
+            let tqMedian = tqTimes[tqRuns / 2]
 
             // Report
             let speedup1 = seqMedian > 0 ? seqMedian / pipeMedian : 0
             let speedup2 = seqMedian > 0 ? seqMedian / dbMedian : 0
+            let speedup3 = seqMedian > 0 ? seqMedian / tqMedian : 0
             print(String(format: "  Sequential:       %7.2f ms", seqMedian))
             print(String(format: "  Pipelined:        %7.2f ms (%.2f\u{00d7})", pipeMedian, speedup1))
             print(String(format: "  Double-buffered:  %7.2f ms (%.2f\u{00d7})", dbMedian, speedup2))
-            if merkleMedian > 0 {
-                print(String(format: "  GPU Merkle batch: %7.2f ms (%d paths)", merkleMedian, totalPaths))
-            }
+            print(String(format: "  Task-queue:       %7.2f ms (%.2f\u{00d7})", tqMedian, speedup3))
             print()
         }
 
-        // Correctness check
-        print("--- Correctness Verification ---")
+        // ============================================
+        // Part 2: GPU EC On-Curve Batch Verification
+        // ============================================
+        print("--- GPU EC On-Curve Batch Verification ---\n")
+
+        let ecSizes = CommandLine.arguments.contains("--quick") ? [100, 1000] : [100, 1000, 10_000, 100_000]
+
+        for count in ecSizes {
+            // Generate random valid BN254 points by scalar multiplication
+            var rng2: UInt64 = 0xCAFE_BABE_1234 &+ UInt64(count)
+            var points = [PointAffine]()
+            points.reserveCapacity(count)
+
+            // Generate points: use generator * random_scalar to get valid curve points
+            let g = PointAffine(x: fpFromInt(1), y: fpFromInt(2))
+            let gProj = pointFromAffine(g)
+            for _ in 0..<count {
+                rng2 = rng2 &* 6364136223846793005 &+ 1442695040888963407
+                let scalar = frFromInt(rng2 >> 32)
+                let pt = cPointScalarMul(gProj, scalar)
+                let ptAff = batchToAffine([pt])
+                points.append(ptAff[0])
+            }
+
+            // Benchmark: CPU on-curve check (baseline)
+            let cpuT0 = CFAbsoluteTimeGetCurrent()
+            var cpuOk = true
+            for pt in points {
+                if !StreamingVerifier.cpuCheckOnCurve(point: pt) {
+                    cpuOk = false
+                }
+            }
+            let cpuTime = (CFAbsoluteTimeGetCurrent() - cpuT0) * 1000
+
+            // Benchmark: GPU batch on-curve check
+            // Warmup
+            let _ = try streamVerifier.batchCheckOnCurve(points: Array(points.prefix(min(10, count))))
+
+            let gpuRuns = 3
+            var gpuTimes = [Double]()
+            var gpuOk = true
+            for _ in 0..<gpuRuns {
+                let t0 = CFAbsoluteTimeGetCurrent()
+                let results = try streamVerifier.batchCheckOnCurve(points: points)
+                let elapsed = (CFAbsoluteTimeGetCurrent() - t0) * 1000
+                gpuTimes.append(elapsed)
+                if results.contains(false) { gpuOk = false }
+            }
+            gpuTimes.sort()
+            let gpuMedian = gpuTimes[gpuRuns / 2]
+
+            // Benchmark: Task-queue API for EC checks
+            let tqRuns2 = 3
+            var tqTimes2 = [Double]()
+            for _ in 0..<tqRuns2 {
+                let t0 = CFAbsoluteTimeGetCurrent()
+                streamVerifier.beginVerification()
+                for pt in points {
+                    streamVerifier.submitPointCheck(point: pt, expectedOnCurve: true)
+                }
+                let ok = try streamVerifier.finalize()
+                let elapsed = (CFAbsoluteTimeGetCurrent() - t0) * 1000
+                tqTimes2.append(elapsed)
+                if !ok {
+                    print("  WARNING: Task-queue EC check FAILED")
+                }
+            }
+            tqTimes2.sort()
+            let tqMedian2 = tqTimes2[tqRuns2 / 2]
+
+            let speedup = cpuTime / max(gpuMedian, 0.001)
+            print(String(format: "  N=%-6d  CPU: %7.2f ms  GPU: %7.2f ms  TQ: %7.2f ms  (%.1f\u{00d7})",
+                         count, cpuTime, gpuMedian, tqMedian2, speedup))
+        }
+
+        // ============================================
+        // Part 3: Correctness Checks
+        // ============================================
+        print("\n--- Correctness Verification ---")
+
+        // FRI correctness
         let testLogN = 12
         let testN = 1 << testLogN
         var rng2: UInt64 = 0xCAFE_BABE
@@ -209,7 +274,7 @@ public func runStreamingVerifyBench() {
         print("  Pipelined:       \(pipeOk ? "PASS" : "FAIL")")
         print("  Double-buffered: \(dbOk ? "PASS" : "FAIL")")
 
-        // Test GPU batch Merkle correctness
+        // Task-queue Merkle correctness
         let batchMerkle = try PipelinedMerkleVerifier()
         let merkleEngine = try Poseidon2MerkleEngine()
 
@@ -241,6 +306,34 @@ public func runStreamingVerifyBench() {
             leaves: [testLeaves[3]], indices: [3], paths: [path],
             roots: [wrongRoot], maxDepth: path.count)
         print("  Wrong root:      \(!wrongResult[0] ? "PASS (correctly rejected)" : "FAIL")")
+
+        // EC on-curve correctness
+        let g = PointAffine(x: fpFromInt(1), y: fpFromInt(2))
+        let gProj = pointFromAffine(g)
+        let validPt = cPointScalarMul(gProj, frFromInt(42))
+        let validAff = batchToAffine([validPt])
+
+        let ecResults = try streamVerifier.batchCheckOnCurve(points: validAff)
+        print("  EC on-curve:     \(ecResults[0] ? "PASS" : "FAIL")")
+
+        // Test CPU vs GPU consistency for on-curve
+        let cpuResult = StreamingVerifier.cpuCheckOnCurve(point: validAff[0])
+        print("  CPU on-curve:    \(cpuResult ? "PASS" : "FAIL")")
+
+        // Task-queue API correctness: mixed Merkle + EC checks
+        streamVerifier.beginVerification()
+        streamVerifier.submitMerkleCheck(root: root, leaf: testLeaves[3],
+                                          path: path, index: 3)
+        streamVerifier.submitPointCheck(point: validAff[0], expectedOnCurve: true)
+        let mixedOk = try streamVerifier.finalize()
+        print("  Mixed task-queue: \(mixedOk ? "PASS" : "FAIL")")
+
+        // Task-queue with invalid point should fail
+        let badPoint = PointAffine(x: fpFromInt(99), y: fpFromInt(99))
+        streamVerifier.beginVerification()
+        streamVerifier.submitPointCheck(point: badPoint, expectedOnCurve: true)
+        let badOk = try streamVerifier.finalize()
+        print("  Bad point reject: \(!badOk ? "PASS (correctly rejected)" : "FAIL")")
 
     } catch {
         print("ERROR: \(error)")

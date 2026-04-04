@@ -217,11 +217,11 @@ if cmd == "calibrate" {
     runAccumulationBench()
 } else if cmd == "gkr" {
     runGKRBench()
-} else if cmd == "dparallel" || cmd == "dp" {
-    fputs("Data parallel: stub\n", stderr)
+} else if cmd == "dparallel" || cmd == "dp" || cmd == "datapar" {
+    runDataParallelBench()
 } else if cmd == "batch-verify" || cmd == "bv" {
     runBatchVerifyBench()
-} else if cmd == "stream-verify" || cmd == "sv" {
+} else if cmd == "stream-verify" || cmd == "streaming-verify" || cmd == "sv" {
     runStreamingVerifyBench()
 } else if cmd == "lattice" || cmd == "kyber" || cmd == "dilithium" || cmd == "pq" {
     runLatticeBench()
