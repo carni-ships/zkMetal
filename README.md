@@ -372,41 +372,41 @@ Methodology: Compute-bound = total_ops / 3.6T flops (BN254 mul = ~64 32-bit muls
 
 | Rank | Primitive | Current | Theoretical Floor | Bottleneck | Headroom |
 |------|-----------|---------|-------------------|------------|----------|
-| 1 | P2 Merkle 2^16 | 22ms | ~0.6ms | Dispatch latency (16 sequential levels x 0.5ms) | ~37x |
-| 2 | P2 Merkle 2^18 | 46ms | ~1.2ms | 18 sequential dispatches | ~38x |
-| 3 | Groth16 prove 256 | 1.5s | ~60ms | MSM dominated (3 large MSMs + NTT) | ~25x |
-| 4 | Lasso prove 2^18 | 481ms | ~30ms | Tensor decomposition + 4 sumchecks + commitments | ~16x |
-| 5 | GKR 2^10 d=4 | 241ms | ~17ms | Sumcheck dominated (10 rounds x 2^10 vars) | ~14x |
-| 6 | Plonk prove 1024 | 157ms | ~15ms | NTT + MSM dominated (6 NTTs + 3 MSMs) | ~10x |
-| 7 | NTT BN254 2^22 | 26ms | ~2.9ms | Compute + strided BW (256-bit: 64 muls/elem) | ~9x |
-| 8 | MSM BN254 2^18 | 45ms | ~5ms | Random-access BW (scatter bucket accumulation) | ~9x |
-| 9 | KZG commit 2^10 | 4.6ms | ~0.5ms | MSM dominated (small N, dispatch overhead) | ~9x |
-| 10 | Sumcheck 2^20 | 7.3ms | ~0.85ms | Bandwidth (2^20 x 32B per round) | ~9x |
-| 11 | ECDSA batch 64 (CPU) | 8ms | ~1ms | C CIOS scalar mul (64 x ~300 doublings) | ~8x |
-| 12 | Basefold open 2^18 | 144ms | ~20ms | Iterative fold+commit (18 rounds x Merkle) | ~7x |
-| 13 | FRI Fold 2^20 | 1.96ms | ~0.3ms | Bandwidth (2^20 x 32B read+write) | ~7x |
-| 14 | BLS12-377 MSM 2^18 | 218ms | ~35ms | Wider limbs (253-bit), less optimized window sizes | ~6x |
-| 15 | Keccak Merkle 2^20 | 13ms | ~2.2ms | Compute (24 rounds x 64-bit) + 20 levels | ~6x |
-| 16 | Blake3 Batch 2^20 | 3.5ms | ~0.6ms | Bandwidth (2^20 x 64B) | ~6x |
-| 17 | Circle STARK prove 2^14 | 56ms | ~10ms | Multi-phase pipeline (LDE+commit+FRI, 5+ dispatches) | ~6x |
-| 18 | HyperNova per-fold | 3.7ms | ~0.7ms | MSM dominated (commitment + cross-term) | ~5x |
-| 19 | secp256k1 MSM 2^18 | 77ms | ~15ms | No GLV, wider scatter than BN254 | ~5x |
-| 20 | Poseidon2 batch 2^16 | 8.1ms | ~1.8ms | Compute bound (390 ops/elem x 65K, but 22 sequential rounds limit parallelism) | ~4.5x |
-| 21 | Radix Sort 2^20 | 4.1ms | ~1ms | Sequential 4-pass + BW | ~4x |
-| 22 | Binius FFT 2^16 (CPU) | 21ms | ~5ms | CPU only; XOR-add is free but table mul is serial | ~4x |
-| 23 | Constraint IR 2^16 | 5.3ms | ~1.5ms | Compute (20 constraints x 65K rows, pipeline compile overhead) | ~3.5x |
-| 24 | Witness Gen BN254 2^18 | 3.0ms | ~0.9ms | Memory bandwidth (10 cols x 262K x 32B = 84MB) | ~3.3x |
-| 25 | Keccak Batch 2^18 | 1.4ms | ~0.5ms | Compute (24 rounds Keccak-f per hash) | ~3x |
+| 1 | Groth16 prove 256 | 1.5s | ~60ms | MSM dominated (3 large MSMs + NTT) | ~25x |
+| 2 | Lasso prove 2^18 | 481ms | ~30ms | Tensor decomposition + 4 sumchecks + commitments | ~16x |
+| 3 | GKR 2^10 d=4 | 241ms | ~17ms | Sumcheck dominated (10 rounds x 2^10 vars) | ~14x |
+| 4 | Plonk prove 1024 | 157ms | ~15ms | NTT + MSM dominated (6 NTTs + 3 MSMs) | ~10x |
+| 5 | NTT BN254 2^22 | 26ms | ~2.9ms | Compute + strided BW (256-bit: 64 muls/elem) | ~9x |
+| 6 | MSM BN254 2^18 | 45ms | ~5ms | Random-access BW (scatter bucket accumulation) | ~9x |
+| 7 | KZG commit 2^10 | 4.6ms | ~0.5ms | MSM dominated (small N, dispatch overhead) | ~9x |
+| 8 | Sumcheck 2^20 | 7.3ms | ~0.85ms | Bandwidth (2^20 x 32B per round) | ~9x |
+| 9 | ECDSA batch 64 (CPU) | 8ms | ~1ms | C CIOS scalar mul (64 x ~300 doublings) | ~8x |
+| 10 | Basefold open 2^18 | 144ms | ~20ms | Iterative fold+commit (18 rounds x Merkle) | ~7x |
+| 11 | FRI Fold 2^20 | 1.96ms | ~0.3ms | Bandwidth (2^20 x 32B read+write) | ~7x |
+| 12 | BLS12-377 MSM 2^18 | 218ms | ~35ms | Wider limbs (253-bit), less optimized window sizes | ~6x |
+| 13 | Keccak Merkle 2^20 | 13ms | ~2.2ms | Compute (24 rounds x 64-bit) + 20 levels | ~6x |
+| 14 | Blake3 Batch 2^20 | 3.5ms | ~0.6ms | Bandwidth (2^20 x 64B) | ~6x |
+| 15 | Circle STARK prove 2^14 | 56ms | ~10ms | Multi-phase pipeline (LDE+commit+FRI, 5+ dispatches) | ~6x |
+| 16 | HyperNova per-fold | 3.7ms | ~0.7ms | MSM dominated (commitment + cross-term) | ~5x |
+| 17 | secp256k1 MSM 2^18 | 77ms | ~15ms | No GLV, wider scatter than BN254 | ~5x |
+| 18 | Poseidon2 batch 2^16 | 8.1ms | ~1.8ms | Compute (390 ops/elem, 22 sequential rounds limit parallelism) | ~4.5x |
+| 19 | Radix Sort 2^20 | 4.1ms | ~1ms | Sequential 4-pass + BW | ~4x |
+| 20 | Binius FFT 2^16 (CPU) | 21ms | ~5ms | CPU only; XOR-add is free but table mul is serial | ~4x |
+| 21 | Constraint IR 2^16 | 5.3ms | ~1.5ms | Compute (20 constraints x 65K rows, pipeline compile overhead) | ~3.5x |
+| 22 | Witness Gen BN254 2^18 | 3.0ms | ~0.9ms | Memory bandwidth (10 cols x 262K x 32B = 84MB) | ~3.3x |
+| 23 | Keccak Batch 2^18 | 1.4ms | ~0.5ms | Compute (24 rounds Keccak-f per hash) | ~3x |
+| 24 | P2 Merkle 2^18 | 46ms | ~16ms | Compute (262K hashes, level-by-level at n>65K) | ~2.9x |
+| 25 | P2 Merkle 2^16 | 22ms | ~8ms | Compute (65K hashes, fused subtree 1.7x over level-by-level) | ~2.8x |
 | 26 | Streaming verify 2^16 | 11ms | ~4ms | Task-queue overhead + Merkle verification | ~2.8x |
 | 27 | Verkle proof 256 (CPU) | 23ms | ~10ms | IPA dominated (C scalar mul) | ~2.3x |
 | 28 | Incremental Merkle batch 256 | 13ms | ~6ms | Path updates (log(N) hashes per leaf) | ~2.2x |
-| 29 | Lattice Kyber NTT 10K | 5.6M NTTs/s | ~8M NTTs/s | Compute (256-pt NTT, 32-bit) | ~1.4x |
-| 30 | Circle NTT 2^20 | 4.0ms | ~3ms | Compute ~= BW (32-bit elements, single-word) | ~1.3x |
-| 31 | IPA prove n=256 | 13ms | ~10ms | C scalar mul + GPU batch fold | ~1.3x |
-| 32 | NTT Goldilocks 2^24 | 3.0ms | ~1.8ms | Compute ~= BW (64-bit) | ~1.7x |
+| 29 | NTT Goldilocks 2^24 | 3.0ms | ~1.8ms | Compute ~= BW (64-bit) | ~1.7x |
+| 30 | Lattice Kyber NTT 10K | 5.6M NTTs/s | ~8M NTTs/s | Compute (256-pt NTT, 32-bit) | ~1.4x |
+| 31 | Circle NTT 2^20 | 4.0ms | ~3ms | Compute ~= BW (32-bit elements, single-word) | ~1.3x |
+| 32 | IPA prove n=256 | 13ms | ~10ms | C scalar mul + GPU batch fold | ~1.3x |
 | 33 | NTT BabyBear 2^24 | 2.0ms | ~1.7ms | Bandwidth (2^24 x 4B) | ~1.2x |
 
-BabyBear/Goldilocks NTT and IPA are near-optimal (within 1-2x of hardware limits). Biggest opportunities: Poseidon2 Merkle (dispatch latency), Groth16/Plonk/GKR (MSM/NTT bottleneck), and Lasso (algorithmic complexity).
+BabyBear/Goldilocks NTT and IPA are near-optimal (within 1-2x of hardware limits). Biggest opportunities: Groth16/Plonk/GKR (MSM/NTT bottleneck) and Lasso (algorithmic complexity). P2 Merkle is compute-bound (~2.8x headroom) — fused subtree kernel with shared memory is 1.7x faster than level-by-level despite 80% thread waste.
 
 ## Supported Fields
 
