@@ -24,8 +24,131 @@ public func runGroth16Bench() {
         let vt = CFAbsoluteTimeGetCurrent()
         let valid = verifier.verify(proof: proof, vk: vk, publicInputs: pub)
         fputs("  Verify: \(String(format: "%.1f", (CFAbsoluteTimeGetCurrent()-vt)*1000))ms -- \(valid ? "VALID" : "INVALID")\n", stderr)
-        // Debug: scalar-level Groth16 equation check
-        fputs("  [Debug] Scalar-level Groth16 check...\n", stderr)
+        // Debug: check NTT round-trip and H polynomial
+        fputs("  [Debug] Checking NTT round-trip and H...\n", stderr)
+        do {
+            let prover2 = try Groth16Prover()
+            // NTT round-trip test
+            let testVec: [Fr] = [frFromInt(1), frFromInt(2), frFromInt(3), frFromInt(4)]
+            let fwd = try prover2.ntt.ntt(testVec)
+            let back = try prover2.ntt.intt(fwd)
+            var nttOk = true
+            for i in 0..<4 { if !frSub(testVec[i], back[i]).isZero { nttOk = false } }
+            fputs("  [Debug] NTT round-trip: \(nttOk)\n", stderr)
+
+            // Check R1CS evaluations
+            let nP2 = r1cs.numPublic
+            var zz = [Fr](repeating: .zero, count: r1cs.numVars)
+            zz[0] = .one; for ii in 0..<nP2 { zz[1+ii] = pub[ii] }
+            for ii in 0..<wit.count { zz[1+nP2+ii] = wit[ii] }
+            let az = r1cs.sparseMatVec(r1cs.aEntries, zz)
+            let bz = r1cs.sparseMatVec(r1cs.bEntries, zz)
+            let cz = r1cs.sparseMatVec(r1cs.cEntries, zz)
+            var pointwiseOk = true
+            for ii in 0..<r1cs.numConstraints {
+                if !frSub(frMul(az[ii], bz[ii]), cz[ii]).isZero { pointwiseOk = false }
+            }
+            fputs("  [Debug] Az*Bz==Cz pointwise: \(pointwiseOk)\n", stderr)
+
+            // Check H: compute H and verify A*B - C = H*Z at a random point
+            let m = r1cs.numConstraints
+            var domN2 = 1; var logD2 = 0
+            while domN2 < m { domN2 <<= 1; logD2 += 1 }
+
+            // Get A,B,C coefficients via INTT of evaluations
+            var aEv = [Fr](repeating: .zero, count: domN2)
+            var bEv = [Fr](repeating: .zero, count: domN2)
+            var cEv = [Fr](repeating: .zero, count: domN2)
+            for ii in 0..<m { aEv[ii] = az[ii]; bEv[ii] = bz[ii]; cEv[ii] = cz[ii] }
+            let aCo = try prover2.ntt.intt(aEv)
+            let bCo = try prover2.ntt.intt(bEv)
+            let cCo = try prover2.ntt.intt(cEv)
+
+            // Evaluate A, B, C at test point x=7
+            let testX = frFromInt(7)
+            func evalPoly(_ coeffs: [Fr], _ x: Fr) -> Fr {
+                var result = Fr.zero; var xpow = Fr.one
+                for c in coeffs { result = frAdd(result, frMul(c, xpow)); xpow = frMul(xpow, x) }
+                return result
+            }
+            let aAt7 = evalPoly(aCo, testX)
+            let bAt7 = evalPoly(bCo, testX)
+            let cAt7 = evalPoly(cCo, testX)
+            let pAt7 = frSub(frMul(aAt7, bAt7), cAt7)
+
+            // Z(7) = 7^domN - 1
+            var z7 = Fr.one; for _ in 0..<domN2 { z7 = frMul(z7, testX) }
+            z7 = frSub(z7, .one)
+
+            // Compute H using the same code as prover
+            // Replicate computeH logic
+            let bigN = domN2 * 2
+            var aPad = [Fr](repeating: .zero, count: bigN)
+            var bPad = [Fr](repeating: .zero, count: bigN)
+            var cPad = [Fr](repeating: .zero, count: bigN)
+            for ii in 0..<domN2 { aPad[ii] = aCo[ii]; bPad[ii] = bCo[ii]; cPad[ii] = cCo[ii] }
+            let aEE = try prover2.ntt.ntt(aPad)
+            let bEE = try prover2.ntt.ntt(bPad)
+            let cEE = try prover2.ntt.ntt(cPad)
+            var pEE = [Fr](repeating: .zero, count: bigN)
+            for ii in 0..<bigN { pEE[ii] = frSub(frMul(aEE[ii], bEE[ii]), cEE[ii]) }
+            let minusTwo = frNeg(frAdd(.one, .one))
+            let minusTwoInv = frInverse(minusTwo)
+            var hEE = [Fr](repeating: .zero, count: bigN)
+            for ii in 0..<bigN {
+                if ii % 2 == 0 { hEE[ii] = .zero }
+                else { hEE[ii] = frMul(pEE[ii], minusTwoInv) }
+            }
+            let hCo = try prover2.ntt.intt(hEE)
+            let hAt7 = evalPoly(Array(hCo.prefix(domN2)), testX)
+
+            // Check: P(7) == H(7) * Z(7)
+            let hz7 = frMul(hAt7, z7)
+            fputs("  [Debug] P(7)==H(7)*Z(7): \(frSub(pAt7, hz7).isZero)\n", stderr)
+            fputs("  [Debug] P(7) nonzero: \(!pAt7.isZero)\n", stderr)
+            fputs("  [Debug] H(7) nonzero: \(!hAt7.isZero)\n", stderr)
+
+            // Check even evaluations of P are zero
+            var evenZeroCount = 0; var evenNonzeroCount = 0
+            for ii in stride(from: 0, to: bigN, by: 2) {
+                if pEE[ii].isZero { evenZeroCount += 1 } else { evenNonzeroCount += 1 }
+            }
+            fputs("  [Debug] P evals at even indices: \(evenZeroCount) zero, \(evenNonzeroCount) nonzero\n", stderr)
+
+            // Check odd evaluations nonzero
+            var oddNonzero = 0
+            for ii in stride(from: 1, to: bigN, by: 2) {
+                if !pEE[ii].isZero { oddNonzero += 1 }
+            }
+            fputs("  [Debug] P evals at odd indices: \(oddNonzero) nonzero out of \(bigN/2)\n", stderr)
+
+            // Alternative: do polynomial long division of P by Z = x^domN - 1
+            // P has degree < 2*domN, Z has degree domN
+            // P = H * Z + R where deg(R) < domN
+            // Since P vanishes on the N-th roots, R should be 0
+            var pCoeffs = try prover2.ntt.intt(pEE)  // coefficients of P
+            // Long division: P / (x^domN - 1)
+            // H[i] = P[i + domN], and subtract: P[i] += H[i] (since Z = x^N - 1, so x^N * H[i] gives H[i] at position i+N, and -H[i] at position i)
+            var hLong = [Fr](repeating: .zero, count: domN2)
+            var rem = Array(pCoeffs.prefix(bigN))
+            for ii in stride(from: bigN - 1, through: domN2, by: -1) {
+                let q = rem[ii]  // quotient coefficient
+                hLong[ii - domN2] = q
+                rem[ii] = .zero
+                rem[ii - domN2] = frAdd(rem[ii - domN2], q)  // subtract -1 * q = add q
+            }
+            // Check remainder is zero
+            var remZero = true
+            for ii in 0..<domN2 { if !rem[ii].isZero { remZero = false; break } }
+            fputs("  [Debug] Long division remainder zero: \(remZero)\n", stderr)
+
+            // Evaluate H from long division at x=7
+            let hLongAt7 = evalPoly(hLong, testX)
+            let hzLong7 = frMul(hLongAt7, z7)
+            fputs("  [Debug] P(7)==H_longdiv(7)*Z(7): \(frSub(pAt7, hzLong7).isZero)\n", stderr)
+        } catch {
+            fputs("  [Debug] Error: \(error)\n", stderr)
+        }
         // Debug: manually check the pairing equation
         fputs("  [Debug] Checking pairing equation manually...\n", stderr)
         let pA = pointToAffine(proof.a)!
