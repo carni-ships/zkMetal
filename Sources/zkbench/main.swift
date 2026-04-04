@@ -157,6 +157,8 @@ if cmd == "calibrate" {
     runBLS12377GLVTest()
 } else if cmd == "bls381" || cmd == "bls12381" {
     runBLS12381Test()
+} else if cmd == "sha256" || cmd == "sha" {
+    runSHA256Bench()
 } else if cmd == "blake3" || cmd == "b3" {
     runBlake3Bench()
 } else if cmd == "secp256k1" || cmd == "secp" {
@@ -167,6 +169,10 @@ if cmd == "calibrate" {
     runSecp256k1MSMBench()
 } else if cmd == "ecdsa" {
     runECDSABench()
+} else if cmd == "ed25519" || cmd == "eddsa" || cmd == "curve25519" {
+    runEd25519Bench()
+} else if cmd == "babyjubjub" || cmd == "bjj" || cmd == "pedersen-bjj" {
+    runBabyJubjubBench()
 } else if cmd == "ipa" {
     runIPABench()
 } else if cmd == "verkle" {
@@ -205,6 +211,10 @@ if cmd == "calibrate" {
     runZeromorphBench()
 } else if cmd == "brakedown" || cmd == "bk" {
     runBrakedownBench()
+} else if cmd == "grumpkin" || cmd == "grump" {
+    runGrumpkinTest()
+} else if cmd == "grumpkinmsm" || cmd == "grumpkin-msm" {
+    runGrumpkinMSMBench()
 } else if cmd == "pasta" {
     runPastaTest()
 } else if cmd == "pastamsm" || cmd == "pasta-msm" {
