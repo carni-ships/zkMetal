@@ -7,8 +7,137 @@ public func runIncrementalMerkleBench() {
     print("  (Poseidon2 BN254 Fr, unified memory)\n")
 
     do {
+        // --- Quick correctness debug ---
+        print("--- Quick Debug ---")
+        do {
+            // Build a small tree (depth 4) using CPU append and verify all nodes
+            let t = try IncrementalMerkleTree(depth: 4)  // capacity 16
+            for i in 0..<16 {
+                try t.append(leaf: frFromInt(UInt64(i + 1)))
+            }
+            let bufPtr = t.nodeBuffer.contents().bindMemory(to: Fr.self, capacity: 32)
+            var bad4 = 0
+            for k in stride(from: 15, through: 1, by: -1) {
+                let left = bufPtr[k * 2]
+                let right = bufPtr[k * 2 + 1]
+                let expected = poseidon2Hash(left, right)
+                let actual = bufPtr[k]
+                if !frEqual(actual, expected) {
+                    print("  Depth-4 BAD node[\(k)]")
+                    bad4 += 1
+                }
+            }
+            print("  Depth-4 full tree (append 1-by-1): \(bad4) bad nodes")
+
+            // Now depth 4 using batch append
+            let t2 = try IncrementalMerkleTree(depth: 4)
+            var leaves4 = [Fr]()
+            for i in 0..<16 { leaves4.append(frFromInt(UInt64(i + 1))) }
+            try t2.appendBatch(leaves: leaves4)
+            let bufPtr2 = t2.nodeBuffer.contents().bindMemory(to: Fr.self, capacity: 32)
+            var bad4b = 0
+            for k in stride(from: 15, through: 1, by: -1) {
+                let left = bufPtr2[k * 2]
+                let right = bufPtr2[k * 2 + 1]
+                let expected = poseidon2Hash(left, right)
+                let actual = bufPtr2[k]
+                if !frEqual(actual, expected) {
+                    print("  Depth-4 batch BAD node[\(k)]")
+                    bad4b += 1
+                }
+            }
+            print("  Depth-4 batch 16 leaves: \(bad4b) bad nodes")
+
+            // Depth 4 using 2 batches of 8
+            let t3 = try IncrementalMerkleTree(depth: 4)
+            var b1 = [Fr]()
+            var b2 = [Fr]()
+            for i in 0..<8 { b1.append(frFromInt(UInt64(i + 1))) }
+            for i in 8..<16 { b2.append(frFromInt(UInt64(i + 1))) }
+            try t3.appendBatch(leaves: b1)
+            try t3.appendBatch(leaves: b2)
+            let bufPtr3 = t3.nodeBuffer.contents().bindMemory(to: Fr.self, capacity: 32)
+            var bad4c = 0
+            for k in stride(from: 15, through: 1, by: -1) {
+                let left = bufPtr3[k * 2]
+                let right = bufPtr3[k * 2 + 1]
+                let expected = poseidon2Hash(left, right)
+                let actual = bufPtr3[k]
+                if !frEqual(actual, expected) {
+                    print("  Depth-4 2-batch BAD node[\(k)]")
+                    bad4c += 1
+                }
+            }
+            print("  Depth-4 two batches of 8: \(bad4c) bad nodes")
+
+            // Compare CPU vs GPU hash of same inputs
+            let a = frFromInt(1)
+            let b = frFromInt(2)
+            let cpuHash = poseidon2Hash(a, b)
+            // GPU hash via Poseidon2MerkleEngine
+            let gpuLeaves = [a, b]
+            let gpuMerkle = try Poseidon2MerkleEngine()
+            let gpuRoot = try gpuMerkle.merkleRoot(gpuLeaves)
+            print("  CPU hash(1,2) == GPU merkle_root([1,2]): \(frEqual(cpuHash, gpuRoot) ? "MATCH" : "MISMATCH")")
+
+            // Test with specific leaves that fail at depth 14
+            let l34 = frFromInt(35)
+            let l35 = frFromInt(36)
+            let cpuH = poseidon2Hash(l34, l35)
+            // GPU hash via merkleRoot (2 leaves -> root is hash(l, r))
+            let gpuRoot2 = try gpuMerkle.merkleRoot([l34, l35])
+            print("  CPU hash(35,36) == GPU merkle_root([35,36]): \(frEqual(cpuH, gpuRoot2) ? "MATCH" : "MISMATCH")")
+
+            // Direct GPU hash_pairs test using encodeHashPairs
+            let p2Engine = try Poseidon2Engine()
+            let frStride = MemoryLayout<Fr>.stride
+            // Buffer layout: [input pairs at offset 0 (4 Fr)][output at offset 4*stride (2 Fr)]
+            guard let testBuf = p2Engine.device.makeBuffer(length: 6 * frStride, options: .storageModeShared) else {
+                print("  Failed to allocate test buffer")
+                return
+            }
+            let tPtr = testBuf.contents().bindMemory(to: Fr.self, capacity: 6)
+            tPtr[0] = l34; tPtr[1] = l35  // pair 0
+            tPtr[2] = frFromInt(1); tPtr[3] = frFromInt(2)  // pair 1
+            guard let cmdBuf = p2Engine.commandQueue.makeCommandBuffer() else { return }
+            let enc = cmdBuf.makeComputeCommandEncoder()!
+            p2Engine.encodeHashPairs(encoder: enc, buffer: testBuf, inputOffset: 0,
+                                      outputOffset: 4 * frStride, count: 2)
+            enc.endEncoding()
+            cmdBuf.commit()
+            cmdBuf.waitUntilCompleted()
+            let gpuDirect0 = tPtr[4]
+            let gpuDirect1 = tPtr[5]
+            print("  GPU hash_pairs(35,36) == CPU: \(frEqual(gpuDirect0, cpuH) ? "MATCH" : "MISMATCH")")
+            print("  GPU hash_pairs(1,2) == CPU: \(frEqual(gpuDirect1, cpuHash) ? "MATCH" : "MISMATCH")")
+
+            // Now test what the incremental tree stores after GPU rehash
+            // Build a depth-6 tree (capacity=64) and fill with 64 leaves using batch
+            let t6 = try IncrementalMerkleTree(depth: 6)
+            var leaves6 = [Fr]()
+            for i in 0..<64 { leaves6.append(frFromInt(UInt64(i + 1))) }
+            try t6.appendBatchFused(leaves: leaves6)
+            let bp6 = t6.nodeBuffer.contents().bindMemory(to: Fr.self, capacity: 128)
+            // Parent of leaves 34,35 is node 64+34/2... no, 1-indexed: leaf34 is at 64+34=98
+            // Parent is 98/2 = 49. Children of 49 are 98 and 99.
+            let stored49 = bp6[49]
+            let child98 = bp6[98]
+            let child99 = bp6[99]
+            let cpuCheck49 = poseidon2Hash(child98, child99)
+            print("  Depth-6 node[49]: stored matches CPU recomputed = \(frEqual(stored49, cpuCheck49) ? "PASS" : "FAIL")")
+            var bad6 = 0
+            for k in stride(from: 63, through: 1, by: -1) {
+                let left = bp6[k * 2]
+                let right = bp6[k * 2 + 1]
+                let expected = poseidon2Hash(left, right)
+                let actual = bp6[k]
+                if !frEqual(actual, expected) { bad6 += 1 }
+            }
+            print("  Depth-6 batch 64: \(bad6) bad nodes")
+        }
+
         // --- 0. Quick smoke test ---
-        print("--- Smoke Test ---")
+        print("\n--- Smoke Test ---")
         do {
             let tree = try IncrementalMerkleTree(depth: 4)
             for i in 0..<8 {
@@ -225,6 +354,64 @@ public func runIncrementalMerkleBench() {
         let fullRoot = try tree.fullRebuildRoot()
         let rootMatch = frEqual(tree.root, fullRoot)
         print("  Root matches full rebuild: \(rootMatch ? "PASS" : "FAIL")")
+
+        // Debug: check internal nodes by rebuilding path manually
+        do {
+            // Verify CPU hash determinism
+            let a = frFromInt(1)
+            let b = frFromInt(2)
+            let h1 = poseidon2Hash(a, b)
+            let h2 = poseidon2Hash(a, b)
+            print("  CPU hash determinism: \(frEqual(h1, h2) ? "PASS" : "FAIL")")
+
+            // Check specific bad node 8209: parent of leaves 34,35
+            let bufPtr2 = tree.nodeBuffer.contents().bindMemory(to: Fr.self, capacity: 2 * n)
+            let leaf34 = bufPtr2[n + 34]   // leaf 34 stored in buffer
+            let leaf35 = bufPtr2[n + 35]   // leaf 35
+            let expected34 = frFromInt(UInt64(34 + 1))  // what we wrote
+            let expected35 = frFromInt(UInt64(35 + 1))
+            print("  Leaf 34 correct: \(frEqual(leaf34, expected34) ? "PASS" : "FAIL")")
+            print("  Leaf 35 correct: \(frEqual(leaf35, expected35) ? "PASS" : "FAIL")")
+            let recomputed = poseidon2Hash(leaf34, leaf35)
+            let stored8209 = bufPtr2[8209]
+            print("  Node 8209: stored matches recomputed = \(frEqual(stored8209, recomputed) ? "PASS" : "FAIL")")
+
+            let merkle2 = try Poseidon2MerkleEngine()
+            let fullTree = try merkle2.buildTree(allLeaves)
+            // fullTree layout: [leaves 0..<n, internal n..<2n-1] root at 2n-2
+            // incremental layout: 1-indexed heap, leaves at [cap, 2*cap), root at 1
+            // Compare a few internal nodes
+            let bufPtr = tree.nodeBuffer.contents().bindMemory(to: Fr.self, capacity: 2 * n)
+            var badByLevel = [Int](repeating: 0, count: depth)
+            var totalByLevel = [Int](repeating: 0, count: depth)
+            var firstBadPerLevel = [Int](repeating: -1, count: depth)
+            // Check bottom-up: level 0 = parents of leaves (indices [n/2, n))
+            // level L = indices [n >> (L+1), n >> L)
+            for level in 0..<depth {
+                let lo = n >> (level + 1)
+                let hi = n >> level
+                for k in lo..<hi {
+                    totalByLevel[level] += 1
+                    let left = bufPtr[k * 2]
+                    let right = bufPtr[k * 2 + 1]
+                    let expected = poseidon2Hash(left, right)
+                    let actual = bufPtr[k]
+                    if !frEqual(actual, expected) {
+                        badByLevel[level] += 1
+                        if firstBadPerLevel[level] == -1 { firstBadPerLevel[level] = k }
+                    }
+                }
+            }
+            var totalBad = 0
+            for level in 0..<depth {
+                totalBad += badByLevel[level]
+                if badByLevel[level] > 0 {
+                    let lo = n >> (level + 1)
+                    print("  Level \(level) [\(lo)..\(lo + totalByLevel[level])): \(badByLevel[level])/\(totalByLevel[level]) bad, first bad=\(firstBadPerLevel[level])")
+                }
+            }
+            print("  Internal node check: \(totalBad) bad nodes out of \(n - 1)")
+        }
 
         // Verify proof for a few leaves
         var proofOk = true
