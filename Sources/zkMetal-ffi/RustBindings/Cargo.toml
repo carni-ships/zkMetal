@@ -1,0 +1,18 @@
+[package]
+name = "zkmetal"
+version = "0.2.0"
+edition = "2021"
+description = "Rust bindings for zkMetal — GPU-accelerated ZK primitives on Apple Silicon"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/example/zkMetal"
+readme = "README.md"
+keywords = ["zk", "metal", "gpu", "msm", "ntt"]
+categories = ["cryptography", "mathematics"]
+
+[lib]
+name = "zkmetal"
+
+[build-dependencies]
+
+[features]
+default = []

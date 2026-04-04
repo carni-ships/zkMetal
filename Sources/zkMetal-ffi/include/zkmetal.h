@@ -4,6 +4,12 @@
 // All field elements are 32 bytes (8x u32 limbs, little-endian Montgomery form).
 // Points are affine: 64 bytes (x: 32B, y: 32B) in Montgomery form.
 // Scalars for MSM are 32 bytes (8x u32 limbs, standard form, NOT Montgomery).
+//
+// Two API styles:
+//   1. Engine-based: create/destroy engine handles, pass to compute functions.
+//      Best for repeated calls — avoids re-initialization.
+//   2. Auto (convenience): functions with _auto suffix use a lazy singleton.
+//      Simpler API, engine created on first call, persists for process lifetime.
 
 #ifndef ZKMETAL_H
 #define ZKMETAL_H
@@ -34,6 +40,8 @@ typedef int32_t ZkMetalStatus;
 typedef void* ZkMetalMSMEngine;
 typedef void* ZkMetalNTTEngine;
 typedef void* ZkMetalPoseidon2Engine;
+typedef void* ZkMetalKeccakEngine;
+typedef void* ZkMetalFRIEngine;
 
 // ============================================================================
 // Engine lifecycle
@@ -58,22 +66,43 @@ ZkMetalStatus zkmetal_poseidon2_engine_create(ZkMetalPoseidon2Engine* out);
 /// Destroy a Poseidon2 engine.
 void zkmetal_poseidon2_engine_destroy(ZkMetalPoseidon2Engine engine);
 
+/// Create a Keccak-256 GPU engine.
+ZkMetalStatus zkmetal_keccak_engine_create(ZkMetalKeccakEngine* out);
+
+/// Destroy a Keccak-256 engine.
+void zkmetal_keccak_engine_destroy(ZkMetalKeccakEngine engine);
+
+/// Create a FRI folding engine.
+ZkMetalStatus zkmetal_fri_engine_create(ZkMetalFRIEngine* out);
+
+/// Destroy a FRI engine.
+void zkmetal_fri_engine_destroy(ZkMetalFRIEngine engine);
+
 // ============================================================================
 // MSM — Multi-Scalar Multiplication (BN254 G1)
 // ============================================================================
 
 /// Compute MSM: result = sum(scalars[i] * points[i]) for i in 0..n_points.
 ///
+/// - engine:     MSM engine handle from zkmetal_msm_engine_create()
 /// - points:     n_points affine points, each 64 bytes (x,y in Montgomery form, 8x u32 LE)
 /// - scalars:    n_points scalars, each 32 bytes (8x u32 LE, standard form)
 /// - n_points:   number of point-scalar pairs
 /// - result_x:   output buffer for projective X coordinate (32 bytes, Montgomery form)
 /// - result_y:   output buffer for projective Y coordinate (32 bytes, Montgomery form)
 /// - result_z:   output buffer for projective Z coordinate (32 bytes, Montgomery form)
-///
-/// Returns ZKMETAL_SUCCESS or error code.
 ZkMetalStatus zkmetal_bn254_msm(
     ZkMetalMSMEngine engine,
+    const uint8_t* points,
+    const uint8_t* scalars,
+    uint32_t n_points,
+    uint8_t* result_x,
+    uint8_t* result_y,
+    uint8_t* result_z
+);
+
+/// Convenience MSM using a lazy singleton engine (no engine handle needed).
+ZkMetalStatus zkmetal_bn254_msm_auto(
     const uint8_t* points,
     const uint8_t* scalars,
     uint32_t n_points,
@@ -101,6 +130,18 @@ ZkMetalStatus zkmetal_bn254_intt(
     uint32_t log_n
 );
 
+/// Convenience forward NTT using a lazy singleton engine.
+ZkMetalStatus zkmetal_bn254_ntt_auto(
+    uint8_t* data,
+    uint32_t log_n
+);
+
+/// Convenience inverse NTT using a lazy singleton engine.
+ZkMetalStatus zkmetal_bn254_intt_auto(
+    uint8_t* data,
+    uint32_t log_n
+);
+
 // ============================================================================
 // Poseidon2 Hash (BN254 Fr)
 // ============================================================================
@@ -113,6 +154,62 @@ ZkMetalStatus zkmetal_bn254_poseidon2_hash_pairs(
     const uint8_t* input,
     uint32_t n_pairs,
     uint8_t* output
+);
+
+/// Convenience Poseidon2 batch hash using a lazy singleton engine.
+ZkMetalStatus zkmetal_bn254_poseidon2_hash_pairs_auto(
+    const uint8_t* input,
+    uint32_t n_pairs,
+    uint8_t* output
+);
+
+// ============================================================================
+// Keccak-256 Hash (GPU)
+// ============================================================================
+
+/// Batch Keccak-256 hash of 64-byte inputs.
+/// - input:    n_inputs * 64 bytes (each input is 64 bytes)
+/// - n_inputs: number of 64-byte inputs to hash
+/// - output:   n_inputs * 32 bytes (each output is a 32-byte hash)
+ZkMetalStatus zkmetal_keccak256_hash(
+    ZkMetalKeccakEngine engine,
+    const uint8_t* input,
+    uint32_t n_inputs,
+    uint8_t* output
+);
+
+/// Convenience Keccak-256 batch hash using a lazy singleton engine.
+ZkMetalStatus zkmetal_keccak256_hash_auto(
+    const uint8_t* input,
+    uint32_t n_inputs,
+    uint8_t* output
+);
+
+// ============================================================================
+// FRI Fold (BN254 Fr)
+// ============================================================================
+
+/// Single FRI fold round: fold n=2^log_n evaluations with challenge beta.
+/// Output has n/2 elements.
+///
+/// - evals:   n field elements (each 32 bytes, Montgomery form)
+/// - log_n:   log2 of the number of evaluation points (must be >= 1)
+/// - beta:    fold challenge (32 bytes, Montgomery form)
+/// - result:  output buffer for n/2 field elements (each 32 bytes)
+ZkMetalStatus zkmetal_fri_fold(
+    ZkMetalFRIEngine engine,
+    const uint8_t* evals,
+    uint32_t log_n,
+    const uint8_t* beta,
+    uint8_t* result
+);
+
+/// Convenience FRI fold using a lazy singleton engine.
+ZkMetalStatus zkmetal_fri_fold_auto(
+    const uint8_t* evals,
+    uint32_t log_n,
+    const uint8_t* beta,
+    uint8_t* result
 );
 
 // ============================================================================
