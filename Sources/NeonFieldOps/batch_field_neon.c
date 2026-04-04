@@ -394,3 +394,136 @@ void bn254_fr_batch_mul_scalar_parallel(uint64_t *result, const uint64_t *a,
 {
     batch_parallel(result, a, NULL, scalar, n, 3);
 }
+
+// ============================================================
+// Vector sum: result = sum(a[i]) for i=0..n-1
+// Uses 4-way accumulation to improve ILP, then tree-reduce.
+// ============================================================
+void bn254_fr_vector_sum(const uint64_t *a, int n, uint64_t result[4])
+{
+    if (n == 0) {
+        result[0] = result[1] = result[2] = result[3] = 0;
+        return;
+    }
+    // 4-way parallel accumulators for instruction-level parallelism
+    uint64_t acc0[4] = {0, 0, 0, 0};
+    uint64_t acc1[4] = {0, 0, 0, 0};
+    uint64_t acc2[4] = {0, 0, 0, 0};
+    uint64_t acc3[4] = {0, 0, 0, 0};
+
+    int i = 0;
+    for (; i + 3 < n; i += 4) {
+        if (i + 7 < n) {
+            __builtin_prefetch(&a[(i + 4) * 4], 0, 1);
+            __builtin_prefetch(&a[(i + 6) * 4], 0, 1);
+        }
+        fr_add_branchless(acc0, &a[i * 4], acc0);
+        fr_add_branchless(acc1, &a[(i + 1) * 4], acc1);
+        fr_add_branchless(acc2, &a[(i + 2) * 4], acc2);
+        fr_add_branchless(acc3, &a[(i + 3) * 4], acc3);
+    }
+    for (; i < n; i++) {
+        fr_add_branchless(acc0, &a[i * 4], acc0);
+    }
+    // Reduce accumulators
+    fr_add_branchless(acc0, acc1, acc0);
+    fr_add_branchless(acc2, acc3, acc2);
+    fr_add_branchless(acc0, acc2, result);
+}
+
+// ============================================================
+// Batch beta+value: result[i] = beta + values[indices[i]]
+// Fuses the gather + field add in one pass for cache efficiency.
+// ============================================================
+void bn254_fr_batch_beta_add(const uint64_t *beta, const uint64_t *values,
+                              const int *indices, int m, uint64_t *result)
+{
+    int i = 0;
+    for (; i + 1 < m; i += 2) {
+        if (i + 3 < m) {
+            __builtin_prefetch(&values[indices[i + 2] * 4], 0, 1);
+            __builtin_prefetch(&values[indices[i + 3] * 4], 0, 1);
+        }
+        fr_add_branchless(beta, &values[indices[i] * 4], &result[i * 4]);
+        fr_add_branchless(beta, &values[indices[i + 1] * 4], &result[(i + 1) * 4]);
+    }
+    if (i < m) {
+        fr_add_branchless(beta, &values[indices[i] * 4], &result[i * 4]);
+    }
+}
+
+// ============================================================
+// Batch range-check decomposition: extracts chunk indices from
+// Montgomery-form Fr elements without per-element heap allocation.
+// For each lookup[i], reduces from Montgomery form to integer,
+// then extracts (numChunks) indices of (bitsPerChunk) bits each.
+// Output: indices[k*m + i] = chunk k's index for lookup i.
+// ============================================================
+
+// Montgomery reduction: multiply by 1 (raw) to convert from Montgomery form
+static inline uint64_t fr_to_uint64(const uint64_t a[4])
+{
+    // Multiply a * [1, 0, 0, 0] using CIOS Montgomery multiplication
+    // Since b = [1,0,0,0], only a[j]*b[0]=a[j]*1 is nonzero
+    uint64_t t0 = 0, t1 = 0, t2 = 0, t3 = 0, t4 = 0;
+
+    // i=0: multiply by b[0]=1
+    t0 = a[0]; t1 = a[1]; t2 = a[2]; t3 = a[3]; t4 = 0;
+    uint64_t m = t0 * FR_INV;
+    uint128_t w; uint64_t c;
+    w = (uint128_t)m * FR_P[0] + t0; c = (uint64_t)(w >> 64);
+    w = (uint128_t)m * FR_P[1] + t1 + c; t0 = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)m * FR_P[2] + t2 + c; t1 = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)m * FR_P[3] + t3 + c; t2 = (uint64_t)w; c = (uint64_t)(w >> 64);
+    t3 = t4 + c; t4 = 0;
+
+    // i=1: multiply by b[1]=0, just reduce
+    m = t0 * FR_INV;
+    w = (uint128_t)m * FR_P[0] + t0; c = (uint64_t)(w >> 64);
+    w = (uint128_t)m * FR_P[1] + t1 + c; t0 = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)m * FR_P[2] + t2 + c; t1 = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)m * FR_P[3] + t3 + c; t2 = (uint64_t)w; c = (uint64_t)(w >> 64);
+    t3 = t4 + c; t4 = 0;
+
+    // i=2
+    m = t0 * FR_INV;
+    w = (uint128_t)m * FR_P[0] + t0; c = (uint64_t)(w >> 64);
+    w = (uint128_t)m * FR_P[1] + t1 + c; t0 = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)m * FR_P[2] + t2 + c; t1 = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)m * FR_P[3] + t3 + c; t2 = (uint64_t)w; c = (uint64_t)(w >> 64);
+    t3 = t4 + c; t4 = 0;
+
+    // i=3
+    m = t0 * FR_INV;
+    w = (uint128_t)m * FR_P[0] + t0; c = (uint64_t)(w >> 64);
+    w = (uint128_t)m * FR_P[1] + t1 + c; t0 = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)m * FR_P[2] + t2 + c; t1 = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)m * FR_P[3] + t3 + c; t2 = (uint64_t)w; c = (uint64_t)(w >> 64);
+    t3 = t4 + c;
+
+    // Final reduction
+    uint128_t d;
+    uint64_t borrow = 0;
+    d = (uint128_t)t0 - FR_P[0]; uint64_t r0 = (uint64_t)d; borrow = (d >> 127) & 1;
+    d = (uint128_t)t1 - FR_P[1] - borrow; borrow = (d >> 127) & 1;
+    d = (uint128_t)t2 - FR_P[2] - borrow; borrow = (d >> 127) & 1;
+    d = (uint128_t)t3 - FR_P[3] - borrow; borrow = (d >> 127) & 1;
+    if (!borrow) return r0;  // reduced value
+    return t0;
+}
+
+void bn254_fr_batch_decompose(const uint64_t *lookups, int m,
+                               int numChunks, int bitsPerChunk,
+                               int *indices)
+{
+    uint64_t chunkMask = ((uint64_t)1 << bitsPerChunk) - 1;
+    for (int i = 0; i < m; i++) {
+        if (i + 4 < m) {
+            __builtin_prefetch(&lookups[(i + 4) * 4], 0, 1);
+        }
+        uint64_t v = fr_to_uint64(&lookups[i * 4]);
+        for (int k = 0; k < numChunks; k++) {
+            indices[k * m + i] = (int)((v >> (k * bitsPerChunk)) & chunkMask);
+        }
+    }
+}

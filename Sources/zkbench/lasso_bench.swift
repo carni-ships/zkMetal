@@ -69,6 +69,30 @@ public func runLassoBench() {
         fputs("  ERROR: \(error)\n", stderr)
     }
 
+    // --- Profile: identify phase costs at 2^18 ---
+    fputs("\n--- Profile (2^18) ---\n", stderr)
+    do {
+        let profEngine = try LassoEngine()
+        profEngine.profileLasso = true
+        let profM = 1 << 18
+        var rngP: UInt64 = 0xDEAD_BEEF_1234
+        var profValues = [UInt64]()
+        profValues.reserveCapacity(profM)
+        for _ in 0..<profM {
+            rngP = rngP &* 6364136223846793005 &+ 1442695040888963407
+            profValues.append(rngP >> 32)
+        }
+        let profLookups: [Fr] = profValues.map { frFromInt($0) }
+        let profTable = LassoTable.rangeCheck(bits: 32, chunks: 4)
+        // Warmup
+        let _ = try profEngine.prove(lookups: profLookups, table: profTable)
+        fputs("  --- profiled run ---\n", stderr)
+        let _ = try profEngine.prove(lookups: profLookups, table: profTable)
+        profEngine.profileLasso = false
+    } catch {
+        fputs("  Profile ERROR: \(error)\n", stderr)
+    }
+
     // --- Performance: Lasso vs LogUp ---
     fputs("\n--- Performance: Lasso vs LogUp ---\n", stderr)
     do {

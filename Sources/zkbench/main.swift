@@ -49,52 +49,54 @@ func runMSMBench() throws {
     }
 
     let doProfile = CommandLine.arguments.contains("--profile")
+    let paperMode = CommandLine.arguments.contains("--paper")
+    let iterations = paperMode ? 20 : 10
+
+    var msmResults = [(String, BenchResult)]()
 
     for n in sizes {
         let points = Array(allPoints.prefix(n))
         let scalars = Array(allScalars.prefix(n))
-
-        // Warmup
-        let _ = try engine.msm(points: points, scalars: scalars)
+        let logN = logSizes[sizes.firstIndex(of: n)!]
 
         // Profile run (one extra run with instrumentation)
         if doProfile && (n == 1 << 16 || n == 1 << 18) {
-            fputs("  --- Profile for 2^\(Int(log2(Double(n)))) ---\n", stderr)
+            fputs("  --- Profile for 2^\(logN) ---\n", stderr)
             engine.profileMSM = true
             let _ = try engine.msm(points: points, scalars: scalars)
             engine.profileMSM = false
         }
 
-        // Timed runs
-        let runs = 5
-        var times = [Double]()
-        for _ in 0..<runs {
-            let start = CFAbsoluteTimeGetCurrent()
+        // GPU benchmark with full statistics
+        let label = String(format: "MSM 2^%-2d = %7d pts", logN, n)
+        let gpuResult = try bench(label, warmup: 2, iterations: iterations) {
             let _ = try engine.msm(points: points, scalars: scalars)
-            let elapsed = (CFAbsoluteTimeGetCurrent() - start) * 1000
-            times.append(elapsed)
         }
-        times.sort()
-        let median = times[runs / 2]
-        let logN = logSizes[sizes.firstIndex(of: n)!]
+        msmResults.append((label, gpuResult))
 
         // CPU baseline (sequential scalar mul + accumulate) — skip for large sizes
         if !skipCPU && n <= 16384 {
-            let projPoints = points.map { pointFromAffine($0) }
-            let cpuT0 = CFAbsoluteTimeGetCurrent()
-            var cpuResult = pointIdentity()
-            for i in 0..<n {
-                let scalar = frFromLimbs(scalars[i])
-                cpuResult = pointAdd(cpuResult, pointScalarMul(projPoints[i], scalar))
+            let cpuLabel = String(format: "MSM 2^%-2d CPU", logN)
+            let cpuResult = bench(cpuLabel, warmup: 0, iterations: 3) {
+                let projPoints = points.map { pointFromAffine($0) }
+                var cpuR = pointIdentity()
+                for i in 0..<n {
+                    let scalar = frFromLimbs(scalars[i])
+                    cpuR = pointAdd(cpuR, pointScalarMul(projPoints[i], scalar))
+                }
+                _ = cpuR
             }
-            _ = cpuResult  // prevent optimization
-            let cpuTime = (CFAbsoluteTimeGetCurrent() - cpuT0) * 1000
-            let speedup = cpuTime / median
-            fputs(String(format: "  MSM 2^%-2d = %7d pts: GPU %7.1f ms | CPU %8.1f ms | %.1f×\n",
-                        logN, n, median, cpuTime, speedup), stderr)
-        } else {
-            fputs(String(format: "  MSM 2^%-2d = %7d pts: %7.1f ms\n", logN, n, median), stderr)
+            let speedup = cpuResult.median / gpuResult.median
+            fputs(String(format: "    -> GPU vs CPU: %.1fx speedup\n", speedup), stderr)
         }
+    }
+
+    // Paper output (--paper flag)
+    if paperMode {
+        fputs("\n--- LaTeX Table ---\n", stderr)
+        print(formatLatexTable(results: msmResults))
+        fputs("\n--- Markdown Table ---\n", stderr)
+        print(formatMarkdownTable(results: msmResults))
     }
 }
 

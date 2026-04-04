@@ -247,4 +247,24 @@ void bn254_fr_batch_neg_parallel(uint64_t *result, const uint64_t *a, int n);
 void bn254_fr_batch_mul_scalar_parallel(uint64_t *result, const uint64_t *a,
                                          const uint64_t *scalar, int n);
 
+/// Vector sum: result = sum(a[i]) for i=0..n-1.
+/// a: array of n Fr elements (4 uint64 each, Montgomery form).
+/// result: single Fr element (4 uint64).
+void bn254_fr_vector_sum(const uint64_t *a, int n, uint64_t result[4]);
+
+/// Batch beta+value: result[i] = beta + values[indices[i]] for i=0..m-1.
+/// beta: single Fr element (4 uint64, Montgomery form).
+/// values: subtable array (4 uint64 each).
+/// indices: m integers indexing into values.
+/// result: output array of m Fr elements.
+void bn254_fr_batch_beta_add(const uint64_t *beta, const uint64_t *values,
+                              const int *indices, int m, uint64_t *result);
+
+/// Batch range-check decomposition: extracts chunk indices from Fr elements.
+/// lookups: m Fr elements (4 uint64 each, Montgomery form).
+/// indices: output array of size numChunks * m, stored as indices[k*m + i].
+void bn254_fr_batch_decompose(const uint64_t *lookups, int m,
+                               int numChunks, int bitsPerChunk,
+                               int *indices);
+
 #endif // NEON_FIELD_OPS_H

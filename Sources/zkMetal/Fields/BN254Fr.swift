@@ -143,6 +143,16 @@ public func frToInt(_ a: Fr) -> [UInt64] {
     return frMul(a, Fr.from64(one)).to64()
 }
 
+/// Fast extraction of low 64-bit integer value from Fr (no heap allocation).
+/// Only correct when the integer value fits in 64 bits.
+/// Performs Montgomery reduction: multiply by raw 1 and take low limb.
+@inline(__always)
+public func frToUInt64(_ a: Fr) -> UInt64 {
+    let rawOne = Fr(v: (1, 0, 0, 0, 0, 0, 0, 0))
+    let reduced = frMul(a, rawOne)
+    return UInt64(reduced.v.0) | (UInt64(reduced.v.1) << 32)
+}
+
 public func frInverse(_ a: Fr) -> Fr {
     var result = Fr.one
     var base = a
