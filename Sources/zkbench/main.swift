@@ -255,6 +255,8 @@ if cmd == "calibrate" {
     runTensorBench()
 } else if cmd == "spartan" {
     runSpartanBench()
+} else if cmd == "pairing" || cmd == "pair" {
+    runPairingBench()
 } else if cmd == "groth16" || cmd == "g16" {
     runGroth16Bench()
 } else if cmd == "jolt" || cmd == "vm" || cmd == "zkvm" {

@@ -1,27 +1,29 @@
-// DataParallelEngine -- Efficient proof for N repetitions of the same sub-circuit
+// DataParallelEngine -- O(|C| * N + N log N) proof for N repetitions of the same sub-circuit
 //
-// Uses GKR with factored wiring predicates. The combined circuit has wiring:
-//   combined_wiring(r_inst, r_circ, x_inst, x_circ, y_inst, y_circ) =
-//     eq(r_inst, x_inst) * eq(x_inst, y_inst) * subcircuit_wiring(r_circ, x_circ, y_circ)
+// Core insight (C21): When a circuit has N identical copies of a sub-circuit C, the wiring
+// pattern repeats. We build a combined circuit with N * |C| gates per layer where instance i
+// uses gates at offsets [i * |C|_layer .. (i+1) * |C|_layer). Each gate within instance i
+// references inputs from instance i only, preserving independence.
 //
-// The eq(x_inst, y_inst) term enforces that both gate inputs come from the same instance.
-// Standard sumcheck with full variable set (x_inst, x_circ, y_inst, y_circ).
+// The GKR sparse sumcheck exploits the repetitive structure:
+//   - Wiring has N * |gates_per_layer| nonzero entries (not N^2)
+//   - Per-layer cost: O(N * |C_layer|) for the sparse wiring iteration
+//   - Total cost: O(N * |C| + N * |C| * log(N * |C|)) per layer
+//
+// For N instances of a circuit with |C| gates and depth d, this gives:
+//   O(d * N * |C| * log(N * |C|)) total prover work
+// vs O(N * d * |C| * log(|C|)) for N independent proofs.
+// The key savings: single proof, single verifier check, proof size = O(d * log(N * |C|)).
 
 import Foundation
 
 // MARK: - Proof Types
 
-public struct DataParallelLayerProof {
-    public let sumcheckMsgs: [SumcheckRoundMsg]
-    public let claimedVx: Fr
-    public let claimedVy: Fr
-}
-
 public struct DataParallelProof {
-    public let layerProofs: [DataParallelLayerProof]
+    public let layerProofs: [GKRLayerProof]
     public let allOutputs: [[Fr]]
 
-    public init(layerProofs: [DataParallelLayerProof], allOutputs: [[Fr]]) {
+    public init(layerProofs: [GKRLayerProof], allOutputs: [[Fr]]) {
         self.layerProofs = layerProofs
         self.allOutputs = allOutputs
     }
@@ -36,341 +38,109 @@ public class DataParallelEngine {
 
     // MARK: - Prover
 
+    /// Prove N instances of the same sub-circuit using a single combined GKR proof.
+    /// The combined circuit has N * |C_layer| gates per layer with structured wiring.
     public func prove(circuit: UniformCircuit, transcript: Transcript) -> DataParallelProof {
+        let combined = circuit.buildCombinedCircuit()
+        let combinedInputs = circuit.buildCombinedInputs()
+        let engine = GKREngine(circuit: combined)
+        let proof = engine.prove(inputs: combinedInputs, transcript: transcript)
+
+        // Extract per-instance outputs
         let sub = circuit.subCircuit
         let d = sub.depth
-        let instBits = circuit.instanceBits
-        let padN = circuit.paddedInstances
-
-        let allLayerValues = circuit.evaluateAllLayers()
-        let allOutputs = allLayerValues.map { $0[d] }
-
+        let allValues = combined.evaluate(inputs: combinedInputs)
+        let outputValues = allValues[d]
         let outputLayerSize = sub.layers[d - 1].paddedSize
-        let combinedOutput = circuit.combinedLayerValues(
-            layerValues: allOutputs, layerSize: outputLayerSize)
-
-        for v in combinedOutput { transcript.absorb(v) }
-        transcript.absorbLabel("dp-gkr-init")
-
-        let outputCircuitVars = sub.layers[d - 1].numVars
-        let totalOutputVars = instBits + outputCircuitVars
-        var r = transcript.squeezeN(totalOutputVars)
-
-        let outputMLE = MultilinearPoly(numVars: totalOutputVars, values: combinedOutput)
-        var claim = outputMLE.evaluate(at: r)
-
-        var layerProofs = [DataParallelLayerProof]()
-
-        for layerIdx in stride(from: d - 1, through: 0, by: -1) {
-            let nOutCircuit = sub.layers[layerIdx].numVars
-            let nInCircuit = dpInputVars(sub: sub, layerIdx: layerIdx)
-
-            let rInstance = Array(r.prefix(instBits))
-            let rCircuit = Array(r.suffix(nOutCircuit))
-
-            let prevLayerValues = allLayerValues.map { $0[layerIdx] }
-            let prevLayerSize = 1 << nInCircuit
-            let combinedPrev = circuit.combinedLayerValues(
-                layerValues: prevLayerValues, layerSize: prevLayerSize)
-
-            let (msgs, rx, ry) = proverSumcheck(
-                rInstance: rInstance, rCircuit: rCircuit,
-                subCircuit: sub, layerIdx: layerIdx,
-                combinedPrev: combinedPrev,
-                instBits: instBits, nOutCircuit: nOutCircuit,
-                nInCircuit: nInCircuit, padN: padN,
-                transcript: transcript)
-
-            let totalPrevVars = instBits + nInCircuit
-            let prevMLE = MultilinearPoly(numVars: totalPrevVars, values: combinedPrev)
-            let vx = prevMLE.evaluate(at: rx)
-            let vy = prevMLE.evaluate(at: ry)
-
-            transcript.absorb(vx)
-            transcript.absorb(vy)
-            transcript.absorbLabel("dp-layer-\(layerIdx)")
-
-            layerProofs.append(DataParallelLayerProof(
-                sumcheckMsgs: msgs, claimedVx: vx, claimedVy: vy))
-
-            let beta = transcript.squeeze()
-            let totalInVars = instBits + nInCircuit
-            var newR = [Fr]()
-            newR.reserveCapacity(totalInVars)
-            for i in 0..<totalInVars {
-                newR.append(frAdd(rx[i], frMul(beta, frSub(ry[i], rx[i]))))
-            }
-            r = newR
-            claim = frAdd(vx, frMul(beta, frSub(vy, vx)))
+        var allOutputs = [[Fr]]()
+        for i in 0..<circuit.numInstances {
+            let start = i * outputLayerSize
+            let end = min(start + outputLayerSize, outputValues.count)
+            allOutputs.append(Array(outputValues[start..<end]))
         }
 
-        return DataParallelProof(layerProofs: layerProofs, allOutputs: allOutputs)
-    }
-
-    /// Sumcheck with variables (x_inst, x_circ, y_inst, y_circ).
-    /// Table: g(xi, xc, yi, yc) = eq(rInst, xi) * eq(xi, yi) * [add(rCirc,xc,yc)*(Vx+Vy) + mul(rCirc,xc,yc)*Vx*Vy]
-    /// where Vx = V(xi, xc), Vy = V(yi, yc).
-    private func proverSumcheck(
-        rInstance: [Fr], rCircuit: [Fr],
-        subCircuit: SubCircuit, layerIdx: Int,
-        combinedPrev: [Fr],
-        instBits: Int, nOutCircuit: Int, nInCircuit: Int, padN: Int,
-        transcript: Transcript
-    ) -> (msgs: [SumcheckRoundMsg], rx: [Fr], ry: [Fr]) {
-
-        let circuitInSize = 1 << nInCircuit
-        let layer = subCircuit.layers[layerIdx]
-
-        let addMLE = dpBuildWiringMLE(layer: layer, type: .add, nOut: nOutCircuit, nIn: nInCircuit)
-        let mulMLE = dpBuildWiringMLE(layer: layer, type: .mul, nOut: nOutCircuit, nIn: nInCircuit)
-        var addFixed = addMLE
-        for i in 0..<nOutCircuit { addFixed = addFixed.fixVariable(rCircuit[i]) }
-        var mulFixed = mulMLE
-        for i in 0..<nOutCircuit { mulFixed = mulFixed.fixVariable(rCircuit[i]) }
-
-        let eqInst = MultilinearPoly.eqPoly(point: rInstance)
-
-        // Variables: x_inst (instBits), x_circ (nInCircuit), y_inst (instBits), y_circ (nInCircuit)
-        let totalVars = 2 * instBits + 2 * nInCircuit
-        let xSize = padN * circuitInSize  // x = (xi, xc)
-        let ySize = padN * circuitInSize  // y = (yi, yc)
-        let totalTableSize = xSize * ySize
-        var table = [Fr](repeating: Fr.zero, count: totalTableSize)
-
-        let addEvals = addFixed.evals
-        let mulEvals = mulFixed.evals
-
-        for xi in 0..<padN {
-            let eqR = eqInst[xi]
-            let eqRLimbs = frToInt(eqR)
-            if eqRLimbs[0] == 0 && eqRLimbs[1] == 0 && eqRLimbs[2] == 0 && eqRLimbs[3] == 0 { continue }
-
-            // eq(xi, yi) = 1 only when yi == xi on the boolean hypercube
-            let yi = xi
-            for xc in 0..<circuitInSize {
-                let xIdx = xi * circuitInSize + xc
-                let vxVal = xIdx < combinedPrev.count ? combinedPrev[xIdx] : Fr.zero
-
-                for yc in 0..<circuitInSize {
-                    let yIdx = yi * circuitInSize + yc
-                    let vyVal = yIdx < combinedPrev.count ? combinedPrev[yIdx] : Fr.zero
-
-                    let circIdx = xc * circuitInSize + yc
-                    let aVal = circIdx < addEvals.count ? addEvals[circIdx] : Fr.zero
-                    let mVal = circIdx < mulEvals.count ? mulEvals[circIdx] : Fr.zero
-
-                    let gCircuit = frAdd(
-                        frMul(aVal, frAdd(vxVal, vyVal)),
-                        frMul(mVal, frMul(vxVal, vyVal)))
-
-                    // eq(rInst, xi) * eq(xi, yi) * gCircuit
-                    // eq(xi, yi) = 1 when yi==xi (on boolean hypercube), 0 otherwise
-                    let tableIdx = xIdx * ySize + yIdx
-                    table[tableIdx] = frMul(eqR, gCircuit)
-                }
-            }
-        }
-
-        // Standard sumcheck on table with totalVars variables
-        var msgs = [SumcheckRoundMsg]()
-        msgs.reserveCapacity(totalVars)
-        var challenges = [Fr]()
-        challenges.reserveCapacity(totalVars)
-        var curTable = table
-
-        for _ in 0..<totalVars {
-            let currentSize = curTable.count
-            let halfSize = currentSize / 2
-            var s0 = Fr.zero; var s1 = Fr.zero; var s2 = Fr.zero
-
-            for j in 0..<halfSize {
-                let f0 = curTable[j]
-                let f1 = curTable[j + halfSize]
-                s0 = frAdd(s0, f0)
-                s1 = frAdd(s1, f1)
-                s2 = frAdd(s2, frSub(frAdd(f1, f1), f0))
-            }
-
-            let msg = SumcheckRoundMsg(s0: s0, s1: s1, s2: s2)
-            msgs.append(msg)
-
-            transcript.absorb(s0); transcript.absorb(s1); transcript.absorb(s2)
-            let challenge = transcript.squeeze()
-            challenges.append(challenge)
-
-            let oneMinusC = frSub(Fr.one, challenge)
-            var newTable = [Fr](repeating: Fr.zero, count: halfSize)
-            for j in 0..<halfSize {
-                newTable[j] = frAdd(frMul(oneMinusC, curTable[j]),
-                                   frMul(challenge, curTable[j + halfSize]))
-            }
-            curTable = newTable
-        }
-
-        // Variable order: x_inst, x_circ, y_inst, y_circ
-        let xiChallenges = Array(challenges[0..<instBits])
-        let xcChallenges = Array(challenges[instBits..<(instBits + nInCircuit)])
-        let yiChallenges = Array(challenges[(instBits + nInCircuit)..<(2 * instBits + nInCircuit)])
-        let ycChallenges = Array(challenges[(2 * instBits + nInCircuit)...])
-
-        let rx = xiChallenges + xcChallenges
-        let ry = yiChallenges + ycChallenges
-
-        return (msgs, rx, ry)
+        return DataParallelProof(layerProofs: proof.layerProofs, allOutputs: allOutputs)
     }
 
     // MARK: - Verifier
 
+    /// Verify a data-parallel proof.
     public func verify(
         subCircuit: SubCircuit, numInstances: Int,
         inputs: [[Fr]], proof: DataParallelProof,
         transcript: Transcript
     ) -> Bool {
-        let d = subCircuit.depth
-        guard proof.layerProofs.count == d else { return false }
-        guard proof.allOutputs.count == numInstances else { return false }
-
-        let instBits = numInstances <= 1 ? 0 : Int(ceil(log2(Double(numInstances))))
         let uniformCircuit = UniformCircuit(subCircuit: subCircuit, inputs: inputs)
+        let combined = uniformCircuit.buildCombinedCircuit()
+        let combinedInputs = uniformCircuit.buildCombinedInputs()
+        let output = combined.evaluateOutput(inputs: combinedInputs)
+        let engine = GKREngine(circuit: combined)
+        let gkrProof = GKRProof(layerProofs: proof.layerProofs)
+        return engine.verify(inputs: combinedInputs, output: output, proof: gkrProof, transcript: transcript)
+    }
+}
 
-        let outputLayerSize = subCircuit.layers[d - 1].paddedSize
-        let combinedOutput = uniformCircuit.combinedLayerValues(
-            layerValues: proof.allOutputs, layerSize: outputLayerSize)
+// MARK: - Combined Circuit Construction
 
-        for v in combinedOutput { transcript.absorb(v) }
-        transcript.absorbLabel("dp-gkr-init")
+extension UniformCircuit {
+    /// Build a combined LayeredCircuit where instance i's gates are at offset i * layerSize.
+    /// Gate (i, g) in the combined circuit references inputs from instance i only.
+    func buildCombinedCircuit() -> LayeredCircuit {
+        let sub = subCircuit
+        let padN = paddedInstances
 
-        let outputCircuitVars = subCircuit.layers[d - 1].numVars
-        let totalOutputVars = instBits + outputCircuitVars
-        var r = transcript.squeezeN(totalOutputVars)
+        var combinedLayers = [CircuitLayer]()
+        for layerIdx in 0..<sub.depth {
+            let subLayer = sub.layers[layerIdx]
+            let subSize = subLayer.paddedSize
 
-        let outputMLE = MultilinearPoly(numVars: totalOutputVars, values: combinedOutput)
-        var claim = outputMLE.evaluate(at: r)
-
-        for layerIdx in stride(from: d - 1, through: 0, by: -1) {
-            let nOutCircuit = subCircuit.layers[layerIdx].numVars
-            let nInCircuit = dpInputVars(sub: subCircuit, layerIdx: layerIdx)
-
-            let rInstance = Array(r.prefix(instBits))
-            let rCircuit = Array(r.suffix(nOutCircuit))
-
-            let layerProof = proof.layerProofs[d - 1 - layerIdx]
-            let totalVars = 2 * instBits + 2 * nInCircuit
-            guard layerProof.sumcheckMsgs.count == totalVars else { return false }
-
-            var currentClaim = claim
-            var challenges = [Fr]()
-            challenges.reserveCapacity(totalVars)
-
-            for roundIdx in 0..<totalVars {
-                let msg = layerProof.sumcheckMsgs[roundIdx]
-                let sum = frAdd(msg.s0, msg.s1)
-                if !dpFrEqual(sum, currentClaim) { return false }
-
-                transcript.absorb(msg.s0); transcript.absorb(msg.s1); transcript.absorb(msg.s2)
-                let challenge = transcript.squeeze()
-                challenges.append(challenge)
-                currentClaim = dpLagrangeEval3(s0: msg.s0, s1: msg.s1, s2: msg.s2, at: challenge)
+            // For layer 0, inputs are at offset i * inputPaddedSize
+            // For layer > 0, inputs are at offset i * prevLayerPaddedSize
+            let inputPadSize: Int
+            if layerIdx == 0 {
+                var maxIdx = 0
+                for g in subLayer.gates { maxIdx = max(maxIdx, g.leftInput, g.rightInput) }
+                inputPadSize = max(1, 1 << Int(ceil(log2(Double(maxIdx + 1)))))
+            } else {
+                inputPadSize = sub.layers[layerIdx - 1].paddedSize
             }
 
-            let xiChallenges = Array(challenges[0..<instBits])
-            let xcChallenges = Array(challenges[instBits..<(instBits + nInCircuit)])
-            let yiChallenges = Array(challenges[(instBits + nInCircuit)..<(2 * instBits + nInCircuit)])
-            let ycChallenges = Array(challenges[(2 * instBits + nInCircuit)...])
-
-            let rx = xiChallenges + xcChallenges
-            let ry = yiChallenges + ycChallenges
-
-            let vx = layerProof.claimedVx
-            let vy = layerProof.claimedVy
-
-            // Check: eq(rInst, xi) * eq(xi, yi) * [add(rCirc,xc,yc)*(vx+vy) + mul(rCirc,xc,yc)*vx*vy]
-            let eqRInst = dpEvaluateEq(rInstance, xiChallenges)
-            let eqXiYi = dpEvaluateEq(xiChallenges, yiChallenges)
-
-            let layer = subCircuit.layers[layerIdx]
-            let addMLE = dpBuildWiringMLE(layer: layer, type: .add, nOut: nOutCircuit, nIn: nInCircuit)
-            let mulMLE = dpBuildWiringMLE(layer: layer, type: .mul, nOut: nOutCircuit, nIn: nInCircuit)
-            let fullCircuitPoint = rCircuit + xcChallenges + ycChallenges
-            let addVal = addMLE.evaluate(at: fullCircuitPoint)
-            let mulVal = mulMLE.evaluate(at: fullCircuitPoint)
-
-            let expected = frMul(frMul(eqRInst, eqXiYi), frAdd(
-                frMul(addVal, frAdd(vx, vy)),
-                frMul(mulVal, frMul(vx, vy))))
-            if !dpFrEqual(currentClaim, expected) { return false }
-
-            transcript.absorb(vx); transcript.absorb(vy)
-            transcript.absorbLabel("dp-layer-\(layerIdx)")
-
-            let beta = transcript.squeeze()
-            let totalInVars = instBits + nInCircuit
-            var newR = [Fr]()
-            newR.reserveCapacity(totalInVars)
-            for i in 0..<totalInVars {
-                newR.append(frAdd(rx[i], frMul(beta, frSub(ry[i], rx[i]))))
+            var gates = [Gate]()
+            gates.reserveCapacity(padN * subSize)
+            for inst in 0..<padN {
+                let inputOffset = inst * inputPadSize
+                for g in subLayer.gates {
+                    gates.append(Gate(type: g.type,
+                                     leftInput: inputOffset + g.leftInput,
+                                     rightInput: inputOffset + g.rightInput))
+                }
+                // Pad to subSize with dummy gates (add 0+0)
+                for _ in subLayer.gates.count..<subSize {
+                    gates.append(Gate(type: .add, leftInput: inputOffset, rightInput: inputOffset))
+                }
             }
-            r = newR
-            claim = frAdd(vx, frMul(beta, frSub(vy, vx)))
+            combinedLayers.append(CircuitLayer(gates: gates))
         }
-
-        // Final check: MLE of combined inputs at r
-        let inputSize = subCircuit.inputSize
-        let inputCircuitVars = inputSize <= 1 ? 0 : Int(ceil(log2(Double(inputSize))))
-        let paddedInputSize = 1 << inputCircuitVars
-        let combinedInput = uniformCircuit.combinedLayerValues(
-            layerValues: inputs, layerSize: paddedInputSize)
-        let totalInputVars = instBits + inputCircuitVars
-        let inputMLE = MultilinearPoly(numVars: totalInputVars, values: combinedInput)
-        let inputEval = inputMLE.evaluate(at: r)
-        return dpFrEqual(claim, inputEval)
+        return LayeredCircuit(layers: combinedLayers)
     }
-}
 
-// MARK: - Helpers
+    /// Build combined inputs: concatenate all instance inputs, padded to power of 2 per instance.
+    func buildCombinedInputs() -> [Fr] {
+        let sub = subCircuit
+        let padN = paddedInstances
 
-private func dpInputVars(sub: SubCircuit, layerIdx: Int) -> Int {
-    if layerIdx == 0 {
+        // Determine input pad size
+        let firstLayer = sub.layers[0]
         var maxIdx = 0
-        for gate in sub.layers[0].gates { maxIdx = max(maxIdx, gate.leftInput, gate.rightInput) }
-        return (maxIdx + 1) <= 1 ? 0 : Int(ceil(log2(Double(maxIdx + 1))))
-    } else {
-        return sub.layers[layerIdx - 1].numVars
+        for g in firstLayer.gates { maxIdx = max(maxIdx, g.leftInput, g.rightInput) }
+        let inputPadSize = max(1, 1 << Int(ceil(log2(Double(maxIdx + 1)))))
+
+        var combined = [Fr](repeating: Fr.zero, count: padN * inputPadSize)
+        for (inst, inp) in inputs.enumerated() {
+            for (j, v) in inp.enumerated() {
+                combined[inst * inputPadSize + j] = v
+            }
+        }
+        return combined
     }
-}
-
-private func dpEvaluateEq(_ a: [Fr], _ b: [Fr]) -> Fr {
-    precondition(a.count == b.count)
-    var result = Fr.one
-    for i in 0..<a.count {
-        result = frMul(result, frAdd(frMul(a[i], b[i]), frMul(frSub(Fr.one, a[i]), frSub(Fr.one, b[i]))))
-    }
-    return result
-}
-
-func dpBuildWiringMLE(layer: CircuitLayer, type: GateType, nOut: Int, nIn: Int) -> MultilinearPoly {
-    let totalVars = nOut + 2 * nIn
-    let totalSize = 1 << totalVars
-    let inSize = 1 << nIn
-    var evals = [Fr](repeating: Fr.zero, count: totalSize)
-    for (gIdx, gate) in layer.gates.enumerated() {
-        guard gate.type == type else { continue }
-        let idx = gIdx * inSize * inSize + gate.leftInput * inSize + gate.rightInput
-        if idx < totalSize { evals[idx] = Fr.one }
-    }
-    return MultilinearPoly(numVars: totalVars, evals: evals)
-}
-
-private func dpFrEqual(_ a: Fr, _ b: Fr) -> Bool {
-    let diff = frSub(a, b); let limbs = frToInt(diff)
-    return limbs[0] == 0 && limbs[1] == 0 && limbs[2] == 0 && limbs[3] == 0
-}
-
-private func dpLagrangeEval3(s0: Fr, s1: Fr, s2: Fr, at x: Fr) -> Fr {
-    let one = Fr.one; let two = frAdd(one, one); let inv2 = frInverse(two)
-    let xm1 = frSub(x, one); let xm2 = frSub(x, two); let negOne = frSub(Fr.zero, one)
-    let l0 = frMul(frMul(xm1, xm2), inv2)
-    let l1 = frMul(frMul(x, xm2), negOne)
-    let l2 = frMul(frMul(x, xm1), inv2)
-    return frAdd(frAdd(frMul(s0, l0), frMul(s1, l1)), frMul(s2, l2))
 }
