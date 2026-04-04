@@ -157,6 +157,8 @@ if cmd == "calibrate" {
     runBLS12377MSMBench()
 } else if cmd == "bls377glv" {
     runBLS12377GLVTest()
+} else if cmd == "stark252" || cmd == "starknet" {
+    runStark252Bench()
 } else if cmd == "bls381" || cmd == "bls12381" {
     runBLS12381Test()
 } else if cmd == "sha256" || cmd == "sha" {
@@ -171,6 +173,8 @@ if cmd == "calibrate" {
     runSecp256k1MSMBench()
 } else if cmd == "ecdsa" {
     runECDSABench()
+} else if cmd == "bls-sig" || cmd == "bls-signature" || cmd == "blssig" {
+    runBLSSignatureBench()
 } else if cmd == "ed25519" || cmd == "eddsa" || cmd == "curve25519" {
     runEd25519Bench()
 } else if cmd == "babyjubjub" || cmd == "bjj" || cmd == "pedersen-bjj" {
@@ -281,6 +285,7 @@ if cmd == "calibrate" {
     try runMSMBench()
     runNTTBench()
     runBLS12377NTTBench()
+    runStark252Bench()
     runPoseidon2Bench()
     runKeccakBench()
     runMerkleBench()

@@ -53,8 +53,8 @@ public func bjjD() -> Fr {
 /// Subgroup order q (little-endian 64-bit limbs)
 /// q = 2736030358979909402780800718157159386076813972158567259200215660948447373041
 public let BJJ_SUBGROUP_ORDER: [UInt64] = [
-    0x060c89ce5c263405, 0x24ed9171a53c0f03,
-    0x0000000000000000, 0x0c19139cb84c680a
+    0x677297dc392126f1, 0xab3eedb83920ee0a,
+    0x370a08b6d0302b0b, 0x060c89ce5c263405
 ]
 
 /// Cofactor = 8 (BabyJubjub has order 8 * q)

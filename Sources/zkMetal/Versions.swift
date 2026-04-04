@@ -35,6 +35,7 @@ public enum Versions {
     // --- Signatures ---
     public static let eddsa          = PrimitiveVersion(version: "1.0.0", updated: "2026-04-04")
     public static let bjjEdDSA       = PrimitiveVersion(version: "1.0.0", updated: "2026-04-04")
+    public static let blsSignature   = PrimitiveVersion(version: "1.0.0", updated: "2026-04-04")
 
     // --- BabyJubjub ---
     public static let babyJubjub     = PrimitiveVersion(version: "1.0.0", updated: "2026-04-04")
@@ -45,6 +46,7 @@ public enum Versions {
     public static let nttGoldilocks  = PrimitiveVersion(version: "1.2.0", updated: "2026-04-02")
     public static let nttBabyBear    = PrimitiveVersion(version: "1.1.0", updated: "2026-04-03")
     public static let nttBLS12377    = PrimitiveVersion(version: "1.0.0", updated: "2026-04-02")
+    public static let nttStark252    = PrimitiveVersion(version: "1.0.0", updated: "2026-04-04")
     public static let circleNTT      = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let rnsNTT         = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let mersenne31     = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
@@ -118,10 +120,12 @@ public enum Versions {
             ("MSM Ed25519",       msmEd25519),
             ("MSM Grumpkin",      msmGrumpkin),
             ("EdDSA Ed25519",    eddsa),
+            ("BLS Signature",    blsSignature),
             ("NTT BN254",         nttBN254),
             ("NTT Goldilocks",    nttGoldilocks),
             ("NTT BabyBear",      nttBabyBear),
             ("NTT BLS12-377",     nttBLS12377),
+            ("NTT Stark252",      nttStark252),
             ("Circle NTT M31",   circleNTT),
             ("RNS NTT (HE)",    rnsNTT),
             ("Mersenne31",       mersenne31),

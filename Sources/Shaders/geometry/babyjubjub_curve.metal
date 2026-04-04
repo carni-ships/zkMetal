@@ -119,7 +119,6 @@ BJJPointExtended bjj_double(BJJPointExtended p, Fr a_const) {
 // Point negation
 BJJPointExtended bjj_neg(BJJPointExtended p) {
     BJJPointExtended r;
-    r.x = fr_sub(fr_modulus(), p.x);  // This is wrong for Montgomery; use fr_sub(zero, x)
     r.x = fr_sub(fr_zero(), p.x);
     r.y = p.y;
     r.z = p.z;
