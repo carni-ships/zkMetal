@@ -173,6 +173,8 @@ if cmd == "calibrate" {
     runSecp256k1MSMBench()
 } else if cmd == "ecdsa" {
     runECDSABench()
+} else if cmd == "schnorr" || cmd == "bip340" || cmd == "taproot" {
+    runSchnorrBench()
 } else if cmd == "bls-sig" || cmd == "bls-signature" || cmd == "blssig" {
     runBLSSignatureBench()
 } else if cmd == "ed25519" || cmd == "eddsa" || cmd == "curve25519" {

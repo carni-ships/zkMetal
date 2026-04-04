@@ -36,6 +36,7 @@ public enum Versions {
     public static let eddsa          = PrimitiveVersion(version: "1.0.0", updated: "2026-04-04")
     public static let bjjEdDSA       = PrimitiveVersion(version: "1.0.0", updated: "2026-04-04")
     public static let blsSignature   = PrimitiveVersion(version: "1.0.0", updated: "2026-04-04")
+    public static let schnorr        = PrimitiveVersion(version: "1.0.0", updated: "2026-04-04")
 
     // --- BabyJubjub ---
     public static let babyJubjub     = PrimitiveVersion(version: "1.0.0", updated: "2026-04-04")
@@ -121,6 +122,7 @@ public enum Versions {
             ("MSM Grumpkin",      msmGrumpkin),
             ("EdDSA Ed25519",    eddsa),
             ("BLS Signature",    blsSignature),
+            ("Schnorr BIP340",   schnorr),
             ("NTT BN254",         nttBN254),
             ("NTT Goldilocks",    nttGoldilocks),
             ("NTT BabyBear",      nttBabyBear),
