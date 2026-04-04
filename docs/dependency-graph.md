@@ -84,6 +84,41 @@ FRI commitments, STARK prover/verifier, data availability, Fiat-Shamir transcrip
 | Jubjub | BLS12-381 Fr (EXISTS) | Same pattern as BabyJubjub |
 | Stark252 | Nothing (new field) | New field + NTT integration |
 
+## Production Stack Coverage
+
+How zkMetal maps to the major ZK stacks deployed in production today.
+
+### Coverage Matrix
+
+| Production Stack | Used By | Required Primitives | zkMetal Coverage |
+|-----------------|---------|-------------------|-----------------|
+| **Plonky3 / SP1** | Succinct SP1 zkVM, Valida | BabyBear NTT, Poseidon2 (width-16 BB), FRI, AIR constraints | **90%** — BabyBear NTT, P2 (BN254/M31), FRI, Circle STARK. Gap: P2 width-16 over BabyBear |
+| **Halo2 (PSE)** | Scroll, Taiko, PSE circuits | Pasta (Pallas/Vesta), IPA, Plonk + lookups | **95%** — Pallas/Vesta, IPA, Plonk, LogUp all shipped |
+| **Cairo / Stwo** | StarkNet, StarkWare | Stark252 field, Circle STARK over M31, Poseidon | **70%** — Circle STARK + M31 yes. **Gap: Stark252 field** |
+| **RISC Zero** | RISC Zero zkVM | BabyBear, FRI, STARK, Poseidon2 | **95%** — all core primitives present |
+| **Jolt / Lasso** | a16z Labs | BN254 pairing, Lasso lookups, sumcheck | **95%** — pairing, Lasso, sumcheck, batch FFI all shipped |
+| **Barretenberg** | Aztec Network | BN254, Grumpkin, Plonk (UltraHonk), KZG | **80%** — BN254+Plonk+KZG yes. **Gap: Grumpkin** (in progress) |
+| **Gnark** | Linea, ConsenSys | BN254/BLS12-381, Groth16, Plonk+KZG | **95%** — all present |
+| **Circom / Snarkjs** | Polygon zkEVM, Semaphore, Tornado Cash | BN254 Groth16, BabyJubjub, Poseidon | **80%** — Groth16+Poseidon yes. **Gap: BabyJubjub** (in progress) |
+| **Boojum** | zkSync Era (Matter Labs) | Goldilocks, Poseidon2, FRI, custom gates | **90%** — Goldilocks NTT, P2, FRI all shipped |
+| **Kimchi** | Mina Protocol | Pasta curves, IPA, Plonk | **95%** — Pallas/Vesta, IPA, Plonk all shipped |
+| **Ethereum Consensus** | All validators | BLS12-381 pairing, BLS signatures | **70%** — pairing exists. **Gap: BLS signature scheme** |
+
+### Gaps Blocking Full Coverage
+
+| Gap | Blocks | Status |
+|-----|--------|--------|
+| **BabyJubjub curve** | Circom, Semaphore, Tornado Cash, Polygon | In progress (agent running) |
+| **Grumpkin curve** | Aztec recursive proving | In progress (agent running) |
+| **SHA-256** | Bitcoin, most blockchains, TLS | In progress (agent running) |
+| **Stark252 field** | StarkNet/Cairo | Backlog (GAP7) |
+| **BLS Signatures** | Ethereum consensus | Backlog (GAP5) |
+| **Poseidon2 width-16 BabyBear** | SP1/Plonky3 exact config | Backlog (config change) |
+
+### What Full Coverage Looks Like
+
+With the 3 in-progress items (BabyJubjub, Grumpkin, SHA-256) plus Stark252 and BLS signatures, zkMetal would have **90%+ coverage of every major production ZK stack**.
+
 ## What Unlocks What
 
 Completing a hub primitive unlocks downstream work:
