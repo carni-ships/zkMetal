@@ -236,6 +236,90 @@ public func runFRIBench() {
             print(String(format: "  Commit 2^%d: %.1fms (fold + Merkle)", protoLogN, commitTimes[2]))
         }
 
+        // FRI commit-by-4 → query → verify round-trip
+        print("\n--- FRI Proof Protocol fold-by-4 (commit → query → verify) ---")
+        do {
+            let protoLogN = 14
+            let protoN = 1 << protoLogN
+            var protoEvals = [Fr](repeating: Fr.zero, count: protoN)
+            for i in 0..<protoN {
+                rng = rng &* 6364136223846793005 &+ 1442695040888963407
+                protoEvals[i] = frFromInt(rng >> 32)
+            }
+            // fold-by-4 needs logN/2 betas (7 for logN=14)
+            let numBetas4 = protoLogN / 2
+            var protoBetas4 = [Fr]()
+            for i in 0..<numBetas4 {
+                protoBetas4.append(frFromInt(UInt64(i + 1) * 17))
+            }
+
+            let commitment4 = try engine.commitPhase4(evals: protoEvals, betas: protoBetas4)
+            print("  Commit4: \(commitment4.layers.count) layers, \(commitment4.roots.count) roots")
+
+            let queryIndices: [UInt32] = [0, 42, 1000, UInt32(protoN / 4 - 1)]
+            let queries4 = try engine.queryPhase4(commitment: commitment4, queryIndices: queryIndices)
+            print("  Query4: \(queries4.count) proofs extracted")
+
+            let verified4 = engine.verify4(commitment: commitment4, queries: queries4)
+            print("  Verify4: \(verified4 ? "PASS" : "FAIL")")
+
+            // Benchmark commit phase 4
+            let _ = try engine.commitPhase4(evals: protoEvals, betas: protoBetas4)  // warmup
+            engine.profileCommit = true
+            let _ = try engine.commitPhase4(evals: protoEvals, betas: protoBetas4)  // profile run
+            engine.profileCommit = false
+            var commitTimes4 = [Double]()
+            for _ in 0..<5 {
+                let t0 = CFAbsoluteTimeGetCurrent()
+                let _ = try engine.commitPhase4(evals: protoEvals, betas: protoBetas4)
+                commitTimes4.append((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+            }
+            commitTimes4.sort()
+            print(String(format: "  Commit4 2^%d: %.1fms (fold + Merkle, %d layers vs %d)",
+                        protoLogN, commitTimes4[2], numBetas4 + 1, protoLogN + 1))
+        }
+
+        // Commit phase comparison at multiple sizes
+        print("\n--- Commit phase: fold-by-2 vs fold-by-4 ---")
+        for commitLogN in [14, 16, 18] {
+            let commitN = 1 << commitLogN
+            var commitEvals = [Fr](repeating: Fr.zero, count: commitN)
+            for i in 0..<commitN {
+                rng = rng &* 6364136223846793005 &+ 1442695040888963407
+                commitEvals[i] = frFromInt(rng >> 32)
+            }
+            // fold-by-2 betas
+            var betas2 = [Fr]()
+            for i in 0..<commitLogN { betas2.append(frFromInt(UInt64(i + 1) * 23)) }
+            // fold-by-4 betas
+            let nb4 = commitLogN / 2
+            var betas4 = [Fr]()
+            for i in 0..<nb4 { betas4.append(frFromInt(UInt64(i + 1) * 23)) }
+
+            // Warmup
+            let _ = try engine.commitPhase(evals: commitEvals, betas: betas2)
+            let _ = try engine.commitPhase4(evals: commitEvals, betas: betas4)
+
+            var times2 = [Double]()
+            var times4 = [Double]()
+            for _ in 0..<5 {
+                let t0 = CFAbsoluteTimeGetCurrent()
+                let _ = try engine.commitPhase(evals: commitEvals, betas: betas2)
+                times2.append((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+            }
+            for _ in 0..<5 {
+                let t0 = CFAbsoluteTimeGetCurrent()
+                let _ = try engine.commitPhase4(evals: commitEvals, betas: betas4)
+                times4.append((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+            }
+            times2.sort()
+            times4.sort()
+            let m2 = times2[2]
+            let m4 = times4[2]
+            print(String(format: "  2^%-2d | fold-by-2: %7.1fms (%d layers) | fold-by-4: %7.1fms (%d layers) | %.1fx",
+                        commitLogN, m2, commitLogN + 1, m4, nb4 + 1, m2 / m4))
+        }
+
         // Multi-fold benchmark: full FRI protocol
         print("\n--- Full FRI protocol (fold to constant) ---")
         for startLogN in [16, 18, 20] {

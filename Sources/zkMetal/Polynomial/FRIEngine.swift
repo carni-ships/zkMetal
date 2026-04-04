@@ -51,6 +51,10 @@ public class FRIEngine {
     private var cachedLayerBufs: [MTLBuffer] = []
     private var cachedLayerBufsLogN: Int = 0
 
+    // Cached per-layer buffers for commitPhase4 (fold-by-4, fewer layers)
+    private var cachedLayer4Bufs: [MTLBuffer] = []
+    private var cachedLayer4BufsLogN: Int = 0
+
     private let tuning: TuningConfig
 
     public init() throws {
@@ -982,6 +986,390 @@ public class FRIEngine {
                 }
 
                 idx = nextIdx
+            }
+        }
+        return true
+    }
+
+    // MARK: - FRI Fold-by-4 Proof Protocol
+
+    /// Commit phase using fold-by-4: fold iteratively by 4x, halving the number of
+    /// Merkle tree commitments compared to fold-by-2.
+    /// Each round consumes one beta and reduces domain by 4x.
+    /// If logN is odd, one fold-by-2 is done first, then fold-by-4 for the rest.
+    public func commitPhase4(evals: [Fr], betas: [Fr]) throws -> FRICommitment {
+        let n = evals.count
+        precondition(n > 1 && (n & (n - 1)) == 0)
+        let logN = Int(log2(Double(n)))
+
+        let oddStart = (logN % 2 != 0) ? 1 : 0
+        let fold4Count = (logN - oddStart) / 2
+        let totalBetas = oddStart + fold4Count
+        precondition(betas.count >= totalBetas, "Need \(totalBetas) betas for fold-by-4 commit, got \(betas.count)")
+
+        let merkle = merkleEngine
+        let stride = MemoryLayout<Fr>.stride
+
+        // Compute layer sizes: layer 0 = n, then each fold-by-4 reduces by 4x
+        // (optionally first fold-by-2 reduces by 2x)
+        var layerSizes: [Int] = [n]
+        var curSize = n
+        if oddStart == 1 {
+            curSize /= 2
+            layerSizes.append(curSize)
+        }
+        for _ in 0..<fold4Count {
+            curSize /= 4
+            layerSizes.append(curSize)
+        }
+
+        // Allocate input buffer
+        if n > multiFoldInputBufElements {
+            guard let buf = device.makeBuffer(length: n * stride, options: .storageModeShared) else {
+                throw MSMError.gpuError("Failed to create multiFold input buffer")
+            }
+            multiFoldInputBuf = buf
+            multiFoldInputBufElements = n
+        }
+        evals.withUnsafeBytes { src in
+            memcpy(multiFoldInputBuf!.contents(), src.baseAddress!, n * stride)
+        }
+
+        // Allocate per-layer GPU buffers (cached across calls for same logN)
+        let numFoldSteps = totalBetas
+        if cachedLayer4BufsLogN != logN || cachedLayer4Bufs.count != numFoldSteps {
+            cachedLayer4Bufs = []
+            for i in 0..<numFoldSteps {
+                let layerN = layerSizes[i + 1]
+                guard let buf = device.makeBuffer(length: layerN * stride, options: .storageModeShared) else {
+                    throw MSMError.gpuError("Failed to create layer buffer")
+                }
+                cachedLayer4Bufs.append(buf)
+            }
+            cachedLayer4BufsLogN = logN
+        }
+        var layerBufs: [MTLBuffer] = [multiFoldInputBuf!]
+        layerBufs.append(contentsOf: cachedLayer4Bufs)
+
+        // Fold: single CB for all fold operations
+        var foldT0 = CFAbsoluteTimeGetCurrent()
+        guard let cmdBuf = commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
+        }
+        let enc = cmdBuf.makeComputeCommandEncoder()!
+        var betaIdx = 0
+        var curLogN = logN
+
+        // Handle odd logN: one fold-by-2 first
+        if oddStart == 1 {
+            let curN = layerSizes[0]
+            let halfN = curN / 2
+            let invTwiddles = getInvTwiddles(logN: curLogN)
+            var beta = betas[betaIdx]
+            var nVal = UInt32(curN)
+            enc.setComputePipelineState(foldFunction)
+            enc.setBuffer(layerBufs[0], offset: 0, index: 0)
+            enc.setBuffer(layerBufs[1], offset: 0, index: 1)
+            enc.setBuffer(invTwiddles, offset: 0, index: 2)
+            enc.setBytes(&beta, length: stride, index: 3)
+            enc.setBytes(&nVal, length: 4, index: 4)
+            let tg = min(tuning.friThreadgroupSize, Int(foldFunction.maxTotalThreadsPerThreadgroup))
+            enc.dispatchThreads(MTLSize(width: halfN, height: 1, depth: 1),
+                               threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+            enc.memoryBarrier(scope: .buffers)
+            curLogN -= 1
+            betaIdx += 1
+        }
+
+        // Fold-by-4 rounds
+        while betaIdx < totalBetas {
+            let layerIdx = betaIdx
+            let curN = layerSizes[layerIdx]
+            let quarterN = curN / 4
+            let invTwiddles = getInvTwiddles(logN: curLogN)
+            var beta = betas[betaIdx]
+            var nVal = UInt32(curN)
+
+            enc.setComputePipelineState(foldBy4Function)
+            enc.setBuffer(layerBufs[layerIdx], offset: 0, index: 0)
+            enc.setBuffer(layerBufs[layerIdx + 1], offset: 0, index: 1)
+            enc.setBuffer(invTwiddles, offset: 0, index: 2)
+            enc.setBytes(&beta, length: stride, index: 3)
+            enc.setBytes(&nVal, length: 4, index: 4)
+            let tg = min(tuning.friThreadgroupSize, Int(foldBy4Function.maxTotalThreadsPerThreadgroup))
+            enc.dispatchThreads(MTLSize(width: quarterN, height: 1, depth: 1),
+                               threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+
+            curLogN -= 2
+            betaIdx += 1
+            if betaIdx < totalBetas { enc.memoryBarrier(scope: .buffers) }
+        }
+        enc.endEncoding()
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+        if let error = cmdBuf.error {
+            throw MSMError.gpuError(error.localizedDescription)
+        }
+        let foldTime = (CFAbsoluteTimeGetCurrent() - foldT0) * 1000
+
+        // Read layers from GPU buffers
+        var layers: [[Fr]] = [evals]
+        for i in 1..<layerSizes.count {
+            let count = layerSizes[i]
+            let ptr = layerBufs[i].contents().bindMemory(to: Fr.self, capacity: count)
+            layers.append(Array(UnsafeBufferPointer(start: ptr, count: count)))
+        }
+
+        // Merkle: compute roots for each layer
+        let merkleT0 = CFAbsoluteTimeGetCurrent()
+        let subtreeSize = Poseidon2Engine.merkleSubtreeSize
+        let p2 = merkle.p2Engine
+        let cpuMerkleThreshold = 16
+
+        let numMerkleRoots = totalBetas
+        let rootsBufBytes = max(numMerkleRoots * stride, stride)
+        if merkleRootsBuf == nil || merkleRootsBufSize < rootsBufBytes {
+            merkleRootsBuf = device.makeBuffer(length: rootsBufBytes, options: .storageModeShared)
+            merkleRootsBufSize = rootsBufBytes
+        }
+        guard let rootsBuf = merkleRootsBuf else {
+            throw MSMError.gpuError("Failed to allocate merkle roots buffer")
+        }
+
+        let maxSubtreeRoots = max(layerSizes[1] / subtreeSize, 1)
+        let subtreeRootBytes = maxSubtreeRoots * stride
+        if merkleSubtreeRootsBuf == nil || merkleSubtreeRootsBufSize < subtreeRootBytes {
+            merkleSubtreeRootsBuf = device.makeBuffer(length: subtreeRootBytes, options: .storageModeShared)
+            merkleSubtreeRootsBufSize = subtreeRootBytes
+        }
+        guard let subtreeRootsBuf = merkleSubtreeRootsBuf else {
+            throw MSMError.gpuError("Failed to allocate subtree roots buffer")
+        }
+
+        var roots = [Fr](repeating: Fr.zero, count: totalBetas)
+
+        var hasGPUMerkle = false
+        for i in 0..<totalBetas {
+            if layerSizes[i + 1] > cpuMerkleThreshold { hasGPUMerkle = true; break }
+        }
+
+        if hasGPUMerkle {
+            guard let merkleCB = commandQueue.makeCommandBuffer() else {
+                throw MSMError.noCommandBuffer
+            }
+            let mEnc = merkleCB.makeComputeCommandEncoder()!
+            var firstDispatch = true
+
+            for i in 0..<totalBetas {
+                let layerN = layerSizes[i + 1]
+                if layerN <= cpuMerkleThreshold { continue }
+                if !firstDispatch { mEnc.memoryBarrier(scope: .buffers) }
+                firstDispatch = false
+                encodeMerkleForLayer(encoder: mEnc, p2: p2, layerBuf: layerBufs[i + 1], layerN: layerN,
+                                     rootsBuf: rootsBuf, rootOffset: i * stride,
+                                     subtreeRootsBuf: subtreeRootsBuf, subtreeSize: subtreeSize, stride: stride)
+            }
+            mEnc.endEncoding()
+            merkleCB.commit()
+
+            // CPU merkle for small layers while GPU works
+            for i in 0..<totalBetas {
+                let layerN = layerSizes[i + 1]
+                if layerN > cpuMerkleThreshold { continue }
+                if layerN <= 1 {
+                    roots[i] = layers[i + 1][0]
+                } else {
+                    layers[i + 1].withUnsafeBufferPointer { bp in
+                        roots[i] = cpuMerkleRoot(bp)
+                    }
+                }
+            }
+
+            merkleCB.waitUntilCompleted()
+            if let error = merkleCB.error {
+                throw MSMError.gpuError(error.localizedDescription)
+            }
+
+            let rootPtr = rootsBuf.contents().bindMemory(to: Fr.self, capacity: numMerkleRoots)
+            for i in 0..<totalBetas {
+                if layerSizes[i + 1] > cpuMerkleThreshold {
+                    roots[i] = rootPtr[i]
+                }
+            }
+        } else {
+            for i in 0..<totalBetas {
+                let layerN = layerSizes[i + 1]
+                if layerN <= 1 {
+                    roots[i] = layers[i + 1][0]
+                } else {
+                    layers[i + 1].withUnsafeBufferPointer { bp in
+                        roots[i] = cpuMerkleRoot(bp)
+                    }
+                }
+            }
+        }
+
+        let merkleTime = (CFAbsoluteTimeGetCurrent() - merkleT0) * 1000
+        if profileCommit {
+            fputs(String(format: "  commitPhase4: fold %.1fms, merkle %.1fms, total %.1fms (%d layers)\n",
+                        foldTime, merkleTime, foldTime + merkleTime, layerSizes.count), stderr)
+        }
+
+        let current = layers.last!
+        let finalValue = current.count == 1 ? current[0] : current[0]
+
+        return FRICommitment(
+            layers: layers,
+            roots: roots,
+            betas: betas,
+            finalValue: finalValue
+        )
+    }
+
+    /// Query phase for fold-by-4 commitment: extract evaluation quartets and Merkle paths.
+    /// For fold-by-4 layers, each query extracts 4 evaluations at stride N/4.
+    /// For fold-by-2 layers (first layer when logN is odd), extracts pairs.
+    public func queryPhase4(commitment: FRICommitment, queryIndices: [UInt32]) throws -> [FRIQueryProof] {
+        let numQueries = queryIndices.count
+        let merkle = merkleEngine
+
+        var proofs = [FRIQueryProof]()
+        proofs.reserveCapacity(numQueries)
+
+        for qi in 0..<numQueries {
+            var layerEvals: [(Fr, Fr)] = []
+            var merklePaths: [[[Fr]]] = []
+            var idx = queryIndices[qi]
+
+            for layer in 0..<commitment.layers.count - 1 {
+                let evals = commitment.layers[layer]
+                let n = evals.count
+                let nextN = commitment.layers[layer + 1].count
+
+                if nextN == n / 2 {
+                    // Fold-by-2 layer
+                    let halfN = UInt32(n / 2)
+                    let lowerIdx = idx < halfN ? idx : idx - halfN
+                    let upperIdx = lowerIdx + halfN
+                    layerEvals.append((evals[Int(lowerIdx)], evals[Int(upperIdx)]))
+
+                    let tree = try merkle.buildTree(evals)
+                    let path = extractMerklePath(tree: tree, leafCount: n, index: Int(idx))
+                    merklePaths.append([path])
+
+                    idx = lowerIdx
+                } else {
+                    // Fold-by-4 layer: extract quartet at stride N/4
+                    let quarterN = UInt32(n / 4)
+                    let baseIdx = idx % quarterN
+                    let e0 = evals[Int(baseIdx)]
+                    let e1 = evals[Int(baseIdx + quarterN)]
+                    let e2 = evals[Int(baseIdx + 2 * quarterN)]
+                    let e3 = evals[Int(baseIdx + 3 * quarterN)]
+
+                    // Store as two pairs for compatibility with FRIQueryProof
+                    layerEvals.append((e0, e1))
+                    layerEvals.append((e2, e3))
+
+                    let tree = try merkle.buildTree(evals)
+                    let path0 = extractMerklePath(tree: tree, leafCount: n, index: Int(baseIdx))
+                    let path1 = extractMerklePath(tree: tree, leafCount: n, index: Int(baseIdx + quarterN))
+                    let path2 = extractMerklePath(tree: tree, leafCount: n, index: Int(baseIdx + 2 * quarterN))
+                    let path3 = extractMerklePath(tree: tree, leafCount: n, index: Int(baseIdx + 3 * quarterN))
+                    merklePaths.append([path0, path1, path2, path3])
+
+                    idx = baseIdx
+                }
+            }
+
+            proofs.append(FRIQueryProof(
+                initialIndex: queryIndices[qi],
+                layerEvals: layerEvals,
+                merklePaths: merklePaths
+            ))
+        }
+
+        return proofs
+    }
+
+    /// Verify a fold-by-4 FRI proof: check consistency of query responses.
+    public func verify4(commitment: FRICommitment, queries: [FRIQueryProof]) -> Bool {
+        for query in queries {
+            var idx = query.initialIndex
+            var evalIdx = 0  // index into layerEvals (fold-by-4 uses 2 entries per layer)
+
+            for layer in 0..<commitment.layers.count - 1 {
+                let n = commitment.layers[layer].count
+                let nextN = commitment.layers[layer + 1].count
+
+                if nextN == n / 2 {
+                    // Fold-by-2 verification
+                    let (evalA, evalB) = query.layerEvals[evalIdx]
+                    evalIdx += 1
+                    let halfN = UInt32(n / 2)
+                    let logN = Int(log2(Double(n)))
+                    let beta = commitment.betas[layer]
+
+                    let omega = frRootOfUnity(logN: logN)
+                    let omegaInv = frInverse(omega)
+                    let lowerIdx = idx < halfN ? idx : idx - halfN
+                    let w_inv = frPow(omegaInv, UInt64(lowerIdx))
+
+                    let sum = frAdd(evalA, evalB)
+                    let diff = frSub(evalA, evalB)
+                    let term = frMul(frMul(beta, w_inv), diff)
+                    let expected = frAdd(sum, term)
+
+                    let nextEval = commitment.layers[layer + 1][Int(lowerIdx)]
+                    if frToInt(expected) != frToInt(nextEval) { return false }
+                    idx = lowerIdx
+                } else {
+                    // Fold-by-4 verification
+                    let (e0, e1) = query.layerEvals[evalIdx]
+                    let (e2, e3) = query.layerEvals[evalIdx + 1]
+                    evalIdx += 2
+                    let quarterN = UInt32(n / 4)
+                    let logN = Int(log2(Double(n)))
+                    let beta = commitment.betas[layer]
+
+                    let baseIdx = idx % quarterN
+
+                    // Replicate the cpuFold4 logic
+                    let omega = frRootOfUnity(logN: logN)
+                    let omegaInv = frInverse(omega)
+                    let w4_inv = frPow(omegaInv, UInt64(quarterN))
+
+                    let s02 = frAdd(e0, e2)
+                    let d02 = frSub(e0, e2)
+                    let s13 = frAdd(e1, e3)
+                    let d13 = frSub(e1, e3)
+                    let d13_w4inv = frMul(d13, w4_inv)
+
+                    var t0 = frAdd(s02, s13)
+                    var t1 = frAdd(d02, d13_w4inv)
+                    var t2 = frSub(s02, s13)
+                    var t3 = frSub(d02, d13_w4inv)
+
+                    let inv_x = frPow(omegaInv, UInt64(baseIdx))
+                    let inv_x2 = frMul(inv_x, inv_x)
+                    let inv_x3 = frMul(inv_x2, inv_x)
+
+                    t1 = frMul(t1, inv_x)
+                    t2 = frMul(t2, inv_x2)
+                    t3 = frMul(t3, inv_x3)
+
+                    let r = beta
+                    let r2 = frMul(r, r)
+                    let r3 = frMul(r2, r)
+
+                    var expected = frAdd(t0, frMul(r, t1))
+                    expected = frAdd(expected, frMul(r2, t2))
+                    expected = frAdd(expected, frMul(r3, t3))
+
+                    let nextEval = commitment.layers[layer + 1][Int(baseIdx)]
+                    if frToInt(expected) != frToInt(nextEval) { return false }
+                    idx = baseIdx
+                }
             }
         }
         return true
