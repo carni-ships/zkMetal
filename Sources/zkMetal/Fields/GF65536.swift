@@ -1,5 +1,5 @@
-// GF(2^16) = GF(2)[x] / (x^16 + x^5 + x^3 + x + 1)
-// Irreducible polynomial: 0x1002B (bit 16 + bit 5 + bit 3 + bit 1 + bit 0)
+// GF(2^16) = GF(2)[x] / (x^16 + x^12 + x^3 + x + 1)
+// Primitive polynomial: 0x1100B (g=2 generates full multiplicative group of order 65535)
 // Used for Reed-Solomon erasure coding over binary fields.
 // Multiplication via log/antilog tables (each 64K entries, fast lookup).
 
@@ -11,8 +11,9 @@ public struct GF16: Equatable {
     public static let zero = GF16(value: 0)
     public static let one = GF16(value: 1)
 
-    /// Irreducible polynomial: x^16 + x^5 + x^3 + x + 1
-    static let POLY: UInt32 = 0x1002B
+    /// Primitive polynomial: x^16 + x^12 + x^3 + x + 1
+    /// g=2 has order 65535 (generates full multiplicative group)
+    static let POLY: UInt32 = 0x1100B
 
     public init(value: UInt16) {
         self.value = value

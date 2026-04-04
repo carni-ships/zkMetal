@@ -217,7 +217,6 @@ kernel void msm_bucket_sum_direct(
 }
 
 // Phase 3: Serial reduction of segment results per window (one thread per window)
-// Avoids threadgroup memory patterns that trigger Metal compiler miscompilation
 kernel void msm_combine_segments(
     device const PointProjective* segment_results [[buffer(0)]],
     device PointProjective* window_results        [[buffer(1)]],

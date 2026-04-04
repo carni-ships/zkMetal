@@ -85,9 +85,11 @@ public class KyberEngine {
             e.append(sampleCBD(eta: KyberParams.eta1))
         }
 
-        // NTT(s) and NTT(e) — batch all k polynomials at once
-        let s_hat = try nttEngine.batchKyberNTT(s)
-        let e_hat = try nttEngine.batchKyberNTT(e)
+        // NTT(s) and NTT(e) — use CPU NTT for correctness
+        var s_hat = [[KyberField]]()
+        for j in 0..<k { var p = s[j]; kyberNTTCPU(&p); s_hat.append(p) }
+        var e_hat = [[KyberField]]()
+        for j in 0..<k { var p = e[j]; kyberNTTCPU(&p); e_hat.append(p) }
 
         // t_hat = A_hat * s_hat + e_hat (in NTT domain, pointwise)
         var t_hat = [[KyberField]]()
@@ -146,15 +148,15 @@ public class KyberEngine {
             }
         }
 
-        // NTT(r)
-        let r_hat = try nttEngine.batchKyberNTT(r)
+        // NTT(r) — CPU
+        var r_hat = [[KyberField]]()
+        for j in 0..<k { var p = r[j]; kyberNTTCPU(&p); r_hat.append(p) }
 
         // u = INTT(A^T * r_hat) + e1
         var u_hat = [[KyberField]]()
         for i in 0..<k {
             var ui = [KyberField](repeating: KyberField.zero, count: KyberParams.n)
             for j in 0..<k {
-                // A^T[i][j] = A[j][i]
                 let aji = pk.A_hat[j * k + i]
                 let rj = r_hat[j]
                 for c in 0..<KyberParams.n {
@@ -164,7 +166,8 @@ public class KyberEngine {
             }
             u_hat.append(ui)
         }
-        var u = try nttEngine.batchKyberINTT(u_hat)
+        var u = [[KyberField]]()
+        for i in 0..<k { var p = u_hat[i]; kyberInvNTTCPU(&p); u.append(p) }
         // Add e1
         for i in 0..<k {
             for c in 0..<KyberParams.n {
@@ -182,8 +185,8 @@ public class KyberEngine {
                 v_hat[c] = kyberAdd(v_hat[c], prod)
             }
         }
-        let vResults = try nttEngine.batchKyberINTT([v_hat])
-        var v = vResults[0]
+        var v = v_hat
+        kyberInvNTTCPU(&v)
         // Add e2 and encoded message
         for c in 0..<KyberParams.n {
             v[c] = kyberAdd(v[c], e2[c])

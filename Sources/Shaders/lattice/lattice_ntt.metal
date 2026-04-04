@@ -20,11 +20,8 @@ constant uint KYBER_BARRETT_M = 5039;
 constant uint KYBER_BARRETT_SHIFT = 24;
 
 inline ushort kyber_reduce(uint a) {
-    uint t = (a * KYBER_BARRETT_M) >> KYBER_BARRETT_SHIFT;
-    int r = int(a) - int(t) * int(KYBER_Q);
-    r += (r < 0) ? int(KYBER_Q) : 0;
-    r -= (r >= int(KYBER_Q)) ? int(KYBER_Q) : 0;
-    return ushort(r);
+    // Direct modulo — safe for all inputs, Metal compiles this efficiently for constant divisor
+    return ushort(a % uint(KYBER_Q));
 }
 
 inline ushort kyber_add(ushort a, ushort b) {
@@ -50,11 +47,8 @@ constant ulong DIL_BARRETT_M = 33579385UL;
 constant ulong DIL_BARRETT_SHIFT = 48;
 
 inline uint dil_reduce(ulong a) {
-    ulong t = (a * DIL_BARRETT_M) >> DIL_BARRETT_SHIFT;
-    long r = long(a) - long(t) * long(DIL_Q);
-    r += (r < 0) ? long(DIL_Q) : 0;
-    r -= (r >= long(DIL_Q)) ? long(DIL_Q) : 0;
-    return uint(r);
+    // Direct modulo — safe for all inputs
+    return uint(a % ulong(DIL_Q));
 }
 
 inline uint dil_add(uint a, uint b) {
@@ -144,6 +138,7 @@ kernel void kyber_intt_batch(
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
     // Inverse NTT: Gentleman-Sande, layers from len=2 up to len=128
+    // CPU processes blocks 0,1,...,num_blocks-1 with twiddles[k], twiddles[k-1], ..., twiddles[k-num_blocks+1]
     uint k = 127;
     for (uint len = 2; len <= 128; len <<= 1) {
         uint num_blocks = 256 / (2 * len);
@@ -151,7 +146,7 @@ kernel void kyber_intt_batch(
             uint block_idx = block / len;
             uint j = block % len;
             uint start = block_idx * 2 * len;
-            ushort tw = inv_twiddles[k - (num_blocks - 1 - block_idx)];
+            ushort tw = inv_twiddles[k - block_idx];
             uint i0 = start + j;
             uint i1 = i0 + len;
             ushort t = shared_poly[i0];
@@ -247,7 +242,7 @@ kernel void dilithium_intt_batch(
             uint block_idx = block / len;
             uint j = block % len;
             uint start = block_idx * 2 * len;
-            uint tw = inv_twiddles[k - (num_blocks - 1 - block_idx)];
+            uint tw = inv_twiddles[k - block_idx];
             uint i0 = start + j;
             uint i1 = i0 + len;
             uint t = shared_poly[i0];

@@ -195,9 +195,9 @@ public class CircleSTARKProver {
         let compTree = buildKeccakMerkle(compLeafHashes)
         let compositionCommitment = compTree[1]
 
-        // Step 7: GPU FRI
+        // Step 7: CPU FRI (matches verifier's fold formula exactly)
         transcript.absorbBytes(compositionCommitment)
-        let friProof = try gpuFRI(
+        let friProof = try cpuFRI(
             evals: compositionEvals, logN: logEval,
             numQueries: numQueries, transcript: &transcript
         )
@@ -290,13 +290,12 @@ public class CircleSTARKProver {
         return result
     }
 
-    // MARK: - GPU FRI
+    // MARK: - CPU FRI (matches verifier fold formula exactly)
 
-    private func gpuFRI(
+    private func cpuFRI(
         evals: [M31], logN: Int, numQueries: Int,
         transcript: inout CircleSTARKTranscript
     ) throws -> CircleFRIProofData {
-        let fri = try ensureFRI()
         var currentEvals = evals
         var currentLogN = logN
         var rounds = [CircleFRIRound]()
@@ -309,20 +308,30 @@ public class CircleSTARKProver {
         }
 
         var currentQueryIndices = queryIndices
-        var xFoldRound = 0
+        let inv2 = m31Inverse(M31(v: 2))
 
         while currentLogN > 1 {
             let n = 1 << currentLogN
             let half = n / 2
             let foldAlpha = transcript.squeezeM31()
-            let isFirst = rounds.isEmpty
 
-            let folded = try fri.fold(
-                evals: currentEvals, alpha: foldAlpha,
-                logN: currentLogN, isFirstFold: isFirst,
-                xFoldRound: isFirst ? 0 : xFoldRound
-            )
-            if !isFirst { xFoldRound += 1 }
+            let domain = circleCosetDomain(logN: currentLogN)
+            var twiddles = [M31](repeating: M31.zero, count: half)
+            if rounds.isEmpty {
+                for i in 0..<half { twiddles[i] = domain[i].y }
+            } else {
+                for i in 0..<half { twiddles[i] = domain[i].x }
+            }
+
+            var folded = [M31](repeating: M31.zero, count: half)
+            for i in 0..<half {
+                let fi = currentEvals[i]
+                let fih = currentEvals[i + half]
+                let sum = m31Mul(m31Add(fi, fih), inv2)
+                let invTw2 = m31Mul(inv2, m31Inverse(twiddles[i]))
+                let diff = m31Mul(m31Sub(fi, fih), invTw2)
+                folded[i] = m31Add(sum, m31Mul(foldAlpha, diff))
+            }
 
             let foldedLeaves = folded.map { keccak256(m31ToBytes($0)) }
             let foldedTree = buildKeccakMerkle(foldedLeaves)

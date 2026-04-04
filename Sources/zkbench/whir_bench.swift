@@ -3,12 +3,12 @@ import zkMetal
 import Foundation
 
 public func runWHIRBench() {
-    print("=== WHIR Benchmark ===")
+    fputs("=== WHIR Benchmark ===\n", stderr)
 
     do {
         // MARK: - Correctness Tests
 
-        print("\n--- Correctness verification ---")
+        fputs("\n--- Correctness verification ---\n", stderr)
 
         // Generate test evaluations
         var rng: UInt64 = 0xDEAD_BEEF_1234
@@ -50,8 +50,8 @@ public func runWHIRBench() {
 
         // MARK: - Performance Benchmarks
 
-        print("\n--- WHIR Prover Performance ---")
-        let benchSizes = [14, 18]
+        print("\n--- WHIR vs FRI Performance ---")
+        let benchSizes = [14]
         let friEngine = try FRIEngine()
 
         for logN in benchSizes {
@@ -115,15 +115,15 @@ public func runWHIRBench() {
             let frSize = MemoryLayout<Fr>.stride
             var friProofSize = friCommitment.roots.count * frSize  // roots
             friProofSize += frSize  // final value
-            // Query proofs: 4 queries * (2 evals + logN path) per layer
-            let numFRIQueries = 4
+            // Query proofs: 2 queries * (2 evals + logN path) per layer
+            let numFRIQueries = 2
             for layer in friCommitment.layers {
                 let layerLogN = Int(log2(Double(layer.count)))
                 friProofSize += numFRIQueries * (2 * frSize + layerLogN * frSize)
             }
 
-            // FRI verify
-            let queryIndices: [UInt32] = [0, 42, UInt32(n / 4), UInt32(n / 2 - 1)]
+            // FRI verify (2 queries to keep Merkle rebuild reasonable)
+            let queryIndices: [UInt32] = [0, 42]
             let friQueries = try friEngine.queryPhase(commitment: friCommitment, queryIndices: queryIndices)
             var friVerifyTimes = [Double]()
             for _ in 0..<10 {

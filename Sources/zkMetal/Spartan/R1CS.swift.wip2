@@ -8,7 +8,7 @@ import Foundation
 // MARK: - Sparse Matrix Types
 
 /// A single nonzero entry in a sparse matrix.
-public struct SparseEntry {
+public struct SpartanEntry {
     public let row: Int
     public let col: Int
     public let value: Fr
@@ -23,16 +23,16 @@ public struct SparseEntry {
 /// R1CS instance: A*z . B*z = C*z where . is Hadamard (entry-wise) product.
 ///
 /// Variable layout in z: [1, public_inputs..., witness...]
-public struct R1CSInstance {
+public struct SpartanR1CS {
     public let numConstraints: Int
     public let numVariables: Int
     public let numPublic: Int
-    public let A: [SparseEntry]
-    public let B: [SparseEntry]
-    public let C: [SparseEntry]
+    public let A: [SpartanEntry]
+    public let B: [SpartanEntry]
+    public let C: [SpartanEntry]
 
     public init(numConstraints: Int, numVariables: Int, numPublic: Int,
-                A: [SparseEntry], B: [SparseEntry], C: [SparseEntry]) {
+                A: [SpartanEntry], B: [SpartanEntry], C: [SpartanEntry]) {
         self.numConstraints = numConstraints
         self.numVariables = numVariables
         self.numPublic = numPublic
@@ -70,7 +70,7 @@ public struct R1CSInstance {
     public var paddedN: Int { 1 << logN }
 
     /// Sparse inner product: sum_{(i,j) in M} M[i,j] * eqTau[i] * z[j]
-    public static func sparseInnerProduct(matrix: [SparseEntry], eqTau: [Fr], z: [Fr]) -> Fr {
+    public static func sparseInnerProduct(matrix: [SpartanEntry], eqTau: [Fr], z: [Fr]) -> Fr {
         var result = Fr.zero
         for entry in matrix {
             guard entry.row < eqTau.count && entry.col < z.count else { continue }
@@ -90,12 +90,12 @@ public struct R1CSInstance {
 
 // MARK: - R1CS Builder
 
-public class R1CSBuilder {
+public class SpartanR1CSBuilder {
     public var numPublic: Int = 0
     public var nextVariable: Int = 1  // 0 reserved for constant 1
-    public var constraintsA: [SparseEntry] = []
-    public var constraintsB: [SparseEntry] = []
-    public var constraintsC: [SparseEntry] = []
+    public var constraintsA: [SpartanEntry] = []
+    public var constraintsB: [SpartanEntry] = []
+    public var constraintsC: [SpartanEntry] = []
     public var numConstraints: Int = 0
 
     public init() {}
@@ -111,9 +111,9 @@ public class R1CSBuilder {
     /// Add constraint: (sum a_i*z[i]) * (sum b_j*z[j]) = (sum c_k*z[k])
     public func addConstraint(a: [(Int, Fr)], b: [(Int, Fr)], c: [(Int, Fr)]) {
         let row = numConstraints
-        for (col, val) in a { constraintsA.append(SparseEntry(row: row, col: col, value: val)) }
-        for (col, val) in b { constraintsB.append(SparseEntry(row: row, col: col, value: val)) }
-        for (col, val) in c { constraintsC.append(SparseEntry(row: row, col: col, value: val)) }
+        for (col, val) in a { constraintsA.append(SpartanEntry(row: row, col: col, value: val)) }
+        for (col, val) in b { constraintsB.append(SpartanEntry(row: row, col: col, value: val)) }
+        for (col, val) in c { constraintsC.append(SpartanEntry(row: row, col: col, value: val)) }
         numConstraints += 1
     }
 
@@ -132,18 +132,18 @@ public class R1CSBuilder {
         addConstraint(a: [(a, Fr.one), (0, constant)], b: [(0, Fr.one)], c: [(out, Fr.one)])
     }
 
-    public func build() -> R1CSInstance {
-        R1CSInstance(numConstraints: numConstraints, numVariables: nextVariable,
+    public func build() -> SpartanR1CS {
+        SpartanR1CS(numConstraints: numConstraints, numVariables: nextVariable,
                      numPublic: numPublic, A: constraintsA, B: constraintsB, C: constraintsC)
     }
 }
 
 // MARK: - Example Circuits
 
-extension R1CSBuilder {
+extension SpartanR1CSBuilder {
     /// x^2 + x + 5 = y
-    public static func exampleQuadratic() -> (R1CSInstance, (Fr) -> (publicInputs: [Fr], witness: [Fr])) {
-        let b = R1CSBuilder()
+    public static func exampleQuadratic() -> (SpartanR1CS, (Fr) -> (publicInputs: [Fr], witness: [Fr])) {
+        let b = SpartanR1CSBuilder()
         let y = b.addPublicInput()
         let x = b.addWitness()
         let v1 = b.addWitness()
@@ -162,8 +162,8 @@ extension R1CSBuilder {
     }
 
     /// Synthetic R1CS with n multiply gates for benchmarking.
-    public static func syntheticR1CS(numConstraints n: Int) -> (R1CSInstance, [Fr], [Fr]) {
-        let b = R1CSBuilder()
+    public static func syntheticR1CS(numConstraints n: Int) -> (SpartanR1CS, [Fr], [Fr]) {
+        let b = SpartanR1CSBuilder()
         let y = b.addPublicInput()
         var vars = [Int]()
         let x = b.addWitness()
@@ -186,7 +186,7 @@ extension R1CSBuilder {
 
 // MARK: - Helpers (prefixed to avoid conflicts)
 
-func sparseMatVecSpartan(_ matrix: [SparseEntry], z: [Fr], numRows: Int) -> [Fr] {
+func sparseMatVecSpartan(_ matrix: [SpartanEntry], z: [Fr], numRows: Int) -> [Fr] {
     var result = [Fr](repeating: Fr.zero, count: numRows)
     for entry in matrix {
         guard entry.row < numRows && entry.col < z.count else { continue }

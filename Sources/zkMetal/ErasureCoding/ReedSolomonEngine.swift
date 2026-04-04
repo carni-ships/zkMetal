@@ -208,80 +208,17 @@ public class ReedSolomonGF16Engine {
 
     // MARK: - Systematic Encoding
 
-    /// Encode k data shards into k data + (n-k) parity shards.
-    /// Returns array of n = k + parityCount elements.
-    /// First k elements are the original data (systematic).
+    /// Encode k data shards into n = k + parityCount evaluation shards.
+    /// Treats data as polynomial coefficients and evaluates at n distinct points.
+    /// All shards are evaluations (not systematic -- enables clean Vandermonde decode).
     public func encode(data: [GF16], parityCount: Int) throws -> [GF16] {
         let k = data.count
         let n = k + parityCount
         precondition(n <= 65535, "Total shards must be <= 65535 for GF(2^16)")
 
-        // Build generator matrix: (parityCount x k) Vandermonde submatrix
-        // eval points: g^k, g^(k+1), ..., g^(n-1) for parity rows
-        // generator[i][j] = evalPoint[i]^j
+        // Evaluate data polynomial at n points using GPU
         let evalPoints = gf16EvalPoints(n)
-        var generator = [UInt16](repeating: 0, count: parityCount * k)
-        for i in 0..<parityCount {
-            let alpha = evalPoints[k + i]
-            var alphaPow = GF16.one
-            for j in 0..<k {
-                generator[i * k + j] = alphaPow.value
-                alphaPow = gf16Mul(alphaPow, alpha)
-            }
-        }
-
-        // Upload to GPU
-        let dataSize = k * MemoryLayout<UInt16>.stride
-        guard let dataBuf = device.makeBuffer(length: dataSize, options: .storageModeShared) else {
-            throw RSError.gpuError("Failed to create data buffer")
-        }
-        data.withUnsafeBytes { src in
-            memcpy(dataBuf.contents(), src.baseAddress!, dataSize)
-        }
-
-        let paritySize = parityCount * MemoryLayout<UInt16>.stride
-        guard let parityBuf = device.makeBuffer(length: paritySize, options: .storageModeShared) else {
-            throw RSError.gpuError("Failed to create parity buffer")
-        }
-
-        let genSize = generator.count * MemoryLayout<UInt16>.stride
-        guard let genBuf = device.makeBuffer(bytes: generator, length: genSize, options: .storageModeShared) else {
-            throw RSError.gpuError("Failed to create generator buffer")
-        }
-
-        var kVal = UInt32(k)
-
-        guard let cmdBuf = commandQueue.makeCommandBuffer() else {
-            throw RSError.noCommandBuffer
-        }
-        guard let enc = cmdBuf.makeComputeCommandEncoder() else {
-            throw RSError.gpuError("Failed to create compute encoder")
-        }
-
-        enc.setComputePipelineState(encodeFunction)
-        enc.setBuffer(dataBuf, offset: 0, index: 0)
-        enc.setBuffer(parityBuf, offset: 0, index: 1)
-        enc.setBuffer(genBuf, offset: 0, index: 2)
-        enc.setBuffer(logTableBuf, offset: 0, index: 3)
-        enc.setBuffer(antilogTableBuf, offset: 0, index: 4)
-        enc.setBytes(&kVal, length: 4, index: 5)
-
-        let tgSize = min(parityCount, encodeFunction.maxTotalThreadsPerThreadgroup)
-        enc.dispatchThreads(MTLSize(width: parityCount, height: 1, depth: 1),
-                           threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
-        enc.endEncoding()
-        cmdBuf.commit()
-        cmdBuf.waitUntilCompleted()
-
-        if let error = cmdBuf.error {
-            throw RSError.gpuError(error.localizedDescription)
-        }
-
-        // Combine: data + parity
-        var result = data
-        let parityPtr = parityBuf.contents().bindMemory(to: GF16.self, capacity: parityCount)
-        result.append(contentsOf: UnsafeBufferPointer(start: parityPtr, count: parityCount))
-        return result
+        return try polyEval(coeffs: data, points: evalPoints)
     }
 
     // MARK: - Decoding

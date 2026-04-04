@@ -40,6 +40,7 @@ public struct VerificationItem {
 /// For testing without pairings, we support SRS-secret-based verification:
 ///   Sum r_i*(C_i - v_i*G) == (s)*Sum(r_i*pi_i) - Sum(r_i*z_i*pi_i)
 public class BatchVerifier {
+    public static let version = Versions.batchVerify
     public let msmEngine: MetalMSM
 
     public init() throws {
@@ -106,27 +107,20 @@ public class BatchVerifier {
         let n = items.count
         guard n == scalars.count, n > 0, !srs.isEmpty else { return false }
 
-        fputs("  [dbg] batchVerifyKZGWithScalars n=\(n)\n", stderr)
+        let g = pointFromAffine(srs[0])
 
-        // Compute LHS: Sum r_i*C_i - (Sum r_i*v_i)*G
+        // Compute LHS: Sum r_i*(C_i - v_i*G)
         var lhs = pointIdentity()
         var aggregatedEval = Fr.zero
 
         for i in 0..<n {
-            // r_i * C_i
             let riCi = cPointScalarMul(items[i].commitment, scalars[i])
             lhs = pointAdd(lhs, riCi)
-
-            // r_i * v_i
             aggregatedEval = frAdd(aggregatedEval, frMul(scalars[i], items[i].value))
         }
-        fputs("  [dbg] LHS loop done\n", stderr)
 
-        // Subtract (Sum r_i*v_i)*G from LHS
-        let g = pointFromAffine(srs[0])
         let evalG = cPointScalarMul(g, aggregatedEval)
         lhs = pointAdd(lhs, pointNeg(evalG))
-        fputs("  [dbg] LHS complete\n", stderr)
 
         // Compute RHS: s * Sum(r_i*pi_i) - Sum(r_i*z_i*pi_i)
         var sumRiPi = pointIdentity()
@@ -140,12 +134,13 @@ public class BatchVerifier {
             let riZiPi = cPointScalarMul(items[i].proof, riZi)
             sumRiZiPi = pointAdd(sumRiZiPi, riZiPi)
         }
-        fputs("  [dbg] RHS loops done\n", stderr)
 
         let rhs = pointAdd(cPointScalarMul(sumRiPi, srsSecret), pointNeg(sumRiZiPi))
-        fputs("  [dbg] RHS complete\n", stderr)
 
         // Compare LHS == RHS via affine coordinates
+        if pointIsIdentity(lhs) && pointIsIdentity(rhs) { return true }
+        if pointIsIdentity(lhs) || pointIsIdentity(rhs) { return false }
+
         let lhsAff = batchToAffine([lhs])
         let rhsAff = batchToAffine([rhs])
         return fpToInt(lhsAff[0].x) == fpToInt(rhsAff[0].x) &&
@@ -203,11 +198,12 @@ public class BatchVerifier {
         // RHS = s*B - D
         let rhs = pointAdd(cPointScalarMul(aggProof, srsSecret), pointNeg(weightedProof))
 
+        if pointIsIdentity(lhs) && pointIsIdentity(rhs) { return true }
+        if pointIsIdentity(lhs) || pointIsIdentity(rhs) { return false }
+
         let lhsAff = batchToAffine([lhs])
         let rhsAff = batchToAffine([rhs])
         return fpToInt(lhsAff[0].x) == fpToInt(rhsAff[0].x) &&
                fpToInt(lhsAff[0].y) == fpToInt(rhsAff[0].y)
     }
 }
-
-// fpToFr defined in Folding/HyperNovaEngine.swift

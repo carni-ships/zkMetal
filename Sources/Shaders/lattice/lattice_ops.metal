@@ -14,11 +14,7 @@ constant ulong DIL_BARRETT_M_OPS = 33579385UL;
 constant ulong DIL_BARRETT_SHIFT_OPS = 48;
 
 inline ushort kyber_reduce_ops(uint a) {
-    uint t = (a * KYBER_BARRETT_M_OPS) >> KYBER_BARRETT_SHIFT_OPS;
-    int r = int(a) - int(t) * int(KYBER_Q_OPS);
-    r += (r < 0) ? int(KYBER_Q_OPS) : 0;
-    r -= (r >= int(KYBER_Q_OPS)) ? int(KYBER_Q_OPS) : 0;
-    return ushort(r);
+    return ushort(a % uint(KYBER_Q_OPS));
 }
 
 inline ushort kyber_add_ops(ushort a, ushort b) {
@@ -35,11 +31,7 @@ inline ushort kyber_mul_ops(ushort a, ushort b) {
 }
 
 inline uint dil_reduce_ops(ulong a) {
-    ulong t = (a * DIL_BARRETT_M_OPS) >> DIL_BARRETT_SHIFT_OPS;
-    long r = long(a) - long(t) * long(DIL_Q_OPS);
-    r += (r < 0) ? long(DIL_Q_OPS) : 0;
-    r -= (r >= long(DIL_Q_OPS)) ? long(DIL_Q_OPS) : 0;
-    return uint(r);
+    return uint(a % ulong(DIL_Q_OPS));
 }
 
 inline uint dil_add_ops(uint a, uint b) {

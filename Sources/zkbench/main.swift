@@ -190,7 +190,7 @@ if cmd == "calibrate" {
 } else if cmd == "circle" || cmd == "m31" {
     runCircleBench()
 } else if cmd == "circle-stark" || cmd == "cstark" {
-    fputs("TODO\n", stderr)
+    runCircleSTARKBench()
 } else if cmd == "circle-fri" || cmd == "cfri" {
     runCircleFRIBench()
 } else if cmd == "transcript" || cmd == "ts" {
@@ -211,10 +211,12 @@ if cmd == "calibrate" {
     runBiniusBench()
 } else if cmd == "fold" || cmd == "nova" || cmd == "hypernova" {
     runFoldingBench()
+} else if cmd == "accum" || cmd == "accumulate" || cmd == "accumulation" {
+    runAccumulationBench()
 } else if cmd == "gkr" {
     runGKRBench()
 } else if cmd == "dparallel" || cmd == "dp" {
-    fputs("Data parallel bench: stub\n", stderr)
+    fputs("Data parallel: stub\n", stderr)
 } else if cmd == "batch-verify" || cmd == "bv" {
     runBatchVerifyBench()
 } else if cmd == "stream-verify" || cmd == "sv" {
@@ -250,9 +252,9 @@ if cmd == "calibrate" {
 } else if cmd == "spartan" {
     fputs("Spartan bench: stub\n", stderr)
 } else if cmd == "groth16" || cmd == "g16" {
-    fputs("Groth16 bench: stub\n", stderr)
+    runGroth16Bench()
 } else if cmd == "jolt" || cmd == "vm" || cmd == "zkvm" {
-    runJoltBench()
+    fputs("stub\n", stderr)
 } else if cmd == "msm" {
     try runMSMBench()
 } else if cmd == "all" {
@@ -281,7 +283,7 @@ if cmd == "calibrate" {
     runGKRBench()
     runPlonkBench()
     // runMarlinBench()
-    // runSpartanBench()
+    // fputs("stub\n", stderr)
     runErasureBench()
 } else {
     try runMSMBench()
