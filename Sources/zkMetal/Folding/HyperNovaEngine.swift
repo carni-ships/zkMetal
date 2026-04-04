@@ -12,6 +12,7 @@
 // Reference: "HyperNova: Recursive arguments from folding schemes" (Kothapalli, Setty 2023)
 
 import Foundation
+import NeonFieldOps
 
 // MARK: - Folding Proof
 
@@ -69,7 +70,7 @@ public class HyperNovaEngine {
     // MARK: - Initialize (first instance -> LCCCS)
 
     /// Convert a CCCS with known witness into the initial LCCCS (running instance).
-    /// This is the "base case" — the first instance before any folding.
+    /// This is the "base case" -- the first instance before any folding.
     public func initialize(witness: [Fr], publicInput: [Fr]) -> LCCCS {
         // Build z = [1, publicInput, witness]
         let z = buildZ(publicInput: publicInput, witness: witness)
@@ -78,7 +79,7 @@ public class HyperNovaEngine {
         let commitment = pp.commit(witness: witness)
 
         // Generate random evaluation point r (using Fiat-Shamir)
-        let transcript = Transcript(label: "hypernova-init")
+        let transcript = Transcript(label: "hypernova-init", backend: .keccak256)
         absorbPoint(transcript, commitment)
         for x in publicInput { transcript.absorb(x) }
         let r = transcript.squeezeN(logM)
@@ -86,7 +87,7 @@ public class HyperNovaEngine {
         // Compute v_i = MLE(M_i * z)(r) for each matrix
         let v = ccs.matrices.map { mat -> Fr in
             let mv = mat.mulVec(z)
-            return multilinearEval(evals: padToPow2(mv), point: r)
+            return cMleEvalFold(evals: padToPow2(mv), point: r)
         }
 
         return LCCCS(commitment: commitment, publicInput: publicInput,
@@ -108,29 +109,19 @@ public class HyperNovaEngine {
         let z1 = buildZ(publicInput: running.publicInput, witness: runningWitness)
         let z2 = buildZ(publicInput: new.publicInput, witness: newWitness)
 
-        // Step 1: Compute sigmas (M_i * z1 evaluated at r) and thetas (M_i * z2 evaluated at r)
-        // sigmas should equal running.v (consistency check)
+        // Step 1: Compute sigmas and thetas using C-accelerated MLE eval
         let sigmas = ccs.matrices.map { mat -> Fr in
-            let mv = mat.mulVec(z1)
-            return multilinearEval(evals: padToPow2(mv), point: running.r)
+            let mv = padToPow2(mat.mulVec(z1))
+            return cMleEvalFold(evals: mv, point: running.r)
         }
 
         let thetas = ccs.matrices.map { mat -> Fr in
-            let mv = mat.mulVec(z2)
-            return multilinearEval(evals: padToPow2(mv), point: running.r)
+            let mv = padToPow2(mat.mulVec(z2))
+            return cMleEvalFold(evals: mv, point: running.r)
         }
 
-        // Step 2: Run sumcheck on the cross-term polynomial
-        // The cross-term polynomial g(x) encodes the difference between
-        // the folded constraint and the sum of individual constraints.
-        //
-        // g(x) = sum_j c_j * eq(r, x) * [sum over cross-terms in the product expansion
-        //         of (sigma_i + rho * theta_i)]
-        //
-        // For the sumcheck, we compute g over the boolean hypercube and prove its sum.
-
-        // Build the Fiat-Shamir transcript
-        let transcript = Transcript(label: "hypernova-fold")
+        // Build the Fiat-Shamir transcript (Keccak for speed: NEON-accelerated)
+        let transcript = Transcript(label: "hypernova-fold", backend: .keccak256)
         absorbLCCCS(transcript, running)
         absorbCCCS(transcript, new)
         for s in sigmas { transcript.absorb(s) }
@@ -139,10 +130,8 @@ public class HyperNovaEngine {
         // Get challenge rho for the random linear combination
         let rho = transcript.squeeze()
 
-        // Step 3: Compute folded values
-
-        // Fold commitments: C' = C1 + rho * C2
-        let rhoC2 = pointScalarMul(new.commitment, rho)
+        // Fold commitments: C' = C1 + rho * C2 (C CIOS scalar mul)
+        let rhoC2 = cPointScalarMul(new.commitment, rho)
         let foldedCommitment = pointAdd(running.commitment, rhoC2)
 
         // Fold public inputs: x' = x1 + rho * x2
@@ -166,8 +155,8 @@ public class HyperNovaEngine {
             frAdd(w1, frMul(rho, w2))
         }
 
-        // Build the sumcheck proof (proving consistency of the cross-term)
-        let sumcheckProof = computeCrossTermSumcheck(
+        // Build the sumcheck proof (C-accelerated cross-term)
+        let sumcheckProof = computeCrossTermSumcheckC(
             z1: z1, z2: z2, rho: rho, r: running.r, transcript: transcript)
 
         let proof = FoldingProof(sigmas: sigmas, thetas: thetas, sumcheckProof: sumcheckProof)
@@ -184,8 +173,8 @@ public class HyperNovaEngine {
     /// Checks that the folded LCCCS is consistent with the inputs and proof.
     public func verifyFold(running: LCCCS, new: CCCS, folded: LCCCS,
                            proof: FoldingProof) -> Bool {
-        // Rebuild transcript
-        let transcript = Transcript(label: "hypernova-fold")
+        // Rebuild transcript (must match fold's backend)
+        let transcript = Transcript(label: "hypernova-fold", backend: .keccak256)
         absorbLCCCS(transcript, running)
         absorbCCCS(transcript, new)
         for s in proof.sigmas { transcript.absorb(s) }
@@ -194,7 +183,7 @@ public class HyperNovaEngine {
         let rho = transcript.squeeze()
 
         // Check folded commitment: C' = C1 + rho * C2
-        let expectedC = pointAdd(running.commitment, pointScalarMul(new.commitment, rho))
+        let expectedC = pointAdd(running.commitment, cPointScalarMul(new.commitment, rho))
         guard pointEqual(folded.commitment, expectedC) else { return false }
 
         // Check folded u: u' = u1 + rho
@@ -243,7 +232,7 @@ public class HyperNovaEngine {
         // Check 2: v_i = MLE(M_i * z)(r) for all i
         for i in 0..<ccs.t {
             let mv = ccs.matrices[i].mulVec(z)
-            let eval = multilinearEval(evals: padToPow2(mv), point: lcccs.r)
+            let eval = cMleEvalFold(evals: padToPow2(mv), point: lcccs.r)
             guard frEq(eval, lcccs.v[i]) else {
                 return false
             }
@@ -267,22 +256,25 @@ public class HyperNovaEngine {
         return z
     }
 
-    /// Absorb a projective point into transcript (serialize x, y, z coordinates).
+    /// Absorb a projective point into transcript using C-accelerated affine conversion.
     func absorbPoint(_ transcript: Transcript, _ p: PointProjective) {
-        // Convert to affine for canonical representation
         if pointIsIdentity(p) {
             transcript.absorb(Fr.zero)
             transcript.absorb(Fr.zero)
             return
         }
-        let zInv = fpInverse(p.z)
-        let zInv2 = fpSqr(zInv)
-        let zInv3 = fpMul(zInv, zInv2)
-        let ax = fpMul(p.x, zInv2)
-        let ay = fpMul(p.y, zInv3)
-        // Absorb as Fr (reinterpret Fp limbs as Fr for transcript)
-        transcript.absorb(fpToFr(ax))
-        transcript.absorb(fpToFr(ay))
+        // Use C CIOS projective-to-affine (much faster than Swift fpInverse)
+        var affine = (Fp.zero, Fp.zero)  // x, y as Fp
+        withUnsafeBytes(of: p) { pBuf in
+            withUnsafeMutableBytes(of: &affine) { aBuf in
+                bn254_projective_to_affine(
+                    pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                )
+            }
+        }
+        transcript.absorb(fpToFr(affine.0))
+        transcript.absorb(fpToFr(affine.1))
     }
 
     /// Absorb LCCCS into transcript.
@@ -303,24 +295,16 @@ public class HyperNovaEngine {
     }
 
     /// Compute cross-term sumcheck proof.
-    /// This is a simplified version — proves that the cross-terms are consistent.
+    /// This is a simplified version -- proves that the cross-terms are consistent.
     func computeCrossTermSumcheck(z1: [Fr], z2: [Fr], rho: Fr,
                                   r: [Fr], transcript: Transcript) -> SumcheckFoldProof {
-        // Compute the cross-term: for each constraint row, evaluate the
-        // difference between the folded product and sum of individual products.
-        //
-        // For degree-2 (R1CS case): cross-term_i = (A*z1)_i * (B*z2)_i + (A*z2)_i * (B*z1)_i
-        // scaled by rho.
-
         let numRounds = logM
         var crossTermEvals = [Fr](repeating: .zero, count: 1 << logM)
 
-        // For each multiset term, compute cross-terms
         for j in 0..<ccs.q {
             let sj = ccs.multisets[j]
-            if sj.count < 2 { continue }  // degree-1 terms have no cross-terms
+            if sj.count < 2 { continue }
 
-            // For degree-2 (most common: R1CS), compute A*z1 . B*z2 + A*z2 . B*z1
             if sj.count == 2 {
                 let m0z1 = ccs.matrices[sj[0]].mulVec(z1)
                 let m0z2 = ccs.matrices[sj[0]].mulVec(z2)
@@ -334,12 +318,10 @@ public class HyperNovaEngine {
             }
         }
 
-        // Run simplified sumcheck rounds on the cross-term polynomial
         var roundPolys = [[Fr]]()
         var current = crossTermEvals
         let eqR = eqEvals(point: r)
 
-        // Weight by eq(r, x)
         for i in 0..<current.count {
             if i < eqR.count {
                 current[i] = frMul(current[i], eqR[i])
@@ -356,12 +338,10 @@ public class HyperNovaEngine {
             }
             roundPolys.append([s0, s1])
 
-            // Get challenge for this round
             transcript.absorb(s0)
             transcript.absorb(s1)
             let challenge = transcript.squeeze()
 
-            // Fold: current[j] = (1 - challenge) * current[2j] + challenge * current[2j+1]
             let oneMinusC = frSub(Fr.one, challenge)
             var next = [Fr](repeating: .zero, count: half)
             for j in 0..<half {
@@ -374,6 +354,100 @@ public class HyperNovaEngine {
         let finalEval = current.isEmpty ? Fr.zero : current[0]
         return SumcheckFoldProof(roundPolys: roundPolys, finalEval: finalEval)
     }
+
+    /// C-accelerated cross-term sumcheck using CIOS Montgomery field arithmetic.
+    /// Uses gkr_eq_poly for eq evaluations and C MLE eval.
+    func computeCrossTermSumcheckC(z1: [Fr], z2: [Fr], rho: Fr,
+                                    r: [Fr], transcript: Transcript) -> SumcheckFoldProof {
+        let numRounds = logM
+        let size = 1 << logM
+        var crossTermEvals = [Fr](repeating: .zero, count: size)
+
+        // Compute cross-terms (same math, relies on sparse matrix being fast enough)
+        for j in 0..<ccs.q {
+            let sj = ccs.multisets[j]
+            if sj.count < 2 { continue }
+
+            if sj.count == 2 {
+                let m0z1 = ccs.matrices[sj[0]].mulVec(z1)
+                let m0z2 = ccs.matrices[sj[0]].mulVec(z2)
+                let m1z1 = ccs.matrices[sj[1]].mulVec(z1)
+                let m1z2 = ccs.matrices[sj[1]].mulVec(z2)
+                let rhoTimesC = frMul(rho, ccs.coefficients[j])
+                for i in 0..<min(ccs.m, size) {
+                    let cross = frAdd(frMul(m0z1[i], m1z2[i]), frMul(m0z2[i], m1z1[i]))
+                    crossTermEvals[i] = frAdd(crossTermEvals[i], frMul(rhoTimesC, cross))
+                }
+            }
+        }
+
+        // Weight by eq(r, x) using C-accelerated eq poly
+        var eqR = [Fr](repeating: Fr.zero, count: size)
+        r.withUnsafeBytes { ptBuf in
+            eqR.withUnsafeMutableBytes { evalBuf in
+                gkr_eq_poly(
+                    ptBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(r.count),
+                    evalBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                )
+            }
+        }
+        for i in 0..<size {
+            crossTermEvals[i] = frMul(crossTermEvals[i], eqR[i])
+        }
+
+        // Run sumcheck rounds
+        var roundPolys = [[Fr]]()
+        var current = crossTermEvals
+
+        for round in 0..<numRounds {
+            let half = current.count / 2
+            var s0 = Fr.zero
+            var s1 = Fr.zero
+            for j in 0..<half {
+                s0 = frAdd(s0, current[2 * j])
+                s1 = frAdd(s1, current[2 * j + 1])
+            }
+            roundPolys.append([s0, s1])
+
+            transcript.absorb(s0)
+            transcript.absorb(s1)
+            let challenge = transcript.squeeze()
+
+            let oneMinusC = frSub(Fr.one, challenge)
+            var next = [Fr](repeating: .zero, count: half)
+            for j in 0..<half {
+                next[j] = frAdd(frMul(oneMinusC, current[2 * j]),
+                                frMul(challenge, current[2 * j + 1]))
+            }
+            current = next
+        }
+
+        let finalEval = current.isEmpty ? Fr.zero : current[0]
+        return SumcheckFoldProof(roundPolys: roundPolys, finalEval: finalEval)
+    }
+}
+
+// MARK: - C-accelerated helpers
+
+/// C-accelerated MLE evaluation using bn254_fr_mle_eval.
+func cMleEvalFold(evals: [Fr], point: [Fr]) -> Fr {
+    let numVars = point.count
+    if evals.count != (1 << numVars) { return multilinearEval(evals: evals, point: point) }
+    var result = Fr.zero
+    evals.withUnsafeBytes { evalBuf in
+        point.withUnsafeBytes { ptBuf in
+            withUnsafeMutableBytes(of: &result) { resBuf in
+                bn254_fr_mle_eval(
+                    evalBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(numVars),
+                    ptBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    resBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                )
+            }
+        }
+    }
+    return result
 }
 
 // MARK: - Fp <-> Fr conversion helper

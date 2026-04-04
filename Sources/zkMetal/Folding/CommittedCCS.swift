@@ -151,22 +151,26 @@ public struct PedersenParams {
     }
 
     /// Commit to witness vector w: C = sum_i w_i * G_i
+    /// Uses C CIOS field arithmetic for fast scalar multiplication.
     public func commit(witness: [Fr]) -> PointProjective {
         precondition(witness.count <= generators.count,
                      "Witness too large for SRS: \(witness.count) > \(generators.count)")
         let n = witness.count
+        if n <= 16 {
+            // For small n, direct C scalar-mul accumulation (no Pippenger overhead)
+            var result = pointIdentity()
+            for i in 0..<n {
+                let p = pointFromAffine(generators[i])
+                let sp = cPointScalarMul(p, witness[i])
+                result = pointAdd(result, sp)
+            }
+            return result
+        }
         let pts = Array(generators.prefix(n))
         let scalars = witness.map { scalar -> [UInt32] in
-            let limbs = scalar.to64()
-            return [
-                UInt32(limbs[0] & 0xFFFFFFFF), UInt32(limbs[0] >> 32),
-                UInt32(limbs[1] & 0xFFFFFFFF), UInt32(limbs[1] >> 32),
-                UInt32(limbs[2] & 0xFFFFFFFF), UInt32(limbs[2] >> 32),
-                UInt32(limbs[3] & 0xFFFFFFFF), UInt32(limbs[3] >> 32),
-            ]
+            frToLimbs(scalar)
         }
-        // CPU MSM for commitment (GPU MSM would be used for large witnesses)
-        return cpuMSM(points: pts, scalars: scalars)
+        return cPippengerMSM(points: pts, scalars: scalars)
     }
 
     /// Commit using GPU MSM engine for larger witnesses.

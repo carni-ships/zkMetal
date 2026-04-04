@@ -339,7 +339,7 @@ C CIOS Montgomery acceleration: eq polynomial, sumcheck rounds, wiring reduction
 
 | Primitive | Key Benchmark | Notes |
 |-----------|---------------|-------|
-| HyperNova fold | 3.7ms/fold (10-1000 steps) | CCS folding, MSM+cross-term dominated |
+| HyperNova fold | 0.11ms/fold (10-1000 steps) | Keccak256 transcript + C CIOS: **33x** improvement (3.6ms→0.11ms) |
 | Basefold open 2^18 | 144ms | NTT-free multilinear PCS |
 | Brakedown PCS | -- | Crashes on some hardware (signal 139) |
 | Zeromorph PCS | -- | Crashes on some hardware (signal 139) |
@@ -402,7 +402,7 @@ Methodology: Compute-bound = total_ops / 3.6T flops (BN254 mul = ~64 32-bit muls
 | 13 | Keccak Merkle 2^20 | 13ms | ~2.2ms | Compute (24 rounds x 64-bit) + 20 levels | ~6x |
 | 14 | Blake3 Batch 2^20 | 3.5ms | ~0.6ms | Bandwidth (2^20 x 64B) | ~6x |
 | 15 | Circle STARK prove 2^14 | 56ms | ~10ms | Multi-phase pipeline (LDE+commit+FRI, 5+ dispatches) | ~6x |
-| 16 | HyperNova per-fold | 3.7ms | ~0.7ms | MSM dominated (commitment + cross-term) | ~5x |
+| 16 | HyperNova per-fold | 0.11ms | ~0.07ms | Near floor: C CIOS + Keccak transcript (33x from 3.6ms) | ~1.6x |
 | 17 | secp256k1 MSM 2^18 | 77ms | ~15ms | No GLV, wider scatter than BN254 | ~5x |
 | 18 | Poseidon2 batch 2^16 | 8.1ms | ~1.8ms | Compute (390 ops/elem, 22 sequential rounds limit parallelism) | ~4.5x |
 | 19 | Radix Sort 2^20 | 2.1ms | ~1ms | Vectorized histogram + flat clearing | ~2x |
