@@ -1,6 +1,0 @@
-cargo:rustc-link-search=native=/Users/carnation/Documents/Claude/zkMetal/.build/release
-cargo:rustc-link-lib=dylib=zkMetal-ffi
-cargo:rustc-link-lib=framework=Metal
-cargo:rustc-link-lib=framework=Foundation
-cargo:rerun-if-env-changed=ZKMETAL_LIB_DIR
-cargo:rerun-if-changed=build.rs
