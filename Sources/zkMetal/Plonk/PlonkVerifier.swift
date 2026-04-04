@@ -52,6 +52,9 @@ public class PlonkVerifier {
         absorbPoint(transcript, proof.tLoCommit)
         absorbPoint(transcript, proof.tMidCommit)
         absorbPoint(transcript, proof.tHiCommit)
+        for extraCommit in proof.tExtraCommits {
+            absorbPoint(transcript, extraCommit)
+        }
 
         // Round 4
         let zeta = transcript.squeeze()
@@ -110,6 +113,29 @@ public class PlonkVerifier {
         rCommit = pointAdd(rCommit, cPointScalarMul(setup.selectorCommitments[2], proof.cEval))  // qO
         rCommit = pointAdd(rCommit, setup.selectorCommitments[4])  // qC (coeff = 1)
 
+        // Custom gate selectors
+        // Range: scalar = a*(1-a) = a - a^2
+        let aEvalSq = frSqr(proof.aEval)
+        let rangeScalar = frSub(proof.aEval, aEvalSq)
+        rCommit = pointAdd(rCommit, cPointScalarMul(setup.selectorCommitments[5], rangeScalar))  // qRange
+
+        // Lookup: scalar = prod(a - t_i) for all table values
+        var lookupScalar = Fr.zero
+        for table in setup.lookupTables {
+            if table.values.isEmpty { continue }
+            var prod = Fr.one
+            for tVal in table.values {
+                prod = frMul(prod, frSub(proof.aEval, tVal))
+            }
+            lookupScalar = frAdd(lookupScalar, prod)
+        }
+        rCommit = pointAdd(rCommit, cPointScalarMul(setup.selectorCommitments[6], lookupScalar))  // qLookup
+
+        // Poseidon: scalar = c - a*b^2
+        let bEvalSq = frSqr(proof.bEval)
+        let poseidonScalar = frSub(proof.cEval, frMul(proof.aEval, bEvalSq))
+        rCommit = pointAdd(rCommit, cPointScalarMul(setup.selectorCommitments[7], poseidonScalar))  // qPoseidon
+
         // Permutation part with z
         let zCoeff = frAdd(frMul(alpha, permNum), frMul(alpha2, l1Zeta))
         rCommit = pointAdd(rCommit, cPointScalarMul(proof.zCommit, zCoeff))
@@ -118,11 +144,16 @@ public class PlonkVerifier {
         let sigma3Coeff = frSub(Fr.zero, frMul(alpha, permDenPartial))
         rCommit = pointAdd(rCommit, cPointScalarMul(setup.permutationCommitments[2], sigma3Coeff))
 
-        // Quotient part
-        let zetaN2 = frSqr(zetaN)
+        // Quotient part: sum_k(zeta^{k*n} * [t_k])
         var tCommit = proof.tLoCommit
-        tCommit = pointAdd(tCommit, cPointScalarMul(proof.tMidCommit, zetaN))
-        tCommit = pointAdd(tCommit, cPointScalarMul(proof.tHiCommit, zetaN2))
+        var zetaNPow = zetaN
+        tCommit = pointAdd(tCommit, cPointScalarMul(proof.tMidCommit, zetaNPow))
+        zetaNPow = frMul(zetaNPow, zetaN)
+        tCommit = pointAdd(tCommit, cPointScalarMul(proof.tHiCommit, zetaNPow))
+        for extraCommit in proof.tExtraCommits {
+            zetaNPow = frMul(zetaNPow, zetaN)
+            tCommit = pointAdd(tCommit, cPointScalarMul(extraCommit, zetaNPow))
+        }
         rCommit = pointAdd(rCommit, cPointScalarMul(tCommit, frSub(Fr.zero, zhZeta)))
 
         // --- Verify KZG openings ---
@@ -211,6 +242,10 @@ public class PlonkVerifier {
         let term2 = frAdd(frAdd(proof.bEval, frMul(beta, proof.sigma2Eval)), gamma)
         let term3 = frAdd(proof.cEval, gamma)
         let permCorr = frMul(frMul(frMul(term1, term2), term3), proof.zOmegaEval)
+        // Note: custom gate contributions (range, lookup, poseidon) are fully determined
+        // by wire evaluations and don't add correction terms to the linearization eval,
+        // because the custom selector polynomials are opened via their commitments
+        // with known scalar multipliers in the commitment reconstruction.
         return frAdd(frMul(alpha, permCorr), frMul(alpha2, l1Zeta))
     }
 }

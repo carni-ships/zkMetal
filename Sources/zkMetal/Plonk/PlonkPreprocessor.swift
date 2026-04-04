@@ -17,7 +17,7 @@ import NeonFieldOps
 // MARK: - Setup result
 
 public struct PlonkSetup {
-    public let selectorCommitments: [PointProjective]   // [qL], [qR], [qO], [qM], [qC]
+    public let selectorCommitments: [PointProjective]   // [qL], [qR], [qO], [qM], [qC], [qRange], [qLookup], [qPoseidon]
     public let permutationCommitments: [PointProjective] // [sigma1], [sigma2], [sigma3]
     public let selectorPolys: [[Fr]]       // coefficient form (after iNTT)
     public let permutationPolys: [[Fr]]    // coefficient form
@@ -30,6 +30,7 @@ public struct PlonkSetup {
     public let k1: Fr                      // coset generator for b-column
     public let k2: Fr                      // coset generator for c-column
     public let srsSecret: Fr               // toxic waste (for test verification only)
+    public let lookupTables: [PlonkLookupTable]  // lookup tables for lookup gates
 }
 
 // MARK: - Preprocessor
@@ -63,6 +64,9 @@ public class PlonkPreprocessor {
         var qOEvals = [Fr](repeating: Fr.zero, count: n)
         var qMEvals = [Fr](repeating: Fr.zero, count: n)
         var qCEvals = [Fr](repeating: Fr.zero, count: n)
+        var qRangeEvals = [Fr](repeating: Fr.zero, count: n)
+        var qLookupEvals = [Fr](repeating: Fr.zero, count: n)
+        var qPoseidonEvals = [Fr](repeating: Fr.zero, count: n)
 
         for i in 0..<circuit.numGates {
             let g = circuit.gates[i]
@@ -71,6 +75,9 @@ public class PlonkPreprocessor {
             qOEvals[i] = g.qO
             qMEvals[i] = g.qM
             qCEvals[i] = g.qC
+            qRangeEvals[i] = g.qRange
+            qLookupEvals[i] = g.qLookup
+            qPoseidonEvals[i] = g.qPoseidon
         }
 
         // 3. iNTT to get coefficient form
@@ -79,9 +86,14 @@ public class PlonkPreprocessor {
         let qOCoeffs = try ntt.intt(qOEvals)
         let qMCoeffs = try ntt.intt(qMEvals)
         let qCCoeffs = try ntt.intt(qCEvals)
+        let qRangeCoeffs = try ntt.intt(qRangeEvals)
+        let qLookupCoeffs = try ntt.intt(qLookupEvals)
+        let qPoseidonCoeffs = try ntt.intt(qPoseidonEvals)
 
-        let selectorPolys = [qLCoeffs, qRCoeffs, qOCoeffs, qMCoeffs, qCCoeffs]
-        let selectorEvals = [qLEvals, qREvals, qOEvals, qMEvals, qCEvals]
+        let selectorPolys = [qLCoeffs, qRCoeffs, qOCoeffs, qMCoeffs, qCCoeffs,
+                             qRangeCoeffs, qLookupCoeffs, qPoseidonCoeffs]
+        let selectorEvals = [qLEvals, qREvals, qOEvals, qMEvals, qCEvals,
+                             qRangeEvals, qLookupEvals, qPoseidonEvals]
 
         // 4. Commit to selector polynomials
         var selectorCommitments = [PointProjective]()
@@ -181,7 +193,8 @@ public class PlonkPreprocessor {
             srs: kzg.srs,
             k1: k1,
             k2: k2,
-            srsSecret: srsSecret
+            srsSecret: srsSecret,
+            lookupTables: circuit.lookupTables
         )
     }
 }

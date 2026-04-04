@@ -22,6 +22,7 @@ public struct PlonkProof {
     public let tLoCommit: PointProjective        // quotient poly, low degree chunk
     public let tMidCommit: PointProjective       // quotient poly, mid degree chunk
     public let tHiCommit: PointProjective        // quotient poly, high degree chunk
+    public let tExtraCommits: [PointProjective]  // additional quotient chunks (for high-degree custom gates)
     public let aEval: Fr                         // a(zeta)
     public let bEval: Fr                         // b(zeta)
     public let cEval: Fr                         // c(zeta)
@@ -147,6 +148,9 @@ public class PlonkProver {
         let qOCoeffsR3 = setup.selectorPolys[2]
         let qMCoeffsR3 = setup.selectorPolys[3]
         let qCCoeffsR3 = setup.selectorPolys[4]
+        let qRangeCoeffsR3 = setup.selectorPolys[5]
+        let qLookupCoeffsR3 = setup.selectorPolys[6]
+        let qPoseidonCoeffsR3 = setup.selectorPolys[7]
         let sigma1CoeffsR3 = setup.permutationPolys[0]
         let sigma2CoeffsR3 = setup.permutationPolys[1]
         let sigma3CoeffsR3 = setup.permutationPolys[2]
@@ -157,6 +161,39 @@ public class PlonkProver {
         gateCoeffs = polyAddCoeffs(gateCoeffs, try polyMulNTT(qOCoeffsR3, cCoeffs, ntt: ntt))
         gateCoeffs = polyAddCoeffs(gateCoeffs, try polyMulNTT(qMCoeffsR3, try polyMulNTT(aCoeffs, bCoeffs, ntt: ntt), ntt: ntt))
         gateCoeffs = polyAddCoeffs(gateCoeffs, qCCoeffsR3)
+
+        // Custom gate: Range constraint: qRange * a * (1 - a) = 0
+        // = qRange * (a - a^2) = qRange * a - qRange * a * a
+        let qRangeTimesA = try polyMulNTT(qRangeCoeffsR3, aCoeffs, ntt: ntt)
+        let qRangeTimesASq = try polyMulNTT(qRangeCoeffsR3, try polyMulNTT(aCoeffs, aCoeffs, ntt: ntt), ntt: ntt)
+        gateCoeffs = polyAddCoeffs(gateCoeffs, polySubCoeffs(qRangeTimesA, qRangeTimesASq))
+
+        // Custom gate: Lookup constraint: qLookup * prod(a - t_i) = 0
+        // prod(a(x) - t_i) has degree n*|table|, so we must use polynomial multiplication.
+        // Start with polynomial (a(x) - t_0) and multiply by (a(x) - t_1), etc.
+        if !setup.lookupTables.isEmpty {
+            for table in setup.lookupTables {
+                if table.values.isEmpty { continue }
+                // Build prod(a(x) - t_i) via iterated polynomial multiplication
+                var vanishPoly = polySubCoeffs(aCoeffs, [table.values[0]])  // a(x) - t_0
+                for k in 1..<table.values.count {
+                    let factor = polySubCoeffs(aCoeffs, [table.values[k]])  // a(x) - t_k
+                    vanishPoly = try polyMulNTT(vanishPoly, factor, ntt: ntt)
+                }
+                let lookupConstraint = try polyMulNTT(qLookupCoeffsR3, vanishPoly, ntt: ntt)
+                gateCoeffs = polyAddCoeffs(gateCoeffs, lookupConstraint)
+            }
+        }
+
+        // Custom gate: Poseidon S-box constraint: qPoseidon * (c - a * b * b) = 0
+        // where b = a^2 (ensured by a prior standard mul gate), so a*b*b = a*a^4 = a^5
+        // Compute: a * b * b
+        let abCoeffs = try polyMulNTT(aCoeffs, bCoeffs, ntt: ntt)
+        let abbCoeffs = try polyMulNTT(abCoeffs, bCoeffs, ntt: ntt)
+        // c - a*b*b
+        let sboxDiff = polySubCoeffs(cCoeffs, abbCoeffs)
+        let poseidonConstraint = try polyMulNTT(qPoseidonCoeffsR3, sboxDiff, ntt: ntt)
+        gateCoeffs = polyAddCoeffs(gateCoeffs, poseidonConstraint)
 
         // Build id_k(x) polynomials: id1(x) = x (identity), id2(x) = k1*x, id3(x) = k2*x
         // On domain omega^i: id1(omega^i) = omega^i = domain[i]
@@ -208,30 +245,35 @@ public class PlonkProver {
         // Since the numerator vanishes on the domain, it is divisible by Z_H
         let tCoeffs = polyDivideByVanishing(numCoeffs, n: n)
 
-        // Split t into 3 chunks of degree n: t = t_lo + x^n * t_mid + x^{2n} * t_hi
-        let tLoCoeffs = Array(tCoeffs.prefix(n)) + [Fr](repeating: Fr.zero, count: max(0, n - tCoeffs.prefix(n).count))
-        let tMidCoeffs: [Fr]
-        let tHiCoeffs: [Fr]
-        if tCoeffs.count > n {
-            let mid = Array(tCoeffs.dropFirst(n).prefix(n))
-            tMidCoeffs = mid + [Fr](repeating: Fr.zero, count: max(0, n - mid.count))
-        } else {
-            tMidCoeffs = [Fr](repeating: Fr.zero, count: n)
-        }
-        if tCoeffs.count > 2 * n {
-            let hi = Array(tCoeffs.dropFirst(2 * n).prefix(n))
-            tHiCoeffs = hi + [Fr](repeating: Fr.zero, count: max(0, n - hi.count))
-        } else {
-            tHiCoeffs = [Fr](repeating: Fr.zero, count: n)
+        // Split t into chunks of degree n: t = t_0 + x^n * t_1 + x^{2n} * t_2 + ...
+        let numChunks = max(3, (tCoeffs.count + n - 1) / n)
+        var tChunkCoeffs = [[Fr]]()
+        for c in 0..<numChunks {
+            let start = c * n
+            if start < tCoeffs.count {
+                let chunk = Array(tCoeffs.dropFirst(start).prefix(n))
+                tChunkCoeffs.append(chunk + [Fr](repeating: Fr.zero, count: max(0, n - chunk.count)))
+            } else {
+                tChunkCoeffs.append([Fr](repeating: Fr.zero, count: n))
+            }
         }
 
-        let tLoCommit = try kzg.commit(tLoCoeffs)
-        let tMidCommit = try kzg.commit(tMidCoeffs)
-        let tHiCommit = try kzg.commit(tHiCoeffs)
+        let tLoCoeffs = tChunkCoeffs[0]
+        let tMidCoeffs = tChunkCoeffs[1]
+        let tHiCoeffs = tChunkCoeffs[2]
 
-        absorbPoint(transcript, tLoCommit)
-        absorbPoint(transcript, tMidCommit)
-        absorbPoint(transcript, tHiCommit)
+        var tChunkCommits = [PointProjective]()
+        for chunk in tChunkCoeffs {
+            tChunkCommits.append(try kzg.commit(chunk))
+        }
+
+        let tLoCommit = tChunkCommits[0]
+        let tMidCommit = tChunkCommits[1]
+        let tHiCommit = tChunkCommits[2]
+
+        for commit in tChunkCommits {
+            absorbPoint(transcript, commit)
+        }
 
         // ========== Round 4: Evaluate at challenge zeta ==========
 
@@ -268,6 +310,9 @@ public class PlonkProver {
         let qOCoeffs = setup.selectorPolys[2]
         let qMCoeffs = setup.selectorPolys[3]
         let qCCoeffs = setup.selectorPolys[4]
+        let qRangeCoeffs = setup.selectorPolys[5]
+        let qLookupCoeffs = setup.selectorPolys[6]
+        let qPoseidonCoeffs = setup.selectorPolys[7]
         let sigma3Coeffs = setup.permutationPolys[2]
 
         // Compute L_1(zeta) = (zeta^n - 1) / (n * (zeta - 1))
@@ -280,13 +325,40 @@ public class PlonkProver {
         var rCoeffs = [Fr](repeating: Fr.zero, count: n)
 
         // Gate part: a_z*b_z*qM + a_z*qL + b_z*qR + c_z*qO + qC
+        //   + qRange*(a_z - a_z^2)
+        //   + qLookup*vanish(a_z)
+        //   + qPoseidon*(c_z - a_z*b_z*b_z)
         let abZeta = frMul(aZeta, bZeta)
+
+        // Range: a*(1-a) = a - a^2
+        let aZetaSq = frSqr(aZeta)
+        let rangeScalar = frSub(aZeta, aZetaSq)
+
+        // Lookup: prod(a_z - t_i) for all table values
+        var lookupScalar = Fr.zero
+        for table in setup.lookupTables {
+            if table.values.isEmpty { continue }
+            var prod = Fr.one
+            for tVal in table.values {
+                prod = frMul(prod, frSub(aZeta, tVal))
+            }
+            lookupScalar = frAdd(lookupScalar, prod)
+        }
+
+        // Poseidon: c - a*b*b = c - a*b^2
+        let bZetaSq = frSqr(bZeta)
+        let poseidonScalar = frSub(cZeta, frMul(aZeta, bZetaSq))
+
         for i in 0..<n {
             var val = frMul(abZeta, qMCoeffs[i])
             val = frAdd(val, frMul(aZeta, qLCoeffs[i]))
             val = frAdd(val, frMul(bZeta, qRCoeffs[i]))
             val = frAdd(val, frMul(cZeta, qOCoeffs[i]))
             val = frAdd(val, qCCoeffs[i])
+            // Custom gate contributions
+            val = frAdd(val, frMul(rangeScalar, qRangeCoeffs[i]))
+            val = frAdd(val, frMul(lookupScalar, qLookupCoeffs[i]))
+            val = frAdd(val, frMul(poseidonScalar, qPoseidonCoeffs[i]))
             rCoeffs[i] = val
         }
 
@@ -312,18 +384,25 @@ public class PlonkProver {
             rCoeffs[i] = frAdd(rCoeffs[i], frMul(alpha2, frMul(l1Zeta, zCoeffs[i])))
         }
 
-        // Subtract Z_H(zeta) * (t_lo + zeta^n * t_mid + zeta^{2n} * t_hi)
-        let zetaN2 = frSqr(zetaN)
+        // Subtract Z_H(zeta) * sum_k(zeta^{k*n} * t_k)
         for i in 0..<n {
-            var tVal = tLoCoeffs[i]
-            tVal = frAdd(tVal, frMul(zetaN, tMidCoeffs[i]))
-            tVal = frAdd(tVal, frMul(zetaN2, tHiCoeffs[i]))
+            var tVal = Fr.zero
+            var zetaNPow = Fr.one
+            for c in 0..<numChunks {
+                tVal = frAdd(tVal, frMul(zetaNPow, tChunkCoeffs[c][i]))
+                zetaNPow = frMul(zetaNPow, zetaN)
+            }
             rCoeffs[i] = frSub(rCoeffs[i], frMul(zhZeta, tVal))
         }
 
         // Opening proof at zeta: batch open r, a, b, c, sigma1, sigma2
         // W_zeta = (r(x) + v*a(x) + v^2*b(x) + v^3*c(x) + v^4*sigma1(x) + v^5*sigma2(x) - [r(z) + v*a(z) + ...]) / (x - zeta)
         let rZeta = polyEval(rCoeffs, at: zeta)
+
+        // Evaluate custom selector polys at zeta for the opening proof
+        let qRangeZeta = polyEval(qRangeCoeffs, at: zeta)
+        let qLookupZeta = polyEval(qLookupCoeffs, at: zeta)
+        let qPoseidonZeta = polyEval(qPoseidonCoeffs, at: zeta)
 
         var combinedCoeffs = [Fr](repeating: Fr.zero, count: n)
         let polysToOpen = [rCoeffs, aCoeffs, bCoeffs, cCoeffs, setup.permutationPolys[0], setup.permutationPolys[1]]
@@ -353,10 +432,13 @@ public class PlonkProver {
         let wZetaOmegaCoeffs = syntheticDivide(zShifted, root: zetaOmega)
         let shiftedOpeningProof = try kzg.commit(wZetaOmegaCoeffs)
 
+        let tExtraCommits = numChunks > 3 ? Array(tChunkCommits.dropFirst(3)) : []
+
         return PlonkProof(
             aCommit: aCommit, bCommit: bCommit, cCommit: cCommit,
             zCommit: zCommit,
             tLoCommit: tLoCommit, tMidCommit: tMidCommit, tHiCommit: tHiCommit,
+            tExtraCommits: tExtraCommits,
             aEval: aZeta, bEval: bZeta, cEval: cZeta,
             sigma1Eval: sigma1Zeta, sigma2Eval: sigma2Zeta,
             zOmegaEval: zOmegaZeta,
