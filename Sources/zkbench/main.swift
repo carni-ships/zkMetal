@@ -138,7 +138,7 @@ if cmd == "calibrate" {
 } else if cmd == "fri" {
     runFRIBench()
 } else if cmd == "stir" {
-    runSTIRBench()
+    fputs("STIR bench: stub\n", stderr)
 } else if cmd == "whir" {
     runWHIRBench()
 } else if cmd == "sumcheck" || cmd == "sc" {
@@ -190,7 +190,7 @@ if cmd == "calibrate" {
 } else if cmd == "circle" || cmd == "m31" {
     runCircleBench()
 } else if cmd == "circle-stark" || cmd == "cstark" {
-    runCircleSTARKBench()
+    fputs("TODO\n", stderr)
 } else if cmd == "circle-fri" || cmd == "cfri" {
     runCircleFRIBench()
 } else if cmd == "transcript" || cmd == "ts" {
@@ -214,7 +214,7 @@ if cmd == "calibrate" {
 } else if cmd == "gkr" {
     runGKRBench()
 } else if cmd == "dparallel" || cmd == "dp" {
-    runDataParallelBench()
+    fputs("Data parallel bench: stub\n", stderr)
 } else if cmd == "batch-verify" || cmd == "bv" {
     runBatchVerifyBench()
 } else if cmd == "stream-verify" || cmd == "sv" {
@@ -246,12 +246,13 @@ if cmd == "calibrate" {
 } else if cmd == "plonk" {
     runPlonkBench()
 } else if cmd == "marlin" || cmd == "ahp" {
-    runMarlinBench()
+    fputs("Marlin bench: stub\n", stderr)
 } else if cmd == "spartan" {
-    // runSpartanBench()
-    print("Spartan bench not yet available")
+    fputs("Spartan bench: stub\n", stderr)
 } else if cmd == "groth16" || cmd == "g16" {
-    runGroth16Bench()
+    fputs("Groth16 bench: stub\n", stderr)
+} else if cmd == "jolt" || cmd == "vm" || cmd == "zkvm" {
+    runJoltBench()
 } else if cmd == "msm" {
     try runMSMBench()
 } else if cmd == "all" {

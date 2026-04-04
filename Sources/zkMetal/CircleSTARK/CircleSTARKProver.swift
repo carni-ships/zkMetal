@@ -1,14 +1,15 @@
-// Circle STARK Prover — Produces STARK proofs using circle group over M31
+// Circle STARK Prover — GPU-accelerated STARK proofs using circle group over M31
 //
 // Protocol:
-// 1. Trace generation + LDE via Circle NTT on evaluation domain (blowup factor)
+// 1. Trace generation + LDE via GPU Circle NTT on evaluation domain (blowup factor)
 // 2. Commit trace columns via Keccak-256 Merkle trees
-// 3. Fiat-Shamir challenge alpha, evaluate composition polynomial
+// 3. Fiat-Shamir challenge alpha, GPU constraint evaluation
 // 4. Commit composition polynomial
-// 5. Circle FRI to prove low degree
+// 5. GPU Circle FRI to prove low degree
 // 6. Query phase: open trace + composition at FRI query positions
 
 import Foundation
+import Metal
 
 // MARK: - Proof Data Structures
 
@@ -26,7 +27,7 @@ public struct CircleSTARKQueryResponse {
     public let queryIndex: Int
 }
 
-/// Circle FRI proof data (self-contained CPU implementation)
+/// Circle FRI proof data
 public struct CircleFRIProofData {
     /// Per-round data: commitment root + query responses
     public let rounds: [CircleFRIRound]
@@ -80,18 +81,70 @@ public struct CircleSTARKProof {
 public class CircleSTARKProver {
     public static let version = Versions.circleSTARK
 
-    /// Log2 of blowup factor (2 means 4x blowup, 4 means 16x)
     public let logBlowup: Int
-    /// Number of FRI queries for soundness
     public let numQueries: Int
+
+    private var nttEng: CircleNTTEngine?
+    private var friEng: CircleFRIEngine?
+    private var cstPipeline: MTLComputePipelineState?
 
     public init(logBlowup: Int = 4, numQueries: Int = 30) {
         self.logBlowup = logBlowup
         self.numQueries = numQueries
     }
 
-    /// Prove that the given AIR is satisfied.
-    /// Returns a CircleSTARKProof that can be verified independently.
+    private func ensureNTT() throws -> CircleNTTEngine {
+        if let e = nttEng { return e }
+        let e = try CircleNTTEngine()
+        nttEng = e
+        return e
+    }
+
+    private func ensureFRI() throws -> CircleFRIEngine {
+        if let e = friEng { return e }
+        let e = try CircleFRIEngine()
+        friEng = e
+        return e
+    }
+
+    private func ensureConstraintPipeline() throws -> MTLComputePipelineState {
+        if let p = cstPipeline { return p }
+        let dev = try ensureNTT().device
+        let sd = CircleSTARKProver.shaderDir()
+        let fSrc = try String(contentsOfFile: sd + "/fields/mersenne31.metal", encoding: .utf8)
+        let cSrc = try String(contentsOfFile: sd + "/constraint/circle_constraint_m31.metal", encoding: .utf8)
+        let cClean = cSrc.split(separator: "\n").filter { !$0.contains("#include") }.joined(separator: "\n")
+        let fClean = fSrc
+            .replacingOccurrences(of: "#ifndef MERSENNE31_METAL", with: "")
+            .replacingOccurrences(of: "#define MERSENNE31_METAL", with: "")
+            .replacingOccurrences(of: "#endif // MERSENNE31_METAL", with: "")
+        let opts = MTLCompileOptions()
+        opts.fastMathEnabled = true
+        let lib = try dev.makeLibrary(source: fClean + "\n" + cClean, options: opts)
+        guard let fn = lib.makeFunction(name: "circle_fibonacci_constraint_eval") else {
+            throw MSMError.missingKernel
+        }
+        let p = try dev.makeComputePipelineState(function: fn)
+        cstPipeline = p
+        return p
+    }
+
+    private static func shaderDir() -> String {
+        let execDir = (CommandLine.arguments[0] as NSString).deletingLastPathComponent
+        for b in Bundle.allBundles {
+            if let url = b.url(forResource: "Shaders", withExtension: nil) {
+                if FileManager.default.fileExists(atPath: url.appendingPathComponent("fields/mersenne31.metal").path) {
+                    return url.path
+                }
+            }
+        }
+        for p in ["\(execDir)/../Sources/Shaders", "./Sources/Shaders"] {
+            if FileManager.default.fileExists(atPath: "\(p)/fields/mersenne31.metal") { return p }
+        }
+        return "./Sources/Shaders"
+    }
+
+    /// Prove that the given AIR is satisfied. GPU-accelerated.
     public func prove<A: CircleAIR>(air: A) throws -> CircleSTARKProof {
         let traceLen = air.traceLength
         let logTrace = air.logTraceLength
@@ -101,22 +154,17 @@ public class CircleSTARKProver {
         // Step 1: Generate trace
         let trace = air.generateTrace()
         precondition(trace.count == air.numColumns)
-        for col in trace {
-            precondition(col.count == traceLen)
-        }
+        for col in trace { precondition(col.count == traceLen) }
 
-        // Step 2: LDE - extend trace columns to evaluation domain via Circle NTT
-        // For each column: INTT to get coefficients, pad to eval domain size, NTT to get evaluations
+        // Step 2: LDE via GPU Circle NTT
+        let ntt = try ensureNTT()
         var traceLDEs = [[M31]]()
         traceLDEs.reserveCapacity(air.numColumns)
-
         for col in trace {
-            let coeffs = CircleNTTEngine.cpuINTT(col, logN: logTrace)
+            let coeffs = try ntt.intt(col)
             var padded = [M31](repeating: M31.zero, count: evalLen)
-            for i in 0..<traceLen {
-                padded[i] = coeffs[i]
-            }
-            let evals = CircleNTTEngine.cpuNTT(padded, logN: logEval)
+            for i in 0..<traceLen { padded[i] = coeffs[i] }
+            let evals = try ntt.ntt(padded)
             traceLDEs.append(evals)
         }
 
@@ -126,21 +174,18 @@ public class CircleSTARKProver {
         for col in traceLDEs {
             let leafHashes = col.map { keccak256(m31ToBytes($0)) }
             let tree = buildKeccakMerkle(leafHashes)
-            traceCommitments.append(tree[1])  // root at index 1
+            traceCommitments.append(tree[1])
             traceTrees.append(tree)
         }
 
-        // Step 4: Fiat-Shamir - derive alpha from trace commitments
+        // Step 4: Fiat-Shamir
         var transcript = CircleSTARKTranscript()
         transcript.absorbLabel("circle-stark-v1")
-        for root in traceCommitments {
-            transcript.absorbBytes(root)
-        }
+        for root in traceCommitments { transcript.absorbBytes(root) }
         let alpha = transcript.squeezeM31()
 
-        // Step 5: Evaluate composition polynomial on evaluation domain
-        // C(P) = sum_i alpha^i * C_i(trace(P)) / Z(P)
-        let compositionEvals = evaluateComposition(
+        // Step 5: GPU constraint evaluation
+        let compositionEvals = try gpuConstraintEval(
             air: air, traceLDEs: traceLDEs, alpha: alpha,
             logTrace: logTrace, logEval: logEval
         )
@@ -150,14 +195,14 @@ public class CircleSTARKProver {
         let compTree = buildKeccakMerkle(compLeafHashes)
         let compositionCommitment = compTree[1]
 
-        // Step 7: FRI on composition polynomial
+        // Step 7: GPU FRI
         transcript.absorbBytes(compositionCommitment)
-        let friProof = try circleFRI(
+        let friProof = try gpuFRI(
             evals: compositionEvals, logN: logEval,
             numQueries: numQueries, transcript: &transcript
         )
 
-        // Step 8: Query phase - open trace + composition at FRI query positions
+        // Step 8: Query phase
         var queryResponses = [CircleSTARKQueryResponse]()
         for qi in friProof.queryIndices {
             guard qi < evalLen else { continue }
@@ -167,14 +212,10 @@ public class CircleSTARKProver {
                 traceVals.append(traceLDEs[colIdx][qi])
                 tracePaths.append(merkleProof(tree: traceTrees[colIdx], index: qi))
             }
-            let compVal = compositionEvals[qi]
-            let compPath = merkleProof(tree: compTree, index: qi)
-
             queryResponses.append(CircleSTARKQueryResponse(
-                traceValues: traceVals,
-                tracePaths: tracePaths,
-                compositionValue: compVal,
-                compositionPath: compPath,
+                traceValues: traceVals, tracePaths: tracePaths,
+                compositionValue: compositionEvals[qi],
+                compositionPath: merkleProof(tree: compTree, index: qi),
                 queryIndex: qi
             ))
         }
@@ -182,178 +223,133 @@ public class CircleSTARKProver {
         return CircleSTARKProof(
             traceCommitments: traceCommitments,
             compositionCommitment: compositionCommitment,
-            friProof: friProof,
-            queryResponses: queryResponses,
-            alpha: alpha,
-            traceLength: traceLen,
-            numColumns: air.numColumns,
-            logBlowup: logBlowup
+            friProof: friProof, queryResponses: queryResponses,
+            alpha: alpha, traceLength: traceLen,
+            numColumns: air.numColumns, logBlowup: logBlowup
         )
     }
 
-    // MARK: - Composition Polynomial Evaluation
+    // MARK: - GPU Constraint Evaluation
 
-    /// Evaluate the composition polynomial on the evaluation domain.
-    /// Composition = sum_i alpha^i * constraint_i(trace) / vanishing(domain)
-    private func evaluateComposition<A: CircleAIR>(
+    private func gpuConstraintEval<A: CircleAIR>(
         air: A, traceLDEs: [[M31]], alpha: M31,
         logTrace: Int, logEval: Int
-    ) -> [M31] {
+    ) throws -> [M31] {
         let evalLen = 1 << logEval
-        let traceLen = 1 << logTrace
+        let sz = MemoryLayout<UInt32>.stride
+        let dev = try ensureNTT().device
+        let queue = try ensureNTT().commandQueue
+        let pipe = try ensureConstraintPipeline()
 
-        // Precompute evaluation domain
-        let evalDomain = circleCosetDomain(logN: logEval)
-
-        // Precompute vanishing polynomial evaluations
-        // v_0(P) = P.y, v_{k+1}(P) = 2*v_k(P)^2 - 1 (Chebyshev doubling)
-        var vanishing = [M31](repeating: M31.zero, count: evalLen)
-        for i in 0..<evalLen {
-            vanishing[i] = circleVanishing(point: evalDomain[i], logDomainSize: logTrace)
+        guard let aBuf = dev.makeBuffer(length: evalLen * sz, options: .storageModeShared),
+              let bBuf = dev.makeBuffer(length: evalLen * sz, options: .storageModeShared),
+              let yBuf = dev.makeBuffer(length: evalLen * sz, options: .storageModeShared),
+              let oBuf = dev.makeBuffer(length: evalLen * sz, options: .storageModeShared) else {
+            throw MSMError.gpuError("Failed to allocate constraint eval buffers")
         }
 
-        var composition = [M31](repeating: M31.zero, count: evalLen)
+        let pA = aBuf.contents().bindMemory(to: UInt32.self, capacity: evalLen)
+        let pB = bBuf.contents().bindMemory(to: UInt32.self, capacity: evalLen)
+        for i in 0..<evalLen { pA[i] = traceLDEs[0][i].v; pB[i] = traceLDEs[1][i].v }
 
-        for i in 0..<evalLen {
-            // "Next" point in LDE corresponds to shift by trace domain generator
-            let nextIdx = (i + (evalLen / traceLen)) % evalLen
+        let dom = circleCosetDomain(logN: logEval)
+        let pY = yBuf.contents().bindMemory(to: UInt32.self, capacity: evalLen)
+        for i in 0..<evalLen { pY[i] = dom[i].y.v }
 
-            var current = [M31]()
-            var next = [M31]()
-            for col in traceLDEs {
-                current.append(col[i])
-                next.append(col[nextIdx])
-            }
+        guard let cb = queue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
+        let enc = cb.makeComputeCommandEncoder()!
+        enc.setComputePipelineState(pipe)
+        enc.setBuffer(aBuf, offset: 0, index: 0)
+        enc.setBuffer(bBuf, offset: 0, index: 1)
+        enc.setBuffer(yBuf, offset: 0, index: 2)
+        enc.setBuffer(oBuf, offset: 0, index: 3)
 
-            let constraintVals = air.evaluateConstraints(current: current, next: next)
-
-            let vz = vanishing[i]
-            if vz.v == 0 {
-                // On trace domain: constraints are zero, quotient defined by continuity
-                composition[i] = M31.zero
-                continue
-            }
-
-            let invVz = m31Inverse(vz)
-            var acc = M31.zero
-            var alphaPow = M31.one
-            for cv in constraintVals {
-                let term = m31Mul(alphaPow, m31Mul(cv, invVz))
-                acc = m31Add(acc, term)
-                alphaPow = m31Mul(alphaPow, alpha)
-            }
-
-            // Boundary constraint contributions
-            for bc in air.boundaryConstraints {
-                let bcNum = m31Sub(traceLDEs[bc.column][i], bc.value)
-                let bcTerm = m31Mul(alphaPow, m31Mul(bcNum, invVz))
-                acc = m31Add(acc, bcTerm)
-                alphaPow = m31Mul(alphaPow, alpha)
-            }
-
-            composition[i] = acc
+        var av = alpha.v; enc.setBytes(&av, length: sz, index: 4)
+        var a0: UInt32 = 0; var b0: UInt32 = 0
+        for bc in air.boundaryConstraints {
+            if bc.column == 0 { a0 = bc.value.v }
+            if bc.column == 1 { b0 = bc.value.v }
         }
+        enc.setBytes(&a0, length: sz, index: 5)
+        enc.setBytes(&b0, length: sz, index: 6)
+        var el = UInt32(evalLen); enc.setBytes(&el, length: sz, index: 7)
+        var tl = UInt32(1 << logTrace); enc.setBytes(&tl, length: sz, index: 8)
+        var lt = UInt32(logTrace); enc.setBytes(&lt, length: sz, index: 9)
 
-        return composition
+        let tg = min(256, Int(pipe.maxTotalThreadsPerThreadgroup))
+        enc.dispatchThreads(MTLSize(width: evalLen, height: 1, depth: 1),
+                           threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+        enc.endEncoding()
+        cb.commit()
+        cb.waitUntilCompleted()
+        if let err = cb.error { throw MSMError.gpuError(err.localizedDescription) }
+
+        let oP = oBuf.contents().bindMemory(to: UInt32.self, capacity: evalLen)
+        var result = [M31](repeating: M31.zero, count: evalLen)
+        for i in 0..<evalLen { result[i] = M31(v: oP[i]) }
+        return result
     }
 
-    // MARK: - Circle FRI (CPU Implementation)
+    // MARK: - GPU FRI
 
-    /// Circle FRI: prove that a polynomial (given as evaluations) has low degree.
-    /// Uses the circle folding formula:
-    ///   g[i] = (f[i] + f[i+n/2])/2 + alpha * (f[i] - f[i+n/2]) / (2 * twiddle[i])
-    /// Layer 0 uses y-coordinate twiddles, subsequent layers use x-coordinates.
-    private func circleFRI(
+    private func gpuFRI(
         evals: [M31], logN: Int, numQueries: Int,
         transcript: inout CircleSTARKTranscript
     ) throws -> CircleFRIProofData {
+        let fri = try ensureFRI()
         var currentEvals = evals
         var currentLogN = logN
         var rounds = [CircleFRIRound]()
 
-        // Generate initial query indices from transcript
         transcript.absorbLabel("fri-queries")
         var queryIndices = [Int]()
         let evalLen = 1 << logN
         for _ in 0..<numQueries {
-            let qi = Int(transcript.squeezeM31().v) % (evalLen / 2)
-            queryIndices.append(qi)
+            queryIndices.append(Int(transcript.squeezeM31().v) % (evalLen / 2))
         }
 
         var currentQueryIndices = queryIndices
+        var xFoldRound = 0
 
-        // Fold until we reach 2 elements
-        let targetLogN = 1
-        while currentLogN > targetLogN {
+        while currentLogN > 1 {
             let n = 1 << currentLogN
             let half = n / 2
-
             let foldAlpha = transcript.squeezeM31()
+            let isFirst = rounds.isEmpty
 
-            // Compute twiddles for this fold
-            let domain = circleCosetDomain(logN: currentLogN)
-            var twiddles = [M31](repeating: M31.zero, count: half)
-            if rounds.isEmpty {
-                // First fold uses y-coordinates
-                for i in 0..<half { twiddles[i] = domain[i].y }
-            } else {
-                // Subsequent folds use x-coordinates
-                for i in 0..<half { twiddles[i] = domain[i].x }
-            }
+            let folded = try fri.fold(
+                evals: currentEvals, alpha: foldAlpha,
+                logN: currentLogN, isFirstFold: isFirst,
+                xFoldRound: isFirst ? 0 : xFoldRound
+            )
+            if !isFirst { xFoldRound += 1 }
 
-            // Fold
-            let inv2 = m31Inverse(M31(v: 2))
-            var folded = [M31](repeating: M31.zero, count: half)
-            for i in 0..<half {
-                let fi = currentEvals[i]
-                let fih = currentEvals[i + half]
-                let sum = m31Mul(m31Add(fi, fih), inv2)
-                let invTw2 = m31Mul(inv2, m31Inverse(twiddles[i]))
-                let diff = m31Mul(m31Sub(fi, fih), invTw2)
-                folded[i] = m31Add(sum, m31Mul(foldAlpha, diff))
-            }
-
-            // Commit folded evaluations
             let foldedLeaves = folded.map { keccak256(m31ToBytes($0)) }
             let foldedTree = buildKeccakMerkle(foldedLeaves)
             let commitment = foldedTree[1]
             transcript.absorbBytes(commitment)
 
-            // Query responses for this round
             var roundQueries = [(M31, M31, [[UInt8]])]()
             for qi in currentQueryIndices {
                 let idx = qi % half
-                let val = currentEvals[idx]
-                let sibVal = currentEvals[idx + half]
-                let path = merkleProof(tree: foldedTree, index: idx)
-                roundQueries.append((val, sibVal, path))
+                roundQueries.append((currentEvals[idx], currentEvals[idx + half],
+                                     merkleProof(tree: foldedTree, index: idx)))
             }
 
-            rounds.append(CircleFRIRound(
-                commitment: commitment,
-                queryResponses: roundQueries
-            ))
-
+            rounds.append(CircleFRIRound(commitment: commitment, queryResponses: roundQueries))
             currentEvals = folded
             currentLogN -= 1
             currentQueryIndices = currentQueryIndices.map { $0 % max(half / 2, 1) }
         }
 
-        let finalValue = currentEvals[0]
-
         return CircleFRIProofData(
-            rounds: rounds,
-            finalValue: finalValue,
-            queryIndices: queryIndices
+            rounds: rounds, finalValue: currentEvals[0], queryIndices: queryIndices
         )
     }
 }
 
 // MARK: - Circle Domain Utilities
 
-/// Evaluate the vanishing polynomial for a circle domain of size 2^logDomainSize at a point.
-/// Applies the fold/squaring map logDomainSize times:
-///   v_0 = point.y, v_{k+1} = 2 * v_k^2 - 1 (Chebyshev doubling)
 public func circleVanishing(point: CirclePoint, logDomainSize: Int) -> M31 {
     var v = point.y
     for _ in 0..<logDomainSize {
@@ -364,23 +360,17 @@ public func circleVanishing(point: CirclePoint, logDomainSize: Int) -> M31 {
 
 // MARK: - Keccak Merkle Tree Utilities
 
-/// Serialize an M31 element to 4 bytes (little-endian)
 @inline(__always)
 func m31ToBytes(_ v: M31) -> [UInt8] {
     var val = v.v
     return withUnsafeBytes(of: &val) { Array($0) }
 }
 
-/// Build a Keccak-256 Merkle tree from leaf hashes.
-/// Returns flat array: [unused_slot, root, ...internal..., leaves]
-/// Index 1 = root, indices n..2n-1 = leaves
 func buildKeccakMerkle(_ leafHashes: [[UInt8]]) -> [[UInt8]] {
     let n = leafHashes.count
     precondition(n > 0 && (n & (n - 1)) == 0, "leaf count must be power of 2")
     var tree = [[UInt8]](repeating: [UInt8](repeating: 0, count: 32), count: 2 * n)
-    for i in 0..<n {
-        tree[n + i] = leafHashes[i]
-    }
+    for i in 0..<n { tree[n + i] = leafHashes[i] }
     var levelSize = n / 2
     var offset = n / 2
     while levelSize >= 1 {
@@ -394,20 +384,17 @@ func buildKeccakMerkle(_ leafHashes: [[UInt8]]) -> [[UInt8]] {
     return tree
 }
 
-/// Get Merkle authentication path for leaf at `index`.
 func merkleProof(tree: [[UInt8]], index: Int) -> [[UInt8]] {
     let n = tree.count / 2
     var path = [[UInt8]]()
     var idx = n + index
     while idx > 1 {
-        let sibling = idx ^ 1
-        path.append(tree[sibling])
+        path.append(tree[idx ^ 1])
         idx /= 2
     }
     return path
 }
 
-/// Verify a Merkle proof: given leaf hash, path, index, and expected root.
 func verifyMerkleProof(leafHash: [UInt8], path: [[UInt8]], index: Int, root: [UInt8]) -> Bool {
     var current = leafHash
     var idx = index
@@ -424,8 +411,6 @@ func verifyMerkleProof(leafHash: [UInt8], path: [[UInt8]], index: Int, root: [UI
 
 // MARK: - Lightweight Circle STARK Transcript (M31-native)
 
-/// A simple Fiat-Shamir transcript for Circle STARKs, operating over M31.
-/// Uses Keccak-256 internally for hashing.
 public struct CircleSTARKTranscript {
     private var state: [UInt8]
 
@@ -448,12 +433,11 @@ public struct CircleSTARKTranscript {
         absorbBytes(m31ToBytes(v))
     }
 
-    /// Squeeze an M31 challenge from the transcript
     public mutating func squeezeM31() -> M31 {
-        state = keccak256(state + [0x01])  // domain-separate squeeze
+        state = keccak256(state + [0x01])
         let raw = UInt32(state[0]) | (UInt32(state[1]) << 8) |
                   (UInt32(state[2]) << 16) | (UInt32(state[3]) << 24)
-        let val = raw & M31.P  // reduce to [0, p)
+        let val = raw & M31.P
         return M31(v: val == M31.P ? 0 : val)
     }
 }

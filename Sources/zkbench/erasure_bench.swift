@@ -325,3 +325,8 @@ func cpuRSEncode(data: [GF16], parityCount: Int) -> [GF16] {
     }
     return result
 }
+
+// MARK: - Stubs for missing bench functions (auto-generated engines not yet complete)
+// These prevent build errors when main.swift references them.
+
+func _stubMsg(_ name: String) { fputs("[\(name)] not yet available\n", stderr) }
