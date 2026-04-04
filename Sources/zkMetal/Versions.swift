@@ -14,6 +14,7 @@ public enum Versions {
     // --- Hash ---
     public static let poseidon2       = PrimitiveVersion(version: "1.3.0", updated: "2026-04-03")
     public static let poseidon2M31    = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
+    public static let poseidon2BabyBear = PrimitiveVersion(version: "1.0.0", updated: "2026-04-04")
     public static let keccak256       = PrimitiveVersion(version: "1.2.0", updated: "2026-04-02")
     public static let blake3          = PrimitiveVersion(version: "1.1.0", updated: "2026-04-02")
     public static let poseidon2Merkle = PrimitiveVersion(version: "1.2.0", updated: "2026-04-03")
@@ -31,6 +32,7 @@ public enum Versions {
     public static let msmVesta       = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let msmEd25519     = PrimitiveVersion(version: "1.0.0", updated: "2026-04-04")
     public static let msmGrumpkin    = PrimitiveVersion(version: "1.0.0", updated: "2026-04-04")
+    public static let msmBN254G2    = PrimitiveVersion(version: "1.0.0", updated: "2026-04-04")
 
     // --- Signatures ---
     public static let eddsa          = PrimitiveVersion(version: "1.0.0", updated: "2026-04-04")
@@ -106,6 +108,7 @@ public enum Versions {
         let entries: [(String, PrimitiveVersion)] = [
             ("Poseidon2",         poseidon2),
             ("Poseidon2 M31",    poseidon2M31),
+            ("Poseidon2 BB",     poseidon2BabyBear),
             ("Keccak-256",        keccak256),
             ("SHA-256",            sha256),
             ("Blake3",            blake3),
@@ -120,6 +123,7 @@ public enum Versions {
             ("MSM Vesta",         msmVesta),
             ("MSM Ed25519",       msmEd25519),
             ("MSM Grumpkin",      msmGrumpkin),
+            ("MSM BN254 G2",     msmBN254G2),
             ("EdDSA Ed25519",    eddsa),
             ("BLS Signature",    blsSignature),
             ("Schnorr BIP340",   schnorr),

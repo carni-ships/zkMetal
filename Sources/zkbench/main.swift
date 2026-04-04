@@ -127,6 +127,8 @@ if cmd == "calibrate" {
     runPoseidon2Bench()
 } else if cmd == "poseidon2-m31" || cmd == "p2m31" {
     runPoseidon2M31Bench()
+} else if cmd == "poseidon2-bb" || cmd == "p2bb" {
+    runPoseidon2BabyBearBench()
 } else if cmd == "keccak" || cmd == "k256" {
     runKeccakBench()
 } else if cmd == "merkle" {
@@ -223,6 +225,8 @@ if cmd == "calibrate" {
     runGrumpkinTest()
 } else if cmd == "grumpkinmsm" || cmd == "grumpkin-msm" {
     runGrumpkinMSMBench()
+} else if cmd == "g2msm" || cmd == "g2-msm" || cmd == "bn254g2" {
+    runG2MSMBench()
 } else if cmd == "pasta" {
     runPastaTest()
 } else if cmd == "pastamsm" || cmd == "pasta-msm" {
@@ -289,6 +293,7 @@ if cmd == "calibrate" {
     runBLS12377NTTBench()
     runStark252Bench()
     runPoseidon2Bench()
+    runPoseidon2BabyBearBench()
     runKeccakBench()
     runMerkleBench()
     runPolyBench()
