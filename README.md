@@ -295,6 +295,17 @@ secp256k1 ECDSA using C CIOS Montgomery field arithmetic. Previous version (Swif
 
 GPU-accelerated Circle STARK prover over Mersenne31 with Fibonacci AIR. Full GPU pipeline: Circle NTT for LDE, GPU constraint evaluation, GPU Keccak Merkle trees (hash_m31 + level-by-level tree), CPU FRI fold with GPU Merkle per round. Previous version (CPU Merkle): 785ms at 2^12 — GPU Merkle gives **45×** improvement.
 
+### Plonk (BN254, KZG)
+
+| Gates | Setup | Prove | Verify |
+|-------|-------|-------|--------|
+| 16 | 9ms | 17ms | 3ms |
+| 64 | 13ms | 25ms | 3ms |
+| 256 | 17ms | 54ms | 3ms |
+| 1024 | 35ms | 164ms | 3ms |
+
+Preprocessed Plonk prover with KZG polynomial commitments over BN254. NTT-based polynomial multiplication for quotient computation. Previous version (naive O(n^2) poly mul): 7365ms at n=1024 — GPU NTT gives **43×** improvement.
+
 ### Circle NTT (Mersenne31, GPU)
 
 | Size | GPU Time | Throughput |

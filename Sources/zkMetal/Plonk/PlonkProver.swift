@@ -152,10 +152,10 @@ public class PlonkProver {
         let sigma3CoeffsR3 = setup.permutationPolys[2]
 
         // Gate constraint: qL*a + qR*b + qO*c + qM*a*b + qC
-        var gateCoeffs = polyMulCoeffs(qLCoeffsR3, aCoeffs)
-        gateCoeffs = polyAddCoeffs(gateCoeffs, polyMulCoeffs(qRCoeffsR3, bCoeffs))
-        gateCoeffs = polyAddCoeffs(gateCoeffs, polyMulCoeffs(qOCoeffsR3, cCoeffs))
-        gateCoeffs = polyAddCoeffs(gateCoeffs, polyMulCoeffs(qMCoeffsR3, polyMulCoeffs(aCoeffs, bCoeffs)))
+        var gateCoeffs = try polyMulNTT(qLCoeffsR3, aCoeffs, ntt: ntt)
+        gateCoeffs = polyAddCoeffs(gateCoeffs, try polyMulNTT(qRCoeffsR3, bCoeffs, ntt: ntt))
+        gateCoeffs = polyAddCoeffs(gateCoeffs, try polyMulNTT(qOCoeffsR3, cCoeffs, ntt: ntt))
+        gateCoeffs = polyAddCoeffs(gateCoeffs, try polyMulNTT(qMCoeffsR3, try polyMulNTT(aCoeffs, bCoeffs, ntt: ntt), ntt: ntt))
         gateCoeffs = polyAddCoeffs(gateCoeffs, qCCoeffsR3)
 
         // Build id_k(x) polynomials: id1(x) = x (identity), id2(x) = k1*x, id3(x) = k2*x
@@ -176,7 +176,7 @@ public class PlonkProver {
         let permN1 = polyAddCoeffs(polyAddCoeffs(aCoeffs, polyScaleCoeffs(id1Coeffs, beta)), gammaConst)
         let permN2 = polyAddCoeffs(polyAddCoeffs(bCoeffs, polyScaleCoeffs(id2Coeffs, beta)), gammaConst)
         let permN3 = polyAddCoeffs(polyAddCoeffs(cCoeffs, polyScaleCoeffs(id3Coeffs, beta)), gammaConst)
-        let permNumPoly = polyMulCoeffs(polyMulCoeffs(polyMulCoeffs(permN1, permN2), permN3), zCoeffs)
+        let permNumPoly = try polyMulNTT(try polyMulNTT(try polyMulNTT(permN1, permN2, ntt: ntt), permN3, ntt: ntt), zCoeffs, ntt: ntt)
 
         // Permutation denominator: (a + beta*sigma1 + gamma)(b + beta*sigma2 + gamma)(c + beta*sigma3 + gamma) * z(omega*x)
         let permD1 = polyAddCoeffs(polyAddCoeffs(aCoeffs, polyScaleCoeffs(sigma1CoeffsR3, beta)), gammaConst)
@@ -184,7 +184,7 @@ public class PlonkProver {
         let permD3 = polyAddCoeffs(polyAddCoeffs(cCoeffs, polyScaleCoeffs(sigma3CoeffsR3, beta)), gammaConst)
         // z(omega*x) has coefficients z[i] * omega^i
         let zOmegaCoeffs = polyShift(zCoeffs, omega: omega)
-        let permDenPoly = polyMulCoeffs(polyMulCoeffs(polyMulCoeffs(permD1, permD2), permD3), zOmegaCoeffs)
+        let permDenPoly = try polyMulNTT(try polyMulNTT(try polyMulNTT(permD1, permD2, ntt: ntt), permD3, ntt: ntt), zOmegaCoeffs, ntt: ntt)
 
         let permCoeffs = polySubCoeffs(permNumPoly, permDenPoly)
 
@@ -196,7 +196,7 @@ public class PlonkProver {
         let l1Coeffs = try ntt.intt(l1Evals)
         var zMinus1Coeffs = zCoeffs
         zMinus1Coeffs[0] = frSub(zMinus1Coeffs[0], Fr.one)
-        let boundaryCoeffs = polyMulCoeffs(zMinus1Coeffs, l1Coeffs)
+        let boundaryCoeffs = try polyMulNTT(zMinus1Coeffs, l1Coeffs, ntt: ntt)
 
         // Combine: numerator = gate + alpha * perm + alpha^2 * boundary
         let alpha2 = frSqr(alpha)
@@ -414,6 +414,7 @@ func syntheticDivide(_ coeffs: [Fr], root: Fr) -> [Fr] {
 }
 
 /// Multiply two polynomials (coefficient form) naively in O(n*m).
+/// Used only for small polynomials; large ones should use polyMulNTT.
 func polyMulCoeffs(_ a: [Fr], _ b: [Fr]) -> [Fr] {
     if a.isEmpty || b.isEmpty { return [] }
     let n = a.count + b.count - 1
@@ -424,6 +425,29 @@ func polyMulCoeffs(_ a: [Fr], _ b: [Fr]) -> [Fr] {
         }
     }
     return result
+}
+
+/// NTT-based polynomial multiplication in O(n log n) using GPU NTT.
+func polyMulNTT(_ a: [Fr], _ b: [Fr], ntt: NTTEngine) throws -> [Fr] {
+    if a.isEmpty || b.isEmpty { return [] }
+    let resultLen = a.count + b.count - 1
+    var logM = 0
+    while (1 << logM) < resultLen { logM += 1 }
+    let m = 1 << logM
+
+    var aPad = [Fr](repeating: Fr.zero, count: m)
+    for i in 0..<a.count { aPad[i] = a[i] }
+    var bPad = [Fr](repeating: Fr.zero, count: m)
+    for i in 0..<b.count { bPad[i] = b[i] }
+
+    let aEvals = try ntt.ntt(aPad)
+    let bEvals = try ntt.ntt(bPad)
+
+    var cEvals = [Fr](repeating: Fr.zero, count: m)
+    for i in 0..<m { cEvals[i] = frMul(aEvals[i], bEvals[i]) }
+
+    let result = try ntt.intt(cEvals)
+    return Array(result.prefix(resultLen))
 }
 
 /// Add two polynomials (coefficient form).
