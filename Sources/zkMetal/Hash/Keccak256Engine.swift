@@ -97,8 +97,8 @@ public class Keccak256Engine {
         enc.setComputePipelineState(hash64Function)
         enc.setBuffer(inputBuf, offset: 0, index: 0)
         enc.setBuffer(outputBuf, offset: 0, index: 1)
-        var count = UInt32(n)
-        enc.setBytes(&count, length: 4, index: 2)
+        var countVal = UInt32(n)
+        enc.setBytes(&countVal, length: 4, index: 2)
         let tg = min(tuning.hashThreadgroupSize, Int(hash64Function.maxTotalThreadsPerThreadgroup))
         enc.dispatchThreads(MTLSize(width: n, height: 1, depth: 1),
                            threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))

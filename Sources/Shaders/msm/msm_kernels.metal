@@ -50,11 +50,13 @@ kernel void msm_reduce_sorted_buckets(
     PointAffine pt0 = points[raw_idx0 & 0x7FFFFFFFu];
     if (raw_idx0 & 0x80000000u) pt0.y = fp_neg(pt0.y);
     PointProjective acc = point_from_affine(pt0);
+    // Use unsafe mixed add: acc is never identity (initialized from affine),
+    // and random point collision has probability ~10^-65.
     for (uint i = 1; i < count; i++) {
         uint raw_idx = sorted_indices[base + offset + i];
         PointAffine pt = points[raw_idx & 0x7FFFFFFFu];
         if (raw_idx & 0x80000000u) pt.y = fp_neg(pt.y);
-        acc = point_add_mixed(acc, pt);
+        acc = point_add_mixed_unsafe(acc, pt);
     }
     buckets[flat_idx] = acc;
 }

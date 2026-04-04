@@ -79,6 +79,27 @@ PointProjective point_add_mixed(PointProjective p, PointAffine q) {
     return result;
 }
 
+// Fast mixed addition: no identity/doubling checks.
+// Use only when p is guaranteed non-identity and p != ±q.
+// Saves branch overhead in tight MSM bucket reduction loops.
+PointProjective point_add_mixed_unsafe(PointProjective p, PointAffine q) {
+    Fp z1z1 = fp_mul(p.z, p.z);
+    Fp u2 = fp_mul(q.x, z1z1);
+    Fp s2 = fp_mul(q.y, fp_mul(p.z, z1z1));
+    Fp h = fp_sub(u2, p.x);
+    PointProjective result;
+    result.z = fp_double(fp_mul(p.z, h));
+    Fp hh = fp_mul(h, h);
+    Fp i = fp_double(fp_double(hh));
+    Fp v = fp_mul(p.x, i);
+    Fp j = fp_mul(h, i);
+    Fp rr = fp_double(fp_sub(s2, p.y));
+    result.x = fp_sub(fp_sub(fp_mul(rr, rr), j), fp_double(v));
+    result.y = fp_sub(fp_mul(rr, fp_sub(v, result.x)),
+                      fp_double(fp_mul(p.y, j)));
+    return result;
+}
+
 // Full addition: projective + projective
 // Uses fp_mul(a,a) instead of fp_sqr to reduce register pressure
 PointProjective point_add(PointProjective p, PointProjective q) {

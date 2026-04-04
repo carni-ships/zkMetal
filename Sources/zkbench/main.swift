@@ -19,7 +19,7 @@ func runMSMBench() throws {
     let gProj = pointFromAffine(PointAffine(x: gx, y: gy))
 
     // Generate max points once, slice for smaller sizes
-    let logSizes = [8, 10, 12, 14, 16, 17, 18, 20]
+    let logSizes = CommandLine.arguments.contains("--quick") ? [16, 18] : [8, 10, 12, 14, 16, 17, 18, 20]
     let sizes = logSizes.map { 1 << $0 }
     let maxN = sizes.last!
 
@@ -48,12 +48,22 @@ func runMSMBench() throws {
         allScalars.append(limbs)
     }
 
+    let doProfile = CommandLine.arguments.contains("--profile")
+
     for n in sizes {
         let points = Array(allPoints.prefix(n))
         let scalars = Array(allScalars.prefix(n))
 
         // Warmup
         let _ = try engine.msm(points: points, scalars: scalars)
+
+        // Profile run (one extra run with instrumentation)
+        if doProfile && (n == 1 << 16 || n == 1 << 18) {
+            fputs("  --- Profile for 2^\(Int(log2(Double(n)))) ---\n", stderr)
+            engine.profileMSM = true
+            let _ = try engine.msm(points: points, scalars: scalars)
+            engine.profileMSM = false
+        }
 
         // Timed runs
         let runs = 5

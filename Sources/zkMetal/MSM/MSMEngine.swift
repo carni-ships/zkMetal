@@ -273,8 +273,10 @@ public class MetalMSM {
     }
 
     public var useGLV = true
+    public var profileMSM = false
 
     public func msm(points: [PointAffine], scalars: [[UInt32]]) throws -> PointProjective {
+        let _tStart = profileMSM ? CFAbsoluteTimeGetCurrent() : 0
         let n = points.count
         guard n == scalars.count, n > 0 else {
             throw MSMError.invalidInput
@@ -285,9 +287,6 @@ public class MetalMSM {
             return cPippengerMSM(points: points, scalars: scalars)
         }
 
-        var msmPoints = points
-        // Reduce scalars mod r to prevent signed-digit carry overflow
-        var msmScalars = scalars.map { Self.reduceModR($0) }
         var scalarBits = 256
 
         var flatScalarBuf: UnsafeMutablePointer<UInt32>? = nil
@@ -321,10 +320,13 @@ public class MetalMSM {
             let scalarInBuf = glvScalarInBufCached!
             let k1MetalBuf = glvK1MetalBufCached!
 
-            let scalarDst = scalarInBuf.contents().assumingMemoryBound(to: UInt8.self)
-            for i in 0..<n {
-                scalars[i].withUnsafeBufferPointer { sp in
-                    memcpy(scalarDst + i * 32, sp.baseAddress!, 32)
+            // Bulk copy scalars — contiguous memcpy when possible
+            let scalarDst = scalarInBuf.contents().assumingMemoryBound(to: UInt32.self)
+            scalars.withUnsafeBufferPointer { scalarsArrayBuf in
+                for i in 0..<n {
+                    scalarsArrayBuf[i].withUnsafeBufferPointer { sp in
+                        memcpy(scalarDst + i * 8, sp.baseAddress!, 32)
+                    }
                 }
             }
 
@@ -340,7 +342,7 @@ public class MetalMSM {
             scalarBits = 128
         }
 
-        let effectiveN = glvN > 0 ? 2 * glvN : msmPoints.count
+        let effectiveN = glvN > 0 ? 2 * glvN : points.count
 
         var windowBits: UInt32
         if effectiveN <= 256 {
@@ -375,12 +377,13 @@ public class MetalMSM {
         }
 
 
+        if profileMSM { let _tp = CFAbsoluteTimeGetCurrent(); fputs(String(format: "  [profile] setup+alloc: %.2f ms\n", (_tp - _tStart) * 1000), stderr) }
         let gpuPtsPtr = pointsBuffer.contents().bindMemory(to: PointAffine.self, capacity: effectiveN)
-        let useGpuSort = glvN > 0 && signedDigitBuffer != nil && effectiveN >= 262144
+        let useGpuSort = false  // CPU sort always wins on M-series (GPU sync overhead > CPU work)
         var endoCmdBuf: MTLCommandBuffer? = nil
         if glvN > 0 {
             // Copy points to GPU buffer before dispatching (shared mode = CPU writes visible to GPU)
-            msmPoints.withUnsafeBufferPointer { src in
+            points.withUnsafeBufferPointer { src in
                 gpuPtsPtr.update(from: src.baseAddress!, count: glvN)
             }
             guard let cmdBuf = commandQueue.makeCommandBuffer() else {
@@ -436,7 +439,7 @@ public class MetalMSM {
             cmdBuf.commit()
             endoCmdBuf = cmdBuf
         } else {
-            msmPoints.withUnsafeBufferPointer { src in
+            points.withUnsafeBufferPointer { src in
                 gpuPtsPtr.update(from: src.baseAddress!, count: effectiveN)
             }
         }
@@ -535,8 +538,9 @@ public class MetalMSM {
                             }
                         }
                     } else {
+                        let reducedScalar = Self.reduceModR(scalars[i])
                         for w in 0..<nWLocal {
-                            var digit = UInt32(self.extractBucketIndex(msmScalars[i], windowBits: wbLocal, windowIndex: w)) &+ carry
+                            var digit = UInt32(self.extractBucketIndex(reducedScalar, windowBits: wbLocal, windowIndex: w)) &+ carry
                             carry = 0
                             if digit > halfBk {
                                 digit = fullBk &- digit
@@ -633,6 +637,7 @@ public class MetalMSM {
 
         // Wait for endo + GPU signed-digit extraction before sort reads the data
         endoCmdBuf?.waitUntilCompleted()
+        if profileMSM { let _t1 = CFAbsoluteTimeGetCurrent(); fputs(String(format: "  [profile] GLV+endo+signed_digit: %.2f ms\n", (_t1 - _tStart) * 1000), stderr) }
 
         if useGpuSort {
             // Ensure positions buffer is large enough
@@ -641,7 +646,7 @@ public class MetalMSM {
                 gpuSortPositionsBuffer = device.makeBuffer(length: posNeeded * MemoryLayout<UInt32>.stride, options: .storageModeShared)
             }
 
-            // Step 1: GPU histogram
+            // Step 1: GPU histogram (single CB for hist)
             memset(allCountsBuffer.contents(), 0, nBuckets * nWindows * MemoryLayout<UInt32>.stride)
             do {
                 guard let histCB = commandQueue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
@@ -664,11 +669,11 @@ public class MetalMSM {
                 histCB.waitUntilCompleted()
             }
 
-            // Step 2: CPU prefix sum
+            // Step 2: CPU prefix sum (fast sequential scan)
             let countsPtr = allCountsBuffer.contents().bindMemory(to: UInt32.self, capacity: nBuckets * nWindows)
             let offsetsPtr = allOffsetsBuffer.contents().bindMemory(to: UInt32.self, capacity: nBuckets * nWindows)
             let positionsPtr = gpuSortPositionsBuffer!.contents().bindMemory(to: UInt32.self, capacity: nBuckets * nWindows)
-            for w in 0..<nWindows {
+            DispatchQueue.concurrentPerform(iterations: nWindows) { w in
                 let wOff = w * nBuckets
                 var running: UInt32 = 0
                 for i in 0..<nBuckets {
@@ -678,7 +683,7 @@ public class MetalMSM {
                 }
             }
 
-            // Step 3: GPU scatter + CSM build
+            // Step 3: GPU scatter + CSM build (single CB)
             do {
                 guard let sortCB = commandQueue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
                 let scatterEnc = sortCB.makeComputeCommandEncoder()!
@@ -719,7 +724,7 @@ public class MetalMSM {
             sortWindows(0..<nWindows)
         }
 
-
+        if profileMSM { let _t2 = CFAbsoluteTimeGetCurrent(); fputs(String(format: "  [profile] sort: %.2f ms\n", (_t2 - _tStart) * 1000), stderr) }
 
         // Single command buffer: reduce + bucket_sum + combine
         guard let cb = commandQueue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
@@ -750,7 +755,7 @@ public class MetalMSM {
         }
         cb.commit()
         cb.waitUntilCompleted()
-
+        if profileMSM { let _t3 = CFAbsoluteTimeGetCurrent(); fputs(String(format: "  [profile] GPU reduce+bucket_sum+combine: %.2f ms\n", (_t3 - _tStart) * 1000), stderr) }
 
         if let error = cb.error { throw MSMError.gpuError(error.localizedDescription) }
 
@@ -768,6 +773,7 @@ public class MetalMSM {
             }
             result = pointAdd(result, windowResults[w])
         }
+        if profileMSM { let _t4 = CFAbsoluteTimeGetCurrent(); fputs(String(format: "  [profile] Horner combine (CPU): %.2f ms\n", (_t4 - _tStart) * 1000), stderr); fputs(String(format: "  [profile] nWindows=%d, windowBits=%d, effectiveN=%d, nBuckets=%d, nSegments=%d\n", nWindows, windowBits, effectiveN, nBuckets, nSegments), stderr) }
         if scalarOutMetalBuf == nil { flatScalarBuf?.deallocate() }
         _ = scalarOutMetalBuf
         return result
