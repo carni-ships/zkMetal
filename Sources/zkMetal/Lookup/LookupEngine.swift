@@ -49,57 +49,119 @@ public class LookupEngine {
     public let polyEngine: PolyEngine
     public let sumcheckEngine: SumcheckEngine
 
+    /// Enable timing instrumentation for profiling hot paths
+    public var profileLogUp = false
+
+    // Grow-only cached GPU buffers to avoid per-call allocation
+    private var cachedBufA: MTLBuffer?     // for betaPlusF or betaPlusT input
+    private var cachedBufB: MTLBuffer?     // for batchInverse output
+    private var cachedBufC: MTLBuffer?     // for hadamard second input (mult)
+    private var cachedBufD: MTLBuffer?     // for hadamard output (ht)
+    private var cachedBufCapacity: Int = 0 // max element count currently allocated
+
     public init() throws {
         self.polyEngine = try PolyEngine()
         self.sumcheckEngine = try SumcheckEngine()
     }
 
+    /// Ensure cached buffers can hold at least `count` Fr elements.
+    /// Grow-only: only reallocates when the requested size exceeds current capacity.
+    private func ensureCachedBuffers(count: Int) {
+        guard count > cachedBufCapacity else { return }
+        let bytes = count * MemoryLayout<Fr>.stride
+        let device = polyEngine.device
+        cachedBufA = device.makeBuffer(length: bytes, options: .storageModeShared)
+        cachedBufB = device.makeBuffer(length: bytes, options: .storageModeShared)
+        cachedBufC = device.makeBuffer(length: bytes, options: .storageModeShared)
+        cachedBufD = device.makeBuffer(length: bytes, options: .storageModeShared)
+        cachedBufCapacity = count
+    }
+
     /// Compute multiplicities: for each table entry T[j], count how many times it appears in f.
     /// Returns array of length table.count with multiplicity values as Fr elements.
+    ///
+    /// Uses sorted-array binary search instead of Dictionary for cache-friendly access.
     public static func computeMultiplicities(table: [Fr], lookups: [Fr]) -> [Fr] {
-        // Build map from table value → index
-        var tableIndex = [FrKey: Int]()
-        for j in 0..<table.count {
-            tableIndex[FrKey(table[j])] = j
+        // Build sorted array of (key, originalIndex) for binary search
+        let N = table.count
+        var sortedEntries = [(limbs: [UInt64], idx: Int)](repeating: ([], 0), count: N)
+        for j in 0..<N {
+            sortedEntries[j] = (frToInt(table[j]), j)
+        }
+        sortedEntries.sort { a, b in
+            for k in stride(from: a.limbs.count - 1, through: 0, by: -1) {
+                if a.limbs[k] != b.limbs[k] { return a.limbs[k] < b.limbs[k] }
+            }
+            return false
         }
 
-        var mult = [UInt64](repeating: 0, count: table.count)
+        // Extract sorted keys for cache-friendly binary search
+        let sortedKeys = sortedEntries.map { $0.limbs }
+        let sortedIndices = sortedEntries.map { $0.idx }
+
+        var mult = [UInt64](repeating: 0, count: N)
         for i in 0..<lookups.count {
-            guard let idx = tableIndex[FrKey(lookups[i])] else {
-                preconditionFailure("Lookup value not in table at index \(i)")
+            let key = frToInt(lookups[i])
+            // Binary search in sorted keys
+            var lo = 0, hi = N - 1
+            var found = false
+            while lo <= hi {
+                let mid = (lo + hi) >> 1
+                let cmp = compareLimbs(key, sortedKeys[mid])
+                if cmp == 0 {
+                    mult[sortedIndices[mid]] += 1
+                    found = true
+                    break
+                } else if cmp < 0 {
+                    hi = mid - 1
+                } else {
+                    lo = mid + 1
+                }
             }
-            mult[idx] += 1
+            precondition(found, "Lookup value not in table at index \(i)")
         }
 
         return mult.map { frFromInt($0) }
     }
 
+    /// Compare two limb arrays lexicographically (big-endian limb order).
+    /// Returns -1, 0, or 1.
+    private static func compareLimbs(_ a: [UInt64], _ b: [UInt64]) -> Int {
+        for k in stride(from: a.count - 1, through: 0, by: -1) {
+            if a[k] < b[k] { return -1 }
+            if a[k] > b[k] { return 1 }
+        }
+        return 0
+    }
+
     /// Create a LogUp lookup proof.
     /// Proves that every element in `lookups` exists in `table`.
     /// The `beta` challenge would normally come from Fiat-Shamir; here it's passed explicitly.
+    ///
+    /// Optimizations applied:
+    /// - Fused GPU command buffer: batchInverse(f) + batchInverse(T) + hadamard in one submit
+    /// - Grow-only buffer caching: avoids per-call GPU allocation
+    /// - Sorted-array multiplicities: cache-friendly binary search
     public func prove(table: [Fr], lookups: [Fr], beta: Fr) throws -> LookupProof {
         let m = lookups.count
         let N = table.count
         precondition(m > 0 && (m & (m - 1)) == 0, "Lookup count must be power of 2")
         precondition(N > 0 && (N & (N - 1)) == 0, "Table size must be power of 2")
 
+        let _tTotal = profileLogUp ? CFAbsoluteTimeGetCurrent() : 0
+        var _tPhase = profileLogUp ? CFAbsoluteTimeGetCurrent() : 0
+
         // Step 1: Compute multiplicities
         let mult = LookupEngine.computeMultiplicities(table: table, lookups: lookups)
 
-        // Step 2: Compute h_f[i] = 1/(β + f[i]) for the lookup side
-        var betaPlusF = [Fr](repeating: Fr.zero, count: m)
-        for i in 0..<m {
-            betaPlusF[i] = frAdd(beta, lookups[i])
-        }
-        let hf = try polyEngine.batchInverse(betaPlusF)
+        if profileLogUp { let _t = CFAbsoluteTimeGetCurrent(); fputs(String(format: "  [logup] multiplicities: %.2f ms\n", (_t - _tPhase) * 1000), stderr); _tPhase = _t }
 
-        // Step 3: Compute h_t[j] = mult[j]/(β + T[j]) for the table side
-        var betaPlusT = [Fr](repeating: Fr.zero, count: N)
-        for i in 0..<N {
-            betaPlusT[i] = frAdd(beta, table[i])
-        }
-        let invBetaPlusT = try polyEngine.batchInverse(betaPlusT)
-        let ht = try polyEngine.hadamard(mult, invBetaPlusT)
+        // Step 2+3: Compute h_f and h_t via fused GPU command buffer
+        // h_f[i] = 1/(β + f[i]),  h_t[j] = mult[j]/(β + T[j])
+        let (hf, ht) = try fusedInverseAndHadamard(
+            lookups: lookups, table: table, mult: mult, beta: beta)
+
+        if profileLogUp { let _t = CFAbsoluteTimeGetCurrent(); fputs(String(format: "  [logup] fused GPU (batchInv x2 + hadamard): %.2f ms\n", (_t - _tPhase) * 1000), stderr); _tPhase = _t }
 
         // Step 4: Compute the claimed sum S = Σ h_f[i]
         var sum = Fr.zero
@@ -114,8 +176,9 @@ public class LookupEngine {
         }
         precondition(frEqual(sum, tableSum), "LogUp sum mismatch — lookup values not all in table")
 
+        if profileLogUp { let _t = CFAbsoluteTimeGetCurrent(); fputs(String(format: "  [logup] sum computation: %.2f ms\n", (_t - _tPhase) * 1000), stderr); _tPhase = _t }
+
         // Step 5: Run sumcheck on h_f (lookup side)
-        // Use GPU for large inputs, CPU for small
         var transcript = [UInt8]()
         appendFr(&transcript, beta)
         appendFr(&transcript, sum)
@@ -124,11 +187,17 @@ public class LookupEngine {
         let (lookupRounds, lookupFinalEval, lookupChallenges) = try runSumcheck(
             evals: hf, numVars: logM, transcript: &transcript)
 
+        if profileLogUp { let _t = CFAbsoluteTimeGetCurrent(); fputs(String(format: "  [logup] sumcheck lookup (logM=%d): %.2f ms\n", logM, (_t - _tPhase) * 1000), stderr); _tPhase = _t }
+
         // Step 6: Run sumcheck on h_t (table side)
         let logN = Int(log2(Double(N)))
         let (tableRounds, tableFinalEval, tableChallenges) = try runSumcheck(
             evals: ht, numVars: logN, transcript: &transcript)
         _ = tableChallenges  // used implicitly via transcript
+
+        if profileLogUp { let _t = CFAbsoluteTimeGetCurrent(); fputs(String(format: "  [logup] sumcheck table (logN=%d): %.2f ms\n", logN, (_t - _tPhase) * 1000), stderr)
+            fputs(String(format: "  [logup] TOTAL prove: %.2f ms\n", (_t - _tTotal) * 1000), stderr)
+        }
 
         return LookupProof(
             multiplicities: mult,
@@ -139,6 +208,123 @@ public class LookupEngine {
             lookupFinalEval: lookupFinalEval,
             tableFinalEval: tableFinalEval
         )
+    }
+
+    /// Fused GPU dispatch: batchInverse(lookups) + batchInverse(table) + hadamard(mult, invT)
+    /// Uses a single command buffer and cached grow-only buffers.
+    private func fusedInverseAndHadamard(
+        lookups: [Fr], table: [Fr], mult: [Fr], beta: Fr
+    ) throws -> (hf: [Fr], ht: [Fr]) {
+        let m = lookups.count
+        let N = table.count
+        let maxN = max(m, N)
+        let stride = MemoryLayout<Fr>.stride
+        let device = polyEngine.device
+
+        // Ensure cached buffers are large enough
+        ensureCachedBuffers(count: maxN)
+
+        // Prepare betaPlusF on CPU, write directly into cached buffer
+        let bufBetaPlusF = cachedBufA!
+        let bufHf = cachedBufB!
+        do {
+            let dst = bufBetaPlusF.contents().bindMemory(to: Fr.self, capacity: m)
+            for i in 0..<m {
+                dst[i] = frAdd(beta, lookups[i])
+            }
+        }
+
+        // We need separate buffers for table side since m and N may differ
+        // Use temporary buffers for table side, reusing cached ones when possible
+        let bufBetaPlusT: MTLBuffer
+        let bufInvT: MTLBuffer
+        let bufMult: MTLBuffer
+        let bufHt: MTLBuffer
+        if N <= cachedBufCapacity && m <= cachedBufCapacity {
+            // Reuse cachedBufC for mult input, cachedBufD for ht output
+            bufBetaPlusT = device.makeBuffer(length: N * stride, options: .storageModeShared)!
+            bufInvT = device.makeBuffer(length: N * stride, options: .storageModeShared)!
+            bufMult = cachedBufC!
+            bufHt = cachedBufD!
+        } else {
+            bufBetaPlusT = device.makeBuffer(length: N * stride, options: .storageModeShared)!
+            bufInvT = device.makeBuffer(length: N * stride, options: .storageModeShared)!
+            bufMult = device.makeBuffer(length: N * stride, options: .storageModeShared)!
+            bufHt = device.makeBuffer(length: N * stride, options: .storageModeShared)!
+        }
+
+        // Prepare betaPlusT and mult into GPU buffers
+        do {
+            let dst = bufBetaPlusT.contents().bindMemory(to: Fr.self, capacity: N)
+            for i in 0..<N {
+                dst[i] = frAdd(beta, table[i])
+            }
+        }
+        mult.withUnsafeBytes { src in
+            memcpy(bufMult.contents(), src.baseAddress!, N * stride)
+        }
+
+        // Single command buffer for all GPU work
+        guard let cmdBuf = polyEngine.commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
+        }
+
+        let chunkSize = 512
+        let biTG = min(64, Int(polyEngine.batchInverseFunction.maxTotalThreadsPerThreadgroup))
+
+        // Encode batchInverse for lookup side
+        do {
+            let enc = cmdBuf.makeComputeCommandEncoder()!
+            enc.setComputePipelineState(polyEngine.batchInverseFunction)
+            enc.setBuffer(bufBetaPlusF, offset: 0, index: 0)
+            enc.setBuffer(bufHf, offset: 0, index: 1)
+            var nVal = UInt32(m)
+            enc.setBytes(&nVal, length: 4, index: 2)
+            let numGroups = (m + chunkSize - 1) / chunkSize
+            enc.dispatchThreadgroups(MTLSize(width: numGroups, height: 1, depth: 1),
+                                    threadsPerThreadgroup: MTLSize(width: biTG, height: 1, depth: 1))
+            enc.endEncoding()
+        }
+
+        // Encode batchInverse for table side
+        do {
+            let enc = cmdBuf.makeComputeCommandEncoder()!
+            enc.setComputePipelineState(polyEngine.batchInverseFunction)
+            enc.setBuffer(bufBetaPlusT, offset: 0, index: 0)
+            enc.setBuffer(bufInvT, offset: 0, index: 1)
+            var nVal = UInt32(N)
+            enc.setBytes(&nVal, length: 4, index: 2)
+            let numGroups = (N + chunkSize - 1) / chunkSize
+            enc.dispatchThreadgroups(MTLSize(width: numGroups, height: 1, depth: 1),
+                                    threadsPerThreadgroup: MTLSize(width: biTG, height: 1, depth: 1))
+            enc.endEncoding()
+        }
+
+        // Encode hadamard: ht = mult * invT
+        do {
+            let enc = cmdBuf.makeComputeCommandEncoder()!
+            enc.setComputePipelineState(polyEngine.hadamardFunction)
+            enc.setBuffer(bufMult, offset: 0, index: 0)
+            enc.setBuffer(bufInvT, offset: 0, index: 1)
+            enc.setBuffer(bufHt, offset: 0, index: 2)
+            var nVal = UInt32(N)
+            enc.setBytes(&nVal, length: 4, index: 3)
+            let tg = min(256, Int(polyEngine.hadamardFunction.maxTotalThreadsPerThreadgroup))
+            enc.dispatchThreads(MTLSize(width: N, height: 1, depth: 1),
+                               threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+            enc.endEncoding()
+        }
+
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+        if let error = cmdBuf.error {
+            throw MSMError.gpuError(error.localizedDescription)
+        }
+
+        // Read results
+        let hf = polyEngine.readBuffer(bufHf, count: m)
+        let ht = polyEngine.readBuffer(bufHt, count: N)
+        return (hf, ht)
     }
 
     /// Verify a LogUp lookup proof.

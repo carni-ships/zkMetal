@@ -129,8 +129,8 @@ kernel void ed_msm_signed_digit_extract(
 
     device const uint* sc = scalars + gid * 8;
     uint mask = (1u << window_bits) - 1u;
-    uint half = 1u << (window_bits - 1u);
-    uint full = 1u << window_bits;
+    uint half_bk = 1u << (window_bits - 1u);
+    uint full_bk = 1u << window_bits;
     uint carry = 0;
 
     for (uint w = 0; w < n_windows; w++) {
@@ -149,8 +149,8 @@ kernel void ed_msm_signed_digit_extract(
 
         uint digit = idx + carry;
         carry = 0;
-        if (digit > half) {
-            digit = full - digit;
+        if (digit > half_bk) {
+            digit = full_bk - digit;
             carry = 1;
             signed_digits[w * n_points + gid] = digit | 0x80000000u;
         } else {

@@ -7,15 +7,31 @@
 // Layout convention: same as dense SumcheckEngine (MSB-first variable elimination).
 // Index i corresponds to evaluation at the binary point (bit k-1 of i, ..., bit 0 of i).
 // First half (indices 0..2^(k-1)-1) has MSB=0, second half has MSB=1.
+//
+// Optimization: uses sorted arrays of SparseEntry instead of Dictionary for
+// cache-friendly sequential iteration and two-pointer merge (no hash overhead).
 
 import Foundation
 
+/// A single non-zero entry in a sparse multilinear polynomial.
+public struct SparseEntry {
+    public var idx: Int
+    public var val: Fr
+
+    @inline(__always)
+    public init(idx: Int, val: Fr) {
+        self.idx = idx
+        self.val = val
+    }
+}
+
 /// A multilinear polynomial in sparse representation.
-/// Stores only non-zero evaluations over the boolean hypercube {0,1}^numVars.
+/// Stores only non-zero evaluations over the boolean hypercube {0,1}^numVars
+/// as a sorted array of (index, value) pairs for cache-friendly access.
 public struct SparseMultilinearPoly {
     public let numVars: Int
-    /// Non-zero entries: maps hypercube index → field element value
-    public var entries: [Int: Fr]
+    /// Non-zero entries sorted by idx (ascending). Invariant: no duplicate indices, no zero values.
+    public var entries: [SparseEntry]
 
     /// Total number of evaluation points (2^numVars)
     public var domainSize: Int { 1 << numVars }
@@ -26,9 +42,24 @@ public struct SparseMultilinearPoly {
     /// Sparsity ratio (fraction of zeros)
     public var sparsity: Double { 1.0 - Double(nnz) / Double(domainSize) }
 
-    public init(numVars: Int, entries: [Int: Fr]) {
+    /// Create from pre-sorted entries array. Caller must ensure sorted by idx, no duplicates, no zeros.
+    public init(numVars: Int, sortedEntries: [SparseEntry]) {
         self.numVars = numVars
-        self.entries = entries
+        self.entries = sortedEntries
+    }
+
+    /// Create from dictionary (convenience, converts to sorted array).
+    public init(numVars: Int, entries dict: [Int: Fr]) {
+        self.numVars = numVars
+        var arr = [SparseEntry]()
+        arr.reserveCapacity(dict.count)
+        for (idx, val) in dict {
+            if !sparseIsZero(val) {
+                arr.append(SparseEntry(idx: idx, val: val))
+            }
+        }
+        arr.sort { $0.idx < $1.idx }
+        self.entries = arr
     }
 
     /// Create from dense evaluations (drops zeros)
@@ -36,27 +67,33 @@ public struct SparseMultilinearPoly {
         let n = dense.count
         precondition(n > 0 && (n & (n - 1)) == 0, "Size must be power of 2")
         self.numVars = Int(log2(Double(n)))
-        var e = [Int: Fr]()
+        var arr = [SparseEntry]()
         for i in 0..<n {
-            if !isZero(dense[i]) {
-                e[i] = dense[i]
+            if !sparseIsZero(dense[i]) {
+                arr.append(SparseEntry(idx: i, val: dense[i]))
             }
         }
-        self.entries = e
+        // Already sorted since we iterate in order
+        self.entries = arr
     }
 
     /// Convert to dense evaluations
     public func toDense() -> [Fr] {
         var result = [Fr](repeating: Fr.zero, count: domainSize)
-        for (idx, val) in entries {
-            result[idx] = val
+        for e in entries {
+            result[e.idx] = e.val
         }
         return result
     }
 
-    /// Get value at index (returns zero for missing entries)
+    /// Get value at index (returns zero for missing entries).
+    /// Uses binary search: O(log nnz).
     public subscript(index: Int) -> Fr {
-        entries[index] ?? Fr.zero
+        let pos = sparseLowerBound(entries, index)
+        if pos < entries.count && entries[pos].idx == index {
+            return entries[pos].val
+        }
+        return Fr.zero
     }
 }
 
@@ -67,32 +104,55 @@ extension SparseMultilinearPoly {
     /// Compute the round polynomial S(X) = (S(0), S(1), S(2)) for the MSB variable.
     /// S(t) = Σ_{x ∈ {0,1}^(k-1)} f(x_1, ..., x_{k-1}, t) extrapolated to t=0,1,2.
     /// Only iterates over non-zero entries: O(nnz) work.
+    ///
+    /// Uses two-pointer merge over the sorted array: entries in [0, halfN) are the
+    /// "low" half (MSB=0), entries in [halfN, 2*halfN) are the "high" half (MSB=1).
+    /// Pairs are matched by pairIdx = idx % halfN.
     public func roundPoly() -> (Fr, Fr, Fr) {
         let halfN = domainSize / 2
         var s0 = Fr.zero  // S(0): sum of entries in first half
         var s1 = Fr.zero  // S(1): sum of entries in second half
         var s2 = Fr.zero  // S(2): extrapolation
 
-        // Track which pair indices have been visited from either side
-        var pairContributions = [Int: (Fr, Fr)]()  // pairIdx → (a, b)
+        // Find the split point: first entry with idx >= halfN
+        let splitPos = sparseLowerBound(entries, halfN)
 
-        for (idx, val) in entries {
-            let pairIdx = idx % halfN
-            var (a, b) = pairContributions[pairIdx] ?? (Fr.zero, Fr.zero)
-            if idx < halfN {
-                a = val
-            } else {
-                b = val
+        // Two-pointer merge over low [0..splitPos) and high [splitPos..count)
+        var li = 0
+        var hi = splitPos
+
+        entries.withUnsafeBufferPointer { buf in
+            while li < splitPos || hi < buf.count {
+                let lowPairIdx = li < splitPos ? buf[li].idx : Int.max
+                let highPairIdx = hi < buf.count ? (buf[hi].idx - halfN) : Int.max
+
+                if lowPairIdx < highPairIdx {
+                    // Only low half has this pair index
+                    let a = buf[li].val
+                    s0 = frAdd(s0, a)
+                    // f(2) = 2*b - a = -a when b=0
+                    s2 = frSub(s2, a)
+                    li += 1
+                } else if highPairIdx < lowPairIdx {
+                    // Only high half has this pair index
+                    let b = buf[hi].val
+                    s1 = frAdd(s1, b)
+                    // f(2) = 2*b - a = 2*b when a=0
+                    let twoB = frAdd(b, b)
+                    s2 = frAdd(s2, twoB)
+                    hi += 1
+                } else {
+                    // Both halves have this pair index
+                    let a = buf[li].val
+                    let b = buf[hi].val
+                    s0 = frAdd(s0, a)
+                    s1 = frAdd(s1, b)
+                    let twoB = frAdd(b, b)
+                    s2 = frAdd(s2, frSub(twoB, a))
+                    li += 1
+                    hi += 1
+                }
             }
-            pairContributions[pairIdx] = (a, b)
-        }
-
-        for (_, (a, b)) in pairContributions {
-            s0 = frAdd(s0, a)
-            s1 = frAdd(s1, b)
-            // f(2) = 2*b - a (linear extrapolation from f(0)=a, f(1)=b)
-            let twoB = frAdd(b, b)
-            s2 = frAdd(s2, frSub(twoB, a))
         }
 
         return (s0, s1, s2)
@@ -102,42 +162,62 @@ extension SparseMultilinearPoly {
     /// result[i] = (1-r)*self[i] + r*self[i + halfN] for i in 0..<halfN
     /// Returns a new sparse polynomial with numVars-1 variables.
     /// Only iterates over non-zero entries: O(nnz) work.
+    ///
+    /// Uses two-pointer merge over sorted array, emitting new sorted entries directly.
     public func reduce(challenge: Fr) -> SparseMultilinearPoly {
         precondition(numVars > 0)
         let halfN = domainSize / 2
         let oneMinusR = frSub(Fr.one, challenge)
 
-        // Collect pair indices that have at least one non-zero entry
-        var pairEntries = [Int: (Fr, Fr)]()
-        for (idx, val) in entries {
-            let pairIdx = idx % halfN
-            var (a, b) = pairEntries[pairIdx] ?? (Fr.zero, Fr.zero)
-            if idx < halfN {
-                a = val
-            } else {
-                b = val
+        let splitPos = sparseLowerBound(entries, halfN)
+
+        var newEntries = [SparseEntry]()
+        newEntries.reserveCapacity(entries.count) // upper bound
+
+        var li = 0
+        var hi = splitPos
+
+        entries.withUnsafeBufferPointer { buf in
+            while li < splitPos || hi < buf.count {
+                let lowPairIdx = li < splitPos ? buf[li].idx : Int.max
+                let highPairIdx = hi < buf.count ? (buf[hi].idx - halfN) : Int.max
+
+                let pairIdx: Int
+                let result: Fr
+
+                if lowPairIdx < highPairIdx {
+                    // Only low: result = (1-r)*a
+                    pairIdx = lowPairIdx
+                    result = frMul(oneMinusR, buf[li].val)
+                    li += 1
+                } else if highPairIdx < lowPairIdx {
+                    // Only high: result = r*b
+                    pairIdx = highPairIdx
+                    result = frMul(challenge, buf[hi].val)
+                    hi += 1
+                } else {
+                    // Both: result = (1-r)*a + r*b
+                    pairIdx = lowPairIdx
+                    result = frAdd(frMul(oneMinusR, buf[li].val), frMul(challenge, buf[hi].val))
+                    li += 1
+                    hi += 1
+                }
+
+                if !sparseIsZero(result) {
+                    newEntries.append(SparseEntry(idx: pairIdx, val: result))
+                }
             }
-            pairEntries[pairIdx] = (a, b)
         }
 
-        var newEntries = [Int: Fr]()
-        for (pairIdx, (a, b)) in pairEntries {
-            // result = (1-r)*a + r*b
-            let result = frAdd(frMul(oneMinusR, a), frMul(challenge, b))
-            if !isZero(result) {
-                newEntries[pairIdx] = result
-            }
-        }
-
-        return SparseMultilinearPoly(numVars: numVars - 1, entries: newEntries)
+        return SparseMultilinearPoly(numVars: numVars - 1, sortedEntries: newEntries)
     }
 
     /// Compute the total sum: Σ f(x) over all x ∈ {0,1}^numVars.
-    /// O(nnz) work.
+    /// O(nnz) work — sequential scan over contiguous array.
     public func totalSum() -> Fr {
         var sum = Fr.zero
-        for (_, val) in entries {
-            sum = frAdd(sum, val)
+        for e in entries {
+            sum = frAdd(sum, e.val)
         }
         return sum
     }
@@ -229,6 +309,25 @@ public func verifySumcheckProof(
     return (true, challenges)
 }
 
+// MARK: - Sorted array helpers
+
+/// Binary search: find first index in sorted entries where idx >= target.
+@inline(__always)
+private func sparseLowerBound(_ entries: [SparseEntry], _ target: Int) -> Int {
+    var lo = 0, hi = entries.count
+    while lo < hi {
+        let mid = (lo + hi) >> 1
+        if entries[mid].idx < target { lo = mid + 1 } else { hi = mid }
+    }
+    return lo
+}
+
+/// Check if an Fr element is zero (in Montgomery form)
+private func sparseIsZero(_ a: Fr) -> Bool {
+    let limbs = frToInt(a)
+    return limbs[0] == 0 && limbs[1] == 0 && limbs[2] == 0 && limbs[3] == 0
+}
+
 // MARK: - Transcript helpers (module-level)
 
 private func appendFrToTranscript(_ transcript: inout [UInt8], _ v: Fr) {
@@ -267,10 +366,4 @@ private func evaluateQuadraticPoly(_ triple: (Fr, Fr, Fr), at x: Fr) -> Fr {
     let l2 = frMul(frMul(x, xm1), inv2)
 
     return frAdd(frAdd(frMul(s0, l0), frMul(s1, l1)), frMul(s2, l2))
-}
-
-/// Check if an Fr element is zero (in Montgomery form)
-private func isZero(_ a: Fr) -> Bool {
-    let limbs = frToInt(a)
-    return limbs[0] == 0 && limbs[1] == 0 && limbs[2] == 0 && limbs[3] == 0
 }

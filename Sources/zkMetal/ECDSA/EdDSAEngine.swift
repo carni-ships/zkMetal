@@ -46,19 +46,20 @@ public struct EdDSASecretKey {
         a[31] &= 127
         a[31] |= 64
         self.nonceSeed = Array(h[32..<64])
-        // Convert clamped scalar to field element
-        var limbs: [UInt64] = [0, 0, 0, 0]
+        // Convert clamped scalar to raw limbs
+        var rawLimbs: [UInt64] = [0, 0, 0, 0]
         for i in 0..<4 {
             for j in 0..<8 {
-                limbs[i] |= UInt64(a[i * 8 + j]) << (j * 8)
+                rawLimbs[i] |= UInt64(a[i * 8 + j]) << (j * 8)
             }
         }
-        self.scalar = ed25519FqFromRaw(limbs)
+        // Store in Montgomery form for signing math (mod q operations)
+        self.scalar = ed25519FqFromRaw(rawLimbs)
 
-        // Public key = a * G
+        // Public key = a * G (use raw scalar for point multiplication)
         let gen = ed25519Generator()
         let genExt = ed25519PointFromAffine(gen)
-        let pubExt = ed25519PointMulScalar(genExt, ed25519FqToInt(self.scalar))
+        let pubExt = ed25519PointMulScalar(genExt, rawLimbs)
         let pubAff = ed25519PointToAffine(pubExt)
         self.publicKey = EdDSAPublicKey(point: pubAff)
     }
@@ -225,7 +226,7 @@ public class EdDSAEngine {
 
 // MARK: - SHA-512 helper
 
-func sha512(_ data: [UInt8]) -> [UInt8] {
+public func sha512(_ data: [UInt8]) -> [UInt8] {
     #if canImport(CryptoKit)
     let digest = SHA512.hash(data: data)
     return Array(digest)

@@ -149,18 +149,18 @@ public class FRIEngine {
         let half = Int(n) / 2
         let invTwiddles = getInvTwiddles(logN: logN)
 
-        guard let betaBuf = createFrBuffer([beta]),
-              let cmdBuf = commandQueue.makeCommandBuffer() else {
+        guard let cmdBuf = commandQueue.makeCommandBuffer() else {
             throw MSMError.noCommandBuffer
         }
 
         var nVal = n
+        var betaVal = beta
         let enc = cmdBuf.makeComputeCommandEncoder()!
         enc.setComputePipelineState(foldFunction)
         enc.setBuffer(evals, offset: 0, index: 0)
         enc.setBuffer(folded, offset: 0, index: 1)
         enc.setBuffer(invTwiddles, offset: 0, index: 2)
-        enc.setBuffer(betaBuf, offset: 0, index: 3)
+        enc.setBytes(&betaVal, length: MemoryLayout<Fr>.stride, index: 3)
         enc.setBytes(&nVal, length: 4, index: 4)
         let tg = min(tuning.friThreadgroupSize, Int(foldFunction.maxTotalThreadsPerThreadgroup))
         enc.dispatchThreads(MTLSize(width: half, height: 1, depth: 1),
@@ -351,18 +351,18 @@ public class FRIEngine {
         let quarter = Int(n) / 4
         let invTwiddles = getInvTwiddles(logN: logN)
 
-        guard let betaBuf = createFrBuffer([beta]),
-              let cmdBuf = commandQueue.makeCommandBuffer() else {
+        guard let cmdBuf = commandQueue.makeCommandBuffer() else {
             throw MSMError.noCommandBuffer
         }
 
         var nVal = n
+        var betaVal = beta
         let enc = cmdBuf.makeComputeCommandEncoder()!
         enc.setComputePipelineState(foldBy4Function)
         enc.setBuffer(evals, offset: 0, index: 0)
         enc.setBuffer(folded, offset: 0, index: 1)
         enc.setBuffer(invTwiddles, offset: 0, index: 2)
-        enc.setBuffer(betaBuf, offset: 0, index: 3)
+        enc.setBytes(&betaVal, length: MemoryLayout<Fr>.stride, index: 3)
         enc.setBytes(&nVal, length: 4, index: 4)
         let tg = min(tuning.friThreadgroupSize, Int(foldBy4Function.maxTotalThreadsPerThreadgroup))
         enc.dispatchThreads(MTLSize(width: quarter, height: 1, depth: 1),
@@ -1393,18 +1393,18 @@ public class FRIEngine {
         let eighth = Int(n) / 8
         let invTwiddles = getInvTwiddles(logN: logN)
 
-        guard let betaBuf = createFrBuffer([beta]),
-              let cmdBuf = commandQueue.makeCommandBuffer() else {
+        guard let cmdBuf = commandQueue.makeCommandBuffer() else {
             throw MSMError.noCommandBuffer
         }
 
         var nVal = n
+        var betaVal = beta
         let enc = cmdBuf.makeComputeCommandEncoder()!
         enc.setComputePipelineState(foldBy8Function)
         enc.setBuffer(evals, offset: 0, index: 0)
         enc.setBuffer(folded, offset: 0, index: 1)
         enc.setBuffer(invTwiddles, offset: 0, index: 2)
-        enc.setBuffer(betaBuf, offset: 0, index: 3)
+        enc.setBytes(&betaVal, length: MemoryLayout<Fr>.stride, index: 3)
         enc.setBytes(&nVal, length: 4, index: 4)
         let tg = min(tuning.friThreadgroupSize, Int(foldBy8Function.maxTotalThreadsPerThreadgroup))
         enc.dispatchThreads(MTLSize(width: eighth, height: 1, depth: 1),

@@ -131,8 +131,9 @@ public func runLookupBench() {
         fputs("\n--- Performance ---\n", stderr)
         do {
             let engine = try LookupEngine()
+            engine.profileLogUp = true
 
-            for logN in [8, 10, 12] {
+            for logN in [8, 10, 12, 14] {
                 let N = 1 << logN
                 let m = N  // same size for simplicity
 
