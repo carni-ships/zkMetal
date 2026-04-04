@@ -97,7 +97,7 @@ How zkMetal maps to the major ZK stacks deployed in production today.
 | **Cairo / Stwo** | StarkNet, StarkWare | Stark252 field, Circle STARK over M31, Poseidon | **70%** — Circle STARK + M31 yes. **Gap: Stark252 field** |
 | **RISC Zero** | RISC Zero zkVM | BabyBear, FRI, STARK, Poseidon2 | **95%** — all core primitives present |
 | **Jolt / Lasso** | a16z Labs | BN254 pairing, Lasso lookups, sumcheck | **95%** — pairing, Lasso, sumcheck, batch FFI all shipped |
-| **Barretenberg** | Aztec Network | BN254, Grumpkin, Plonk (UltraHonk), KZG | **80%** — BN254+Plonk+KZG yes. **Gap: Grumpkin** (in progress) |
+| **Barretenberg** | Aztec Network | BN254, Grumpkin, Plonk (UltraHonk), KZG | **95%** — BN254+Plonk+KZG+Grumpkin all shipped |
 | **Gnark** | Linea, ConsenSys | BN254/BLS12-381, Groth16, Plonk+KZG | **95%** — all present |
 | **Circom / Snarkjs** | Polygon zkEVM, Semaphore, Tornado Cash | BN254 Groth16, BabyJubjub, Poseidon | **80%** — Groth16+Poseidon yes. **Gap: BabyJubjub** (in progress) |
 | **Boojum** | zkSync Era (Matter Labs) | Goldilocks, Poseidon2, FRI, custom gates | **90%** — Goldilocks NTT, P2, FRI all shipped |
@@ -109,15 +109,18 @@ How zkMetal maps to the major ZK stacks deployed in production today.
 | Gap | Blocks | Status |
 |-----|--------|--------|
 | **BabyJubjub curve** | Circom, Semaphore, Tornado Cash, Polygon | In progress (agent running) |
-| **Grumpkin curve** | Aztec recursive proving | In progress (agent running) |
-| **SHA-256** | Bitcoin, most blockchains, TLS | In progress (agent running) |
 | **Stark252 field** | StarkNet/Cairo | Backlog (GAP7) |
 | **BLS Signatures** | Ethereum consensus | Backlog (GAP5) |
 | **Poseidon2 width-16 BabyBear** | SP1/Plonky3 exact config | Backlog (config change) |
 
+### Recently Closed Gaps
+
+- **SHA-256** — shipped (GPU batch hash 119M/s, fused Merkle subtree)
+- **Grumpkin curve** — shipped (BN254 inner curve, GPU MSM with signed-digit)
+
 ### What Full Coverage Looks Like
 
-With the 3 in-progress items (BabyJubjub, Grumpkin, SHA-256) plus Stark252 and BLS signatures, zkMetal would have **90%+ coverage of every major production ZK stack**.
+With BabyJubjub (in progress) plus Stark252 and BLS signatures, zkMetal would have **90%+ coverage of every major production ZK stack**.
 
 ## What Unlocks What
 
