@@ -306,6 +306,17 @@ GPU-accelerated Circle STARK prover over Mersenne31 with Fibonacci AIR. Full GPU
 
 Preprocessed Plonk prover with KZG polynomial commitments over BN254. NTT-based polynomial multiplication for quotient computation. Previous version (naive O(n^2) poly mul): 7365ms at n=1024 — GPU NTT gives **43×** improvement.
 
+### GKR (BN254 Fr, Layered Circuits)
+
+| Circuit | Prove | Verify |
+|---------|-------|--------|
+| 2^4 width, d=4 | 2.1ms | 3.0ms |
+| 2^5 width, d=4 | 4.4ms | 3.8ms |
+| 2^6 width, d=4 | 9.6ms | 4.9ms |
+| 2^6 width, d=8 | 19.6ms | 9.8ms |
+
+Goldwasser-Kalai-Rothblum interactive proof for layered arithmetic circuits via batched sumcheck. Sparse wiring predicate evaluation reduces prover work from O(2^(3·logW)) to O(numGates) per sumcheck round. Previous dense implementation: 3728ms at 2^6 d=8 — sparse sumcheck gives **190×** improvement.
+
 ### Circle NTT (Mersenne31, GPU)
 
 | Size | GPU Time | Throughput |
