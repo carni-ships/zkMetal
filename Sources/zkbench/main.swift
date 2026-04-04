@@ -138,7 +138,7 @@ if cmd == "calibrate" {
 } else if cmd == "fri" {
     runFRIBench()
 } else if cmd == "stir" {
-    fputs("STIR bench: stub\n", stderr)
+    runSTIRBench()
 } else if cmd == "whir" {
     runWHIRBench()
 } else if cmd == "sumcheck" || cmd == "sc" {
@@ -252,7 +252,7 @@ if cmd == "calibrate" {
 } else if cmd == "plonk-custom" || cmd == "plonk_custom" {
     runPlonkCustomBench()
 } else if cmd == "marlin" || cmd == "ahp" {
-    fputs("Marlin bench: stub\n", stderr)
+    runMarlinBench()
 } else if cmd == "tensor" || cmd == "tc" {
     runTensorBench()
 } else if cmd == "spartan" {
@@ -262,7 +262,7 @@ if cmd == "calibrate" {
 } else if cmd == "groth16" || cmd == "g16" {
     runGroth16Bench()
 } else if cmd == "jolt" || cmd == "vm" || cmd == "zkvm" {
-    fputs("stub\n", stderr)
+    runJoltBench()
 } else if cmd == "msm" {
     try runMSMBench()
 } else if cmd == "all" {

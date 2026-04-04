@@ -2,6 +2,6 @@
 import Foundation
 import zkMetal
 
-public func runJoltBench() { fputs("[stub] Jolt bench not yet available\n", stderr) }
+// runJoltBench moved to jolt_bench.swift
 
 // runAccumulationBench moved to accumulation_bench.swift
