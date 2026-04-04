@@ -344,13 +344,13 @@ How close each primitive is to the hardware floor (M3 Pro: ~3.6 TFLOPS, ~150 GB/
 | 8 | Radix Sort 2^20 | 10ms | ~1ms (BW) | Sequential passes + BW | ~10x |
 | 9 | NTT BN254 2^22 | 26ms | ~2.9ms (compute) | Compute + strided BW | ~9x |
 | 10 | Blake3 Batch 2^20 | 4.2ms | ~0.6ms (BW) | Bandwidth | ~7x |
-| 11 | IPA prove n=256 | 59ms | ~10ms | C scalar mul + GPU batch fold | ~6x |
+| 11 | IPA prove n=256 | 12ms | ~10ms | C scalar mul + GPU batch fold | ~1.2x |
 | 12 | Keccak Batch 2^18 | 3.1ms | ~0.5ms (compute) | Compute | ~6x |
-| 13 | Verkle proof 256 | 44ms | ~10ms | IPA-dominated (C scalar mul) | ~4x |
+| 13 | Verkle proof 256 | 18ms | ~10ms | IPA-dominated (C scalar mul) | ~1.8x |
 | 14 | NTT Goldilocks 2^24 | 3.0ms | ~1.8ms (compute) | Compute ≈ BW | ~1.7x |
 | 15 | NTT BabyBear 2^24 | 2.0ms | ~1.7ms (BW) | Bandwidth | ~1.2x |
 
-Notes: IPA/Verkle dramatically improved (14-21×) by replacing Swift scalar multiplication with C CIOS `__uint128_t` and GPU batch generator folding. MSM's realistic floor accounts for scatter-gather inefficiency in bucket accumulation. Poseidon2 Merkle overhead comes from 16 sequential kernel dispatches (~0.5ms each). KZG at small sizes is dispatch-overhead dominated. BabyBear and Goldilocks NTT are near-optimal — within 1-2x of hardware bandwidth limits.
+Notes: IPA/Verkle near theoretical floor after C CIOS + GPU batch fold. GKR achieves 190× improvement via sparse wiring predicates. MSM's realistic floor accounts for scatter-gather inefficiency in bucket accumulation. Poseidon2 Merkle overhead comes from 16 sequential kernel dispatches (~0.5ms each). KZG at small sizes is dispatch-overhead dominated. BabyBear and Goldilocks NTT are near-optimal — within 1-2x of hardware bandwidth limits.
 
 ## Supported Fields
 
