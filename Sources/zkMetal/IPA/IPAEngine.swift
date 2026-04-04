@@ -37,7 +37,24 @@ public class IPAEngine {
     public let Q: PointAffine
 
     // GPU threshold: use GPU fold for halfLen >= this
-    static let gpuFoldThreshold = 16
+    // GPU dispatch + batchToAffine overhead dominates below ~4096 points
+    static let gpuFoldThreshold = 4096
+
+    /// Profiling flag — when true, prints per-round timing to stderr
+    public var profileIPA = false
+
+    // Grow-only buffer cache for GPU fold kernel
+    private var bufferCache: [String: (MTLBuffer, Int)] = [:]
+
+    /// Get or grow a cached buffer for the given slot. Reuses existing buffer if large enough.
+    private func getCachedBuffer(slot: String, minBytes: Int) -> MTLBuffer {
+        if let (buf, cap) = bufferCache[slot], cap >= minBytes {
+            return buf
+        }
+        let buf = device.makeBuffer(length: minBytes, options: .storageModeShared)!
+        bufferCache[slot] = (buf, minBytes)
+        return buf
+    }
 
     /// Create an IPA engine with the given generators and blinding point.
     /// generators: n points in affine form (n must be power of 2)
@@ -201,6 +218,8 @@ public class IPAEngine {
         precondition(n == generators.count)
         precondition(n > 0 && (n & (n - 1)) == 0)
 
+        let proofStart = profileIPA ? CFAbsoluteTimeGetCurrent() : 0
+
         var a = inputA
         var b = inputB
         var G = generators.map { pointFromAffine($0) }
@@ -223,9 +242,16 @@ public class IPAEngine {
         appendPoint(&transcript, Cbound)
         appendFr(&transcript, v)
 
+        if profileIPA {
+            let t = CFAbsoluteTimeGetCurrent()
+            fputs(String(format: "  [ipa-profile] commit+setup: %.2f ms\n", (t - proofStart) * 1000), stderr)
+        }
+
         var halfLen = n / 2
 
-        for _ in 0..<logN {
+        for round in 0..<logN {
+            let roundStart = profileIPA ? CFAbsoluteTimeGetCurrent() : 0
+
             // Split vectors
             let aL = Array(a.prefix(halfLen))
             let aR = Array(a.suffix(halfLen))
@@ -252,38 +278,62 @@ public class IPAEngine {
             let x = deriveChallenge(transcript)
             let xInv = frInverse(x)
 
+            let foldStart = profileIPA ? CFAbsoluteTimeGetCurrent() : 0
+
             // Fold: a' = aL * x + aR * x^(-1), b' = bL * x^(-1) + bR * x
             let newA = cFrVectorFold(aL, aR, x: x, xInv: xInv)
             let newB = cFrVectorFold(bL, bR, x: xInv, xInv: x)
 
             // Fold generators: G'_i = xInv * GL_i + x * GR_i
-            // Use C multi-threaded Straus fold (shared doublings for both scalar muls)
-            let xLimbs = frToLimbs(x)
-            let xInvLimbs = frToLimbs(xInv)
-            var newG = [PointProjective](repeating: pointIdentity(), count: halfLen)
-            GL.withUnsafeBytes { glBuf in
-                GR.withUnsafeBytes { grBuf in
-                    xLimbs.withUnsafeBufferPointer { xBuf in
-                        xInvLimbs.withUnsafeBufferPointer { xiBuf in
-                            newG.withUnsafeMutableBytes { outBuf in
-                                bn254_fold_generators(
-                                    glBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                                    grBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                                    xBuf.baseAddress!,
-                                    xiBuf.baseAddress!,
-                                    Int32(halfLen),
-                                    outBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
-                                )
+            let newG: [PointProjective]
+            if halfLen >= IPAEngine.gpuFoldThreshold, let pipeline = foldGeneratorsFunction {
+                // GPU path with cached buffers and setBytes for scalars
+                newG = try gpuFoldGenerators(GL: GL, GR: GR, x: x, xInv: xInv,
+                                             halfLen: halfLen, pipelineState: pipeline)
+            } else {
+                // CPU path: C multi-threaded Straus fold
+                let xLimbs = frToLimbs(x)
+                let xInvLimbs = frToLimbs(xInv)
+                var cpuG = [PointProjective](repeating: pointIdentity(), count: halfLen)
+                GL.withUnsafeBytes { glBuf in
+                    GR.withUnsafeBytes { grBuf in
+                        xLimbs.withUnsafeBufferPointer { xBuf in
+                            xInvLimbs.withUnsafeBufferPointer { xiBuf in
+                                cpuG.withUnsafeMutableBytes { outBuf in
+                                    bn254_fold_generators(
+                                        glBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                        grBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                        xBuf.baseAddress!,
+                                        xiBuf.baseAddress!,
+                                        Int32(halfLen),
+                                        outBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                                    )
+                                }
                             }
                         }
                     }
                 }
+                newG = cpuG
+            }
+
+            if profileIPA {
+                let t = CFAbsoluteTimeGetCurrent()
+                fputs(String(format: "  [ipa-profile] round %d (halfLen=%d): LR=%.2f ms, fold=%.2f ms, total=%.2f ms\n",
+                             round, halfLen,
+                             (foldStart - roundStart) * 1000,
+                             (t - foldStart) * 1000,
+                             (t - roundStart) * 1000), stderr)
             }
 
             a = newA
             b = newB
             G = newG
             halfLen /= 2
+        }
+
+        if profileIPA {
+            let t = CFAbsoluteTimeGetCurrent()
+            fputs(String(format: "  [ipa-profile] total prove: %.2f ms\n", (t - proofStart) * 1000), stderr)
         }
 
         precondition(a.count == 1)
@@ -301,6 +351,8 @@ public class IPAEngine {
         let logN = Int(log2(Double(n)))
         guard proof.L.count == logN, proof.R.count == logN else { return false }
         guard inputB.count == n else { return false }
+
+        let verifyStart = profileIPA ? CFAbsoluteTimeGetCurrent() : 0
 
         let qProj = pointFromAffine(Q)
 
@@ -377,10 +429,15 @@ public class IPAEngine {
         let abQ = cPointScalarMul(qProj, ab)
         let expected = pointAdd(aG, abQ)
 
+        if profileIPA {
+            let t = CFAbsoluteTimeGetCurrent()
+            fputs(String(format: "  [ipa-profile] total verify: %.2f ms\n", (t - verifyStart) * 1000), stderr)
+        }
+
         return pointEqual(Cprime, expected)
     }
 
-    // MARK: - GPU batch fold
+    // MARK: - GPU batch fold with cached buffers and single command buffer
 
     private func gpuFoldGenerators(GL: [PointProjective], GR: [PointProjective],
                                    x: Fr, xInv: Fr, halfLen: Int,
@@ -393,13 +450,21 @@ public class IPAEngine {
         let xLimbs = frToLimbs(x)
         let xInvLimbs = frToLimbs(xInv)
 
-        // Create GPU buffers
+        // Use grow-only cached buffers to avoid re-allocation across rounds
         let pointStride = MemoryLayout<PointAffine>.stride
         let projStride = MemoryLayout<PointProjective>.stride
 
-        let glBuf = device.makeBuffer(bytes: glAffine, length: halfLen * pointStride, options: .storageModeShared)!
-        let grBuf = device.makeBuffer(bytes: grAffine, length: halfLen * pointStride, options: .storageModeShared)!
-        let outBuf = device.makeBuffer(length: halfLen * projStride, options: .storageModeShared)!
+        let glBuf = getCachedBuffer(slot: "foldGL", minBytes: halfLen * pointStride)
+        let grBuf = getCachedBuffer(slot: "foldGR", minBytes: halfLen * pointStride)
+        let outBuf = getCachedBuffer(slot: "foldOut", minBytes: halfLen * projStride)
+
+        // Copy input data into cached buffers
+        glAffine.withUnsafeBytes { src in
+            glBuf.contents().copyMemory(from: src.baseAddress!, byteCount: halfLen * pointStride)
+        }
+        grAffine.withUnsafeBytes { src in
+            grBuf.contents().copyMemory(from: src.baseAddress!, byteCount: halfLen * pointStride)
+        }
 
         guard let cb = commandQueue.makeCommandBuffer(),
               let enc = cb.makeComputeCommandEncoder() else {
@@ -409,6 +474,7 @@ public class IPAEngine {
         enc.setComputePipelineState(pipelineState)
         enc.setBuffer(glBuf, offset: 0, index: 0)
         enc.setBuffer(grBuf, offset: 0, index: 1)
+        // setBytes for small scalar constants — avoids buffer allocation overhead
         var xInvScalar = xInvLimbs  // [UInt32] × 8
         var xScalar = xLimbs
         enc.setBytes(&xInvScalar, length: 32, index: 2)
@@ -530,4 +596,3 @@ public func pointEqual(_ a: PointProjective, _ b: PointProjective) -> Bool {
 
     return fpToInt(lhsX) == fpToInt(rhsX) && fpToInt(lhsY) == fpToInt(rhsY)
 }
-

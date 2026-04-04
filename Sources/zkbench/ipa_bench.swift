@@ -28,12 +28,19 @@ public func runIPABench() {
     fputs("  3*G == G + 2G: \(smulOk ? "PASS" : "FAIL")\n", stderr)
 
     // --- IPA proof tests at various sizes ---
-    for logN in [2, 4, 6, 8] {
+    for logN in [2, 4, 6, 8, 10] {
         let n = 1 << logN
         fputs("\n--- IPA n=\(n) ---\n", stderr)
         do {
             let (gens, Q) = IPAEngine.generateTestGenerators(count: n)
+
+            let initT0 = CFAbsoluteTimeGetCurrent()
             let engine = try IPAEngine(generators: gens, Q: Q)
+            let initTime = (CFAbsoluteTimeGetCurrent() - initT0) * 1000
+            fputs("  Init: \(String(format: "%.1f", initTime)) ms\n", stderr)
+
+            // Enable profiling for larger sizes
+            if logN >= 8 { engine.profileIPA = true }
 
             var a = [Fr]()
             var b = [Fr]()
@@ -60,6 +67,7 @@ public func runIPABench() {
             // Wrong value test
             let wrongV = frFromInt(999)
             let CboundWrong = pointAdd(C, cPointScalarMul(pointFromAffine(Q), wrongV))
+            engine.profileIPA = false  // don't profile wrong-value check
             let rejected = !engine.verify(commitment: CboundWrong, b: b, innerProductValue: wrongV, proof: proof)
             fputs("  Reject wrong v: \(rejected ? "PASS" : "FAIL")\n", stderr)
 
