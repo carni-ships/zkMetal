@@ -61,6 +61,7 @@ public enum Versions {
 
     // --- Other ---
     public static let ecdsa          = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
+    public static let eddsa          = PrimitiveVersion(version: "1.0.0", updated: "2026-04-04")
     public static let radixSort      = PrimitiveVersion(version: "1.1.0", updated: "2026-04-02")
     public static let verkle         = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let lookup         = PrimitiveVersion(version: "1.0.0", updated: "2026-04-01")

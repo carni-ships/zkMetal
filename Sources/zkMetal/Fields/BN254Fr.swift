@@ -163,6 +163,34 @@ public func frInverse(_ a: Fr) -> Fr {
     return result
 }
 
+/// Montgomery batch inversion: compute 1/a[i] for all i using a single frInverse.
+/// Uses O(3n) multiplications instead of O(n * 256) squarings+muls.
+public func frBatchInverse(_ a: [Fr]) -> [Fr] {
+    let n = a.count
+    if n == 0 { return [] }
+    if n == 1 { return [frInverse(a[0])] }
+
+    // Build prefix products: prefix[i] = a[0] * a[1] * ... * a[i]
+    var prefix = [Fr](repeating: Fr.zero, count: n)
+    prefix[0] = a[0]
+    for i in 1..<n {
+        prefix[i] = frMul(prefix[i - 1], a[i])
+    }
+
+    // Invert the total product once
+    var inv = frInverse(prefix[n - 1])
+
+    // Walk backwards: inv currently holds 1/(a[0]*...*a[n-1])
+    var result = [Fr](repeating: Fr.zero, count: n)
+    for i in stride(from: n - 1, through: 1, by: -1) {
+        result[i] = frMul(inv, prefix[i - 1])
+        inv = frMul(inv, a[i])
+    }
+    result[0] = inv
+
+    return result
+}
+
 /// Compute a^n mod r using square-and-multiply.
 public func frPow(_ a: Fr, _ n: UInt64) -> Fr {
     if n == 0 { return Fr.one }

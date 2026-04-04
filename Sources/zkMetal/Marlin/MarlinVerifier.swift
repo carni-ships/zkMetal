@@ -185,11 +185,9 @@ public class MarlinVerifier {
         let etaB = transcript.squeeze()
         let etaC = transcript.squeeze()
 
-        // Round 2: absorb t commitment, squeeze alpha (before sumcheck)
+        // Round 2: absorb t commitment -> alpha, then sumcheck -> beta
         marlinAbsorbPointImpl(transcript, proof.tCommit)
         let alpha = transcript.squeeze()
-
-        // Absorb sumcheck round polynomials, squeeze beta
         for coeffs in proof.sumcheckPolyCoeffs {
             for c in coeffs {
                 transcript.absorb(c)
@@ -265,6 +263,68 @@ public class MarlinVerifier {
         }
 
         return true
+    }
+
+    /// Diagnostic: returns which verification step fails.
+    public func verifyDiag(vk: MarlinVerifyingKey, publicInput: [Fr], proof: MarlinProof) -> String {
+        let idx = vk.index
+        let transcript = Transcript(label: "marlin", backend: .keccak256)
+        transcript.absorb(frFromInt(UInt64(idx.numConstraints)))
+        transcript.absorb(frFromInt(UInt64(idx.numVariables)))
+        transcript.absorb(frFromInt(UInt64(idx.numNonZero)))
+        for c in vk.indexCommitments { marlinAbsorbPointImpl(transcript, c) }
+        for pi in publicInput { transcript.absorb(pi) }
+        marlinAbsorbPointImpl(transcript, proof.wCommit)
+        marlinAbsorbPointImpl(transcript, proof.zACommit)
+        marlinAbsorbPointImpl(transcript, proof.zBCommit)
+        let etaA = transcript.squeeze()
+        let etaB = transcript.squeeze()
+        let etaC = transcript.squeeze()
+        marlinAbsorbPointImpl(transcript, proof.tCommit)
+        let alpha = transcript.squeeze()
+        for coeffs in proof.sumcheckPolyCoeffs { for c in coeffs { transcript.absorb(c) } }
+        let beta = transcript.squeeze()
+        marlinAbsorbPointImpl(transcript, proof.gCommit)
+        marlinAbsorbPointImpl(transcript, proof.hCommit)
+        let gamma = transcript.squeeze()
+
+        if !verifySumcheckRounds(proof.sumcheckPolyCoeffs, alpha: alpha) {
+            return "FAIL:sumcheck"
+        }
+
+        let evals = proof.evaluations
+        let lhs = frAdd(
+            frAdd(frMul(etaA, evals.zABeta), frMul(etaB, evals.zBBeta)),
+            frMul(etaC, frMul(evals.zABeta, evals.zBBeta))
+        )
+        let vHBeta = frSub(frPow(beta, UInt64(idx.constraintDomainSize)), Fr.one)
+        let rhs = frMul(evals.tBeta, vHBeta)
+        if frToInt(lhs) != frToInt(rhs) {
+            return "FAIL:outer"
+        }
+
+        let vKGamma = frSub(frPow(gamma, UInt64(idx.nonZeroDomainSize)), Fr.one)
+        var combinedSigma = Fr.zero
+        let etas = [etaA, etaB, etaC]
+        for m in 0..<3 {
+            let d = frMul(frSub(beta, evals.rowGamma[m]), frSub(gamma, evals.colGamma[m]))
+            if d.isZero { return "FAIL:inner-denom" }
+            combinedSigma = frAdd(combinedSigma, frMul(etas[m], frMul(evals.valGamma[m], frInverse(d))))
+        }
+        let kNZSizeInv = frInverse(frFromInt(UInt64(idx.nonZeroDomainSize)))
+        let hContrib = frMul(frMul(evals.hGamma, vKGamma), kNZSizeInv)
+        let expectedG = frSub(combinedSigma, hContrib)
+        if frToInt(evals.gGamma) != frToInt(expectedG) {
+            return "FAIL:inner"
+        }
+
+        let batchChallenge = transcript.squeeze()
+        if !verifyOpenings(vk: vk, proof: proof, beta: beta, gamma: gamma,
+                           batchChallenge: batchChallenge) {
+            return "FAIL:kzg"
+        }
+
+        return "PASS"
     }
 
     // MARK: - Sumcheck Verification
@@ -447,7 +507,6 @@ public class MarlinVerifier {
 
             marlinAbsorbPointImpl(transcript, proof.tCommit)
             let alpha = transcript.squeeze()
-
             for coeffs in proof.sumcheckPolyCoeffs {
                 for c in coeffs { transcript.absorb(c) }
             }

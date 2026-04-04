@@ -36,6 +36,7 @@ public func runGroth16Bench() {
         let sT = (CFAbsoluteTimeGetCurrent()-st)*1000
         do {
             let prover = try Groth16Prover()
+            prover.profileGroth16 = (sz == 256)
             let pt = CFAbsoluteTimeGetCurrent()
             let proof = try prover.prove(pk: bPk, r1cs: br, publicInputs: bp, witness: bw)
             let pT = (CFAbsoluteTimeGetCurrent()-pt)*1000

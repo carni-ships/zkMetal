@@ -49,6 +49,8 @@ public func runMarlinBench() {
         let valid = engine.verify(vk: vk, publicInput: pub, proof: proof)
         let verifyMs = (CFAbsoluteTimeGetCurrent() - t2) * 1000
         fputs(String(format: "  Verify: %.1fms -- %@\n", verifyMs, valid ? "VALID" : "INVALID"), stderr)
+        let diagResult = engine.verifier.verifyDiag(vk: vk, publicInput: pub, proof: proof)
+        fputs("  Diag: \(diagResult)\n", stderr)
 
         // Reference: MarlinTestProver
         fputs("\n  MarlinTestProver (reference):\n", stderr)

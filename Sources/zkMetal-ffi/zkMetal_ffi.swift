@@ -28,7 +28,17 @@ private class LazyEngines {
     private var _poseidon2: Poseidon2Engine?
     private var _keccak: Keccak256Engine?
     private var _fri: FRIEngine?
+    private var _pairing: BN254PairingEngine?
     private let lock = NSLock()
+
+    func pairing() throws -> BN254PairingEngine {
+        lock.lock()
+        defer { lock.unlock() }
+        if let e = _pairing { return e }
+        let e = try BN254PairingEngine()
+        _pairing = e
+        return e
+    }
 
     func msm() throws -> MetalMSM {
         lock.lock()
@@ -176,6 +186,26 @@ public func zkmetal_fri_engine_create(_ out: UnsafeMutablePointer<UnsafeMutableR
 public func zkmetal_fri_engine_destroy(_ engine: UnsafeMutableRawPointer?) {
     guard let engine = engine else { return }
     Unmanaged<FRIEngine>.fromOpaque(engine).release()
+}
+
+@_cdecl("zkmetal_pairing_engine_create")
+public func zkmetal_pairing_engine_create(_ out: UnsafeMutablePointer<UnsafeMutableRawPointer?>) -> Int32 {
+    do {
+        let engine = try BN254PairingEngine()
+        let retained = Unmanaged.passRetained(engine).toOpaque()
+        out.pointee = retained
+        return ZKMETAL_SUCCESS
+    } catch PairingError.noGPU {
+        return ZKMETAL_ERR_NO_GPU
+    } catch {
+        return ZKMETAL_ERR_GPU_ERROR
+    }
+}
+
+@_cdecl("zkmetal_pairing_engine_destroy")
+public func zkmetal_pairing_engine_destroy(_ engine: UnsafeMutableRawPointer?) {
+    guard let engine = engine else { return }
+    Unmanaged<BN254PairingEngine>.fromOpaque(engine).release()
 }
 
 // MARK: - MSM (engine-based)
@@ -515,6 +545,407 @@ private func _fri_fold_impl(
     } catch {
         return ZKMETAL_ERR_GPU_ERROR
     }
+}
+
+// MARK: - Batch Pairing (engine-based)
+
+@_cdecl("zkmetal_bn254_batch_pairing")
+public func zkmetal_bn254_batch_pairing(
+    _ engine: UnsafeMutableRawPointer,
+    _ g1Ptr: UnsafePointer<UInt8>,
+    _ g2Ptr: UnsafePointer<UInt8>,
+    _ nPairs: UInt32,
+    _ resultPtr: UnsafeMutablePointer<UInt8>
+) -> Int32 {
+    let pairing = Unmanaged<BN254PairingEngine>.fromOpaque(engine).takeUnretainedValue()
+    return _batch_pairing_impl(pairing, g1Ptr, g2Ptr, nPairs, resultPtr)
+}
+
+@_cdecl("zkmetal_bn254_pairing_check")
+public func zkmetal_bn254_pairing_check(
+    _ engine: UnsafeMutableRawPointer,
+    _ g1Ptr: UnsafePointer<UInt8>,
+    _ g2Ptr: UnsafePointer<UInt8>,
+    _ nPairs: UInt32
+) -> Int32 {
+    let pairing = Unmanaged<BN254PairingEngine>.fromOpaque(engine).takeUnretainedValue()
+    return _pairing_check_impl(pairing, g1Ptr, g2Ptr, nPairs)
+}
+
+// MARK: - Batch Pairing (convenience — lazy singleton)
+
+@_cdecl("zkmetal_bn254_batch_pairing_auto")
+public func zkmetal_bn254_batch_pairing_auto(
+    _ g1Ptr: UnsafePointer<UInt8>,
+    _ g2Ptr: UnsafePointer<UInt8>,
+    _ nPairs: UInt32,
+    _ resultPtr: UnsafeMutablePointer<UInt8>
+) -> Int32 {
+    do {
+        let pairing = try LazyEngines.shared.pairing()
+        return _batch_pairing_impl(pairing, g1Ptr, g2Ptr, nPairs, resultPtr)
+    } catch PairingError.noGPU {
+        return ZKMETAL_ERR_NO_GPU
+    } catch {
+        return ZKMETAL_ERR_GPU_ERROR
+    }
+}
+
+@_cdecl("zkmetal_bn254_pairing_check_auto")
+public func zkmetal_bn254_pairing_check_auto(
+    _ g1Ptr: UnsafePointer<UInt8>,
+    _ g2Ptr: UnsafePointer<UInt8>,
+    _ nPairs: UInt32
+) -> Int32 {
+    do {
+        let pairing = try LazyEngines.shared.pairing()
+        return _pairing_check_impl(pairing, g1Ptr, g2Ptr, nPairs)
+    } catch PairingError.noGPU {
+        return ZKMETAL_ERR_NO_GPU
+    } catch {
+        return ZKMETAL_ERR_GPU_ERROR
+    }
+}
+
+private func _decode_pairing_pairs(
+    _ g1Ptr: UnsafePointer<UInt8>,
+    _ g2Ptr: UnsafePointer<UInt8>,
+    _ nPairs: UInt32
+) -> [(PointAffine, G2AffinePoint)] {
+    let n = Int(nPairs)
+    var pairs = [(PointAffine, G2AffinePoint)]()
+    pairs.reserveCapacity(n)
+
+    let pointSize = MemoryLayout<PointAffine>.stride  // 64 bytes
+    // G2 affine: 4 Fp elements = 128 bytes (x.c0, x.c1, y.c0, y.c1)
+
+    for i in 0..<n {
+        // Read G1 point (64 bytes = x,y each 32 bytes)
+        var g1 = PointAffine(x: Fp(v: (0,0,0,0,0,0,0,0)), y: Fp(v: (0,0,0,0,0,0,0,0)))
+        withUnsafeMutableBytes(of: &g1) { dst in
+            memcpy(dst.baseAddress!, g1Ptr.advanced(by: i * pointSize), pointSize)
+        }
+
+        // Read G2 point (128 bytes = x0,x1,y0,y1 each 32 bytes)
+        let g2Base = g2Ptr.advanced(by: i * 128)
+        func readFp(_ offset: Int) -> Fp {
+            var fp = Fp(v: (0,0,0,0,0,0,0,0))
+            withUnsafeMutableBytes(of: &fp) { dst in
+                memcpy(dst.baseAddress!, g2Base.advanced(by: offset), 32)
+            }
+            return fp
+        }
+        let g2 = G2AffinePoint(
+            x: Fp2(c0: readFp(0), c1: readFp(32)),
+            y: Fp2(c0: readFp(64), c1: readFp(96))
+        )
+
+        pairs.append((g1, g2))
+    }
+    return pairs
+}
+
+private func _batch_pairing_impl(
+    _ pairing: BN254PairingEngine,
+    _ g1Ptr: UnsafePointer<UInt8>,
+    _ g2Ptr: UnsafePointer<UInt8>,
+    _ nPairs: UInt32,
+    _ resultPtr: UnsafeMutablePointer<UInt8>
+) -> Int32 {
+    let n = Int(nPairs)
+    if n == 0 { return ZKMETAL_ERR_INVALID_INPUT }
+
+    let pairs = _decode_pairing_pairs(g1Ptr, g2Ptr, nPairs)
+
+    do {
+        let result = try pairing.multiMillerPairing(pairs: pairs)
+        // Fp12 = 12 Fp elements = 384 bytes. Write c0 (Fp6) then c1 (Fp6).
+        // Fp6 = c0,c1,c2 (Fp2 each). Fp2 = c0,c1 (Fp each).
+        var offset = 0
+        func writeFp(_ fp: Fp) {
+            withUnsafeBytes(of: fp) { src in
+                memcpy(resultPtr.advanced(by: offset), src.baseAddress!, 32)
+            }
+            offset += 32
+        }
+        func writeFp2(_ fp2: Fp2) { writeFp(fp2.c0); writeFp(fp2.c1) }
+        func writeFp6(_ fp6: Fp6) { writeFp2(fp6.c0); writeFp2(fp6.c1); writeFp2(fp6.c2) }
+        writeFp6(result.c0)
+        writeFp6(result.c1)
+        return ZKMETAL_SUCCESS
+    } catch {
+        return ZKMETAL_ERR_GPU_ERROR
+    }
+}
+
+private func _pairing_check_impl(
+    _ pairing: BN254PairingEngine,
+    _ g1Ptr: UnsafePointer<UInt8>,
+    _ g2Ptr: UnsafePointer<UInt8>,
+    _ nPairs: UInt32
+) -> Int32 {
+    let n = Int(nPairs)
+    if n == 0 { return ZKMETAL_ERR_INVALID_INPUT }
+
+    let pairs = _decode_pairing_pairs(g1Ptr, g2Ptr, nPairs)
+
+    do {
+        let passed = try pairing.pairingCheck(pairs: pairs)
+        return passed ? ZKMETAL_SUCCESS : ZKMETAL_ERR_INVALID_INPUT
+    } catch {
+        return ZKMETAL_ERR_GPU_ERROR
+    }
+}
+
+// MARK: - Small-Scalar MSM Variants (engine-based)
+
+@_cdecl("zkmetal_bn254_msm_u8")
+public func zkmetal_bn254_msm_u8(
+    _ engine: UnsafeMutableRawPointer,
+    _ pointsPtr: UnsafePointer<UInt8>,
+    _ scalarsPtr: UnsafePointer<UInt8>,
+    _ nPoints: UInt32,
+    _ resultX: UnsafeMutablePointer<UInt8>,
+    _ resultY: UnsafeMutablePointer<UInt8>,
+    _ resultZ: UnsafeMutablePointer<UInt8>
+) -> Int32 {
+    let msm = Unmanaged<MetalMSM>.fromOpaque(engine).takeUnretainedValue()
+    return _msm_small_scalar_impl(msm, pointsPtr, scalarsPtr, nPoints, 1, resultX, resultY, resultZ)
+}
+
+@_cdecl("zkmetal_bn254_msm_u16")
+public func zkmetal_bn254_msm_u16(
+    _ engine: UnsafeMutableRawPointer,
+    _ pointsPtr: UnsafePointer<UInt8>,
+    _ scalarsPtr: UnsafePointer<UInt8>,
+    _ nPoints: UInt32,
+    _ resultX: UnsafeMutablePointer<UInt8>,
+    _ resultY: UnsafeMutablePointer<UInt8>,
+    _ resultZ: UnsafeMutablePointer<UInt8>
+) -> Int32 {
+    let msm = Unmanaged<MetalMSM>.fromOpaque(engine).takeUnretainedValue()
+    return _msm_small_scalar_impl(msm, pointsPtr, scalarsPtr, nPoints, 2, resultX, resultY, resultZ)
+}
+
+@_cdecl("zkmetal_bn254_msm_u32")
+public func zkmetal_bn254_msm_u32(
+    _ engine: UnsafeMutableRawPointer,
+    _ pointsPtr: UnsafePointer<UInt8>,
+    _ scalarsPtr: UnsafePointer<UInt8>,
+    _ nPoints: UInt32,
+    _ resultX: UnsafeMutablePointer<UInt8>,
+    _ resultY: UnsafeMutablePointer<UInt8>,
+    _ resultZ: UnsafeMutablePointer<UInt8>
+) -> Int32 {
+    let msm = Unmanaged<MetalMSM>.fromOpaque(engine).takeUnretainedValue()
+    return _msm_small_scalar_impl(msm, pointsPtr, scalarsPtr, nPoints, 4, resultX, resultY, resultZ)
+}
+
+// MARK: - Small-Scalar MSM Variants (convenience — lazy singleton)
+
+@_cdecl("zkmetal_bn254_msm_u8_auto")
+public func zkmetal_bn254_msm_u8_auto(
+    _ pointsPtr: UnsafePointer<UInt8>,
+    _ scalarsPtr: UnsafePointer<UInt8>,
+    _ nPoints: UInt32,
+    _ resultX: UnsafeMutablePointer<UInt8>,
+    _ resultY: UnsafeMutablePointer<UInt8>,
+    _ resultZ: UnsafeMutablePointer<UInt8>
+) -> Int32 {
+    do {
+        let msm = try LazyEngines.shared.msm()
+        return _msm_small_scalar_impl(msm, pointsPtr, scalarsPtr, nPoints, 1, resultX, resultY, resultZ)
+    } catch MSMError.noGPU {
+        return ZKMETAL_ERR_NO_GPU
+    } catch {
+        return ZKMETAL_ERR_GPU_ERROR
+    }
+}
+
+@_cdecl("zkmetal_bn254_msm_u16_auto")
+public func zkmetal_bn254_msm_u16_auto(
+    _ pointsPtr: UnsafePointer<UInt8>,
+    _ scalarsPtr: UnsafePointer<UInt8>,
+    _ nPoints: UInt32,
+    _ resultX: UnsafeMutablePointer<UInt8>,
+    _ resultY: UnsafeMutablePointer<UInt8>,
+    _ resultZ: UnsafeMutablePointer<UInt8>
+) -> Int32 {
+    do {
+        let msm = try LazyEngines.shared.msm()
+        return _msm_small_scalar_impl(msm, pointsPtr, scalarsPtr, nPoints, 2, resultX, resultY, resultZ)
+    } catch MSMError.noGPU {
+        return ZKMETAL_ERR_NO_GPU
+    } catch {
+        return ZKMETAL_ERR_GPU_ERROR
+    }
+}
+
+@_cdecl("zkmetal_bn254_msm_u32_auto")
+public func zkmetal_bn254_msm_u32_auto(
+    _ pointsPtr: UnsafePointer<UInt8>,
+    _ scalarsPtr: UnsafePointer<UInt8>,
+    _ nPoints: UInt32,
+    _ resultX: UnsafeMutablePointer<UInt8>,
+    _ resultY: UnsafeMutablePointer<UInt8>,
+    _ resultZ: UnsafeMutablePointer<UInt8>
+) -> Int32 {
+    do {
+        let msm = try LazyEngines.shared.msm()
+        return _msm_small_scalar_impl(msm, pointsPtr, scalarsPtr, nPoints, 4, resultX, resultY, resultZ)
+    } catch MSMError.noGPU {
+        return ZKMETAL_ERR_NO_GPU
+    } catch {
+        return ZKMETAL_ERR_GPU_ERROR
+    }
+}
+
+private func _msm_small_scalar_impl(
+    _ msm: MetalMSM,
+    _ pointsPtr: UnsafePointer<UInt8>,
+    _ scalarsPtr: UnsafePointer<UInt8>,
+    _ nPoints: UInt32,
+    _ scalarBytes: Int,
+    _ resultX: UnsafeMutablePointer<UInt8>,
+    _ resultY: UnsafeMutablePointer<UInt8>,
+    _ resultZ: UnsafeMutablePointer<UInt8>
+) -> Int32 {
+    let n = Int(nPoints)
+    if n == 0 { return ZKMETAL_ERR_INVALID_INPUT }
+
+    let pointSize = MemoryLayout<PointAffine>.stride
+    let scalarLimbs = 8
+
+    var points = [PointAffine](repeating: PointAffine(x: Fp(v: (0,0,0,0,0,0,0,0)), y: Fp(v: (0,0,0,0,0,0,0,0))), count: n)
+    _ = points.withUnsafeMutableBytes { dst in
+        memcpy(dst.baseAddress!, pointsPtr, n * pointSize)
+    }
+
+    // Convert small scalars to [[UInt32]] format (8 limbs, zero-extended)
+    var scalars = [[UInt32]](repeating: [UInt32](repeating: 0, count: scalarLimbs), count: n)
+    for i in 0..<n {
+        var val: UInt32 = 0
+        switch scalarBytes {
+        case 1:
+            val = UInt32(scalarsPtr[i])
+        case 2:
+            val = UInt32(scalarsPtr[i * 2]) | (UInt32(scalarsPtr[i * 2 + 1]) << 8)
+        case 4:
+            val = UInt32(scalarsPtr[i * 4])
+                | (UInt32(scalarsPtr[i * 4 + 1]) << 8)
+                | (UInt32(scalarsPtr[i * 4 + 2]) << 16)
+                | (UInt32(scalarsPtr[i * 4 + 3]) << 24)
+        default:
+            break
+        }
+        scalars[i][0] = val
+    }
+
+    do {
+        let result = try msm.msm(points: points, scalars: scalars)
+        _ = withUnsafeBytes(of: result.x) { src in memcpy(resultX, src.baseAddress!, 32) }
+        _ = withUnsafeBytes(of: result.y) { src in memcpy(resultY, src.baseAddress!, 32) }
+        _ = withUnsafeBytes(of: result.z) { src in memcpy(resultZ, src.baseAddress!, 32) }
+        return ZKMETAL_SUCCESS
+    } catch MSMError.invalidInput {
+        return ZKMETAL_ERR_INVALID_INPUT
+    } catch {
+        return ZKMETAL_ERR_GPU_ERROR
+    }
+}
+
+// MARK: - Batch MSM (engine-based)
+
+@_cdecl("zkmetal_bn254_msm_batch")
+public func zkmetal_bn254_msm_batch(
+    _ engine: UnsafeMutableRawPointer,
+    _ allPointsPtr: UnsafePointer<UInt8>,
+    _ allScalarsPtr: UnsafePointer<UInt8>,
+    _ countsPtr: UnsafePointer<UInt32>,
+    _ nMsms: UInt32,
+    _ resultsPtr: UnsafeMutablePointer<UInt8>
+) -> Int32 {
+    let msm = Unmanaged<MetalMSM>.fromOpaque(engine).takeUnretainedValue()
+    return _msm_batch_impl(msm, allPointsPtr, allScalarsPtr, countsPtr, nMsms, resultsPtr)
+}
+
+// MARK: - Batch MSM (convenience — lazy singleton)
+
+@_cdecl("zkmetal_bn254_msm_batch_auto")
+public func zkmetal_bn254_msm_batch_auto(
+    _ allPointsPtr: UnsafePointer<UInt8>,
+    _ allScalarsPtr: UnsafePointer<UInt8>,
+    _ countsPtr: UnsafePointer<UInt32>,
+    _ nMsms: UInt32,
+    _ resultsPtr: UnsafeMutablePointer<UInt8>
+) -> Int32 {
+    do {
+        let msm = try LazyEngines.shared.msm()
+        return _msm_batch_impl(msm, allPointsPtr, allScalarsPtr, countsPtr, nMsms, resultsPtr)
+    } catch MSMError.noGPU {
+        return ZKMETAL_ERR_NO_GPU
+    } catch {
+        return ZKMETAL_ERR_GPU_ERROR
+    }
+}
+
+private func _msm_batch_impl(
+    _ msm: MetalMSM,
+    _ allPointsPtr: UnsafePointer<UInt8>,
+    _ allScalarsPtr: UnsafePointer<UInt8>,
+    _ countsPtr: UnsafePointer<UInt32>,
+    _ nMsms: UInt32,
+    _ resultsPtr: UnsafeMutablePointer<UInt8>
+) -> Int32 {
+    let numMsms = Int(nMsms)
+    if numMsms == 0 { return ZKMETAL_ERR_INVALID_INPUT }
+
+    let pointSize = MemoryLayout<PointAffine>.stride
+    let scalarLimbs = 8
+
+    var pointOffset = 0
+    var scalarOffset = 0
+
+    for m in 0..<numMsms {
+        let count = Int(countsPtr[m])
+        if count == 0 {
+            // Write identity point (zero projective)
+            memset(resultsPtr.advanced(by: m * 96), 0, 96)
+            continue
+        }
+
+        var points = [PointAffine](repeating: PointAffine(x: Fp(v: (0,0,0,0,0,0,0,0)), y: Fp(v: (0,0,0,0,0,0,0,0))), count: count)
+        _ = points.withUnsafeMutableBytes { dst in
+            memcpy(dst.baseAddress!, allPointsPtr.advanced(by: pointOffset), count * pointSize)
+        }
+
+        var scalars = [[UInt32]](repeating: [UInt32](repeating: 0, count: scalarLimbs), count: count)
+        let scalarSrc = allScalarsPtr.advanced(by: scalarOffset)
+        scalarSrc.withMemoryRebound(to: UInt32.self, capacity: count * scalarLimbs) { src in
+            for i in 0..<count {
+                for j in 0..<scalarLimbs {
+                    scalars[i][j] = src[i * scalarLimbs + j]
+                }
+            }
+        }
+
+        do {
+            let result = try msm.msm(points: points, scalars: scalars)
+            let dst = resultsPtr.advanced(by: m * 96)
+            _ = withUnsafeBytes(of: result.x) { src in memcpy(dst, src.baseAddress!, 32) }
+            _ = withUnsafeBytes(of: result.y) { src in memcpy(dst.advanced(by: 32), src.baseAddress!, 32) }
+            _ = withUnsafeBytes(of: result.z) { src in memcpy(dst.advanced(by: 64), src.baseAddress!, 32) }
+        } catch MSMError.invalidInput {
+            return ZKMETAL_ERR_INVALID_INPUT
+        } catch {
+            return ZKMETAL_ERR_GPU_ERROR
+        }
+
+        pointOffset += count * pointSize
+        scalarOffset += count * 32
+    }
+
+    return ZKMETAL_SUCCESS
 }
 
 // MARK: - Utility

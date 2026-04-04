@@ -42,6 +42,7 @@ typedef void* ZkMetalNTTEngine;
 typedef void* ZkMetalPoseidon2Engine;
 typedef void* ZkMetalKeccakEngine;
 typedef void* ZkMetalFRIEngine;
+typedef void* ZkMetalPairingEngine;
 
 // ============================================================================
 // Engine lifecycle
@@ -77,6 +78,12 @@ ZkMetalStatus zkmetal_fri_engine_create(ZkMetalFRIEngine* out);
 
 /// Destroy a FRI engine.
 void zkmetal_fri_engine_destroy(ZkMetalFRIEngine engine);
+
+/// Create a BN254 pairing engine.
+ZkMetalStatus zkmetal_pairing_engine_create(ZkMetalPairingEngine* out);
+
+/// Destroy a pairing engine.
+void zkmetal_pairing_engine_destroy(ZkMetalPairingEngine engine);
 
 // ============================================================================
 // MSM — Multi-Scalar Multiplication (BN254 G1)
@@ -210,6 +217,127 @@ ZkMetalStatus zkmetal_fri_fold_auto(
     uint32_t log_n,
     const uint8_t* beta,
     uint8_t* result
+);
+
+// ============================================================================
+// Batch Pairing (BN254)
+// ============================================================================
+
+/// Batch pairing: compute product of e(g1[i], g2[i]) for i in 0..n_pairs.
+/// GPU-accelerated parallel Miller loops + CPU final exponentiation.
+///
+/// - engine:     Pairing engine handle from zkmetal_pairing_engine_create()
+/// - g1_points:  n_pairs affine G1 points, each 64 bytes (x,y in Montgomery form)
+/// - g2_points:  n_pairs affine G2 points, each 128 bytes (x0,x1,y0,y1 Montgomery Fp2)
+/// - n_pairs:    number of (G1, G2) pairs
+/// - result:     output Fp12 element (384 bytes = 12 * 32B, Montgomery form)
+ZkMetalStatus zkmetal_bn254_batch_pairing(
+    ZkMetalPairingEngine engine,
+    const uint8_t* g1_points,
+    const uint8_t* g2_points,
+    uint32_t n_pairs,
+    uint8_t* result
+);
+
+/// Pairing check: verify product of e(g1[i], g2[i]) == 1 (Gt identity).
+/// Returns ZKMETAL_SUCCESS if check passes, ZKMETAL_ERR_INVALID_INPUT if fails.
+ZkMetalStatus zkmetal_bn254_pairing_check(
+    ZkMetalPairingEngine engine,
+    const uint8_t* g1_points,
+    const uint8_t* g2_points,
+    uint32_t n_pairs
+);
+
+/// Convenience batch pairing using a lazy singleton engine.
+ZkMetalStatus zkmetal_bn254_batch_pairing_auto(
+    const uint8_t* g1_points,
+    const uint8_t* g2_points,
+    uint32_t n_pairs,
+    uint8_t* result
+);
+
+/// Convenience pairing check using a lazy singleton engine.
+ZkMetalStatus zkmetal_bn254_pairing_check_auto(
+    const uint8_t* g1_points,
+    const uint8_t* g2_points,
+    uint32_t n_pairs
+);
+
+// ============================================================================
+// Small-Scalar MSM Variants (BN254 G1)
+// ============================================================================
+
+/// MSM with 1-byte scalars (u8). Each scalar is 1 byte, zero-extended internally.
+/// More efficient than full 256-bit MSM for small scalar ranges.
+ZkMetalStatus zkmetal_bn254_msm_u8(
+    ZkMetalMSMEngine engine,
+    const uint8_t* points,
+    const uint8_t* scalars,
+    uint32_t n_points,
+    uint8_t* result_x, uint8_t* result_y, uint8_t* result_z
+);
+
+/// MSM with 2-byte scalars (u16, little-endian).
+ZkMetalStatus zkmetal_bn254_msm_u16(
+    ZkMetalMSMEngine engine,
+    const uint8_t* points,
+    const uint8_t* scalars,
+    uint32_t n_points,
+    uint8_t* result_x, uint8_t* result_y, uint8_t* result_z
+);
+
+/// MSM with 4-byte scalars (u32, little-endian).
+ZkMetalStatus zkmetal_bn254_msm_u32(
+    ZkMetalMSMEngine engine,
+    const uint8_t* points,
+    const uint8_t* scalars,
+    uint32_t n_points,
+    uint8_t* result_x, uint8_t* result_y, uint8_t* result_z
+);
+
+/// Convenience small-scalar MSM variants using a lazy singleton engine.
+ZkMetalStatus zkmetal_bn254_msm_u8_auto(
+    const uint8_t* points, const uint8_t* scalars, uint32_t n_points,
+    uint8_t* result_x, uint8_t* result_y, uint8_t* result_z
+);
+ZkMetalStatus zkmetal_bn254_msm_u16_auto(
+    const uint8_t* points, const uint8_t* scalars, uint32_t n_points,
+    uint8_t* result_x, uint8_t* result_y, uint8_t* result_z
+);
+ZkMetalStatus zkmetal_bn254_msm_u32_auto(
+    const uint8_t* points, const uint8_t* scalars, uint32_t n_points,
+    uint8_t* result_x, uint8_t* result_y, uint8_t* result_z
+);
+
+// ============================================================================
+// Batch MSM (BN254 G1)
+// ============================================================================
+
+/// Batch MSM: compute multiple independent MSMs in one call.
+/// Amortizes Swift/GPU dispatch overhead for many small MSMs.
+///
+/// - engine:      MSM engine handle
+/// - all_points:  concatenated affine points for all MSMs (64 bytes each)
+/// - all_scalars: concatenated 32-byte scalars for all MSMs
+/// - counts:      array of n_msms uint32_t values, counts[i] = number of points in MSM i
+/// - n_msms:      number of MSMs to compute
+/// - results:     n_msms * 96 bytes output (projective X,Y,Z per MSM, 32 bytes each)
+ZkMetalStatus zkmetal_bn254_msm_batch(
+    ZkMetalMSMEngine engine,
+    const uint8_t* all_points,
+    const uint8_t* all_scalars,
+    const uint32_t* counts,
+    uint32_t n_msms,
+    uint8_t* results
+);
+
+/// Convenience batch MSM using a lazy singleton engine.
+ZkMetalStatus zkmetal_bn254_msm_batch_auto(
+    const uint8_t* all_points,
+    const uint8_t* all_scalars,
+    const uint32_t* counts,
+    uint32_t n_msms,
+    uint8_t* results
 );
 
 // ============================================================================

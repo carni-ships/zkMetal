@@ -89,6 +89,8 @@ mod ffi {
         pub fn zkmetal_keccak_engine_destroy(engine: *mut std::ffi::c_void);
         pub fn zkmetal_fri_engine_create(out: *mut *mut std::ffi::c_void) -> i32;
         pub fn zkmetal_fri_engine_destroy(engine: *mut std::ffi::c_void);
+        pub fn zkmetal_pairing_engine_create(out: *mut *mut std::ffi::c_void) -> i32;
+        pub fn zkmetal_pairing_engine_destroy(engine: *mut std::ffi::c_void);
 
         // -- MSM --
         pub fn zkmetal_bn254_msm(
@@ -158,6 +160,111 @@ mod ffi {
             log_n: u32,
             beta: *const u8,
             result: *mut u8,
+        ) -> i32;
+
+        // -- Batch Pairing --
+        pub fn zkmetal_bn254_batch_pairing(
+            engine: *mut std::ffi::c_void,
+            g1_points: *const u8,
+            g2_points: *const u8,
+            n_pairs: u32,
+            result: *mut u8,
+        ) -> i32;
+
+        pub fn zkmetal_bn254_pairing_check(
+            engine: *mut std::ffi::c_void,
+            g1_points: *const u8,
+            g2_points: *const u8,
+            n_pairs: u32,
+        ) -> i32;
+
+        pub fn zkmetal_bn254_batch_pairing_auto(
+            g1_points: *const u8,
+            g2_points: *const u8,
+            n_pairs: u32,
+            result: *mut u8,
+        ) -> i32;
+
+        pub fn zkmetal_bn254_pairing_check_auto(
+            g1_points: *const u8,
+            g2_points: *const u8,
+            n_pairs: u32,
+        ) -> i32;
+
+        // -- Small-Scalar MSM --
+        pub fn zkmetal_bn254_msm_u8(
+            engine: *mut std::ffi::c_void,
+            points: *const u8,
+            scalars: *const u8,
+            n_points: u32,
+            result_x: *mut u8,
+            result_y: *mut u8,
+            result_z: *mut u8,
+        ) -> i32;
+
+        pub fn zkmetal_bn254_msm_u16(
+            engine: *mut std::ffi::c_void,
+            points: *const u8,
+            scalars: *const u8,
+            n_points: u32,
+            result_x: *mut u8,
+            result_y: *mut u8,
+            result_z: *mut u8,
+        ) -> i32;
+
+        pub fn zkmetal_bn254_msm_u32(
+            engine: *mut std::ffi::c_void,
+            points: *const u8,
+            scalars: *const u8,
+            n_points: u32,
+            result_x: *mut u8,
+            result_y: *mut u8,
+            result_z: *mut u8,
+        ) -> i32;
+
+        pub fn zkmetal_bn254_msm_u8_auto(
+            points: *const u8,
+            scalars: *const u8,
+            n_points: u32,
+            result_x: *mut u8,
+            result_y: *mut u8,
+            result_z: *mut u8,
+        ) -> i32;
+
+        pub fn zkmetal_bn254_msm_u16_auto(
+            points: *const u8,
+            scalars: *const u8,
+            n_points: u32,
+            result_x: *mut u8,
+            result_y: *mut u8,
+            result_z: *mut u8,
+        ) -> i32;
+
+        pub fn zkmetal_bn254_msm_u32_auto(
+            points: *const u8,
+            scalars: *const u8,
+            n_points: u32,
+            result_x: *mut u8,
+            result_y: *mut u8,
+            result_z: *mut u8,
+        ) -> i32;
+
+        // -- Batch MSM --
+        pub fn zkmetal_bn254_msm_batch(
+            engine: *mut std::ffi::c_void,
+            all_points: *const u8,
+            all_scalars: *const u8,
+            counts: *const u32,
+            n_msms: u32,
+            results: *mut u8,
+        ) -> i32;
+
+        pub fn zkmetal_bn254_msm_batch_auto(
+            all_points: *const u8,
+            all_scalars: *const u8,
+            counts: *const u32,
+            n_msms: u32,
+            results: *mut u8,
         ) -> i32;
 
         // -- Utility --
@@ -356,6 +463,164 @@ impl Drop for FriEngine {
     }
 }
 
+/// BN254 Pairing engine handle.
+pub struct PairingEngine {
+    raw: *mut std::ffi::c_void,
+}
+
+unsafe impl Send for PairingEngine {}
+
+impl PairingEngine {
+    /// Create a new pairing engine (compiles GPU shaders, allocates resources).
+    pub fn new() -> Result<Self> {
+        let mut raw = std::ptr::null_mut();
+        check_status(unsafe { ffi::zkmetal_pairing_engine_create(&mut raw) })?;
+        Ok(Self { raw })
+    }
+
+    /// Batch pairing: compute product of e(g1[i], g2[i]).
+    ///
+    /// - `g1_points`: `n * 64` bytes — affine G1 points in Montgomery form
+    /// - `g2_points`: `n * 128` bytes — affine G2 points (x0,x1,y0,y1 Montgomery Fp2)
+    ///
+    /// Returns 384-byte Fp12 result in Montgomery form.
+    pub fn batch_pairing(&self, g1_points: &[u8], g2_points: &[u8], n: u32) -> Result<[u8; 384]> {
+        assert_eq!(g1_points.len(), n as usize * 64, "g1_points must be n*64 bytes");
+        assert_eq!(g2_points.len(), n as usize * 128, "g2_points must be n*128 bytes");
+        let mut result = [0u8; 384];
+        check_status(unsafe {
+            ffi::zkmetal_bn254_batch_pairing(
+                self.raw,
+                g1_points.as_ptr(),
+                g2_points.as_ptr(),
+                n,
+                result.as_mut_ptr(),
+            )
+        })?;
+        Ok(result)
+    }
+
+    /// Pairing check: verify product of e(g1[i], g2[i]) == 1 (Gt identity).
+    /// Returns Ok(true) if check passes, Ok(false) if fails.
+    pub fn pairing_check(&self, g1_points: &[u8], g2_points: &[u8], n: u32) -> Result<bool> {
+        assert_eq!(g1_points.len(), n as usize * 64);
+        assert_eq!(g2_points.len(), n as usize * 128);
+        let status = unsafe {
+            ffi::zkmetal_bn254_pairing_check(
+                self.raw,
+                g1_points.as_ptr(),
+                g2_points.as_ptr(),
+                n,
+            )
+        };
+        match status {
+            0 => Ok(true),
+            -2 => Ok(false), // ZKMETAL_ERR_INVALID_INPUT means check failed
+            _ => check_status(status).map(|_| unreachable!()),
+        }
+    }
+}
+
+impl Drop for PairingEngine {
+    fn drop(&mut self) {
+        unsafe { ffi::zkmetal_pairing_engine_destroy(self.raw) }
+    }
+}
+
+// ============================================================================
+// Additional MsmEngine methods
+// ============================================================================
+
+impl MsmEngine {
+    /// MSM with 1-byte scalars (u8). More efficient for small scalar ranges.
+    ///
+    /// - `points`: `n * 64` bytes — affine points in Montgomery form
+    /// - `scalars`: `n` bytes — one u8 scalar per point
+    pub fn msm_u8(&self, points: &[u8], scalars: &[u8], n: u32) -> Result<([u8; 32], [u8; 32], [u8; 32])> {
+        assert_eq!(points.len(), n as usize * 64);
+        assert_eq!(scalars.len(), n as usize);
+        let mut x = [0u8; 32];
+        let mut y = [0u8; 32];
+        let mut z = [0u8; 32];
+        check_status(unsafe {
+            ffi::zkmetal_bn254_msm_u8(
+                self.raw, points.as_ptr(), scalars.as_ptr(), n,
+                x.as_mut_ptr(), y.as_mut_ptr(), z.as_mut_ptr(),
+            )
+        })?;
+        Ok((x, y, z))
+    }
+
+    /// MSM with 2-byte scalars (u16 LE).
+    ///
+    /// - `points`: `n * 64` bytes
+    /// - `scalars`: `n * 2` bytes (little-endian u16)
+    pub fn msm_u16(&self, points: &[u8], scalars: &[u8], n: u32) -> Result<([u8; 32], [u8; 32], [u8; 32])> {
+        assert_eq!(points.len(), n as usize * 64);
+        assert_eq!(scalars.len(), n as usize * 2);
+        let mut x = [0u8; 32];
+        let mut y = [0u8; 32];
+        let mut z = [0u8; 32];
+        check_status(unsafe {
+            ffi::zkmetal_bn254_msm_u16(
+                self.raw, points.as_ptr(), scalars.as_ptr(), n,
+                x.as_mut_ptr(), y.as_mut_ptr(), z.as_mut_ptr(),
+            )
+        })?;
+        Ok((x, y, z))
+    }
+
+    /// MSM with 4-byte scalars (u32 LE).
+    ///
+    /// - `points`: `n * 64` bytes
+    /// - `scalars`: `n * 4` bytes (little-endian u32)
+    pub fn msm_u32(&self, points: &[u8], scalars: &[u8], n: u32) -> Result<([u8; 32], [u8; 32], [u8; 32])> {
+        assert_eq!(points.len(), n as usize * 64);
+        assert_eq!(scalars.len(), n as usize * 4);
+        let mut x = [0u8; 32];
+        let mut y = [0u8; 32];
+        let mut z = [0u8; 32];
+        check_status(unsafe {
+            ffi::zkmetal_bn254_msm_u32(
+                self.raw, points.as_ptr(), scalars.as_ptr(), n,
+                x.as_mut_ptr(), y.as_mut_ptr(), z.as_mut_ptr(),
+            )
+        })?;
+        Ok((x, y, z))
+    }
+
+    /// Batch MSM: compute multiple independent MSMs in one call.
+    ///
+    /// - `all_points`: concatenated affine points for all MSMs (64 bytes each)
+    /// - `all_scalars`: concatenated 32-byte scalars for all MSMs
+    /// - `counts`: number of points in each MSM
+    ///
+    /// Returns `n_msms * 96` bytes — projective (X,Y,Z) per MSM, 32 bytes each.
+    pub fn msm_batch(
+        &self,
+        all_points: &[u8],
+        all_scalars: &[u8],
+        counts: &[u32],
+    ) -> Result<Vec<u8>> {
+        let n_msms = counts.len() as u32;
+        let total_points: u32 = counts.iter().sum();
+        assert_eq!(all_points.len(), total_points as usize * 64);
+        assert_eq!(all_scalars.len(), total_points as usize * 32);
+        let mut results = vec![0u8; counts.len() * 96];
+        check_status(unsafe {
+            ffi::zkmetal_bn254_msm_batch(
+                self.raw,
+                all_points.as_ptr(),
+                all_scalars.as_ptr(),
+                counts.as_ptr(),
+                n_msms,
+                results.as_mut_ptr(),
+            )
+        })?;
+        Ok(results)
+    }
+}
+
 // ============================================================================
 // Convenience (auto) API — uses lazy singleton engines
 // ============================================================================
@@ -427,6 +692,132 @@ pub fn fri_fold_auto(evals: &[u8], log_n: u32, beta: &[u8; 32], result: &mut [u8
     check_status(unsafe {
         ffi::zkmetal_fri_fold_auto(evals.as_ptr(), log_n, beta.as_ptr(), result.as_mut_ptr())
     })
+}
+
+/// Convenience batch pairing using a lazy singleton engine.
+pub fn bn254_batch_pairing_auto(
+    g1_points: &[u8],
+    g2_points: &[u8],
+    n: u32,
+) -> Result<[u8; 384]> {
+    assert_eq!(g1_points.len(), n as usize * 64);
+    assert_eq!(g2_points.len(), n as usize * 128);
+    let mut result = [0u8; 384];
+    check_status(unsafe {
+        ffi::zkmetal_bn254_batch_pairing_auto(
+            g1_points.as_ptr(),
+            g2_points.as_ptr(),
+            n,
+            result.as_mut_ptr(),
+        )
+    })?;
+    Ok(result)
+}
+
+/// Convenience pairing check using a lazy singleton engine.
+/// Returns Ok(true) if check passes, Ok(false) if fails.
+pub fn bn254_pairing_check_auto(
+    g1_points: &[u8],
+    g2_points: &[u8],
+    n: u32,
+) -> Result<bool> {
+    assert_eq!(g1_points.len(), n as usize * 64);
+    assert_eq!(g2_points.len(), n as usize * 128);
+    let status = unsafe {
+        ffi::zkmetal_bn254_pairing_check_auto(
+            g1_points.as_ptr(),
+            g2_points.as_ptr(),
+            n,
+        )
+    };
+    match status {
+        0 => Ok(true),
+        -2 => Ok(false),
+        _ => check_status(status).map(|_| unreachable!()),
+    }
+}
+
+/// Convenience MSM with u8 scalars using a lazy singleton engine.
+pub fn bn254_msm_u8_auto(
+    points: &[u8],
+    scalars: &[u8],
+    n: u32,
+) -> Result<([u8; 32], [u8; 32], [u8; 32])> {
+    assert_eq!(points.len(), n as usize * 64);
+    assert_eq!(scalars.len(), n as usize);
+    let mut x = [0u8; 32];
+    let mut y = [0u8; 32];
+    let mut z = [0u8; 32];
+    check_status(unsafe {
+        ffi::zkmetal_bn254_msm_u8_auto(
+            points.as_ptr(), scalars.as_ptr(), n,
+            x.as_mut_ptr(), y.as_mut_ptr(), z.as_mut_ptr(),
+        )
+    })?;
+    Ok((x, y, z))
+}
+
+/// Convenience MSM with u16 scalars using a lazy singleton engine.
+pub fn bn254_msm_u16_auto(
+    points: &[u8],
+    scalars: &[u8],
+    n: u32,
+) -> Result<([u8; 32], [u8; 32], [u8; 32])> {
+    assert_eq!(points.len(), n as usize * 64);
+    assert_eq!(scalars.len(), n as usize * 2);
+    let mut x = [0u8; 32];
+    let mut y = [0u8; 32];
+    let mut z = [0u8; 32];
+    check_status(unsafe {
+        ffi::zkmetal_bn254_msm_u16_auto(
+            points.as_ptr(), scalars.as_ptr(), n,
+            x.as_mut_ptr(), y.as_mut_ptr(), z.as_mut_ptr(),
+        )
+    })?;
+    Ok((x, y, z))
+}
+
+/// Convenience MSM with u32 scalars using a lazy singleton engine.
+pub fn bn254_msm_u32_auto(
+    points: &[u8],
+    scalars: &[u8],
+    n: u32,
+) -> Result<([u8; 32], [u8; 32], [u8; 32])> {
+    assert_eq!(points.len(), n as usize * 64);
+    assert_eq!(scalars.len(), n as usize * 4);
+    let mut x = [0u8; 32];
+    let mut y = [0u8; 32];
+    let mut z = [0u8; 32];
+    check_status(unsafe {
+        ffi::zkmetal_bn254_msm_u32_auto(
+            points.as_ptr(), scalars.as_ptr(), n,
+            x.as_mut_ptr(), y.as_mut_ptr(), z.as_mut_ptr(),
+        )
+    })?;
+    Ok((x, y, z))
+}
+
+/// Convenience batch MSM using a lazy singleton engine.
+pub fn bn254_msm_batch_auto(
+    all_points: &[u8],
+    all_scalars: &[u8],
+    counts: &[u32],
+) -> Result<Vec<u8>> {
+    let n_msms = counts.len() as u32;
+    let total_points: u32 = counts.iter().sum();
+    assert_eq!(all_points.len(), total_points as usize * 64);
+    assert_eq!(all_scalars.len(), total_points as usize * 32);
+    let mut results = vec![0u8; counts.len() * 96];
+    check_status(unsafe {
+        ffi::zkmetal_bn254_msm_batch_auto(
+            all_points.as_ptr(),
+            all_scalars.as_ptr(),
+            counts.as_ptr(),
+            n_msms,
+            results.as_mut_ptr(),
+        )
+    })?;
+    Ok(results)
 }
 
 // ============================================================================

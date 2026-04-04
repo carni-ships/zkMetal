@@ -4,6 +4,7 @@ import Metal
 
 public class Groth16Prover {
     public let msm: MetalMSM; public let ntt: NTTEngine
+    public var profileGroth16 = false
     public init() throws { self.msm = try MetalMSM(); self.ntt = try NTTEngine() }
 
     public func prove(pk: Groth16ProvingKey, r1cs: R1CSInstance,
@@ -13,12 +14,18 @@ public class Groth16Prover {
         z[0] = .one; for i in 0..<nP { z[1+i] = publicInputs[i] }
         for i in 0..<witness.count { z[1+nP+i] = witness[i] }
         precondition(r1cs.isSatisfied(z: z), "R1CS not satisfied")
+        var _t = CFAbsoluteTimeGetCurrent()
         let h = try computeH(r1cs: r1cs, z: z)
+        if profileGroth16 { let _e = CFAbsoluteTimeGetCurrent(); fputs(String(format: "  [groth16] computeH: %.2f ms\n", (_e - _t) * 1000), stderr); _t = _e }
         let r = groth16RandomFr(); let s = groth16RandomFr()
         let pA = try proofA(pk: pk, z: z, r: r)
+        if profileGroth16 { let _e = CFAbsoluteTimeGetCurrent(); fputs(String(format: "  [groth16] proofA: %.2f ms\n", (_e - _t) * 1000), stderr); _t = _e }
         let pB = proofBG2(pk: pk, z: z, s: s)
+        if profileGroth16 { let _e = CFAbsoluteTimeGetCurrent(); fputs(String(format: "  [groth16] proofBG2: %.2f ms\n", (_e - _t) * 1000), stderr); _t = _e }
         let pBg1 = try proofBG1(pk: pk, z: z, s: s)
+        if profileGroth16 { let _e = CFAbsoluteTimeGetCurrent(); fputs(String(format: "  [groth16] proofBG1: %.2f ms\n", (_e - _t) * 1000), stderr); _t = _e }
         let pC = try proofC(pk: pk, w: witness, h: h, a: pA, bg1: pBg1, r: r, s: s)
+        if profileGroth16 { let _e = CFAbsoluteTimeGetCurrent(); fputs(String(format: "  [groth16] proofC: %.2f ms\n", (_e - _t) * 1000), stderr); _t = _e }
         return Groth16Proof(a: pA, b: pB, c: pC)
     }
 
@@ -83,9 +90,17 @@ public class Groth16Prover {
     }
 
     private func proofBG2(pk: Groth16ProvingKey, z: [Fr], s: Fr) -> G2ProjectivePoint {
-        let n = min(z.count, pk.b_g2_query.count); var r = pk.beta_g2
-        for i in 0..<n { if !z[i].isZero { r = g2Add(r, g2ScalarMul(pk.b_g2_query[i], frToInt(z[i]))) } }
-        return g2Add(r, g2ScalarMul(pk.delta_g2, frToInt(s)))
+        let n = min(z.count, pk.b_g2_query.count)
+        // Collect non-zero (point, scalar) pairs for batch MSM
+        var pts = [G2ProjectivePoint](); var scs = [[UInt64]]()
+        pts.reserveCapacity(n + 1); scs.reserveCapacity(n + 1)
+        for i in 0..<n {
+            if !z[i].isZero { pts.append(pk.b_g2_query[i]); scs.append(frToInt(z[i])) }
+        }
+        pts.append(pk.delta_g2); scs.append(frToInt(s))
+        if profileGroth16 { fputs("  [groth16] proofBG2 non-zero points: \(pts.count) / \(n+1)\n", stderr) }
+        let m = g2PippengerMSM(points: pts, scalars: scs)
+        return g2Add(pk.beta_g2, m)
     }
 
     private func proofBG1(pk: Groth16ProvingKey, z: [Fr], s: Fr) throws -> PointProjective {
@@ -112,4 +127,31 @@ public class Groth16Prover {
         for s in sc { sl.append(frToLimbs(s)) }
         return n >= 256 ? try msm.msm(points: aff, scalars: sl) : cPippengerMSM(points: aff, scalars: sl)
     }
+}
+
+// MARK: - G2 Straus MSM
+
+/// Straus (Shamir's trick) multi-scalar multiplication for G2 points.
+/// Processes all scalars bit-by-bit from MSB to LSB with a single shared doubling.
+/// Much faster than N sequential scalar muls: O(256 doubles + 256*density adds)
+/// vs O(N * 256 doubles + N * 128 adds).
+public func g2PippengerMSM(points: [G2ProjectivePoint], scalars: [[UInt64]]) -> G2ProjectivePoint {
+    let n = points.count
+    if n == 0 { return g2Identity() }
+    if n == 1 { return g2ScalarMul(points[0], scalars[0]) }
+
+    // Straus: scan from MSB to LSB
+    var result = g2Identity()
+    for bit in stride(from: 255, through: 0, by: -1) {
+        result = g2Double(result)
+        let wordIdx = bit / 64
+        let bitIdx = bit % 64
+        for i in 0..<n {
+            let sc = scalars[i]
+            if wordIdx < sc.count && (sc[wordIdx] >> bitIdx) & 1 == 1 {
+                result = g2Add(result, points[i])
+            }
+        }
+    }
+    return result
 }
