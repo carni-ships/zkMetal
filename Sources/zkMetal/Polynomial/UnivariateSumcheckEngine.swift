@@ -2,14 +2,16 @@
 //
 // Claim: sum_{x in H} f(x) = v, where H is a multiplicative subgroup of size n = 2^k.
 //
-// Protocol:
-//   1. Prover computes h(X) = (f(X) - v/n) / Z_H(X) where Z_H(X) = X^n - 1
-//   2. Prover commits to h(X) via KZG
-//   3. Verifier picks random challenge r, checks: f(r) = v/n + h(r) * Z_H(r)
+// Protocol (for arbitrary degree f, following Aurora/Marlin):
+//   1. Decompose: f(X) - v/n = q(X) * Z_H(X) + X * p(X)
+//      where Z_H(X) = X^n - 1, q is the quotient, and X*p(X) is the remainder
+//      with constant term removed (since it's zero when the claim is correct).
+//   2. Prover commits to q(X) and p(X) via KZG
+//   3. Verifier picks random challenge r, checks:
+//      f(r) - v/n = q(r) * Z_H(r) + r * p(r)
+//   4. Verifier checks KZG opening proofs for f(r), q(r), p(r)
 //
-// Key advantage: single polynomial division (NTT + pointwise divide + iNTT) instead
-// of log(n) sequential rounds in multilinear sumcheck. Fewer GPU dispatches.
-//
+// Key advantage: single round instead of log(n) rounds, using NTT for poly division.
 // Also supports batch mode: k polynomials reduced to 1 via random linear combination.
 
 import Foundation
@@ -17,19 +19,27 @@ import Foundation
 // MARK: - Proof structures
 
 public struct UnivariateSumcheckProof {
-    public let hCommitment: PointProjective    // KZG commitment to quotient h(X)
+    public let qCommitment: PointProjective    // KZG commitment to quotient q(X)
+    public let pCommitment: PointProjective    // KZG commitment to remainder p(X) where rem = X*p(X)
     public let fEval: Fr                       // f(r) at random challenge
-    public let hEval: Fr                       // h(r) at random challenge
-    public let fOpeningProof: PointProjective   // KZG witness for f(r)
-    public let hOpeningProof: PointProjective   // KZG witness for h(r)
+    public let qEval: Fr                       // q(r) at random challenge
+    public let pEval: Fr                       // p(r) at random challenge
+    public let fOpeningProof: PointProjective  // KZG witness for f(r)
+    public let qOpeningProof: PointProjective  // KZG witness for q(r)
+    public let pOpeningProof: PointProjective  // KZG witness for p(r)
 
-    public init(hCommitment: PointProjective, fEval: Fr, hEval: Fr,
-                fOpeningProof: PointProjective, hOpeningProof: PointProjective) {
-        self.hCommitment = hCommitment
+    public init(qCommitment: PointProjective, pCommitment: PointProjective,
+                fEval: Fr, qEval: Fr, pEval: Fr,
+                fOpeningProof: PointProjective, qOpeningProof: PointProjective,
+                pOpeningProof: PointProjective) {
+        self.qCommitment = qCommitment
+        self.pCommitment = pCommitment
         self.fEval = fEval
-        self.hEval = hEval
+        self.qEval = qEval
+        self.pEval = pEval
         self.fOpeningProof = fOpeningProof
-        self.hOpeningProof = hOpeningProof
+        self.qOpeningProof = qOpeningProof
+        self.pOpeningProof = pOpeningProof
     }
 }
 
@@ -57,66 +67,77 @@ public class UnivariateSumcheckEngine {
     // MARK: - Single polynomial prove/verify
 
     /// Prove that sum_{x in H} f(x) = claimedSum, where H is the multiplicative subgroup of size 2^logN.
-    /// f is given in coefficient form, degree < domainSize * quotientBlowup (typically degree < 2n or 4n).
+    /// f is given in coefficient form. Works for any degree (not limited to deg < n).
     ///
-    /// Steps:
-    ///   1. Compute v/n (inverse of domain size times claimed sum)
-    ///   2. g(X) = f(X) - v/n (subtract from constant term)
-    ///   3. Divide g by Z_H(X) = X^n - 1 via NTT: evaluate on larger domain, pointwise divide, iNTT
-    ///   4. Commit h via KZG
-    ///   5. Fiat-Shamir challenge r
-    ///   6. Open f(r) and h(r) via KZG
+    /// Aurora/Marlin decomposition:
+    ///   g(X) = f(X) - v/n
+    ///   g(X) = q(X) * Z_H(X) + rem(X)     where deg(rem) < n
+    ///   rem(X) has rem[0] = 0 when claim is correct, so rem(X) = X * p(X)
+    ///   Verifier checks: f(r) - v/n = q(r) * Z_H(r) + r * p(r)
     public func prove(fCoeffs: [Fr], logN: Int, claimedSum: Fr,
                       transcript: Transcript) throws -> UnivariateSumcheckProof {
         let n = 1 << logN
 
-        // 1. Compute v/n: the constant that f should average to over H
+        // 1. Compute v/n
         let nInv = frInverse(frFromInt(UInt64(n)))
         let vOverN = frMul(claimedSum, nInv)
 
         // 2. g(X) = f(X) - v/n
         var gCoeffs = fCoeffs
+        // Pad to at least n+1 so division always works
+        while gCoeffs.count < n + 1 {
+            gCoeffs.append(Fr.zero)
+        }
         gCoeffs[0] = frSub(gCoeffs[0], vOverN)
 
-        // 3. Polynomial division: h = g / Z_H where Z_H(X) = X^n - 1
-        //    Since Z_H is sparse, we use direct coefficient division:
-        //    if g(X) = sum_i g_i X^i and Z_H = X^n - 1, then
-        //    h = g / Z_H is computed by: h_i = g_{i+n} + h_{i+n} for i from top down
-        //    (synthetic division by X^n - 1)
-        let hCoeffs = divideByVanishing(gCoeffs, vanishingDegree: n)
+        // 3. Polynomial division with remainder: g = q * Z_H + rem
+        let (qCoeffs, remCoeffs) = divideByVanishingWithRemainder(gCoeffs, vanishingDegree: n)
 
-        // 4. Commit f and h via KZG
+        // 4. Extract p from rem: rem(X) = X*p(X), so p[i] = rem[i+1]
+        //    rem[0] should be 0 if the claim is valid (prover assumes this)
+        var pCoeffs: [Fr]
+        if remCoeffs.count > 1 {
+            pCoeffs = Array(remCoeffs[1...])
+        } else {
+            pCoeffs = [Fr.zero]
+        }
+        // Ensure p is non-empty
+        if pCoeffs.isEmpty { pCoeffs = [Fr.zero] }
+
+        // 5. Commit f, q, p via KZG
         let fCommitment = try kzg.commit(fCoeffs)
-        let hCommitment = try kzg.commit(hCoeffs)
+        let qCommitment = try kzg.commit(qCoeffs.isEmpty ? [Fr.zero] : qCoeffs)
+        let pCommitment = try kzg.commit(pCoeffs)
 
-        // 5. Fiat-Shamir: absorb commitments, squeeze challenge r
+        // 6. Fiat-Shamir: absorb commitments, squeeze challenge r
         absorbPoint(transcript, fCommitment)
-        absorbPoint(transcript, hCommitment)
+        absorbPoint(transcript, qCommitment)
+        absorbPoint(transcript, pCommitment)
         transcript.absorbLabel("univariate-sumcheck-challenge")
         let r = transcript.squeeze()
 
-        // 6. Open f(r) and h(r)
+        // 7. Open f(r), q(r), p(r)
         let fProof = try kzg.open(fCoeffs, at: r)
-        let hProof = try kzg.open(hCoeffs, at: r)
+        let qProof = try kzg.open(qCoeffs.isEmpty ? [Fr.zero] : qCoeffs, at: r)
+        let pProof = try kzg.open(pCoeffs, at: r)
 
         return UnivariateSumcheckProof(
-            hCommitment: hCommitment,
+            qCommitment: qCommitment,
+            pCommitment: pCommitment,
             fEval: fProof.evaluation,
-            hEval: hProof.evaluation,
+            qEval: qProof.evaluation,
+            pEval: pProof.evaluation,
             fOpeningProof: fProof.witness,
-            hOpeningProof: hProof.witness
+            qOpeningProof: qProof.witness,
+            pOpeningProof: pProof.witness
         )
     }
 
     /// Verify a univariate sumcheck proof.
     ///
     /// Checks:
-    ///   1. f(r) = v/n + h(r) * Z_H(r)   (the sumcheck equation)
-    ///   2. KZG opening proofs for f(r) and h(r) are valid
-    ///
-    /// Parameters:
-    ///   - fCommitment: KZG commitment to f (provided separately by the protocol)
-    ///   - srsSecret: the SRS toxic waste (needed for verification without pairings)
+    ///   1. f(r) - v/n = q(r) * Z_H(r) + r * p(r)
+    ///   2. KZG opening proofs for f(r), q(r), p(r) are valid
     public func verify(proof: UnivariateSumcheckProof, fCommitment: PointProjective,
                        claimedSum: Fr, logN: Int, transcript: Transcript,
                        srsSecret: Fr) -> Bool {
@@ -124,11 +145,12 @@ public class UnivariateSumcheckEngine {
 
         // Reconstruct Fiat-Shamir challenge
         absorbPoint(transcript, fCommitment)
-        absorbPoint(transcript, proof.hCommitment)
+        absorbPoint(transcript, proof.qCommitment)
+        absorbPoint(transcript, proof.pCommitment)
         transcript.absorbLabel("univariate-sumcheck-challenge")
         let r = transcript.squeeze()
 
-        // 1. Check sumcheck equation: f(r) = v/n + h(r) * Z_H(r)
+        // 1. Check sumcheck equation: f(r) - v/n = q(r) * Z_H(r) + r * p(r)
         let nInv = frInverse(frFromInt(UInt64(n)))
         let vOverN = frMul(claimedSum, nInv)
 
@@ -136,38 +158,36 @@ public class UnivariateSumcheckEngine {
         let rN = frPow(r, UInt64(n))
         let zHr = frSub(rN, Fr.one)
 
-        let expected = frAdd(vOverN, frMul(proof.hEval, zHr))
+        // LHS = f(r) - v/n
+        let lhs = frSub(proof.fEval, vOverN)
+        // RHS = q(r) * Z_H(r) + r * p(r)
+        let rhs = frAdd(frMul(proof.qEval, zHr), frMul(r, proof.pEval))
 
-        let fEvalLimbs = frToInt(proof.fEval)
-        let expectedLimbs = frToInt(expected)
-        guard fEvalLimbs == expectedLimbs else {
+        let lhsLimbs = frToInt(lhs)
+        let rhsLimbs = frToInt(rhs)
+        guard lhsLimbs == rhsLimbs else {
             return false
         }
 
         // 2. Verify KZG openings using SRS secret
-        //    For f: check C_f == [f(r)]*G + [s-r]*pi_f
         let g1 = pointFromAffine(kzg.srs[0])
         let sMr = frSub(srsSecret, r)
 
-        // Verify f opening
-        let fYG = cPointScalarMul(g1, proof.fEval)
-        let fSzP = cPointScalarMul(proof.fOpeningProof, sMr)
-        let fExpected = pointAdd(fYG, fSzP)
-        let fCA = batchToAffine([fCommitment])
-        let fEA = batchToAffine([fExpected])
-        guard fpToInt(fCA[0].x) == fpToInt(fEA[0].x) &&
-              fpToInt(fCA[0].y) == fpToInt(fEA[0].y) else {
+        // Verify f opening: C_f == [f(r)]*G + [s-r]*pi_f
+        guard verifyKZGOpening(commitment: fCommitment, eval: proof.fEval,
+                               witness: proof.fOpeningProof, g1: g1, sMr: sMr) else {
             return false
         }
 
-        // Verify h opening
-        let hYG = cPointScalarMul(g1, proof.hEval)
-        let hSzP = cPointScalarMul(proof.hOpeningProof, sMr)
-        let hExpected = pointAdd(hYG, hSzP)
-        let hCA = batchToAffine([proof.hCommitment])
-        let hEA = batchToAffine([hExpected])
-        guard fpToInt(hCA[0].x) == fpToInt(hEA[0].x) &&
-              fpToInt(hCA[0].y) == fpToInt(hEA[0].y) else {
+        // Verify q opening
+        guard verifyKZGOpening(commitment: proof.qCommitment, eval: proof.qEval,
+                               witness: proof.qOpeningProof, g1: g1, sMr: sMr) else {
+            return false
+        }
+
+        // Verify p opening
+        guard verifyKZGOpening(commitment: proof.pCommitment, eval: proof.pEval,
+                               witness: proof.pOpeningProof, g1: g1, sMr: sMr) else {
             return false
         }
 
@@ -190,7 +210,6 @@ public class UnivariateSumcheckEngine {
         // Get batching challenge alpha from transcript
         transcript.absorbLabel("batch-univariate-sumcheck")
         for i in 0..<k {
-            // Absorb each claim
             transcript.absorb(claims[i])
         }
         let alpha = transcript.squeeze()
@@ -249,9 +268,7 @@ public class UnivariateSumcheckEngine {
         for i in 0..<k {
             transcript.absorb(claims[i])
         }
-        let _alpha = transcript.squeeze()
-        // (alpha should match proof.alphas[1] if k >= 2, but we trust the transcript)
-        _ = _alpha  // suppress unused warning
+        let _ = transcript.squeeze()  // consume alpha
 
         // Reconstruct combined claim w = sum_i alpha^i * v_i
         var w = Fr.zero
@@ -267,37 +284,58 @@ public class UnivariateSumcheckEngine {
 
     // MARK: - Helpers
 
-    /// Divide polynomial g by the vanishing polynomial Z_H(X) = X^n - 1.
-    /// Returns quotient h such that g = h * (X^n - 1).
-    /// Assumes g is exactly divisible (remainder = 0 for valid sumcheck).
+    /// Verify a single KZG opening: C == [eval]*G + [s-r]*witness
+    private func verifyKZGOpening(commitment: PointProjective, eval: Fr,
+                                  witness: PointProjective,
+                                  g1: PointProjective, sMr: Fr) -> Bool {
+        let yG = cPointScalarMul(g1, eval)
+        let szP = cPointScalarMul(witness, sMr)
+        let expected = pointAdd(yG, szP)
+        let cA = batchToAffine([commitment])
+        let eA = batchToAffine([expected])
+        return fpToInt(cA[0].x) == fpToInt(eA[0].x) &&
+               fpToInt(cA[0].y) == fpToInt(eA[0].y)
+    }
+
+    /// Divide polynomial g by Z_H(X) = X^n - 1 with remainder.
+    /// Returns (quotient, remainder) such that g = quotient * Z_H + remainder, deg(remainder) < n.
     ///
-    /// Derivation: g_i = h_{i-n} - h_i, so h_{i-n} = g_i + h_i.
-    /// Process top-down from i = d-1 to i = n.
-    func divideByVanishing(_ g: [Fr], vanishingDegree n: Int) -> [Fr] {
+    /// Synthetic division by X^n - 1:
+    /// Process from highest degree down. For each coefficient g[i] where i >= n,
+    /// the coefficient contributes to quotient[i-n] and adds back to g[i-n] (since Z_H = X^n - 1).
+    func divideByVanishingWithRemainder(_ g: [Fr], vanishingDegree n: Int) -> (quotient: [Fr], remainder: [Fr]) {
         let d = g.count
-        guard d > n else { return [] }
-
-        let hLen = d - n
-        var h = [Fr](repeating: Fr.zero, count: hLen)
-
-        for i in stride(from: d - 1, through: n, by: -1) {
-            let hIdx = i - n
-            if i < hLen {
-                // h[i] was set by a previous (higher) iteration
-                h[hIdx] = frAdd(g[i], h[i])
-            } else {
-                h[hIdx] = g[i]
-            }
+        guard d > n else {
+            // g has degree < n, quotient is 0, remainder is g
+            return ([], g)
         }
 
-        return h
+        // Work on a mutable copy
+        var work = g
+
+        let qLen = d - n
+        var q = [Fr](repeating: Fr.zero, count: qLen)
+
+        // Process from highest degree coefficient down to degree n
+        for i in stride(from: d - 1, through: n, by: -1) {
+            let coeff = work[i]
+            // This coefficient belongs to quotient[i - n]
+            q[i - n] = coeff
+            // Subtract coeff * Z_H contribution: Z_H = X^n - 1, so
+            // coeff * X^{i-n} * (X^n - 1) contributes coeff at position i and -coeff at position i-n
+            // We already "consumed" position i; add coeff back to position i-n (since -(−1) = +1)
+            work[i - n] = frAdd(work[i - n], coeff)
+            work[i] = Fr.zero
+        }
+
+        // Remainder is work[0..n-1]
+        let rem = Array(work.prefix(n))
+        return (q, rem)
     }
 
     /// Absorb a projective point into the transcript by converting to affine and absorbing x, y.
     func absorbPoint(_ transcript: Transcript, _ point: PointProjective) {
         let affine = batchToAffine([point])
-        // Absorb x and y coordinates as field elements
-        // Convert Fp to bytes for the transcript
         let xLimbs = fpToInt(affine[0].x)
         let yLimbs = fpToInt(affine[0].y)
         var xBytes = [UInt8]()
@@ -317,40 +355,31 @@ public class UnivariateSumcheckEngine {
     // MARK: - NTT-based division (for large polynomials)
 
     /// Divide polynomial f by Z_H(X) = X^n - 1 using NTT.
-    /// Evaluates f and Z_H on a domain of size m >= deg(f) + n, does pointwise division, iNTT.
-    /// This is faster for large polynomials where deg(f) >> n.
+    /// Returns only the quotient (for use when exact division is known).
     func divideByVanishingNTT(_ fCoeffs: [Fr], vanishingDegree n: Int) throws -> [Fr] {
         let d = fCoeffs.count
         guard d > n else { return [] }
 
-        // Need evaluation domain of size >= d (to avoid aliasing)
         var m = 1
         while m < d + n { m <<= 1 }
-        let logM = Int(log2(Double(m)))
 
-        // Pad f to size m
         var fPad = fCoeffs
         if fPad.count < m {
             fPad.append(contentsOf: [Fr](repeating: Fr.zero, count: m - fPad.count))
         }
 
-        // Build Z_H in coefficient form: Z_H[0] = -1, Z_H[n] = 1
         var zH = [Fr](repeating: Fr.zero, count: m)
         zH[0] = frSub(Fr.zero, Fr.one)  // -1
         zH[n] = Fr.one
 
-        // NTT both
         let fEvals = try ntt.ntt(fPad)
         let zHEvals = try ntt.ntt(zH)
 
-        // Pointwise divide (with batch inverse for efficiency)
         let zHInv = try poly.batchInverse(zHEvals)
-        var hEvals = try poly.hadamard(fEvals, zHInv)
+        let hEvals = try poly.hadamard(fEvals, zHInv)
 
-        // iNTT
         let hCoeffs = try ntt.intt(hEvals)
 
-        // Trim to expected length
         let hLen = d - n
         return Array(hCoeffs.prefix(hLen))
     }
