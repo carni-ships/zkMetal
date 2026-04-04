@@ -169,8 +169,6 @@ if cmd == "calibrate" {
     runLookupBench()
 } else if cmd == "lasso" {
     runLassoBench()
-// } else if cmd == "cq" || cmd == "cached-quotients" {
-//     runCQBench()
 } else if cmd == "sparse" || cmd == "sparse-sumcheck" {
     runSparseSumcheckBench()
 } else if cmd == "batch-field" || cmd == "bf" {
@@ -203,6 +201,8 @@ if cmd == "calibrate" {
     runBiniusBench()
 } else if cmd == "fold" || cmd == "nova" || cmd == "hypernova" {
     runFoldingBench()
+} else if cmd == "accum" || cmd == "accumulate" || cmd == "accumulation" {
+    runAccumulationBench()
 } else if cmd == "gkr" {
     runGKRBench()
 } else if cmd == "batch-verify" || cmd == "bv" {
@@ -227,6 +227,8 @@ if cmd == "calibrate" {
     runCPUBench()
 } else if cmd == "cpu-msm" {
     runCPUMSMBench()
+} else if cmd == "plonk" {
+    runPlonkBench()
 } else if cmd == "msm" {
     try runMSMBench()
 } else if cmd == "all" {
@@ -253,6 +255,7 @@ if cmd == "calibrate" {
     runTranscriptBench()
     runBasefoldBench()
     runGKRBench()
+    runPlonkBench()
 } else {
     try runMSMBench()
 }

@@ -53,6 +53,19 @@ public struct CQProof {
     public let hEvalAtZ: Fr
     /// t(z) value
     public let tEvalAtZ: Fr
+
+    public init(hCommitment: PointProjective, multiplicities: [Fr], multiplicitySum: Fr,
+                challengeZ: Fr, hOpening: KZGProof, tOpening: KZGProof,
+                hEvalAtZ: Fr, tEvalAtZ: Fr) {
+        self.hCommitment = hCommitment
+        self.multiplicities = multiplicities
+        self.multiplicitySum = multiplicitySum
+        self.challengeZ = challengeZ
+        self.hOpening = hOpening
+        self.tOpening = tOpening
+        self.hEvalAtZ = hEvalAtZ
+        self.tEvalAtZ = tEvalAtZ
+    }
 }
 
 public class CQEngine {

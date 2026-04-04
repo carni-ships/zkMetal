@@ -43,6 +43,7 @@ public enum Versions {
     public static let poly           = PrimitiveVersion(version: "1.0.0", updated: "2026-04-01")
     public static let basefold       = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let circleFRI      = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
+    public static let univariateSumcheck = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
 
     // --- BLS12-381 ---
     public static let bls12381       = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
@@ -101,6 +102,7 @@ public enum Versions {
             ("Mersenne31",       mersenne31),
             ("FRI",               fri),
             ("Sumcheck",          sumcheck),
+            ("Univ. Sumcheck",   univariateSumcheck),
             ("Polynomial Ops",    poly),
             ("KZG",               kzg),
             ("IPA",               ipa),

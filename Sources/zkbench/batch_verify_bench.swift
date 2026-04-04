@@ -6,24 +6,28 @@ import Foundation
 import zkMetal
 
 public func runBatchVerifyBench() {
-    print("=== Batch KZG Verification Benchmark ===")
+    fputs("=== Batch KZG Verification Benchmark ===\n", stderr)
 
     do {
         // Setup: generate SRS
+        fputs("Generating SRS...\n", stderr)
         let generator = PointAffine(x: fpFromInt(1), y: fpFromInt(2))
         let secret: [UInt32] = [42, 0, 0, 0, 0, 0, 0, 0]
         let srsSize = 1024
         let srs = KZGEngine.generateTestSRS(secret: secret, size: srsSize, generator: generator)
+        fputs("SRS generated\n", stderr)
         let srsSecret = frFromLimbs(secret)
         let kzg = try KZGEngine(srs: srs)
+        fputs("KZG engine initialized\n", stderr)
         let batchVerifier = try BatchVerifier(msmEngine: kzg.msmEngine)
+        fputs("Batch verifier initialized\n", stderr)
 
         // Generate random polynomials and their KZG proofs
         let quick = CommandLine.arguments.contains("--quick")
         let batchSizes = quick ? [10, 50] : [10, 50, 100, 500]
         let maxN = batchSizes.last!
 
-        print("Generating \(maxN) KZG proofs...")
+        fputs("Generating \(maxN) KZG proofs...\n", stderr)
         var rng: UInt64 = 0xCAFE_BABE_DEAD_BEEF
         func nextRng() -> UInt64 {
             rng = rng &* 6364136223846793005 &+ 1442695040888963407
@@ -34,7 +38,8 @@ public func runBatchVerifyBench() {
         allItems.reserveCapacity(maxN)
 
         let proofGenT0 = CFAbsoluteTimeGetCurrent()
-        for _ in 0..<maxN {
+        for idx in 0..<maxN {
+            if idx % 10 == 0 { fputs("  proof \(idx)/\(maxN)\n", stderr) }
             // Random polynomial of degree 15
             let degree = 16
             var coeffs = [Fr]()
@@ -70,7 +75,7 @@ public func runBatchVerifyBench() {
 
         let allValid = try batchVerifier.batchVerifyKZGWithScalars(
             items: testItems, scalars: scalars, srs: srs, srsSecret: srsSecret)
-        print("  [\\(allValid ? \"pass\" : \"FAIL\")] Batch verify 10 valid proofs: \\(allValid)")
+        print("  [\(allValid ? "pass" : "FAIL")] Batch verify 10 valid proofs: \(allValid)")
 
         // Test 2: Tamper with one proof -- should fail batch
         var tamperedItems = testItems
@@ -85,14 +90,14 @@ public func runBatchVerifyBench() {
         )
         let tamperedResult = try batchVerifier.batchVerifyKZGWithScalars(
             items: tamperedItems, scalars: scalars, srs: srs, srsSecret: srsSecret)
-        print("  [\\(tamperedResult ? \"FAIL\" : \"pass\")] Detect 1 invalid among 9 valid: \\(!tamperedResult)")
+        print("  [\(tamperedResult ? "FAIL" : "pass")] Detect 1 invalid among 9 valid: \(!tamperedResult)")
 
         // Test 3: Single proof verification
         let singleItem = [allItems[0]]
         let singleScalar = [frFromInt(1)]
         let singleValid = try batchVerifier.batchVerifyKZGWithScalars(
             items: singleItem, scalars: singleScalar, srs: srs, srsSecret: srsSecret)
-        print("  [\\(singleValid ? \"pass\" : \"FAIL\")] Single proof verification: \\(singleValid)")
+        print("  [\(singleValid ? "pass" : "FAIL")] Single proof verification: \(singleValid)")
 
         // Test 4: ProofAggregator API
         let aggregator = ProofAggregator(srs: srs, srsSecret: srsSecret)
@@ -100,8 +105,8 @@ public func runBatchVerifyBench() {
             aggregator.addKZG(item)
         }
         let aggResult = try aggregator.verifyAll()
-        print("  [\\(aggResult ? \"pass\" : \"FAIL\")] ProofAggregator (10 KZG): \\(aggResult)")
-        print("  Savings: \\(aggregator.estimatedSavings)")
+        print("  [\(aggResult ? "pass" : "FAIL")] ProofAggregator (10 KZG): \(aggResult)")
+        print("  Savings: \(aggregator.estimatedSavings)")
 
         // MARK: - Benchmark: individual vs batch
 
@@ -168,6 +173,6 @@ public func runBatchVerifyBench() {
         print("\nDone.")
 
     } catch {
-        print("Error: \\(error)")
+        print("Error: \(error)")
     }
 }

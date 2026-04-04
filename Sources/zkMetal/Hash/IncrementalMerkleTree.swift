@@ -18,54 +18,133 @@ public struct MerkleProof {
     public let leafIndex: Int
 }
 
+// MARK: - Dirty Level Info
+
+/// Represents dirty nodes at one level: either a contiguous range or scattered indices.
+enum DirtyLevel {
+    case empty
+    case contiguous(first: Int, count: Int)  // [first, first+count)
+    case scattered(Set<Int>)
+
+    var nodeCount: Int {
+        switch self {
+        case .empty: return 0
+        case .contiguous(_, let count): return count
+        case .scattered(let s): return s.count
+        }
+    }
+
+    var isContiguous: Bool {
+        switch self {
+        case .empty, .contiguous: return true
+        case .scattered: return false
+        }
+    }
+
+    /// First node index (for contiguous ranges).
+    var first: Int {
+        switch self {
+        case .empty: return 0
+        case .contiguous(let f, _): return f
+        case .scattered(let s): return s.min() ?? 0
+        }
+    }
+
+    /// Sorted array of dirty indices (materializes for scattered case).
+    var sortedIndices: [Int] {
+        switch self {
+        case .empty: return []
+        case .contiguous(let first, let count):
+            return Array(first..<(first + count))
+        case .scattered(let s):
+            return s.sorted()
+        }
+    }
+}
+
 // MARK: - Dirty Tracker
 
 /// Tracks which internal nodes need rehashing after leaf mutations.
-/// Organized by level (0 = leaves, depth = root). Each level stores deduplicated node indices.
+/// Organized by level (0 = parents of leaves, depth-1 = root).
+/// Optimized: contiguous ranges (common for appends) avoid Set overhead.
 struct DirtyTracker {
     let depth: Int
-    /// dirtyByLevel[level] contains 1-indexed node indices that need rehashing.
-    /// Level 0 = parent of leaves (capacity/2 .. capacity-1), level depth-1 = root (index 1).
-    var dirtyByLevel: [Set<Int>]
+    var dirtyByLevel: [DirtyLevel]
 
     init(depth: Int) {
         self.depth = depth
-        self.dirtyByLevel = Array(repeating: Set<Int>(), count: depth)
+        self.dirtyByLevel = Array(repeating: .empty, count: depth)
     }
 
     /// Mark a single leaf index (0-based) as dirty, propagating up all ancestors.
     mutating func markDirty(leafIndex: Int, capacity: Int) {
-        // Leaf is at 1-indexed position (capacity + leafIndex).
-        // Its parent is at (capacity + leafIndex) / 2.
         var nodeIdx = (capacity + leafIndex) >> 1
         for level in 0..<depth {
-            dirtyByLevel[level].insert(nodeIdx)
+            switch dirtyByLevel[level] {
+            case .empty:
+                dirtyByLevel[level] = .contiguous(first: nodeIdx, count: 1)
+            case .contiguous(let first, let count):
+                if nodeIdx >= first && nodeIdx < first + count {
+                    // Already covered
+                } else if nodeIdx == first + count {
+                    dirtyByLevel[level] = .contiguous(first: first, count: count + 1)
+                } else if nodeIdx == first - 1 {
+                    dirtyByLevel[level] = .contiguous(first: nodeIdx, count: count + 1)
+                } else {
+                    // Can't extend contiguous -- switch to scattered
+                    var s = Set<Int>(minimumCapacity: count + 1)
+                    for i in first..<(first + count) { s.insert(i) }
+                    s.insert(nodeIdx)
+                    dirtyByLevel[level] = .scattered(s)
+                }
+            case .scattered(var s):
+                s.insert(nodeIdx)
+                dirtyByLevel[level] = .scattered(s)
+            }
             nodeIdx >>= 1
         }
     }
 
     /// Mark a contiguous range of leaves [start, start+count) as dirty.
+    /// Optimized: stores ranges directly without materializing all indices.
     mutating func markRange(start: Int, count: Int, capacity: Int) {
-        // For each level, compute the range of affected parents.
         var lo = (capacity + start) >> 1
         var hi = (capacity + start + count - 1) >> 1
         for level in 0..<depth {
-            for idx in lo...hi {
-                dirtyByLevel[level].insert(idx)
+            let rangeCount = hi - lo + 1
+            switch dirtyByLevel[level] {
+            case .empty:
+                dirtyByLevel[level] = .contiguous(first: lo, count: rangeCount)
+            case .contiguous(let first, let existCount):
+                // Try to merge
+                let newLo = min(first, lo)
+                let newHi = max(first + existCount - 1, hi)
+                let gap = newHi - newLo + 1
+                // Check if merged range is at most 2x the sum of counts (allow some gaps)
+                if gap <= existCount + rangeCount + 16 {
+                    dirtyByLevel[level] = .contiguous(first: newLo, count: gap)
+                } else {
+                    var s = Set<Int>(minimumCapacity: existCount + rangeCount)
+                    for i in first..<(first + existCount) { s.insert(i) }
+                    for i in lo...hi { s.insert(i) }
+                    dirtyByLevel[level] = .scattered(s)
+                }
+            case .scattered(var s):
+                for i in lo...hi { s.insert(i) }
+                dirtyByLevel[level] = .scattered(s)
             }
             lo >>= 1
             hi >>= 1
         }
     }
 
-    /// Total dirty nodes across all levels.
     var totalDirty: Int {
-        dirtyByLevel.reduce(0) { $0 + $1.count }
+        dirtyByLevel.reduce(0) { $0 + $1.nodeCount }
     }
 
     mutating func clear() {
         for i in 0..<dirtyByLevel.count {
-            dirtyByLevel[i].removeAll(keepingCapacity: true)
+            dirtyByLevel[i] = .empty
         }
     }
 }
@@ -302,51 +381,27 @@ public class IncrementalMerkleTree {
 
         // Process level by level, bottom up
         for level in 0..<depth {
-            let dirtySet = dirtyTracker.dirtyByLevel[level]
-            let dirtyCount = dirtySet.count
+            let dirty = dirtyTracker.dirtyByLevel[level]
+            let dirtyCount = dirty.nodeCount
             if dirtyCount == 0 { continue }
 
             if dirtyCount < gpuThreshold {
                 // CPU path for small number of dirty nodes
-                for nodeIdx in dirtySet {
+                for nodeIdx in dirty.sortedIndices {
                     let left = getNode(nodeIdx * 2)
                     let right = getNode(nodeIdx * 2 + 1)
                     setNode(nodeIdx, poseidon2Hash(left, right))
                 }
+            } else if dirty.isContiguous {
+                let firstParent = dirty.first
+                let inputOffset = firstParent * 2 * stride
+                let outputOffset = firstParent * stride
+                try rehashContiguousGPU(inputOffset: inputOffset,
+                                         outputOffset: outputOffset,
+                                         count: dirtyCount)
             } else {
-                // GPU path: dispatch hash_pairs kernel on dirty nodes.
-                // We need to set up input/output in the nodeBuffer.
-                // Strategy: use encodeHashPairs for contiguous ranges,
-                // or fall back to per-pair dispatch for scattered nodes.
-                try rehashLevelGPU(level: level, dirtyNodes: dirtySet)
+                try rehashScatteredGPU(sortedDirty: dirty.sortedIndices)
             }
-        }
-    }
-
-    /// GPU rehash for a single level with many dirty nodes.
-    /// Collects children into a temp buffer, hashes them, writes results back.
-    private func rehashLevelGPU(level: Int, dirtyNodes: Set<Int>) throws {
-        let dirtyCount = dirtyNodes.count
-        let stride = MemoryLayout<Fr>.stride
-        let sortedDirty = dirtyNodes.sorted()
-
-        // Check if the dirty range is contiguous (common for batch appends)
-        let isContiguous = sortedDirty.count > 1 &&
-            sortedDirty.last! - sortedDirty.first! + 1 == sortedDirty.count
-
-        if isContiguous {
-            // Contiguous range: children are at [2*first, 2*first + 2*count)
-            // This is a contiguous block in nodeBuffer — use encodeHashPairs directly.
-            let firstParent = sortedDirty.first!
-            let inputOffset = firstParent * 2 * stride  // children start
-            let outputOffset = firstParent * stride      // parents start
-
-            try rehashContiguousGPU(inputOffset: inputOffset,
-                                     outputOffset: outputOffset,
-                                     count: dirtyCount)
-        } else {
-            // Scattered dirty nodes: gather children into temp buffer, hash, scatter back.
-            try rehashScatteredGPU(sortedDirty: sortedDirty)
         }
     }
 
@@ -456,12 +511,7 @@ public class IncrementalMerkleTree {
         dirtyTracker.markRange(start: startIdx, count: batchCount, capacity: capacity)
 
         // Check if all levels have contiguous ranges (true for appends)
-        let allContiguous = (0..<depth).allSatisfy { level in
-            let s = dirtyTracker.dirtyByLevel[level]
-            guard s.count > 1 else { return true }
-            let sorted = s.sorted()
-            return sorted.last! - sorted.first! + 1 == sorted.count
-        }
+        let allContiguous = dirtyTracker.dirtyByLevel.allSatisfy { $0.isContiguous }
 
         if allContiguous && dirtyTracker.totalDirty >= gpuThreshold {
             try rehashDirtyFused()
@@ -480,25 +530,16 @@ public class IncrementalMerkleTree {
         let enc = cmdBuf.makeComputeCommandEncoder()!
 
         for level in 0..<depth {
-            let dirtySet = dirtyTracker.dirtyByLevel[level]
-            let dirtyCount = dirtySet.count
+            let dirty = dirtyTracker.dirtyByLevel[level]
+            let dirtyCount = dirty.nodeCount
             if dirtyCount == 0 { continue }
 
             if level > 0 {
                 enc.memoryBarrier(scope: .buffers)
             }
 
-            if dirtyCount < gpuThreshold {
-                // For very small levels near the root, CPU is faster.
-                // But we're in a fused GPU path — just dispatch small kernels.
-                // The overhead is minimal within an existing encoder.
-            }
-
-            let sorted = dirtySet.sorted()
-            let firstParent = sorted.first!
-
-            if sorted.last! - firstParent + 1 == dirtyCount {
-                // Contiguous: direct hash in nodeBuffer
+            if dirty.isContiguous {
+                let firstParent = dirty.first
                 let inputOffset = firstParent * 2 * stride
                 let outputOffset = firstParent * stride
                 engine.encodeHashPairs(encoder: enc, buffer: nodeBuffer,
@@ -512,7 +553,7 @@ public class IncrementalMerkleTree {
                 cmdBuf.waitUntilCompleted()
                 // CPU fallback for remaining levels
                 for remainingLevel in level..<depth {
-                    for nodeIdx in dirtyTracker.dirtyByLevel[remainingLevel] {
+                    for nodeIdx in dirtyTracker.dirtyByLevel[remainingLevel].sortedIndices {
                         let left = getNode(nodeIdx * 2)
                         let right = getNode(nodeIdx * 2 + 1)
                         setNode(nodeIdx, poseidon2Hash(left, right))

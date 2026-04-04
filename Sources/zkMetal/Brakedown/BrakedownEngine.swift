@@ -345,14 +345,12 @@ public class BrakedownEngine {
         }
 
         if frToInt(computedValue) != frToInt(value) {
-            print("    [DEBUG] Check 1 FAILED: computed=\(frToInt(computedValue)[0]) expected=\(frToInt(value)[0])")
             return false
         }
-        print("    [DEBUG] Check 1 passed")
 
         // Check 2: Column consistency via linear code.
         // encode(t) extends t from numCols to encodedCols.
-        // For each opened column j: <tensor_right, col_j> should equal encode(t)[j].
+        // For each opened column j: <tensorRows, col_j> should equal encode(t)[j].
         let code = LinearCode(messageLength: numCols, rateInverse: rateInverse, seed: codeSeed)
         let encodedT = code.encode(proof.tVector)
 
@@ -368,7 +366,6 @@ public class BrakedownEngine {
 
             // This should equal encodedT[colIdx]
             if frToInt(columnDot) != frToInt(encodedT[colIdx]) {
-                print("    [DEBUG] Check 2 FAILED at query \(q), colIdx=\(colIdx): dot=\(frToInt(columnDot)[0]) enc=\(frToInt(encodedT[colIdx])[0])")
                 return false
             }
         }

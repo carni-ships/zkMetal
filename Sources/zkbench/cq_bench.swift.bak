@@ -2,10 +2,10 @@
 import zkMetal
 import Foundation
 
-public func runCQBench() {
+public func runCQLookupBench() {
     fputs("\n=== cq Cached Quotients Lookup ===\n", stderr)
 
-    // Generate a test SRS large enough for our benchmarks
+    // Generate a test SRS
     let gx = fpFromInt(1)
     let gy = fpFromInt(2)
     let gen = PointAffine(x: gx, y: gy)
@@ -65,10 +65,10 @@ public func runCQBench() {
         fputs("  N > |T| (N=16, |T|=4): \(valid4 ? "PASS" : "FAIL")\n", stderr)
 
         // Test 6: Wrong multiplicity count should fail verification
-        var wrongProof = CQProof(
+        let wrongProof = CQProof(
             hCommitment: proof1.hCommitment,
             multiplicities: proof1.multiplicities,
-            multiplicitySum: frAdd(proof1.multiplicitySum, Fr.one),  // tamper
+            multiplicitySum: frAdd(proof1.multiplicitySum, Fr.one),
             challengeZ: proof1.challengeZ,
             hOpening: proof1.hOpening,
             tOpening: proof1.tOpening,
@@ -98,12 +98,10 @@ public func runCQBench() {
 
     // --- Performance Tests ---
     fputs("\n--- Performance: cq vs LogUp ---\n", stderr)
-    fputs("  (Measuring prover time; cq should be independent of |T|)\n\n", stderr)
+    fputs("  (cq prover time should be independent of |T|)\n\n", stderr)
 
     do {
-        // Lookup sizes to test
         let lookupLogSizes = [10, 14]
-        // Table sizes to test
         let tableLogSizes = [8, 12, 16]
 
         let maxTableSize = 1 << tableLogSizes.max()!
@@ -120,7 +118,7 @@ public func runCQBench() {
 
             for tableLog in tableLogSizes {
                 let T = 1 << tableLog
-                if T < N { continue }  // table must be >= lookups for fair test
+                if T < N { continue }
 
                 // Build table
                 let table: [Fr] = (0..<T).map { frFromInt(UInt64($0 + 1)) }
@@ -150,18 +148,16 @@ public func runCQBench() {
                 let cqVerifyTime = (CFAbsoluteTimeGetCurrent() - verifyT0) * 1000
 
                 // --- LogUp ---
-                // LogUp needs power-of-2 table and lookup sizes
-                let logupTable = table  // already power of 2
                 let beta = frFromInt(UInt64(lookupLog + tableLog) &* 31337)
 
                 let logupT0 = CFAbsoluteTimeGetCurrent()
                 let logupProof = try logupEngine.prove(
-                    table: logupTable, lookups: lookups, beta: beta)
+                    table: table, lookups: lookups, beta: beta)
                 let logupProveTime = (CFAbsoluteTimeGetCurrent() - logupT0) * 1000
 
                 let logupV0 = CFAbsoluteTimeGetCurrent()
                 let logupValid = try logupEngine.verify(
-                    proof: logupProof, table: logupTable, lookups: lookups)
+                    proof: logupProof, table: table, lookups: lookups)
                 let logupVerifyTime = (CFAbsoluteTimeGetCurrent() - logupV0) * 1000
 
                 fputs(String(format: "    |T|=2^%-2d: cq preprocess %6.1fms, prove %6.1fms, verify %6.1fms %s\n",
