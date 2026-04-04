@@ -34,7 +34,7 @@ func runPlonkCustomBench() {
         )
         fputs("      Generic:  \(rangeResult.genericGates) gates, prove \(String(format: "%.1f", rangeResult.genericProveMs))ms\n", stderr)
         fputs("      Custom:   \(rangeResult.customGates) gates, prove \(String(format: "%.1f", rangeResult.customProveMs))ms\n", stderr)
-        fputs("      Savings:  \(String(format: "%.0f", rangeResult.gateSavingsPercent))%% fewer gates\n", stderr)
+        fputs("      Savings:  \(String(format: "%.0f", rangeResult.gateSavingsPercent))% fewer gates\n", stderr)
         fputs("      Correct:  \(rangeResult.genericValid && rangeResult.customValid ? "PASS" : "FAIL")\n", stderr)
 
         // ======================================================
@@ -61,7 +61,7 @@ func runPlonkCustomBench() {
         )
         fputs("      Generic:  \(poseidonResult.genericGates) gates, prove \(String(format: "%.1f", poseidonResult.genericProveMs))ms\n", stderr)
         fputs("      Custom:   \(poseidonResult.customGates) gates, prove \(String(format: "%.1f", poseidonResult.customProveMs))ms\n", stderr)
-        fputs("      Savings:  \(String(format: "%.0f", poseidonResult.gateSavingsPercent))%% fewer gates\n", stderr)
+        fputs("      Savings:  \(String(format: "%.0f", poseidonResult.gateSavingsPercent))% fewer gates\n", stderr)
         fputs("      Correct:  \(poseidonResult.genericValid && poseidonResult.customValid ? "PASS" : "FAIL")\n", stderr)
 
         // ======================================================
@@ -75,7 +75,7 @@ func runPlonkCustomBench() {
         )
         fputs("      Generic:  \(fullPosResult.genericGates) gates\n", stderr)
         fputs("      Custom:   \(fullPosResult.customGates) gates\n", stderr)
-        fputs("      Savings:  \(String(format: "%.0f", fullPosResult.gateSavingsPercent))%% fewer gates\n", stderr)
+        fputs("      Savings:  \(String(format: "%.0f", fullPosResult.gateSavingsPercent))% fewer gates\n", stderr)
         fputs("      Correct:  \(fullPosResult.genericValid && fullPosResult.customValid ? "PASS" : "FAIL")\n", stderr)
 
         // ======================================================

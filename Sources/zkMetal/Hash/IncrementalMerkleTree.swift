@@ -278,17 +278,9 @@ public class IncrementalMerkleTree {
 
     // MARK: - Append
 
-    /// Append a single leaf. GPU hashes the O(log n) path.
+    /// Append a single leaf. Uses GPU fused rehash (same path as batch append).
     public func append(leaf: Fr) throws {
-        guard count < capacity else {
-            throw MSMError.gpuError("Incremental Merkle tree full (capacity \(capacity))")
-        }
-        let leafIdx = count
-        setNode(capacity + leafIdx, leaf)
-        count += 1
-
-        // Rehash the path from this leaf to root using GPU
-        try rehashPathGPU(leafIndex: leafIdx)
+        try appendBatchFused(leaves: [leaf])
     }
 
     /// Batch append multiple leaves. GPU accelerated for large batches.
@@ -314,13 +306,9 @@ public class IncrementalMerkleTree {
 
     // MARK: - Update
 
-    /// Update a single leaf at index. GPU rehashes the O(log n) path.
+    /// Update a single leaf at index. GPU rehashes the affected path.
     public func update(index: Int, newLeaf: Fr) throws {
-        guard index < count else {
-            throw MSMError.gpuError("Leaf index \(index) out of range [0, \(count))")
-        }
-        setNode(capacity + index, newLeaf)
-        try rehashPathGPU(leafIndex: index)
+        try batchUpdate(updates: [(index: index, leaf: newLeaf)])
     }
 
     /// Batch update multiple leaves. GPU re-hashes affected subtrees.
@@ -406,41 +394,6 @@ public class IncrementalMerkleTree {
             }
         }
         return frEqual(current, root)
-    }
-
-    // MARK: - GPU Rehash (single path)
-
-    /// Rehash a single path from leaf to root on GPU. O(depth) Poseidon2 hashes.
-    /// Uses a single command buffer with sequential dispatches (one hash per level).
-    private func rehashPathGPU(leafIndex: Int) throws {
-        let frStride = MemoryLayout<Fr>.stride
-
-        guard let cmdBuf = engine.commandQueue.makeCommandBuffer() else {
-            throw MSMError.noCommandBuffer
-        }
-        let enc = cmdBuf.makeComputeCommandEncoder()!
-
-        var nodeIdx = (capacity + leafIndex) >> 1
-        for level in 0..<depth {
-            if level > 0 {
-                enc.memoryBarrier(scope: .buffers)
-            }
-            // Hash children of nodeIdx: input at 2*nodeIdx, output at nodeIdx
-            let inputOffset = nodeIdx * 2 * frStride
-            let outputOffset = nodeIdx * frStride
-            engine.encodeHashPairs(encoder: enc, buffer: nodeBuffer,
-                                    inputOffset: inputOffset,
-                                    outputOffset: outputOffset,
-                                    count: 1)
-            nodeIdx >>= 1
-        }
-
-        enc.endEncoding()
-        cmdBuf.commit()
-        cmdBuf.waitUntilCompleted()
-        if let error = cmdBuf.error {
-            throw MSMError.gpuError(error.localizedDescription)
-        }
     }
 
     // MARK: - GPU Rehash (dirty subtrees)

@@ -77,12 +77,10 @@ Fp2 fp2_mul_by_fp(Fp2 a, Fp b) {
 
 // Multiply by non-residue xi = 9+u: (a0+a1*u)(9+u) = (9*a0 - a1) + (a0 + 9*a1)*u
 Fp fp_nine() {
-    // 9 in Montgomery form: fpFromInt(9) = 9 * R mod p
-    // Precomputed: 9 * R mod p
     Fp r;
-    r.v[0] = 0xca28f58du; r.v[1] = 0x6f60e378u; r.v[2] = 0xc38c6456u;
-    r.v[3] = 0x5f1bd41cu; r.v[4] = 0xa4b9cf61u; r.v[5] = 0xa226de3eu;
-    r.v[6] = 0x643e5d70u; r.v[7] = 0x7de0ce2au;
+    r.v[0] = 0x410d7ff7u; r.v[1] = 0xf60647ceu; r.v[2] = 0xd31bd011u;
+    r.v[3] = 0x2f3d6f4du; r.v[4] = 0x3940c6d1u; r.v[5] = 0x2943337eu;
+    r.v[6] = 0xa7e39857u; r.v[7] = 0x1d9598e8u;
     return r;
 }
 
@@ -362,65 +360,63 @@ Fp12 fp12_mul_by_034(Fp12 f, Fp2 c0val, Fp2 c3val, Fp2 c4val) {
 // gamma_1_1 = xi^((p-1)/6)
 Fp2 bn254_gamma11() {
     Fp2 r;
-    // c0 = 0x1284b71c2865a7dfe8b99fdd76e68b605c521e08292f2176d60b35dadcc9e470
-    r.c0.v[0] = 0xf48b7d0au; r.c0.v[1] = 0xf63e10a1u; r.c0.v[2] = 0x055b7c93u;
-    r.c0.v[3] = 0xa7840e1au; r.c0.v[4] = 0x9aad068cu; r.c0.v[5] = 0x1a722ce4u;
-    r.c0.v[6] = 0xd0ef0c5au; r.c0.v[7] = 0x1e0b2fa3u;
-    // c1 = 0x246996f3b4fae7e6a6327cfe12150b8e747992778eeec7e5ca5cf05f80f362ac
-    r.c1.v[0] = 0x05c9c236u; r.c1.v[1] = 0x6a47a534u; r.c1.v[2] = 0x13cede96u;
-    r.c1.v[3] = 0x04e38dcau; r.c1.v[4] = 0x2ecfe1a5u; r.c1.v[5] = 0xe9218f8au;
-    r.c1.v[6] = 0x8aa0978au; r.c1.v[7] = 0x0ff47a49u;
+    r.c0.v[0] = 0x33144907u; r.c0.v[1] = 0xaf9ba696u; r.c0.v[2] = 0x87afb78au;
+    r.c0.v[3] = 0xca6b1d73u; r.c0.v[4] = 0xf08a2087u; r.c0.v[5] = 0x11bded5eu;
+    r.c0.v[6] = 0x1a1f3a7cu; r.c0.v[7] = 0x02f34d75u;
+    r.c1.v[0] = 0x4c492d72u; r.c1.v[1] = 0xa222ae23u; r.c1.v[2] = 0x565de15bu;
+    r.c1.v[3] = 0xd00f02a4u; r.c1.v[4] = 0x53dfc926u; r.c1.v[5] = 0xdc2ff3a2u;
+    r.c1.v[6] = 0xb3899551u; r.c1.v[7] = 0x10a75716u;
     return r;
 }
 
 // gamma_1_2 = xi^((p-1)/3)
 Fp2 bn254_gamma12() {
     Fp2 r;
-    r.c0.v[0] = 0x8b72e1a0u; r.c0.v[1] = 0x85a8a97bu; r.c0.v[2] = 0x56c6e7c4u;
-    r.c0.v[3] = 0xb95da41fu; r.c0.v[4] = 0x95a88aabu; r.c0.v[5] = 0x226f0353u;
-    r.c0.v[6] = 0x7f23c0a3u; r.c0.v[7] = 0x2c145ec4u;
-    r.c1.v[0] = 0xec7c1fa8u; r.c1.v[1] = 0x1d69faa1u; r.c1.v[2] = 0x5d0f85f6u;
-    r.c1.v[3] = 0x28f57c37u; r.c1.v[4] = 0x4a3a1a1bu; r.c1.v[5] = 0x27ab3b70u;
-    r.c1.v[6] = 0xdcdf3c08u; r.c1.v[7] = 0x00b5f050u;
+    r.c0.v[0] = 0x4563ab30u; r.c0.v[1] = 0xb5773b10u; r.c0.v[2] = 0xa9aa6454u;
+    r.c0.v[3] = 0x347f91c8u; r.c0.v[4] = 0x242e0991u; r.c0.v[5] = 0x7a007127u;
+    r.c0.v[6] = 0x118214ecu; r.c0.v[7] = 0x1956bcd8u;
+    r.c1.v[0] = 0xa0aa4757u; r.c1.v[1] = 0x6e849f1eu; r.c1.v[2] = 0x89f89141u;
+    r.c1.v[3] = 0xaa1c7b6du; r.c1.v[4] = 0xfae0ca3au; r.c1.v[5] = 0xb6e713cdu;
+    r.c1.v[6] = 0x4e82ebc3u; r.c1.v[7] = 0x26694fbbu;
     return r;
 }
 
 // gamma_1_3 = xi^((p-1)/2)
 Fp2 bn254_gamma13() {
     Fp2 r;
-    r.c0.v[0] = 0xdde07e82u; r.c0.v[1] = 0x6b28a0e6u; r.c0.v[2] = 0x69de91e0u;
-    r.c0.v[3] = 0xfab8fa30u; r.c0.v[4] = 0x0cf07e98u; r.c0.v[5] = 0x28f0a56cu;
-    r.c0.v[6] = 0xe6c61a03u; r.c0.v[7] = 0x17ff2e0eu;
-    r.c1.v[0] = 0x6f7c93fau; r.c1.v[1] = 0x79e6d5ffu; r.c1.v[2] = 0x73fb785au;
-    r.c1.v[3] = 0x7d49c9e4u; r.c1.v[4] = 0x08d74abeu; r.c1.v[5] = 0x6b1d2cc8u;
-    r.c1.v[6] = 0x2e56c69au; r.c1.v[7] = 0x19ea3e02u;
+    r.c0.v[0] = 0x2936b629u; r.c0.v[1] = 0xe4bbdd0cu; r.c0.v[2] = 0xe133bacbu;
+    r.c0.v[3] = 0xbb30f162u; r.c0.v[4] = 0xf9645366u; r.c0.v[5] = 0x31a9d1b6u;
+    r.c0.v[6] = 0xa500f8ddu; r.c0.v[7] = 0x253570beu;
+    r.c1.v[0] = 0x5ffe77c7u; r.c1.v[1] = 0xa1d77ce4u; r.c1.v[2] = 0x7826d1dbu;
+    r.c1.v[3] = 0x07affd11u; r.c1.v[4] = 0xbb7edc6bu; r.c1.v[5] = 0x6d16bd27u;
+    r.c1.v[6] = 0x85defeccu; r.c1.v[7] = 0x2c872002u;
     return r;
 }
 
-// gamma_2_1 (in Fp, c1=0): 0x30644e72e131a0295e6dd9e7e0acccb0c28f069fbb966e3de4bd44e5607cfd49
+// gamma_2_1 (in Fp): xi^(2*(p-1)/6)
 Fp bn254_gamma21() {
     Fp r;
-    r.v[0] = 0xa1e0a048u; r.v[1] = 0x3350c88eu; r.v[2] = 0x7166e6f0u;
-    r.v[3] = 0xb0f34527u; r.v[4] = 0x25c71a82u; r.v[5] = 0x1de0c7c5u;
-    r.v[6] = 0xd9bb5cc4u; r.v[7] = 0x0c5fd589u;
+    r.v[0] = 0x00fa1bf2u; r.v[1] = 0xca8d8005u; r.v[2] = 0x68b39769u;
+    r.v[3] = 0xf0c5d614u; r.v[4] = 0xad0d4418u; r.v[5] = 0x0e201271u;
+    r.v[6] = 0xbad856e6u; r.v[7] = 0x04290f65u;
     return r;
 }
 
-// gamma_2_2: 0x30644e72e131a0295e6dd9e7e0acccb0c28f069fbb966e3de4bd44e5607cfd48
+// gamma_2_2: xi^(2*(p-1)/3)
 Fp bn254_gamma22() {
     Fp r;
-    r.v[0] = 0x54d6c48bu; r.v[1] = 0x4f4bdb88u; r.v[2] = 0x7f64e8d0u;
-    r.v[3] = 0xd4277c2eu; r.v[4] = 0x8c85b3f3u; r.v[5] = 0x3a61fa51u;
-    r.v[6] = 0x84f7bc8bu; r.v[7] = 0x2929588au;
+    r.v[0] = 0x13e80b9cu; r.v[1] = 0x3350c88eu; r.v[2] = 0xdb5e56b9u;
+    r.v[3] = 0x7dce557cu; r.v[4] = 0xb615564au; r.v[5] = 0x6001b4b8u;
+    r.v[6] = 0x020217e0u; r.v[7] = 0x2682e617u;
     return r;
 }
 
-// gamma_2_3: 0x30644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd46
+// gamma_2_3: xi^(2*(p-1)/2)
 Fp bn254_gamma23() {
     Fp r;
-    r.v[0] = 0xa3f4a1cdu; r.v[1] = 0xd2ec4c62u; r.v[2] = 0x5b3e0f6bu;
-    r.v[3] = 0x84db2042u; r.v[4] = 0x48a3b0e5u; r.v[5] = 0xacfad0efu;
-    r.v[6] = 0xdf4f2ee4u; r.v[7] = 0x0e09ac46u;
+    r.v[0] = 0x12edefaau; r.v[1] = 0x68c34889u; r.v[2] = 0x72aabf4fu;
+    r.v[3] = 0x8d087f68u; r.v[4] = 0x09081231u; r.v[5] = 0x51e1a247u;
+    r.v[6] = 0x4729c0fau; r.v[7] = 0x2259d6b1u;
     return r;
 }
 
