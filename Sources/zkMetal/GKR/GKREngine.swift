@@ -88,12 +88,9 @@ public class GKREngine {
             let prevValues = allValues[layerIdx]
             let prevMLE = MultilinearPoly(numVars: nIn, values: prevValues)
 
-            let addMLE = circuit.addMLEForLayer(layerIdx)
-            let mulMLE = circuit.mulMLEForLayer(layerIdx)
-
             let (msgs, rx, ry) = proverBatchedSumcheck(
                 rPoints: rPoints,
-                addMLE: addMLE, mulMLE: mulMLE,
+                layer: circuit.layers[layerIdx],
                 prevMLE: prevMLE, nOut: nOut, nIn: nIn,
                 transcript: transcript
             )
@@ -117,39 +114,52 @@ public class GKREngine {
         return GKRProof(layerProofs: layerProofs)
     }
 
-    /// Batched sumcheck for one GKR layer.
+    /// Batched sumcheck for one GKR layer using sparse wiring predicates.
     ///
     /// Given multiple (output-point, weight) pairs, the function being summed is:
     ///   g(a, b) = sum_k w_k * [add_k(a,b) * (V(a)+V(b)) + mul_k(a,b) * V(a)*V(b)]
     ///
-    /// where add_k(a,b) = add(r_k, a, b) is the add wiring MLE with z fixed to r_k.
-    ///
-    /// This is degree 2 in each variable, so we need evaluations at t=0,1,2.
+    /// Key optimization: wiring predicates are extremely sparse (numGates nonzero entries
+    /// out of 2^(2*nIn) total). We track only nonzero (index, value) pairs, reducing
+    /// each sumcheck round from O(2^(2*nIn)) to O(numGates) field operations.
     private func proverBatchedSumcheck(
         rPoints: [([Fr], Fr)],  // [(output_point, weight)]
-        addMLE: MultilinearPoly, mulMLE: MultilinearPoly,
+        layer: CircuitLayer,
         prevMLE: MultilinearPoly,
         nOut: Int, nIn: Int,
         transcript: Transcript
     ) -> (msgs: [SumcheckRoundMsg], rx: [Fr], ry: [Fr]) {
 
         let totalVars = 2 * nIn
+        let inSize = 1 << nIn
 
-        // Build combined wiring tables: sum_k w_k * add(r_k, ., .) and sum_k w_k * mul(r_k, ., .)
-        let xySize = 1 << totalVars
-        var curAdd = [Fr](repeating: Fr.zero, count: xySize)
-        var curMul = [Fr](repeating: Fr.zero, count: xySize)
+        // Build sparse wiring directly from gate structure — O(numGates) not O(2^(nOut+2*nIn)).
+        // For each gate g at index gIdx: the wiring entry at (leftInput, rightInput) in the
+        // 2^(2*nIn) table gets coefficient sum_k w_k * eq(rk, gIdx).
+        var sparseWiringDict = [Int: (Fr, Fr)]()  // xyIdx -> (addCoeff, mulCoeff)
 
         for (rk, wk) in rPoints {
-            var addFixed = addMLE
-            for i in 0..<nOut { addFixed = addFixed.fixVariable(rk[i]) }
-            var mulFixed = mulMLE
-            for i in 0..<nOut { mulFixed = mulFixed.fixVariable(rk[i]) }
+            // Compute eq polynomial: eq(rk, gIdx) for each gIdx
+            let eqVals = MultilinearPoly.eqPoly(point: rk)
 
-            for j in 0..<xySize {
-                curAdd[j] = frAdd(curAdd[j], frMul(wk, addFixed.evals[j]))
-                curMul[j] = frAdd(curMul[j], frMul(wk, mulFixed.evals[j]))
+            for (gIdx, gate) in layer.gates.enumerated() {
+                let eqVal = gIdx < eqVals.count ? eqVals[gIdx] : Fr.zero
+                if eqVal.isZero { continue }
+                let coeff = frMul(wk, eqVal)
+                let xyIdx = gate.leftInput * inSize + gate.rightInput
+
+                var entry = sparseWiringDict[xyIdx] ?? (Fr.zero, Fr.zero)
+                switch gate.type {
+                case .add: entry.0 = frAdd(entry.0, coeff)
+                case .mul: entry.1 = frAdd(entry.1, coeff)
+                }
+                sparseWiringDict[xyIdx] = entry
             }
+        }
+
+        var sparseWiring = sparseWiringDict.compactMap { (idx, coeffs) -> (Int, Fr, Fr)? in
+            if coeffs.0.isZero && coeffs.1.isZero { return nil }
+            return (idx, coeffs.0, coeffs.1)
         }
 
         var curVx = prevMLE.evals
@@ -160,10 +170,28 @@ public class GKREngine {
         var challenges = [Fr]()
         challenges.reserveCapacity(totalVars)
 
+        var currentTableSize = 1 << totalVars
+
         for round in 0..<totalVars {
-            let wiringsSize = curAdd.count
-            let halfWirings = wiringsSize / 2
+            let halfSize = currentTableSize / 2
             let isXPhase = round < nIn
+
+            // Pair sparse entries by their low-half index.
+            // For index j in low half (j < halfSize): paired with j + halfSize in high half.
+            var paired = [Int: (Fr, Fr, Fr, Fr)]()  // lowIdx -> (a0, a1, m0, m1)
+            for (idx, addCoeff, mulCoeff) in sparseWiring {
+                let lowIdx = idx % halfSize
+                let isHigh = idx >= halfSize
+                var entry = paired[lowIdx] ?? (Fr.zero, Fr.zero, Fr.zero, Fr.zero)
+                if !isHigh {
+                    entry.0 = frAdd(entry.0, addCoeff)
+                    entry.2 = frAdd(entry.2, mulCoeff)
+                } else {
+                    entry.1 = frAdd(entry.1, addCoeff)
+                    entry.3 = frAdd(entry.3, mulCoeff)
+                }
+                paired[lowIdx] = entry
+            }
 
             var s0 = Fr.zero
             var s1 = Fr.zero
@@ -172,14 +200,11 @@ public class GKREngine {
             if isXPhase {
                 let vxHalf = curVx.count / 2
                 let ySize = curVy.count
+                let yMask = ySize - 1
 
-                for j in 0..<halfWirings {
-                    let a0 = curAdd[j]
-                    let a1 = curAdd[j + halfWirings]
-                    let m0 = curMul[j]
-                    let m1 = curMul[j + halfWirings]
-
-                    let yIdx = j & (ySize - 1)
+                for (j, coeffs) in paired {
+                    let (a0, a1, m0, m1) = coeffs
+                    let yIdx = j & yMask
                     let xIdx = j >> nIn
 
                     let vx0 = xIdx < vxHalf ? curVx[xIdx] : Fr.zero
@@ -202,16 +227,11 @@ public class GKREngine {
                 let vxScalar = curVx.count > 0 ? curVx[0] : Fr.zero
                 let vyHalf = curVy.count / 2
 
-                for j in 0..<halfWirings {
-                    let a0 = curAdd[j]
-                    let a1 = curAdd[j + halfWirings]
-                    let m0 = curMul[j]
-                    let m1 = curMul[j + halfWirings]
+                for (j, coeffs) in paired {
+                    let (a0, a1, m0, m1) = coeffs
 
-                    let yIdx = j
-
-                    let vy0 = yIdx < vyHalf ? curVy[yIdx] : Fr.zero
-                    let vy1 = (yIdx + vyHalf) < curVy.count ? curVy[yIdx + vyHalf] : Fr.zero
+                    let vy0 = j < vyHalf ? curVy[j] : Fr.zero
+                    let vy1 = (j + vyHalf) < curVy.count ? curVy[j + vyHalf] : Fr.zero
 
                     let g0 = frAdd(frMul(a0, frAdd(vxScalar, vy0)), frMul(m0, frMul(vxScalar, vy0)))
                     s0 = frAdd(s0, g0)
@@ -236,15 +256,10 @@ public class GKREngine {
             let challenge = transcript.squeeze()
             challenges.append(challenge)
 
+            // Reduce sparse wiring: merge low/high halves with challenge
             let oneMinusC = frSub(Fr.one, challenge)
-            var newAdd = [Fr](repeating: Fr.zero, count: halfWirings)
-            var newMul = [Fr](repeating: Fr.zero, count: halfWirings)
-            for j in 0..<halfWirings {
-                newAdd[j] = frAdd(frMul(oneMinusC, curAdd[j]), frMul(challenge, curAdd[j + halfWirings]))
-                newMul[j] = frAdd(frMul(oneMinusC, curMul[j]), frMul(challenge, curMul[j + halfWirings]))
-            }
-            curAdd = newAdd
-            curMul = newMul
+            sparseWiring = reduceSparseWiring(sparseWiring, halfSize: halfSize, challenge: challenge, oneMinusC: oneMinusC)
+            currentTableSize = halfSize
 
             if isXPhase {
                 let vxHalf = curVx.count / 2
@@ -270,6 +285,36 @@ public class GKREngine {
         let rx = Array(challenges.prefix(nIn))
         let ry = Array(challenges.suffix(nIn))
         return (msgs, rx, ry)
+    }
+
+    /// Reduce sparse wiring after fixing one variable to challenge value.
+    /// For each entry at index j: if j < halfSize it's in the low half (coeff *= (1-c)),
+    /// if j >= halfSize it's in the high half (new index = j - halfSize, coeff *= c).
+    /// Entries at the same reduced index are summed.
+    private func reduceSparseWiring(_ wiring: [(Int, Fr, Fr)], halfSize: Int, challenge: Fr, oneMinusC: Fr) -> [(Int, Fr, Fr)] {
+        var dict = [Int: (Fr, Fr)]()
+        for (idx, addCoeff, mulCoeff) in wiring {
+            let newIdx: Int
+            let scale: Fr
+            if idx < halfSize {
+                newIdx = idx
+                scale = oneMinusC
+            } else {
+                newIdx = idx - halfSize
+                scale = challenge
+            }
+            let newAdd = frMul(scale, addCoeff)
+            let newMul = frMul(scale, mulCoeff)
+            if let existing = dict[newIdx] {
+                dict[newIdx] = (frAdd(existing.0, newAdd), frAdd(existing.1, newMul))
+            } else {
+                dict[newIdx] = (newAdd, newMul)
+            }
+        }
+        return dict.compactMap { (idx, coeffs) in
+            if coeffs.0.isZero && coeffs.1.isZero { return nil }
+            return (idx, coeffs.0, coeffs.1)
+        }
     }
 
     // MARK: - Verifier
@@ -325,16 +370,29 @@ public class GKREngine {
             let vy = layerProof.claimedVy
 
             // Verify: expected = sum_k w_k * [add(r_k, rx, ry)*(vx+vy) + mul(r_k, rx, ry)*vx*vy]
-            let addMLE = circuit.addMLEForLayer(layerIdx)
-            let mulMLE = circuit.mulMLEForLayer(layerIdx)
+            // Sparse evaluation: for each gate g at gIdx with inputs (left, right),
+            // wiring(rk, rx, ry) = eq(rk, gIdx) * eq(rx, left) * eq(ry, right)
+            let eqRx = MultilinearPoly.eqPoly(point: rx)
+            let eqRy = MultilinearPoly.eqPoly(point: ry)
+            let sumVxVy = frAdd(vx, vy)
+            let prodVxVy = frMul(vx, vy)
 
             var expected = Fr.zero
             for (rk, wk) in rPoints {
-                let fullPoint = rk + rx + ry
-                let addVal = addMLE.evaluate(at: fullPoint)
-                let mulVal = mulMLE.evaluate(at: fullPoint)
-                let contribution = frAdd(frMul(addVal, frAdd(vx, vy)), frMul(mulVal, frMul(vx, vy)))
-                expected = frAdd(expected, frMul(wk, contribution))
+                let eqRk = MultilinearPoly.eqPoly(point: rk)
+                for (gIdx, gate) in circuit.layers[layerIdx].gates.enumerated() {
+                    let eqZ = gIdx < eqRk.count ? eqRk[gIdx] : Fr.zero
+                    if eqZ.isZero { continue }
+                    let eqX = gate.leftInput < eqRx.count ? eqRx[gate.leftInput] : Fr.zero
+                    let eqY = gate.rightInput < eqRy.count ? eqRy[gate.rightInput] : Fr.zero
+                    let wiringVal = frMul(eqZ, frMul(eqX, eqY))
+                    let contrib: Fr
+                    switch gate.type {
+                    case .add: contrib = frMul(wiringVal, sumVxVy)
+                    case .mul: contrib = frMul(wiringVal, prodVxVy)
+                    }
+                    expected = frAdd(expected, frMul(wk, contrib))
+                }
             }
 
             if !gkrFrEqual(currentClaim, expected) {
