@@ -76,6 +76,34 @@ public func runCircleSTARKBench() {
         }
     }
 
+    // --- Fused vs Separate comparison ---
+    fputs("\n  Fused NTT+Constraint comparison:\n", stderr)
+    for logN in [8, 10, 12, 14] {
+        do {
+            let air = FibonacciAIR(logTraceLength: logN)
+
+            // Separate (baseline)
+            let proverSep = CircleSTARKProver(logBlowup: 2, numQueries: 16)
+            let _ = try proverSep.prove(air: air) // warmup
+            let t0 = CFAbsoluteTimeGetCurrent()
+            let _ = try proverSep.prove(air: air)
+            let sepMs = (CFAbsoluteTimeGetCurrent() - t0) * 1000
+
+            // Fused
+            let proverFused = CircleSTARKProver(logBlowup: 2, numQueries: 16)
+            let _ = try proverFused.proveFused(air: air) // warmup
+            let t1 = CFAbsoluteTimeGetCurrent()
+            let _ = try proverFused.proveFused(air: air)
+            let fusedMs = (CFAbsoluteTimeGetCurrent() - t1) * 1000
+
+            let speedup = sepMs / fusedMs
+            fputs(String(format: "    2^%-2d: separate %6.1fms | fused %6.1fms | %.2f×\n",
+                        logN, sepMs, fusedMs, speedup), stderr)
+        } catch {
+            fputs("    2^\(logN): ERROR - \(error)\n", stderr)
+        }
+    }
+
     // --- Soundness test ---
     do {
         let air = FibonacciAIR(logTraceLength: 6)

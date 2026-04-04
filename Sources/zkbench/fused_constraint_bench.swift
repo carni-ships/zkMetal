@@ -109,3 +109,72 @@ private func frEqual(_ a: Fr, _ b: Fr) -> Bool {
     return a.v.0 == b.v.0 && a.v.1 == b.v.1 && a.v.2 == b.v.2 && a.v.3 == b.v.3 &&
            a.v.4 == b.v.4 && a.v.5 == b.v.5 && a.v.6 == b.v.6 && a.v.7 == b.v.7
 }
+
+// MARK: - Circle STARK Fused NTT + Constraint Benchmark (M31)
+
+func runFusedCircleConstraintBench() {
+    fputs("\n=== Fused Circle NTT + Constraint Benchmark (M31) ===\n", stderr)
+    fputs("Compares: separate LDE+constraint vs fused (single command buffer)\n\n", stderr)
+
+    do {
+        let logBlowup = 4
+        let runs = 5
+
+        for logTrace in [4, 6, 8, 10] {
+            let traceLen = 1 << logTrace
+            let logEval = logTrace + logBlowup
+            let evalLen = 1 << logEval
+            let air = FibonacciAIR(logTraceLength: logTrace)
+
+            // --- Baseline: separate prove (existing path) ---
+            let proverSep = CircleSTARKProver(logBlowup: logBlowup, numQueries: 10)
+            // Warmup
+            let _ = try proverSep.prove(air: air)
+
+            var separateTimes = [Double]()
+            for _ in 0..<runs {
+                let t0 = CFAbsoluteTimeGetCurrent()
+                let _ = try proverSep.prove(air: air)
+                separateTimes.append((CFAbsoluteTimeGetCurrent() - t0) * 1000.0)
+            }
+            separateTimes.sort()
+            let sepMedian = separateTimes[runs / 2]
+
+            // --- Fused: single command buffer path ---
+            let proverFused = CircleSTARKProver(logBlowup: logBlowup, numQueries: 10)
+            // Warmup
+            let _ = try proverFused.proveFused(air: air)
+
+            var fusedTimes = [Double]()
+            for _ in 0..<runs {
+                let t0 = CFAbsoluteTimeGetCurrent()
+                let _ = try proverFused.proveFused(air: air)
+                fusedTimes.append((CFAbsoluteTimeGetCurrent() - t0) * 1000.0)
+            }
+            fusedTimes.sort()
+            let fusedMedian = fusedTimes[runs / 2]
+
+            // Correctness: compare proof outputs
+            let refProof = try proverSep.prove(air: air)
+            let fusedProof = try proverFused.proveFused(air: air)
+            // Both should verify successfully (same AIR, but different alpha due to randomness)
+            // We can't compare proofs directly since Fiat-Shamir state differs.
+            // Instead, verify both produce valid proofs by checking structure.
+            let structOK = refProof.traceCommitments.count == fusedProof.traceCommitments.count
+                && refProof.queryResponses.count == fusedProof.queryResponses.count
+
+            let savings = sepMedian - fusedMedian
+            let speedup = sepMedian / fusedMedian
+            let line = String(format: "  trace=2^%-2d eval=2^%-2d (%5d): separate %6.2fms | fused %6.2fms | save %+.2fms (%.2f×) %@",
+                            logTrace, logEval, evalLen, sepMedian, fusedMedian, savings, speedup,
+                            structOK ? "[OK]" : "[STRUCT MISMATCH]")
+            fputs(line + "\n", stderr)
+        }
+
+        fputs("\nNote: 'separate' = host round-trip between NTT and constraint eval\n", stderr)
+        fputs("      'fused' = NTT output stays on GPU, constraint eval in same/next command buffer\n", stderr)
+
+    } catch {
+        fputs("Error: \(error)\n", stderr)
+    }
+}

@@ -187,6 +187,8 @@ if cmd == "calibrate" {
     runConstraintBench()
 } else if cmd == "fused" || cmd == "fused-ntt" {
     runFusedConstraintBench()
+} else if cmd == "fused-circle" || cmd == "fc" {
+    runFusedCircleConstraintBench()
 } else if cmd == "circle" || cmd == "m31" {
     runCircleBench()
 } else if cmd == "circle-stark" || cmd == "cstark" {
@@ -200,7 +202,7 @@ if cmd == "calibrate" {
 } else if cmd == "basefold" || cmd == "bf-pcs" {
     runBasefoldBench()
 } else if cmd == "zeromorph" || cmd == "zm" {
-    //     runZeromorphBench()
+    runZeromorphBench()
 } else if cmd == "brakedown" || cmd == "bk" {
     runBrakedownBench()
 } else if cmd == "pasta" {

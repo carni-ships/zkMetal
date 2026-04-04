@@ -266,6 +266,104 @@ public class CircleNTTEngine {
         }
     }
 
+    // MARK: - Encode into existing command buffer (for fused pipelines)
+
+    /// Encode forward Circle NTT into an existing command buffer.
+    /// Does NOT commit or wait — caller controls the command buffer lifecycle.
+    public func encodeNTT(data: MTLBuffer, logN: Int, cmdBuf: MTLCommandBuffer) {
+        let n = UInt32(1 << logN)
+        let nInt = Int(n)
+        let twiddles = getForwardTwiddles(logN: logN)
+        var nVal = n
+        let tgSize = min(256, Int(butterflyFunction.maxTotalThreadsPerThreadgroup))
+
+        let enc = cmdBuf.makeComputeCommandEncoder()!
+
+        // Layers k-1 down to 1: x-twiddle butterflies
+        for layer in stride(from: logN - 1, through: 1, by: -1) {
+            if layer < logN - 1 { enc.memoryBarrier(scope: .buffers) }
+            enc.setComputePipelineState(butterflyFunction)
+            enc.setBuffer(data, offset: 0, index: 0)
+            let twiddleOffset = layer * (nInt / 2) * MemoryLayout<M31>.stride
+            enc.setBuffer(twiddles, offset: twiddleOffset, index: 1)
+            enc.setBytes(&nVal, length: 4, index: 2)
+            var stageVal = UInt32(logN - 1 - layer)
+            enc.setBytes(&stageVal, length: 4, index: 3)
+            let numButterflies = nInt / 2
+            enc.dispatchThreads(MTLSize(width: numButterflies, height: 1, depth: 1),
+                              threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
+        }
+
+        // Layer 0: y-twiddle butterfly (outermost in forward)
+        if logN >= 1 {
+            enc.memoryBarrier(scope: .buffers)
+            enc.setComputePipelineState(butterflyFunction)
+            enc.setBuffer(data, offset: 0, index: 0)
+            enc.setBuffer(twiddles, offset: 0, index: 1)
+            enc.setBytes(&nVal, length: 4, index: 2)
+            var stageVal = UInt32(logN - 1)
+            enc.setBytes(&stageVal, length: 4, index: 3)
+            let numButterflies = nInt / 2
+            enc.dispatchThreads(MTLSize(width: numButterflies, height: 1, depth: 1),
+                              threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
+        }
+
+        enc.endEncoding()
+    }
+
+    /// Encode inverse Circle NTT into an existing command buffer.
+    /// Does NOT commit or wait — caller controls the command buffer lifecycle.
+    public func encodeINTT(data: MTLBuffer, logN: Int, cmdBuf: MTLCommandBuffer) {
+        let n = UInt32(1 << logN)
+        let nInt = Int(n)
+        let invTwiddles = getInverseTwiddles(logN: logN)
+        let invN = getInvN(logN: logN)
+        var nVal = n
+        let tgSize = min(256, Int(invButterflyFunction.maxTotalThreadsPerThreadgroup))
+
+        let enc = cmdBuf.makeComputeCommandEncoder()!
+
+        // Layer 0: y-twiddle DIF butterfly
+        if logN >= 1 {
+            enc.setComputePipelineState(invButterflyFunction)
+            enc.setBuffer(data, offset: 0, index: 0)
+            enc.setBuffer(invTwiddles, offset: 0, index: 1)
+            enc.setBytes(&nVal, length: 4, index: 2)
+            var stageVal = UInt32(logN - 1)
+            enc.setBytes(&stageVal, length: 4, index: 3)
+            let numButterflies = nInt / 2
+            enc.dispatchThreads(MTLSize(width: numButterflies, height: 1, depth: 1),
+                              threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
+        }
+
+        // Layers 1..k-1: x-twiddle DIF butterflies
+        for layer in 1..<logN {
+            enc.memoryBarrier(scope: .buffers)
+            enc.setComputePipelineState(invButterflyFunction)
+            enc.setBuffer(data, offset: 0, index: 0)
+            let twiddleOffset = layer * (nInt / 2) * MemoryLayout<M31>.stride
+            enc.setBuffer(invTwiddles, offset: twiddleOffset, index: 1)
+            enc.setBytes(&nVal, length: 4, index: 2)
+            var stageVal = UInt32(logN - 1 - layer)
+            enc.setBytes(&stageVal, length: 4, index: 3)
+            let numButterflies = nInt / 2
+            enc.dispatchThreads(MTLSize(width: numButterflies, height: 1, depth: 1),
+                              threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
+        }
+
+        // Scale by 1/N
+        enc.memoryBarrier(scope: .buffers)
+        enc.setComputePipelineState(scaleFunction)
+        enc.setBuffer(data, offset: 0, index: 0)
+        enc.setBuffer(invN, offset: 0, index: 1)
+        enc.setBytes(&nVal, length: 4, index: 2)
+        let tgScale = min(256, Int(scaleFunction.maxTotalThreadsPerThreadgroup))
+        enc.dispatchThreads(MTLSize(width: nInt, height: 1, depth: 1),
+                          threadsPerThreadgroup: MTLSize(width: tgScale, height: 1, depth: 1))
+
+        enc.endEncoding()
+    }
+
     // MARK: - High-level API
 
     public func ntt(_ input: [M31]) throws -> [M31] {
