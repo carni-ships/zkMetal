@@ -68,7 +68,7 @@ public enum Versions {
     public static let cqLookup       = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let constraint     = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let fusedNTTConstraint = PrimitiveVersion(version: "1.1.0", updated: "2026-04-04")
-    public static let witness        = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
+    public static let witness        = PrimitiveVersion(version: "2.0.0", updated: "2026-04-04")
     public static let transcript     = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let serialization  = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let circleSTARK    = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")

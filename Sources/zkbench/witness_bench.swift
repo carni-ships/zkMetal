@@ -302,4 +302,209 @@ func runWitnessBench() {
     }
 
     fputs("\n", stderr)
+
+    // ========================================================================
+    // M31 Witness Engine — GPU Fibonacci trace generation
+    // ========================================================================
+    fputs("=== M31 Witness Engine (Fibonacci AIR) ===\n", stderr)
+
+    let m31Engine: WitnessEngine
+    do {
+        m31Engine = try WitnessEngine()
+    } catch {
+        fputs("Error: Failed to create WitnessEngine: \(error)\n", stderr)
+        return
+    }
+    fputs("Device: \(m31Engine.device.name)\n\n", stderr)
+
+    // --- Test 4: GPU Fibonacci trace vs CPU FibonacciAIR.generateTrace() ---
+    do {
+        fputs("--- Fibonacci AIR Trace (matrix-power doubling) ---\n", stderr)
+
+        let a0 = M31.one
+        let b0 = M31.one
+
+        let sizes = [1 << 12, 1 << 14, 1 << 16, 1 << 18, 1 << 20, 1 << 22]
+        for n in sizes {
+            // Correctness check on small sizes
+            if n <= (1 << 16) {
+                let (gpuA, gpuB) = try m31Engine.generateFibonacciTrace(a0: a0, b0: b0, numRows: n)
+                // CPU reference
+                var cpuA = [M31](repeating: M31.zero, count: n)
+                var cpuB = [M31](repeating: M31.zero, count: n)
+                cpuA[0] = a0; cpuB[0] = b0
+                for i in 1..<n {
+                    cpuA[i] = cpuB[i - 1]
+                    cpuB[i] = m31Add(cpuA[i - 1], cpuB[i - 1])
+                }
+                var mismatches = 0
+                for i in 0..<n {
+                    if gpuA[i].v != cpuA[i].v || gpuB[i].v != cpuB[i].v {
+                        if mismatches < 3 {
+                            fputs("  MISMATCH row=\(i): GPU=(\(gpuA[i].v),\(gpuB[i].v)) CPU=(\(cpuA[i].v),\(cpuB[i].v))\n", stderr)
+                        }
+                        mismatches += 1
+                    }
+                }
+                if mismatches > 0 {
+                    fputs("  FAIL: \(mismatches) mismatches in \(n) rows\n", stderr)
+                } else if n == sizes[0] {
+                    fputs("  PASS: correctness verified (\(n) rows)\n", stderr)
+                }
+            }
+
+            // Warmup
+            let _ = try m31Engine.generateFibonacciTrace(a0: a0, b0: b0, numRows: n)
+
+            // Bench GPU
+            let iters = n <= (1 << 16) ? 20 : (n <= (1 << 20) ? 5 : 3)
+            let t0 = CFAbsoluteTimeGetCurrent()
+            for _ in 0..<iters {
+                let _ = try m31Engine.generateFibonacciTrace(a0: a0, b0: b0, numRows: n)
+            }
+            let gpuMs = (CFAbsoluteTimeGetCurrent() - t0) * 1000.0 / Double(iters)
+
+            // Bench CPU
+            var cpuMs = 0.0
+            if !skipCPU && n <= (1 << 20) {
+                let cpuIters = n <= (1 << 16) ? 10 : 1
+                let t1 = CFAbsoluteTimeGetCurrent()
+                for _ in 0..<cpuIters {
+                    var a = [M31](repeating: M31.zero, count: n)
+                    var b = [M31](repeating: M31.zero, count: n)
+                    a[0] = a0; b[0] = b0
+                    for i in 1..<n {
+                        a[i] = b[i - 1]
+                        b[i] = m31Add(a[i - 1], b[i - 1])
+                    }
+                }
+                cpuMs = (CFAbsoluteTimeGetCurrent() - t1) * 1000.0 / Double(cpuIters)
+            }
+
+            let throughput = Double(n) * 2.0 / (gpuMs / 1000.0) / 1e6
+            var line = String(format: "  n=2^%d (%dk rows): GPU %.3fms", Int(log2(Double(n))), n / 1024, gpuMs)
+            if cpuMs > 0 {
+                line += String(format: ", CPU %.2fms, speedup %.1fx", cpuMs, cpuMs / gpuMs)
+            }
+            line += String(format: " [%.1f M cells/s]", throughput)
+            fputs(line + "\n", stderr)
+        }
+    } catch {
+        fputs("  Error in Fibonacci trace bench: \(error)\n", stderr)
+    }
+
+    // --- Test 5: Generic M31 trace (independent rows) ---
+    do {
+        fputs("\n--- Generic M31 Trace (Poseidon2-like, 4 cols, independent rows) ---\n", stderr)
+        let prog = M31TraceProgram()
+        prog.loadInput(0, 0)
+        prog.loadInput(1, 1)
+        prog.mul(2, 0, 1)     // c = a * b
+        prog.sqr(3, 2)        // d = c^2
+        prog.addConst(0, 3, M31(v: 7))  // a = d + 7
+        prog.mul(1, 0, 3)     // b = a * d
+        let compiled = prog.compile()
+        fputs("  Program: \(compiled.numInstructions) instrs, \(compiled.numCols) cols\n", stderr)
+
+        let sizes = [1 << 14, 1 << 16, 1 << 18, 1 << 20]
+        for n in sizes {
+            var inputs = [UInt32](repeating: 0, count: n * 2)
+            var rng: UInt64 = 0xDEAD_BEEF_1234_5678
+            for i in 0..<inputs.count {
+                rng = rng &* 6364136223846793005 &+ 1442695040888963407
+                let v = UInt32(truncatingIfNeeded: rng >> 32)
+                inputs[i] = v % M31.P
+            }
+
+            // Warmup
+            let _ = try m31Engine.evaluate(program: compiled, inputs: inputs, numRows: n)
+
+            let iters = n <= (1 << 16) ? 10 : 3
+            let t0 = CFAbsoluteTimeGetCurrent()
+            for _ in 0..<iters {
+                let _ = try m31Engine.evaluate(program: compiled, inputs: inputs, numRows: n)
+            }
+            let gpuMs = (CFAbsoluteTimeGetCurrent() - t0) * 1000.0 / Double(iters)
+
+            let throughput = Double(n) * Double(compiled.numCols) / (gpuMs / 1000.0) / 1e6
+            let line = String(format: "  n=2^%d (%dk rows): GPU %.3fms [%.1f M cells/s]",
+                              Int(log2(Double(n))), n / 1024, gpuMs, throughput)
+            fputs(line + "\n", stderr)
+        }
+    } catch {
+        fputs("  Error in generic M31 trace bench: \(error)\n", stderr)
+    }
+
+    // --- Test 6: Linear recurrence (3-state) ---
+    do {
+        fputs("\n--- Linear Recurrence (3-wide state, T^row * state0) ---\n", stderr)
+        // Example: 3-state recurrence with constant matrix
+        let T: [[M31]] = [
+            [M31(v: 0), M31(v: 1), M31(v: 0)],
+            [M31(v: 0), M31(v: 0), M31(v: 1)],
+            [M31(v: 1), M31(v: 1), M31(v: 1)]
+        ]
+        let s0: [M31] = [M31(v: 1), M31(v: 0), M31(v: 0)]
+
+        let sizes = [1 << 14, 1 << 16, 1 << 18, 1 << 20]
+        for n in sizes {
+            // Correctness on small size
+            if n == sizes[0] {
+                let gpuResult = try m31Engine.generateLinearRecurrence(
+                    transferMatrix: T, initialState: s0, numRows: n
+                )
+                // CPU reference
+                var state = s0
+                var mismatches = 0
+                for row in 0..<min(n, 256) {
+                    for col in 0..<3 {
+                        if gpuResult[row][col].v != state[col].v {
+                            if mismatches < 3 {
+                                fputs("  MISMATCH row=\(row) col=\(col): GPU=\(gpuResult[row][col].v) CPU=\(state[col].v)\n", stderr)
+                            }
+                            mismatches += 1
+                        }
+                    }
+                    // Advance state: state = T * state
+                    var next = [M31](repeating: M31.zero, count: 3)
+                    for i in 0..<3 {
+                        var acc = M31.zero
+                        for j in 0..<3 {
+                            acc = m31Add(acc, m31Mul(T[i][j], state[j]))
+                        }
+                        next[i] = acc
+                    }
+                    state = next
+                }
+                if mismatches > 0 {
+                    fputs("  FAIL: \(mismatches) mismatches in first 256 rows\n", stderr)
+                } else {
+                    fputs("  PASS: correctness verified (first 256 rows)\n", stderr)
+                }
+            }
+
+            // Warmup
+            let _ = try m31Engine.generateLinearRecurrence(
+                transferMatrix: T, initialState: s0, numRows: n
+            )
+
+            let iters = n <= (1 << 16) ? 10 : 3
+            let t0 = CFAbsoluteTimeGetCurrent()
+            for _ in 0..<iters {
+                let _ = try m31Engine.generateLinearRecurrence(
+                    transferMatrix: T, initialState: s0, numRows: n
+                )
+            }
+            let gpuMs = (CFAbsoluteTimeGetCurrent() - t0) * 1000.0 / Double(iters)
+
+            let throughput = Double(n) * 3.0 / (gpuMs / 1000.0) / 1e6
+            let line = String(format: "  n=2^%d (%dk rows): GPU %.3fms [%.1f M cells/s]",
+                              Int(log2(Double(n))), n / 1024, gpuMs, throughput)
+            fputs(line + "\n", stderr)
+        }
+    } catch {
+        fputs("  Error in linear recurrence bench: \(error)\n", stderr)
+    }
+
+    fputs("\n", stderr)
 }

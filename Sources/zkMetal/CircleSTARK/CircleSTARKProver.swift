@@ -87,6 +87,7 @@ public class CircleSTARKProver {
     private var nttEng: CircleNTTEngine?
     private var friEng: CircleFRIEngine?
     private var merkleEng: KeccakMerkleEngine?
+    private var witnessEng: WitnessEngine?
     private var cstPipeline: MTLComputePipelineState?
     private var fusedSepColPipeline: MTLComputePipelineState?
     /// Cached domain_y buffer for fused constraint eval
@@ -96,6 +97,26 @@ public class CircleSTARKProver {
     public init(logBlowup: Int = 4, numQueries: Int = 30) {
         self.logBlowup = logBlowup
         self.numQueries = numQueries
+    }
+
+    private func ensureWitness() throws -> WitnessEngine {
+        if let e = witnessEng { return e }
+        let e = try WitnessEngine()
+        witnessEng = e
+        return e
+    }
+
+    /// GPU-accelerated trace generation for FibonacciAIR.
+    /// Falls back to CPU generateTrace() for non-Fibonacci AIRs.
+    public func generateTraceGPU<A: CircleAIR>(air: A) throws -> [[M31]] {
+        if let fibAIR = air as? FibonacciAIR {
+            let witness = try ensureWitness()
+            let (colA, colB) = try witness.generateFibonacciTrace(
+                a0: fibAIR.a0, b0: fibAIR.b0, numRows: fibAIR.traceLength
+            )
+            return [colA, colB]
+        }
+        return air.generateTrace()
     }
 
     private func ensureNTT() throws -> CircleNTTEngine {
@@ -202,8 +223,8 @@ public class CircleSTARKProver {
         let evalLen = 1 << logEval
 
         let proveT0 = CFAbsoluteTimeGetCurrent()
-        // Step 1: Generate trace
-        let trace = air.generateTrace()
+        // Step 1: Generate trace (GPU-accelerated for supported AIRs)
+        let trace = try generateTraceGPU(air: air)
         precondition(trace.count == air.numColumns)
         for col in trace { precondition(col.count == traceLen) }
         let traceT = CFAbsoluteTimeGetCurrent()
@@ -477,8 +498,8 @@ public class CircleSTARKProver {
 
         let proveT0 = CFAbsoluteTimeGetCurrent()
 
-        // Step 1: Generate trace
-        let trace = air.generateTrace()
+        // Step 1: Generate trace (GPU-accelerated for supported AIRs)
+        let trace = try generateTraceGPU(air: air)
         precondition(trace.count == air.numColumns)
         for col in trace { precondition(col.count == traceLen) }
         let traceT = CFAbsoluteTimeGetCurrent()
