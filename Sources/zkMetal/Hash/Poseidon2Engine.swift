@@ -8,6 +8,7 @@ public class Poseidon2Engine {
     let permuteFunction: MTLComputePipelineState
     let hashPairsFunction: MTLComputePipelineState
     let merkleFusedFunction: MTLComputePipelineState
+    let merkleFusedFullFunction: MTLComputePipelineState
     let rcBuffer: MTLBuffer  // round constants in Montgomery form
 
     // Cached buffers for hashPairs to avoid per-call allocation
@@ -31,13 +32,15 @@ public class Poseidon2Engine {
 
         guard let permuteFn = library.makeFunction(name: "poseidon2_permute"),
               let hashPairsFn = library.makeFunction(name: "poseidon2_hash_pairs"),
-              let merkleFusedFn = library.makeFunction(name: "poseidon2_merkle_fused") else {
+              let merkleFusedFn = library.makeFunction(name: "poseidon2_merkle_fused"),
+              let merkleFusedFullFn = library.makeFunction(name: "poseidon2_merkle_fused_full") else {
             throw MSMError.missingKernel
         }
 
         self.permuteFunction = try device.makeComputePipelineState(function: permuteFn)
         self.hashPairsFunction = try device.makeComputePipelineState(function: hashPairsFn)
         self.merkleFusedFunction = try device.makeComputePipelineState(function: merkleFusedFn)
+        self.merkleFusedFullFunction = try device.makeComputePipelineState(function: merkleFusedFullFn)
 
         // Create round constants buffer (64 rounds * 3 elements = 192 Fr values)
         let rc = POSEIDON2_ROUND_CONSTANTS
@@ -188,6 +191,24 @@ public class Poseidon2Engine {
         var numLevels: UInt32 = 10  // log2(1024) = 10
         encoder.setBytes(&numLevels, length: 4, index: 3)
         // Each threadgroup = 512 threads, processes 1024 leaves
+        encoder.dispatchThreadgroups(MTLSize(width: numSubtrees, height: 1, depth: 1),
+                                      threadsPerThreadgroup: MTLSize(width: 512, height: 1, depth: 1))
+    }
+
+    /// Encode fused Merkle (full tree): writes all intermediate nodes at correct tree offsets.
+    /// levelOffsets buffer contains the start index in the tree for each of the 10 internal levels.
+    public func encodeMerkleFusedFull(encoder: MTLComputeCommandEncoder,
+                                       leavesBuffer: MTLBuffer, leavesOffset: Int,
+                                       treeBuffer: MTLBuffer, treeOffset: Int,
+                                       levelOffsetsBuffer: MTLBuffer,
+                                       numSubtrees: Int) {
+        encoder.setComputePipelineState(merkleFusedFullFunction)
+        encoder.setBuffer(leavesBuffer, offset: leavesOffset, index: 0)
+        encoder.setBuffer(treeBuffer, offset: treeOffset, index: 1)
+        encoder.setBuffer(rcBuffer, offset: 0, index: 2)
+        var numLevels: UInt32 = 10  // log2(1024) = 10
+        encoder.setBytes(&numLevels, length: 4, index: 3)
+        encoder.setBuffer(levelOffsetsBuffer, offset: 0, index: 4)
         encoder.dispatchThreadgroups(MTLSize(width: numSubtrees, height: 1, depth: 1),
                                       threadsPerThreadgroup: MTLSize(width: 512, height: 1, depth: 1))
     }

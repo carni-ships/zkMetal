@@ -656,24 +656,62 @@ void bn254_fr_vector_fold(const uint64_t *a, const uint64_t *b,
 // ============================================================
 
 static void pt_scalar_mul(const uint64_t p[12], const uint32_t scalar[8], uint64_t r[12]) {
-    uint64_t result[12], base[12];
-    pt_set_id(result);
-    memcpy(base, p, 96);
+    // Windowed scalar multiplication, w=4 (process 4 bits at a time)
+    // Precompute table[0..15] = [identity, P, 2P, ..., 15P]
+    // Then scan scalar from MSB: for each nibble, double 4 times then add table[nibble]
+    // Cost: 15 adds (precomp) + 252 doubles + ~64 adds ≈ 331 ops vs 256 doubles + ~128 adds = 384 ops
 
+    uint64_t table[16 * 12];  // 16 projective points
+
+    // table[0] = identity
+    pt_set_id(table);
+    // table[1] = P
+    memcpy(table + 12, p, 96);
+    // table[i] = table[i-1] + P for i = 2..15
+    for (int i = 2; i < 16; i++) {
+        pt_add(table + (i - 1) * 12, p, table + i * 12);
+    }
+
+    // Extract nibbles from scalar (MSB first): 256 bits = 64 nibbles
+    // scalar is 8 x uint32_t, little-endian limbs
+    // Nibble 63 is the highest 4 bits of scalar[7], nibble 0 is lowest 4 bits of scalar[0]
+    uint8_t nibbles[64];
     for (int i = 0; i < 8; i++) {
         uint32_t word = scalar[i];
-        for (int bit = 0; bit < 32; bit++) {
-            if (word & 1) {
-                uint64_t tmp[12];
-                pt_add(result, base, tmp);
-                memcpy(result, tmp, 96);
-            }
-            uint64_t tmp[12];
-            pt_dbl(base, tmp);
-            memcpy(base, tmp, 96);
-            word >>= 1;
+        for (int j = 0; j < 8; j++) {
+            nibbles[i * 8 + j] = (uint8_t)(word & 0xF);
+            word >>= 4;
         }
     }
+
+    // Find highest non-zero nibble
+    int top = 63;
+    while (top >= 0 && nibbles[top] == 0) top--;
+
+    if (top < 0) {
+        pt_set_id(r);
+        return;
+    }
+
+    // Start with table[top nibble]
+    uint64_t result[12];
+    memcpy(result, table + nibbles[top] * 12, 96);
+
+    // Process remaining nibbles from MSB to LSB
+    for (int i = top - 1; i >= 0; i--) {
+        // Double 4 times
+        uint64_t tmp[12];
+        pt_dbl(result, tmp); memcpy(result, tmp, 96);
+        pt_dbl(result, tmp); memcpy(result, tmp, 96);
+        pt_dbl(result, tmp); memcpy(result, tmp, 96);
+        pt_dbl(result, tmp); memcpy(result, tmp, 96);
+        // Add table[nibble] if non-zero
+        if (nibbles[i]) {
+            pt_add(result, table + nibbles[i] * 12, tmp);
+            memcpy(result, tmp, 96);
+        }
+    }
+
     memcpy(r, result, 96);
 }
 
@@ -691,14 +729,83 @@ typedef struct {
     int end;
 } FoldChunk;
 
+// Straus double-scalar multiplication: computes s1*P1 + s2*P2 with shared doublings.
+// Uses w=4 windowed method on both scalars simultaneously.
+// Cost: ~252 doublings + ~64 adds (vs ~504 doublings + ~128 adds for two separate scalar muls)
+static void pt_double_scalar_mul(
+    const uint64_t P1[12], const uint32_t s1[8],
+    const uint64_t P2[12], const uint32_t s2[8],
+    uint64_t r[12])
+{
+    // Precompute tables: table1[i] = i*P1, table2[i] = i*P2 for i in 0..15
+    uint64_t table1[16 * 12], table2[16 * 12];
+
+    pt_set_id(table1);
+    memcpy(table1 + 12, P1, 96);
+    for (int i = 2; i < 16; i++)
+        pt_add(table1 + (i - 1) * 12, P1, table1 + i * 12);
+
+    pt_set_id(table2);
+    memcpy(table2 + 12, P2, 96);
+    for (int i = 2; i < 16; i++)
+        pt_add(table2 + (i - 1) * 12, P2, table2 + i * 12);
+
+    // Extract nibbles for both scalars
+    uint8_t nib1[64], nib2[64];
+    for (int i = 0; i < 8; i++) {
+        uint32_t w1 = s1[i], w2 = s2[i];
+        for (int j = 0; j < 8; j++) {
+            nib1[i * 8 + j] = (uint8_t)(w1 & 0xF); w1 >>= 4;
+            nib2[i * 8 + j] = (uint8_t)(w2 & 0xF); w2 >>= 4;
+        }
+    }
+
+    // Find highest non-zero nibble across both scalars
+    int top = 63;
+    while (top >= 0 && nib1[top] == 0 && nib2[top] == 0) top--;
+
+    if (top < 0) { pt_set_id(r); return; }
+
+    // Initialize with table lookups at top nibble
+    uint64_t result[12];
+    pt_set_id(result);
+    if (nib1[top]) {
+        memcpy(result, table1 + nib1[top] * 12, 96);
+    }
+    if (nib2[top]) {
+        uint64_t tmp[12];
+        pt_add(result, table2 + nib2[top] * 12, tmp);
+        memcpy(result, tmp, 96);
+    }
+
+    // Process remaining nibbles
+    for (int i = top - 1; i >= 0; i--) {
+        uint64_t tmp[12];
+        pt_dbl(result, tmp); memcpy(result, tmp, 96);
+        pt_dbl(result, tmp); memcpy(result, tmp, 96);
+        pt_dbl(result, tmp); memcpy(result, tmp, 96);
+        pt_dbl(result, tmp); memcpy(result, tmp, 96);
+        if (nib1[i]) {
+            pt_add(result, table1 + nib1[i] * 12, tmp);
+            memcpy(result, tmp, 96);
+        }
+        if (nib2[i]) {
+            pt_add(result, table2 + nib2[i] * 12, tmp);
+            memcpy(result, tmp, 96);
+        }
+    }
+
+    memcpy(r, result, 96);
+}
+
 static void *fold_worker(void *arg) {
     FoldChunk *c = (FoldChunk *)arg;
     for (int i = c->start; i < c->end; i++) {
-        uint64_t gL_scaled[12], gR_scaled[12], sum[12];
-        pt_scalar_mul(c->GL + i * 12, c->xInv, gL_scaled);
-        pt_scalar_mul(c->GR + i * 12, c->x, gR_scaled);
-        pt_add(gL_scaled, gR_scaled, sum);
-        memcpy(c->result + i * 12, sum, 96);
+        // Straus trick: compute xInv*GL[i] + x*GR[i] with shared doublings
+        pt_double_scalar_mul(
+            c->GL + i * 12, c->xInv,
+            c->GR + i * 12, c->x,
+            c->result + i * 12);
     }
     return NULL;
 }
@@ -788,11 +895,102 @@ void bn254_pippenger_msm(
 }
 
 // ============================================================
+// MSM from projective points (small n, direct scalar-mul accumulation)
+// Avoids batchToAffine overhead for small IPA rounds.
+// ============================================================
+
+typedef struct {
+    const uint64_t *points;
+    const uint32_t *scalars;
+    uint64_t partial[12];  // thread-local partial sum
+    int start;
+    int end;
+} MSMProjChunk;
+
+static void *msm_proj_worker(void *arg) {
+    MSMProjChunk *c = (MSMProjChunk *)arg;
+    pt_set_id(c->partial);
+    for (int i = c->start; i < c->end; i++) {
+        uint64_t term[12], tmp[12];
+        pt_scalar_mul(c->points + i * 12, c->scalars + i * 8, term);
+        pt_add(c->partial, term, tmp);
+        memcpy(c->partial, tmp, 96);
+    }
+    return NULL;
+}
+
+void bn254_msm_projective(
+    const uint64_t *points,    // n projective points (12 uint64_t each)
+    const uint32_t *scalars,   // n scalars (8 uint32_t each)
+    int n,
+    uint64_t *result)          // output: 12 uint64_t (projective)
+{
+    if (n == 0) { pt_set_id(result); return; }
+
+    // Single-threaded for very small n
+    if (n <= 4) {
+        pt_set_id(result);
+        for (int i = 0; i < n; i++) {
+            uint64_t term[12], tmp[12];
+            pt_scalar_mul(points + i * 12, scalars + i * 8, term);
+            pt_add(result, term, tmp);
+            memcpy(result, tmp, 96);
+        }
+        return;
+    }
+
+    // Multi-threaded for larger n
+    int nThreads = 8;
+    if (n < nThreads) nThreads = n;
+
+    pthread_t threads[8];
+    MSMProjChunk chunks[8];
+    int chunkSize = (n + nThreads - 1) / nThreads;
+
+    for (int t = 0; t < nThreads; t++) {
+        chunks[t].points = points;
+        chunks[t].scalars = scalars;
+        chunks[t].start = t * chunkSize;
+        chunks[t].end = (t + 1) * chunkSize;
+        if (chunks[t].end > n) chunks[t].end = n;
+        pthread_create(&threads[t], NULL, msm_proj_worker, &chunks[t]);
+    }
+    for (int t = 0; t < nThreads; t++)
+        pthread_join(threads[t], NULL);
+
+    // Combine partial sums
+    memcpy(result, chunks[0].partial, 96);
+    for (int t = 1; t < nThreads; t++) {
+        uint64_t tmp[12];
+        pt_add(result, chunks[t].partial, tmp);
+        memcpy(result, tmp, 96);
+    }
+}
+
+// ============================================================
 // Exported utility functions
 // ============================================================
 
 void bn254_point_scalar_mul(const uint64_t p[12], const uint32_t scalar[8], uint64_t r[12]) {
     pt_scalar_mul(p, scalar, r);
+}
+
+void bn254_batch_to_affine(const uint64_t *proj, uint64_t *aff, int n) {
+    batch_to_affine(proj, aff, n);
+}
+
+void bn254_projective_to_affine(const uint64_t p[12], uint64_t affine[8]) {
+    if (fp_is_zero(p + 8)) {
+        // Identity point: return (0, 0)
+        memset(affine, 0, 64);
+        return;
+    }
+    uint64_t zinv[4], zinv2[4], zinv3[4];
+    fp_inv(p + 8, zinv);
+    fp_mul(zinv, zinv, zinv2);
+    fp_mul(zinv2, zinv, zinv3);
+    fp_mul(p, zinv2, affine);        // x_aff = X / Z^2
+    fp_mul(p + 4, zinv3, affine + 4); // y_aff = Y / Z^3
 }
 
 void bn254_fr_inner_product(const uint64_t *a, const uint64_t *b, int n, uint64_t result[4]) {
@@ -813,6 +1011,23 @@ void bn254_fr_vector_fold(const uint64_t *a, const uint64_t *b,
         fr_mul(a + i * 4, x, ax);
         fr_mul(b + i * 4, xInv, bxi);
         fr_add(ax, bxi, out + i * 4);
+    }
+}
+
+void bn254_fr_batch_to_limbs(const uint64_t *mont, uint32_t *limbs, int n) {
+    // Convert n Fr elements from Montgomery form to integer uint32 limbs.
+    static const uint64_t ONE[4] = {1, 0, 0, 0};
+    for (int i = 0; i < n; i++) {
+        uint64_t r[4];
+        fr_mul(mont + i * 4, ONE, r);
+        limbs[i * 8 + 0] = (uint32_t)(r[0]);
+        limbs[i * 8 + 1] = (uint32_t)(r[0] >> 32);
+        limbs[i * 8 + 2] = (uint32_t)(r[1]);
+        limbs[i * 8 + 3] = (uint32_t)(r[1] >> 32);
+        limbs[i * 8 + 4] = (uint32_t)(r[2]);
+        limbs[i * 8 + 5] = (uint32_t)(r[2] >> 32);
+        limbs[i * 8 + 6] = (uint32_t)(r[3]);
+        limbs[i * 8 + 7] = (uint32_t)(r[3] >> 32);
     }
 }
 

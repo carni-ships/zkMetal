@@ -119,7 +119,7 @@ public func runSortBench() {
                 let _ = try engine.sort(keys)
 
                 // GPU timed
-                let runs = 3
+                let runs = 5
                 var gpuTimes = [Double]()
                 for _ in 0..<runs {
                     let t0 = CFAbsoluteTimeGetCurrent()

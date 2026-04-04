@@ -17,7 +17,7 @@ public class RadixSortEngine {
 
     static let radixBits = 8
     static let radixSize = 256  // 2^radixBits
-    static let tileSize = 2048  // keys per threadgroup
+    static let tileSize = 4096  // keys per threadgroup
 
     // Grow-only buffer cache
     private var histogramBuf: MTLBuffer?
@@ -105,7 +105,7 @@ public class RadixSortEngine {
         var inputBuf = keyBufA
         var outputBuf = keyBufB
 
-        let tgSize = min(256, Int(histogramFunction.maxTotalThreadsPerThreadgroup))
+        let tgSize = min(256, Int(scatterFunction.maxTotalThreadsPerThreadgroup))
         let prefixTG = min(256, Int(prefixSumFunction.maxTotalThreadsPerThreadgroup))
 
         // Single command buffer for all 4 passes (eliminates 11 CPU-GPU round trips)
@@ -202,7 +202,7 @@ public class RadixSortEngine {
         var inKeys = keyBufA, outKeys = keyBufB
         var inVals = valBufA, outVals = valBufB
 
-        let tgSize = min(256, Int(histogramFunction.maxTotalThreadsPerThreadgroup))
+        let tgSize = min(256, Int(scatterKVFunction.maxTotalThreadsPerThreadgroup))
         let prefixTG = min(256, Int(prefixSumFunction.maxTotalThreadsPerThreadgroup))
 
         // Single command buffer for all 4 passes

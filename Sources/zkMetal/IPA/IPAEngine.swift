@@ -99,16 +99,78 @@ public class IPAEngine {
     /// Commit to a vector: C = MSM(G, a)
     public func commit(_ a: [Fr]) throws -> PointProjective {
         precondition(a.count == generators.count)
-        // Use C Pippenger for all sizes (faster than GPU for typical IPA sizes ≤ 4096)
-        let scalars = a.map { frToLimbs($0) }
-        return cPippengerMSM(points: generators, scalars: scalars)
+        let n = a.count
+        // C batch Fr-to-limbs + Pippenger
+        var flatScalars = [UInt32](repeating: 0, count: n * 8)
+        a.withUnsafeBytes { aBuf in
+            flatScalars.withUnsafeMutableBufferPointer { lBuf in
+                bn254_fr_batch_to_limbs(
+                    aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    lBuf.baseAddress!,
+                    Int32(n)
+                )
+            }
+        }
+        var result = PointProjective(x: .one, y: .one, z: .zero)
+        generators.withUnsafeBytes { ptsBuf in
+            flatScalars.withUnsafeBufferPointer { scBuf in
+                withUnsafeMutableBytes(of: &result) { resBuf in
+                    bn254_pippenger_msm(
+                        ptsBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        scBuf.baseAddress!,
+                        Int32(n),
+                        resBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    )
+                }
+            }
+        }
+        return result
     }
 
-    /// CPU multi-scalar multiplication using C Pippenger for speed
+    /// CPU multi-scalar multiplication using C Pippenger for speed.
+    /// Uses C batch-to-affine and C batch Fr-to-limbs to avoid slow Swift ops.
     private func cpuMSM(points: [PointProjective], scalars: [Fr]) -> PointProjective {
-        let affPts = batchToAffine(points)
-        let limbScalars = scalars.map { frToLimbs($0) }
-        return cPippengerMSM(points: affPts, scalars: limbScalars)
+        let n = points.count
+        if n == 0 { return pointIdentity() }
+
+        // C batch-to-affine: much faster than Swift batchToAffine
+        var affPts = [PointAffine](repeating: PointAffine(x: .one, y: .one), count: n)
+        points.withUnsafeBytes { projBuf in
+            affPts.withUnsafeMutableBytes { affBuf in
+                bn254_batch_to_affine(
+                    projBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    affBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(n)
+                )
+            }
+        }
+
+        // C batch Fr-to-limbs: much faster than per-element Swift frToLimbs
+        var flatScalars = [UInt32](repeating: 0, count: n * 8)
+        scalars.withUnsafeBytes { sBuf in
+            flatScalars.withUnsafeMutableBufferPointer { lBuf in
+                bn254_fr_batch_to_limbs(
+                    sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    lBuf.baseAddress!,
+                    Int32(n)
+                )
+            }
+        }
+
+        var result = PointProjective(x: .one, y: .one, z: .zero)
+        affPts.withUnsafeBytes { ptsBuf in
+            flatScalars.withUnsafeBufferPointer { scBuf in
+                withUnsafeMutableBytes(of: &result) { resBuf in
+                    bn254_pippenger_msm(
+                        ptsBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        scBuf.baseAddress!,
+                        Int32(n),
+                        resBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    )
+                }
+            }
+        }
+        return result
     }
 
     /// Compute inner product <a, b> = sum(a_i * b_i)
@@ -188,7 +250,7 @@ public class IPAEngine {
             let newB = cFrVectorFold(bL, bR, x: xInv, xInv: x)
 
             // Fold generators: G'_i = xInv * GL_i + x * GR_i
-            // Use C multi-threaded fold (much faster than GPU dispatch or Swift scalar mul)
+            // Use C multi-threaded Straus fold (shared doublings for both scalar muls)
             let xLimbs = frToLimbs(x)
             let xInvLimbs = frToLimbs(xInv)
             var newG = [PointProjective](repeating: pointIdentity(), count: halfLen)
@@ -366,22 +428,33 @@ public class IPAEngine {
 
     private func computeLR(generators G: [PointProjective], scalars a: [Fr],
                            crossIP c: Fr, Q qProj: PointProjective) throws -> PointProjective {
-        // MSM(G, a) + c * Q — always use C Pippenger (faster than GPU for IPA sizes)
-        let msmResult = cpuMSM(points: G, scalars: a)
-        let cQ = cpuMSM(points: [qProj], scalars: [c])
+        // MSM(G, a) + c * Q
+        let msmResult: PointProjective
+        if G.count >= 64 {
+            // For larger MSMs, Pippenger is more efficient despite affine conversion cost
+            msmResult = cpuMSM(points: G, scalars: a)
+        } else {
+            // For small MSMs, direct projective scalar-mul avoids overhead
+            msmResult = cMSMProjective(points: G, scalars: a)
+        }
+        let cQ = cPointScalarMul(qProj, c)
         return pointAdd(msmResult, cQ)
     }
 
     private func appendPoint(_ transcript: inout [UInt8], _ p: PointProjective) {
-        let aff = batchToAffine([p])[0]
-        let xInt = fpToInt(aff.x)
-        let yInt = fpToInt(aff.y)
-        for limb in xInt {
-            for byte in 0..<8 {
-                transcript.append(UInt8((limb >> (byte * 8)) & 0xFF))
+        // Use C CIOS field ops for projective-to-affine (much faster than Swift fpInverse)
+        var affine = [UInt64](repeating: 0, count: 8)
+        withUnsafeBytes(of: p) { pBuf in
+            affine.withUnsafeMutableBufferPointer { affBuf in
+                bn254_projective_to_affine(
+                    pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    affBuf.baseAddress!
+                )
             }
         }
-        for limb in yInt {
+        // Append x and y coordinates as bytes (already in Montgomery form)
+        // We need to convert from Montgomery to integer form for hashing
+        for limb in affine {
             for byte in 0..<8 {
                 transcript.append(UInt8((limb >> (byte * 8)) & 0xFF))
             }

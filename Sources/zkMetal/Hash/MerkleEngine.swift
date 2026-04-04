@@ -9,6 +9,9 @@ public class Poseidon2MerkleEngine {
     private let engine: Poseidon2Engine
     private var cachedTreeBuf: MTLBuffer?
     private var cachedTreeBufNodes: Int = 0
+    private var cachedLevelOffsetsBuf: MTLBuffer?
+    private var cachedRootBuf: MTLBuffer?
+    private var treeSize2: Int = 0
 
     public init() throws {
         self.engine = try Poseidon2Engine()
@@ -17,13 +20,15 @@ public class Poseidon2MerkleEngine {
     /// Build a Merkle tree from leaf Fr elements using Poseidon2 2-to-1 hashing.
     /// Returns all tree nodes: [leaves..., internal nodes..., root].
     /// Tree layout: nodes[0..<n] = leaves, nodes[n..<2n-1] = internal (bottom up), nodes[2n-2] = root.
-    /// For n >= 1024: uses fused subtree kernel for bottom 10 levels (eliminates 9 barriers per subtree).
+    /// For n >= 1024: fused subtree kernel processes bottom 10 levels in shared memory
+    /// (writes intermediate nodes via global memory), then level-by-level for remaining levels.
     public func buildTree(_ leaves: [Fr]) throws -> [Fr] {
         let n = leaves.count
         precondition(n > 0 && (n & (n - 1)) == 0, "Leaf count must be power of 2")
 
         let treeSize = 2 * n - 1
         let stride = MemoryLayout<Fr>.stride
+        let subtreeSize = Poseidon2Engine.merkleSubtreeSize  // 1024
 
         // Reuse cached tree buffer when possible
         if treeSize > cachedTreeBufNodes {
@@ -44,29 +49,81 @@ public class Poseidon2MerkleEngine {
             throw MSMError.noCommandBuffer
         }
 
-        // Level-by-level for Poseidon2: each hash is compute-heavy, so dispatch overhead
-        // is negligible relative to hash time, while fused subtrees waste GPU occupancy
-        // on idle threads at upper levels within each subtree.
         let enc = cmdBuf.makeComputeCommandEncoder()!
 
-        var levelStart = 0
-        var levelSize = n
+        // Use fused subtrees only when n <= 65536. At larger sizes, the thread waste
+        // from idle threads in upper subtree levels exceeds dispatch overhead savings.
+        let useFused = n >= subtreeSize && n <= 65536
 
-        while levelSize > 1 {
-            let parentCount = levelSize / 2
-            let inputOffset = levelStart * stride
-            let outputOffset = (levelStart + levelSize) * stride
+        if useFused {
+            // Phase 1: Fused subtrees for bottom 10 levels.
+            let numSubtrees = n / subtreeSize
+            let numFusedLevels = 10
 
-            engine.encodeHashPairs(encoder: enc, buffer: treeBuf,
-                                   inputOffset: inputOffset,
-                                   outputOffset: outputOffset,
-                                   count: parentCount)
+            // Compute level offsets for the tree layout
+            var levelOffsets = [UInt32]()
+            levelOffsets.reserveCapacity(numFusedLevels)
+            var off = n
+            var width = n / 2
+            for _ in 0..<numFusedLevels {
+                levelOffsets.append(UInt32(off))
+                off += width
+                width /= 2
+            }
 
-            levelStart += levelSize
-            levelSize = parentCount
+            if cachedLevelOffsetsBuf == nil || cachedLevelOffsetsBuf!.length < levelOffsets.count * 4 {
+                cachedLevelOffsetsBuf = engine.device.makeBuffer(length: levelOffsets.count * 4, options: .storageModeShared)
+            }
+            let levelOffsetsBuf = cachedLevelOffsetsBuf!
+            levelOffsets.withUnsafeBytes { src in
+                memcpy(levelOffsetsBuf.contents(), src.baseAddress!, src.count)
+            }
 
-            if levelSize > 1 {
+            engine.encodeMerkleFusedFull(encoder: enc,
+                                          leavesBuffer: treeBuf, leavesOffset: 0,
+                                          treeBuffer: treeBuf, treeOffset: 0,
+                                          levelOffsetsBuffer: levelOffsetsBuf,
+                                          numSubtrees: numSubtrees)
+
+            // Phase 2: Level-by-level for remaining levels above the fused subtree roots
+            var levelStart = Int(levelOffsets[numFusedLevels - 1])
+            var levelSize = numSubtrees
+
+            while levelSize > 1 {
                 enc.memoryBarrier(scope: .buffers)
+                let parentCount = levelSize / 2
+                let inputOffset = levelStart * stride
+                let outputOffset = (levelStart + levelSize) * stride
+
+                engine.encodeHashPairs(encoder: enc, buffer: treeBuf,
+                                       inputOffset: inputOffset,
+                                       outputOffset: outputOffset,
+                                       count: parentCount)
+
+                levelStart += levelSize
+                levelSize = parentCount
+            }
+        } else {
+            // Small tree: level-by-level
+            var levelStart = 0
+            var levelSize = n
+
+            while levelSize > 1 {
+                let parentCount = levelSize / 2
+                let inputOffset = levelStart * stride
+                let outputOffset = (levelStart + levelSize) * stride
+
+                engine.encodeHashPairs(encoder: enc, buffer: treeBuf,
+                                       inputOffset: inputOffset,
+                                       outputOffset: outputOffset,
+                                       count: parentCount)
+
+                levelStart += levelSize
+                levelSize = parentCount
+
+                if levelSize > 1 {
+                    enc.memoryBarrier(scope: .buffers)
+                }
             }
         }
         enc.endEncoding()
@@ -83,9 +140,81 @@ public class Poseidon2MerkleEngine {
     }
 
     /// Get the Merkle root from leaves.
+    /// Optimized: uses fused subtree kernel for bottom 10 levels (64 subtrees of 1024)
+    /// to eliminate dispatch overhead, then level-by-level for remaining levels.
     public func merkleRoot(_ leaves: [Fr]) throws -> Fr {
-        let tree = try buildTree(leaves)
-        return tree.last!
+        let n = leaves.count
+        precondition(n > 0 && (n & (n - 1)) == 0, "Leaf count must be power of 2")
+        let subtreeSize = Poseidon2Engine.merkleSubtreeSize  // 1024
+        let stride = MemoryLayout<Fr>.stride
+
+        // For small trees or large trees (where thread waste exceeds dispatch overhead),
+        // use buildTree which has the appropriate strategy for each size range.
+        if n < subtreeSize || n > 65536 {
+            let tree = try buildTree(leaves)
+            return tree.last!
+        }
+
+        let numSubtrees = n / subtreeSize
+        // We need: input buffer (leaves), intermediate buffer (for subtree roots + upper levels)
+        let upperTreeSize = 2 * numSubtrees - 1  // upper tree nodes
+        let totalBufSize = (n + upperTreeSize) * stride
+
+        if treeSize2 < totalBufSize {
+            guard let buf = engine.device.makeBuffer(length: totalBufSize, options: .storageModeShared) else {
+                throw MSMError.gpuError("Failed to allocate Merkle root buffer")
+            }
+            cachedRootBuf = buf
+            treeSize2 = totalBufSize
+        }
+        let buf = cachedRootBuf!
+
+        // Copy leaves
+        leaves.withUnsafeBytes { src in
+            memcpy(buf.contents(), src.baseAddress!, n * stride)
+        }
+
+        guard let cmdBuf = engine.commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
+        }
+
+        let enc = cmdBuf.makeComputeCommandEncoder()!
+
+        // Phase 1: Fused subtrees — 1024-leaf subtrees in shared memory
+        let rootsOffset = n * stride
+        engine.encodeMerkleFused(encoder: enc,
+                                  leavesBuffer: buf, leavesOffset: 0,
+                                  rootsBuffer: buf, rootsOffset: rootsOffset,
+                                  numSubtrees: numSubtrees)
+
+        // Phase 2: Level-by-level for upper tree
+        var levelStart = n
+        var levelSize = numSubtrees
+
+        while levelSize > 1 {
+            enc.memoryBarrier(scope: .buffers)
+            let parentCount = levelSize / 2
+            let inputOffset = levelStart * stride
+            let outputOffset = (levelStart + levelSize) * stride
+
+            engine.encodeHashPairs(encoder: enc, buffer: buf,
+                                   inputOffset: inputOffset,
+                                   outputOffset: outputOffset,
+                                   count: parentCount)
+
+            levelStart += levelSize
+            levelSize = parentCount
+        }
+        enc.endEncoding()
+
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+        if let error = cmdBuf.error {
+            throw MSMError.gpuError(error.localizedDescription)
+        }
+
+        let ptr = buf.contents().advanced(by: levelStart * stride).bindMemory(to: Fr.self, capacity: 1)
+        return ptr.pointee
     }
 }
 

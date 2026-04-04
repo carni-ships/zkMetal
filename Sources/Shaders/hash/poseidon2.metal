@@ -5,6 +5,8 @@
 #include "../fields/bn254_fr.metal"
 
 // S-box: x -> x^5
+// Input can be lazy (up to ~3p, fits in 256 bits).
+// CIOS handles inputs < 2^256, output is fully reduced to [0, p).
 Fr p2_sbox(Fr x) {
     Fr x2 = fr_mul(x, x);
     Fr x4 = fr_mul(x2, x2);
@@ -13,14 +15,18 @@ Fr p2_sbox(Fr x) {
 
 // External linear layer: circulant [2,1,1] for t=3
 // M_E * [a,b,c] = [2a+b+c, a+2b+c, a+b+2c] = [a+(a+b+c), b+(a+b+c), c+(a+b+c)]
+// Input: fully reduced [0, p). Output: lazy, up to 2p < 2^255.
 void p2_external_layer(thread Fr &s0, thread Fr &s1, thread Fr &s2) {
-    Fr sum = fr_add(fr_add(s0, s1), s2);
-    s0 = fr_add(s0, sum);
-    s1 = fr_add(s1, sum);
-    s2 = fr_add(s2, sum);
+    // Reduce sum to [0, p) so outputs stay bounded: si + sum <= 2p < 2^255
+    Fr sum = fr_reduce(fr_add_lazy(fr_add_lazy(s0, s1), s2));
+    s0 = fr_add_lazy(s0, sum);
+    s1 = fr_add_lazy(s1, sum);
+    s2 = fr_add_lazy(s2, sum);
 }
 
 // Internal linear layer: M_I = [[2,1,1],[1,2,1],[1,1,3]]
+// In partial rounds, s0 comes from S-box (reduced [0,p)), s1/s2 carry from previous layer.
+// To prevent value explosion across rounds, we reduce all inputs first.
 void p2_internal_layer(thread Fr &s0, thread Fr &s1, thread Fr &s2) {
     Fr sum = fr_add(fr_add(s0, s1), s2);
     s0 = fr_add(s0, sum);
@@ -49,44 +55,54 @@ kernel void poseidon2_permute(
 
     // Initial external linear layer
     p2_external_layer(s0, s1, s2);
+    // After external_layer: s0,s1,s2 in [0, 2p)
 
     // First half of full rounds (rounds 0..3)
+    // Lazy RC add: si + rc <= 2p + p = 3p < 2^256, safe for S-box/CIOS.
+    // S-box output: [0, p). External layer output: [0, 2p).
     #pragma unroll
     for (uint r = 0; r < 4; r++) {
         uint rc_base = r * 3;
-        s0 = fr_add(s0, rc[rc_base]);
-        s1 = fr_add(s1, rc[rc_base + 1]);
-        s2 = fr_add(s2, rc[rc_base + 2]);
+        s0 = fr_add_lazy(s0, rc[rc_base]);
+        s1 = fr_add_lazy(s1, rc[rc_base + 1]);
+        s2 = fr_add_lazy(s2, rc[rc_base + 2]);
         s0 = p2_sbox(s0);
         s1 = p2_sbox(s1);
         s2 = p2_sbox(s2);
         p2_external_layer(s0, s1, s2);
     }
 
+    // Reduce before partial rounds: external_layer outputs are [0, 2p),
+    // but internal_layer's fr_add expects [0, p).
+    s0 = fr_reduce(s0); s1 = fr_reduce(s1); s2 = fr_reduce(s2);
+
     // Partial rounds (rounds 4..59) — only s0 gets RC and S-box
+    // After reduce: all in [0, p). RC lazy add: [0, 2p). S-box output: [0, p).
+    // Internal layer (fr_add): expects [0, p), outputs [0, p).
     for (uint r = 4; r < 60; r++) {
-        s0 = fr_add(s0, rc[r * 3]);
+        s0 = fr_add_lazy(s0, rc[r * 3]);
         s0 = p2_sbox(s0);
         p2_internal_layer(s0, s1, s2);
     }
 
     // Second half of full rounds (rounds 60..63)
+    // After internal_layer: all reduced [0, p). External layer: [0, 2p). RC lazy: [0, 3p).
     #pragma unroll
     for (uint r = 60; r < 64; r++) {
         uint rc_base = r * 3;
-        s0 = fr_add(s0, rc[rc_base]);
-        s1 = fr_add(s1, rc[rc_base + 1]);
-        s2 = fr_add(s2, rc[rc_base + 2]);
+        s0 = fr_add_lazy(s0, rc[rc_base]);
+        s1 = fr_add_lazy(s1, rc[rc_base + 1]);
+        s2 = fr_add_lazy(s2, rc[rc_base + 2]);
         s0 = p2_sbox(s0);
         s1 = p2_sbox(s1);
         s2 = p2_sbox(s2);
         p2_external_layer(s0, s1, s2);
     }
 
-    // Write output
-    output[base] = s0;
-    output[base + 1] = s1;
-    output[base + 2] = s2;
+    // Reduce outputs: external_layer outputs are [0, 2p), need final reduction
+    output[base] = fr_reduce(s0);
+    output[base + 1] = fr_reduce(s1);
+    output[base + 2] = fr_reduce(s2);
 }
 
 // 2-to-1 compression: hash pairs of field elements
@@ -111,17 +127,19 @@ kernel void poseidon2_hash_pairs(
     #pragma unroll
     for (uint r = 0; r < 4; r++) {
         uint rc_base = r * 3;
-        s0 = fr_add(s0, rc[rc_base]);
-        s1 = fr_add(s1, rc[rc_base + 1]);
-        s2 = fr_add(s2, rc[rc_base + 2]);
+        s0 = fr_add_lazy(s0, rc[rc_base]);
+        s1 = fr_add_lazy(s1, rc[rc_base + 1]);
+        s2 = fr_add_lazy(s2, rc[rc_base + 2]);
         s0 = p2_sbox(s0);
         s1 = p2_sbox(s1);
         s2 = p2_sbox(s2);
         p2_external_layer(s0, s1, s2);
     }
 
+    s0 = fr_reduce(s0); s1 = fr_reduce(s1); s2 = fr_reduce(s2);
+
     for (uint r = 4; r < 60; r++) {
-        s0 = fr_add(s0, rc[r * 3]);
+        s0 = fr_add_lazy(s0, rc[r * 3]);
         s0 = p2_sbox(s0);
         p2_internal_layer(s0, s1, s2);
     }
@@ -129,16 +147,16 @@ kernel void poseidon2_hash_pairs(
     #pragma unroll
     for (uint r = 60; r < 64; r++) {
         uint rc_base = r * 3;
-        s0 = fr_add(s0, rc[rc_base]);
-        s1 = fr_add(s1, rc[rc_base + 1]);
-        s2 = fr_add(s2, rc[rc_base + 2]);
+        s0 = fr_add_lazy(s0, rc[rc_base]);
+        s1 = fr_add_lazy(s1, rc[rc_base + 1]);
+        s2 = fr_add_lazy(s2, rc[rc_base + 2]);
         s0 = p2_sbox(s0);
         s1 = p2_sbox(s1);
         s2 = p2_sbox(s2);
         p2_external_layer(s0, s1, s2);
     }
 
-    output[gid] = s0;
+    output[gid] = fr_reduce(s0);
 }
 
 // Inline Poseidon2 hash of a pair (a, b) → Fr result
@@ -151,27 +169,28 @@ Fr p2_hash_pair(Fr a, Fr b, constant Fr* rc) {
     #pragma unroll
     for (uint r = 0; r < 4; r++) {
         uint rc_base = r * 3;
-        s0 = fr_add(s0, rc[rc_base]);
-        s1 = fr_add(s1, rc[rc_base + 1]);
-        s2 = fr_add(s2, rc[rc_base + 2]);
+        s0 = fr_add_lazy(s0, rc[rc_base]);
+        s1 = fr_add_lazy(s1, rc[rc_base + 1]);
+        s2 = fr_add_lazy(s2, rc[rc_base + 2]);
         s0 = p2_sbox(s0); s1 = p2_sbox(s1); s2 = p2_sbox(s2);
         p2_external_layer(s0, s1, s2);
     }
+    s0 = fr_reduce(s0); s1 = fr_reduce(s1); s2 = fr_reduce(s2);
     for (uint r = 4; r < 60; r++) {
-        s0 = fr_add(s0, rc[r * 3]);
+        s0 = fr_add_lazy(s0, rc[r * 3]);
         s0 = p2_sbox(s0);
         p2_internal_layer(s0, s1, s2);
     }
     #pragma unroll
     for (uint r = 60; r < 64; r++) {
         uint rc_base = r * 3;
-        s0 = fr_add(s0, rc[rc_base]);
-        s1 = fr_add(s1, rc[rc_base + 1]);
-        s2 = fr_add(s2, rc[rc_base + 2]);
+        s0 = fr_add_lazy(s0, rc[rc_base]);
+        s1 = fr_add_lazy(s1, rc[rc_base + 1]);
+        s2 = fr_add_lazy(s2, rc[rc_base + 2]);
         s0 = p2_sbox(s0); s1 = p2_sbox(s1); s2 = p2_sbox(s2);
         p2_external_layer(s0, s1, s2);
     }
-    return s0;
+    return fr_reduce(s0);
 }
 
 // Fused multi-level Merkle tree: each threadgroup processes a subtree
@@ -210,6 +229,47 @@ kernel void poseidon2_merkle_fused(
 
     if (tid == 0) {
         roots[tgid] = shared_data[0];
+    }
+}
+
+// Fused Merkle that writes ALL intermediate nodes to the tree buffer.
+// Tree layout: [leaves (n), level1 (n/2), level2 (n/4), ..., root (1)]
+// Each subtree writes its intermediate nodes at the correct global offsets.
+// buffer(4) = offsets per level: [n, n + n/2, n + n/2 + n/4, ...] i.e. cumulative start of each level.
+// buffer(5) = num_subtrees (for computing per-subtree stride at each level)
+kernel void poseidon2_merkle_fused_full(
+    device const Fr* leaves       [[buffer(0)]],    // n leaves
+    device Fr* tree               [[buffer(1)]],    // full tree output (2n-1 nodes)
+    constant Fr* rc               [[buffer(2)]],
+    constant uint& num_levels     [[buffer(3)]],    // log2(SUBTREE_SIZE) = 10
+    constant uint* level_offsets  [[buffer(4)]],    // start index of each internal level in tree
+    uint tid                      [[thread_index_in_threadgroup]],
+    uint tgid                     [[threadgroup_position_in_grid]],
+    uint tg_size                  [[threads_per_threadgroup]]
+) {
+    threadgroup Fr shared_data[MERKLE_SUBTREE_SIZE];
+
+    uint leaf_base = tgid * MERKLE_SUBTREE_SIZE;
+    shared_data[tid] = leaves[leaf_base + tid];
+    shared_data[tid + tg_size] = leaves[leaf_base + tid + tg_size];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    uint active = MERKLE_SUBTREE_SIZE;
+    uint subtree_stride = MERKLE_SUBTREE_SIZE / 2;  // pairs at level 0 within each subtree
+
+    for (uint level = 0; level < num_levels; level++) {
+        uint pairs = active >> 1;
+        if (tid < pairs) {
+            Fr a = shared_data[tid * 2];
+            Fr b = shared_data[tid * 2 + 1];
+            Fr h = p2_hash_pair(a, b, rc);
+            shared_data[tid] = h;
+            // Write to global tree: level_offsets[level] + tgid * subtree_stride + tid
+            tree[level_offsets[level] + tgid * subtree_stride + tid] = h;
+        }
+        active = pairs;
+        subtree_stride >>= 1;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 }
 

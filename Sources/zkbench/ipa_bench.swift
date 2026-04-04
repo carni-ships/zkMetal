@@ -44,7 +44,7 @@ public func runIPABench() {
 
             let v = IPAEngine.innerProduct(a, b)
             let C = try engine.commit(a)
-            let vQ = pointScalarMul(pointFromAffine(Q), v)
+            let vQ = cPointScalarMul(pointFromAffine(Q), v)
             let Cbound = pointAdd(C, vQ)
 
             let t0 = CFAbsoluteTimeGetCurrent()
@@ -59,7 +59,7 @@ public func runIPABench() {
 
             // Wrong value test
             let wrongV = frFromInt(999)
-            let CboundWrong = pointAdd(C, pointScalarMul(pointFromAffine(Q), wrongV))
+            let CboundWrong = pointAdd(C, cPointScalarMul(pointFromAffine(Q), wrongV))
             let rejected = !engine.verify(commitment: CboundWrong, b: b, innerProductValue: wrongV, proof: proof)
             fputs("  Reject wrong v: \(rejected ? "PASS" : "FAIL")\n", stderr)
 

@@ -62,6 +62,20 @@ void bn254_fold_generators(const uint64_t *GL, const uint64_t *GR,
 /// @param r       Output projective point (12 uint64_t).
 void bn254_point_scalar_mul(const uint64_t *p, const uint32_t *scalar, uint64_t *r);
 
+/// Convert projective point to affine using C CIOS field ops.
+/// @param p      Projective point (12 uint64_t).
+/// @param affine Output affine point (8 uint64_t: x[4], y[4]).
+/// Batch convert projective points to affine using C CIOS field ops.
+/// Uses Montgomery's batch inversion trick (1 inversion for n points).
+void bn254_batch_to_affine(const uint64_t *proj, uint64_t *aff, int n);
+
+void bn254_projective_to_affine(const uint64_t *p, uint64_t *affine);
+
+/// MSM from projective points (direct scalar-mul accumulation, no affine conversion).
+/// Optimal for small n (IPA rounds). Points in projective form (12 uint64_t each).
+void bn254_msm_projective(const uint64_t *points, const uint32_t *scalars,
+                           int n, uint64_t *result);
+
 /// Fr inner product: result = sum(a[i] * b[i]).
 /// @param a, b   Arrays of n Fr elements (4 uint64_t each, Montgomery form).
 /// @param n      Number of elements.
@@ -76,6 +90,12 @@ void bn254_fr_inner_product(const uint64_t *a, const uint64_t *b, int n, uint64_
 void bn254_fr_vector_fold(const uint64_t *a, const uint64_t *b,
                            const uint64_t *x, const uint64_t *xInv,
                            int n, uint64_t *out);
+
+/// Batch convert Fr elements from Montgomery form to uint32 limbs.
+/// @param mont  n Fr elements (4 uint64_t each, Montgomery form).
+/// @param limbs Output: n × 8 uint32_t (integer form, little-endian).
+/// @param n     Number of elements.
+void bn254_fr_batch_to_limbs(const uint64_t *mont, uint32_t *limbs, int n);
 
 /// Fr synthetic division: quotient = (p(x) - p(z)) / (x - z).
 /// @param coeffs Polynomial coefficients (n elements, 4 uint64_t each, Montgomery form).

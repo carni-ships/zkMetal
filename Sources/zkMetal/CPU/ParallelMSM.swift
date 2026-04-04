@@ -176,3 +176,32 @@ public func cPippengerMSM(points: [PointAffine], scalars: [[UInt32]]) -> PointPr
     }
     return result
 }
+
+/// MSM from projective points — direct scalar-mul accumulation (no affine conversion).
+/// Faster than Pippenger for small n (avoids batchToAffine + thread overhead).
+public func cMSMProjective(points: [PointProjective], scalars: [Fr]) -> PointProjective {
+    let n = points.count
+    precondition(n == scalars.count)
+    if n == 0 { return pointIdentity() }
+
+    // Convert Fr scalars to UInt32 limbs
+    var flatScalars = [UInt32]()
+    flatScalars.reserveCapacity(n * 8)
+    for s in scalars { flatScalars.append(contentsOf: frToLimbs(s)) }
+
+    var result = PointProjective(x: .one, y: .one, z: .zero)
+
+    points.withUnsafeBytes { ptsBuf in
+        flatScalars.withUnsafeBufferPointer { scBuf in
+            withUnsafeMutableBytes(of: &result) { resBuf in
+                bn254_msm_projective(
+                    ptsBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    scBuf.baseAddress!,
+                    Int32(n),
+                    resBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                )
+            }
+        }
+    }
+    return result
+}

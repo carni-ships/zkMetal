@@ -58,6 +58,39 @@ public func runMerkleBench() {
         print("  Root(1,2,3,4) = \(root.map{String(format:"%016llx",$0)}.joined())")
         print("  [pass] Poseidon2 Merkle tree")
 
+        // Fused merkleRoot benchmark (root-only, uses fused subtree kernel)
+        print("")
+        for logN in [10, 12, 14, 16, 18, 20] {
+            let n = 1 << logN
+            var leaves = [Fr](repeating: Fr.zero, count: n)
+            for i in 0..<n { leaves[i] = frFromInt(UInt64(i + 1)) }
+
+            // Warmup
+            let _ = try engine.merkleRoot(leaves)
+
+            var times = [Double]()
+            for _ in 0..<5 {
+                let t0 = CFAbsoluteTimeGetCurrent()
+                let _ = try engine.merkleRoot(leaves)
+                times.append((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+            }
+            times.sort()
+            let median = times[2]
+            print(String(format: "  P2 MerkleRoot  2^%-2d = %6d leaves: %7.2f ms (fused subtrees)",
+                        logN, n, median))
+        }
+
+        // Correctness: merkleRoot must match buildTree root
+        let testLeaves2 = (0..<2048).map { frFromInt(UInt64($0 + 1)) }
+        let fusedRoot = try engine.merkleRoot(testLeaves2)
+        let fullTree = try engine.buildTree(testLeaves2)
+        if frToInt(fusedRoot) == frToInt(fullTree.last!) {
+            print("  [pass] Fused merkleRoot matches buildTree root (2048 leaves)")
+        } else {
+            print("  [FAIL] Fused merkleRoot mismatch!")
+            print("    fused: \(frToInt(fusedRoot).map{String(format:"%016llx",$0)}.joined())")
+            print("    tree:  \(frToInt(fullTree.last!).map{String(format:"%016llx",$0)}.joined())")
+        }
 
     } catch {
         print("  [FAIL] Poseidon2 Merkle: \(error)")
