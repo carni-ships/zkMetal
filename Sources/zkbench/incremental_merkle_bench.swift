@@ -86,7 +86,96 @@ public func runIncrementalMerkleBench() {
             let cpuH = poseidon2Hash(l34, l35)
             // GPU hash via merkleRoot (2 leaves -> root is hash(l, r))
             let gpuRoot2 = try gpuMerkle.merkleRoot([l34, l35])
-            print("  CPU hash(35,36) == GPU merkle_root([35,36]): \(frEqual(cpuH, gpuRoot2) ? "MATCH" : "MISMATCH")")
+            let match35 = frEqual(cpuH, gpuRoot2)
+            print("  CPU hash(35,36) == GPU merkle_root([35,36]): \(match35 ? "MATCH" : "MISMATCH")")
+            if !match35 {
+                let cl = frToInt(cpuH)
+                let gl = frToInt(gpuRoot2)
+                print("    CPU: \(cl.map { String(format: "%016llx", $0) }.joined(separator: " "))")
+                print("    GPU: \(gl.map { String(format: "%016llx", $0) }.joined(separator: " "))")
+                // Also check that frFromInt(35) is the same on both sides
+                let l34limbs = l34.to64()
+                print("    frFromInt(35) limbs: \(l34limbs.map { String(format: "%016llx", $0) }.joined(separator: " "))")
+            }
+
+            // Find the SMALLEST input that causes a mismatch
+            var firstBad: UInt64 = 0
+            for testVal: UInt64 in 1...100 {
+                let la = frFromInt(testVal)
+                let lb = frFromInt(testVal + 1)
+                let ch = poseidon2Hash(la, lb)
+                let gh = try gpuMerkle.merkleRoot([la, lb])
+                if !frEqual(ch, gh) {
+                    firstBad = testVal
+                    break
+                }
+            }
+            print("  First mismatching pair: hash(\(firstBad), \(firstBad+1))")
+            // Direct GPU hashPairs test
+            let in2 = frFromInt(2)
+            let in3 = frFromInt(3)
+            let p2e = try Poseidon2Engine()
+
+            // Verify round constants in GPU buffer match CPU
+            let rcBuf = p2e.rcBuffer
+            let gpuRCPtr = rcBuf.contents().bindMemory(to: Fr.self, capacity: 192)
+            let cpuRC = POSEIDON2_ROUND_CONSTANTS
+            var rcMismatch = 0
+            for r in 0..<64 {
+                for e in 0..<3 {
+                    let gpuVal = gpuRCPtr[r * 3 + e]
+                    let cpuVal = cpuRC[r][e]
+                    if !frEqual(gpuVal, cpuVal) {
+                        if rcMismatch < 3 {
+                            print("  RC mismatch at r=\(r) e=\(e)")
+                        }
+                        rcMismatch += 1
+                    }
+                }
+            }
+            print("  Round constant mismatches: \(rcMismatch)/192")
+
+            let gpuH23 = try p2e.hashPairs([in2, in3])
+            let cpuH23 = poseidon2Hash(in2, in3)
+            print("  Direct GPU hashPairs(2,3) == CPU: \(frEqual(gpuH23[0], cpuH23) ? "MATCH" : "MISMATCH")")
+
+            // Also test: hash(2,3) called TWICE on GPU to check determinism
+            let gpuH23b = try p2e.hashPairs([in2, in3])
+            print("  GPU hashPairs(2,3) deterministic: \(frEqual(gpuH23[0], gpuH23b[0]) ? "YES" : "NO")")
+
+            // Test hash(1,2) via same engine
+            let in1 = frFromInt(1)
+            let gpuH12 = try p2e.hashPairs([in1, in2])
+            let cpuH12 = poseidon2Hash(in1, in2)
+            print("  Direct GPU hashPairs(1,2) == CPU: \(frEqual(gpuH12[0], cpuH12) ? "MATCH" : "MISMATCH")")
+            // Test hash(0,0) - the empty tree hash
+            let gpuH00 = try p2e.hashPairs([Fr.zero, Fr.zero])
+            let cpuH00 = poseidon2Hash(Fr.zero, Fr.zero)
+            print("  Direct GPU hashPairs(0,0) == CPU: \(frEqual(gpuH00[0], cpuH00) ? "MATCH" : "MISMATCH")")
+
+            // Test range: hash(n, n+1) for n in 0..20
+            var matchCount = 0
+            var mismatchCount = 0
+            var failedNs = [UInt64]()
+            for n: UInt64 in 0...20 {
+                let la = frFromInt(n)
+                let lb = frFromInt(n + 1)
+                let ch = poseidon2Hash(la, lb)
+                let gh = try p2e.hashPairs([la, lb])
+                if frEqual(ch, gh[0]) { matchCount += 1 } else { mismatchCount += 1; failedNs.append(n) }
+            }
+            print("  hash(n,n+1) for n=0..20: \(matchCount) match, \(mismatchCount) mismatch, failed: \(failedNs)")
+
+            // Also test hash(n, 0) for various n - single non-zero input
+            var failedN2 = [UInt64]()
+            for n: UInt64 in 0...20 {
+                let la = frFromInt(n)
+                let lb = Fr.zero
+                let ch = poseidon2Hash(la, lb)
+                let gh = try p2e.hashPairs([la, lb])
+                if !frEqual(ch, gh[0]) { failedN2.append(n) }
+            }
+            print("  hash(n,0) mismatches for n=0..20: \(failedN2)")
 
             // Direct GPU hash_pairs test using encodeHashPairs
             let p2Engine = try Poseidon2Engine()

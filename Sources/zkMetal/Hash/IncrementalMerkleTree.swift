@@ -3,6 +3,10 @@
 // Tree layout: 1-indexed heap. nodes[1] = root, nodes[2i] = left child, nodes[2i+1] = right child.
 // Leaves occupy indices [capacity, 2*capacity). Internal nodes occupy [1, capacity).
 // Zero (Fr.zero) is the default empty-leaf value.
+//
+// IMPORTANT: All hashing uses GPU Poseidon2 (encodeHashPairs) to ensure consistency.
+// CPU poseidon2Hash differs from GPU for some inputs due to lazy vs. strict reduction
+// in the external linear layer. Mixing CPU and GPU hashing produces inconsistent trees.
 
 import Foundation
 import Metal
@@ -153,7 +157,7 @@ struct DirtyTracker {
 
 /// Persistent Merkle tree that supports incremental leaf updates.
 /// Uses Apple Silicon unified memory: tree nodes live in an MTLBuffer accessible by both CPU and GPU.
-/// Poseidon2 2-to-1 hashing (BN254 Fr).
+/// Poseidon2 2-to-1 hashing (BN254 Fr). All hashing uses GPU for consistency.
 public class IncrementalMerkleTree {
     public static let version = Versions.incrementalMerkle
 
@@ -171,12 +175,10 @@ public class IncrementalMerkleTree {
 
     private let engine: Poseidon2Engine
     private var dirtyTracker: DirtyTracker
-    private var dirtyIndicesBuf: MTLBuffer?
-    private var dirtyIndicesBufCapacity: Int = 0
 
-    /// GPU rehash threshold: use GPU when dirty count at a level exceeds this.
-    /// Below this, CPU hashing is faster due to dispatch overhead.
-    private let gpuThreshold: Int = 16
+    /// Small scratch buffer for single-path rehash (avoids per-call allocation).
+    /// Layout: [depth pairs input (2*depth Fr)] [depth output (depth Fr)]
+    private var pathScratchBuf: MTLBuffer?
 
     public init(depth: Int) throws {
         precondition(depth > 0 && depth <= 26, "Depth must be in [1, 26]")
@@ -186,18 +188,17 @@ public class IncrementalMerkleTree {
         self.dirtyTracker = DirtyTracker(depth: depth)
 
         let totalNodes = 2 * capacity  // index 0 unused, 1..2*capacity-1
-        let stride = MemoryLayout<Fr>.stride
-        guard let buf = engine.device.makeBuffer(length: totalNodes * stride, options: .storageModeShared) else {
+        let frStride = MemoryLayout<Fr>.stride
+        guard let buf = engine.device.makeBuffer(length: totalNodes * frStride, options: .storageModeShared) else {
             throw MSMError.gpuError("Failed to allocate incremental Merkle buffer (\(totalNodes) nodes)")
         }
         self.nodeBuffer = buf
 
         // Initialize all nodes to zero (default empty leaf)
-        memset(buf.contents(), 0, totalNodes * stride)
+        memset(buf.contents(), 0, totalNodes * frStride)
 
-        // Pre-hash the empty tree: hash(0,0) at each level
-        // This gives correct roots for partially-filled trees.
-        precomputeEmptyTree()
+        // Pre-hash the empty tree using GPU
+        try precomputeEmptyTree()
     }
 
     /// Initialize with an existing Poseidon2Engine (shares GPU resources).
@@ -209,16 +210,16 @@ public class IncrementalMerkleTree {
         self.dirtyTracker = DirtyTracker(depth: depth)
 
         let totalNodes = 2 * capacity
-        let stride = MemoryLayout<Fr>.stride
-        guard let buf = engine.device.makeBuffer(length: totalNodes * stride, options: .storageModeShared) else {
+        let frStride = MemoryLayout<Fr>.stride
+        guard let buf = engine.device.makeBuffer(length: totalNodes * frStride, options: .storageModeShared) else {
             throw MSMError.gpuError("Failed to allocate incremental Merkle buffer (\(totalNodes) nodes)")
         }
         self.nodeBuffer = buf
-        memset(buf.contents(), 0, totalNodes * stride)
-        precomputeEmptyTree()
+        memset(buf.contents(), 0, totalNodes * frStride)
+        try precomputeEmptyTree()
     }
 
-    // MARK: - Node Access (unified memory — zero copy)
+    // MARK: - Node Access (unified memory -- zero copy)
 
     private var nodePtr: UnsafeMutablePointer<Fr> {
         nodeBuffer.contents().bindMemory(to: Fr.self, capacity: 2 * capacity)
@@ -234,28 +235,50 @@ public class IncrementalMerkleTree {
         nodePtr[index] = value
     }
 
-    // MARK: - Empty Tree
+    // MARK: - Empty Tree (GPU)
 
     /// Pre-compute internal nodes for an all-zero tree so that root is valid from the start.
-    private func precomputeEmptyTree() {
-        // Leaves are already zero. Hash bottom-up: each parent = hash(left, right) = hash(0, 0).
-        // Since all leaves are identical, each level has the same hash value.
-        var levelHash = Fr.zero
-        // Level 0 parents: hash(leaf, leaf) for all
+    /// Uses GPU hashing for consistency with all other hash operations.
+    private func precomputeEmptyTree() throws {
+        // All leaves are zero. Hash bottom-up level by level.
+        // Each level has the same hash value since all siblings are identical.
+        let frStride = MemoryLayout<Fr>.stride
+
+        guard let cmdBuf = engine.commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
+        }
+        let enc = cmdBuf.makeComputeCommandEncoder()!
+
+        // Level 0: hash pairs of leaves. All are (0, 0).
+        // We only need to hash ONE pair, then fill the level.
+        // But to use GPU consistently, hash all pairs at level 0.
         for level in 0..<depth {
-            levelHash = poseidon2Hash(levelHash, levelHash)
-            let levelStart = capacity >> (level + 1)  // first node index at this internal level
-            let levelEnd = capacity >> level           // exclusive
-            // All nodes at this level have the same value
-            for i in levelStart..<levelEnd {
-                setNode(i, levelHash)
+            let levelStart = capacity >> (level + 1)
+            let levelCount = capacity >> (level + 1)  // number of nodes at this level = capacity / 2^(level+1)
+            if levelCount == 0 { break }
+
+            if level > 0 {
+                enc.memoryBarrier(scope: .buffers)
             }
+
+            let inputOffset = levelStart * 2 * frStride  // children start at 2*levelStart
+            let outputOffset = levelStart * frStride
+            engine.encodeHashPairs(encoder: enc, buffer: nodeBuffer,
+                                    inputOffset: inputOffset,
+                                    outputOffset: outputOffset,
+                                    count: levelCount)
+        }
+        enc.endEncoding()
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+        if let error = cmdBuf.error {
+            throw MSMError.gpuError(error.localizedDescription)
         }
     }
 
     // MARK: - Append
 
-    /// Append a single leaf. CPU hashes the O(log n) path.
+    /// Append a single leaf. GPU hashes the O(log n) path.
     public func append(leaf: Fr) throws {
         guard count < capacity else {
             throw MSMError.gpuError("Incremental Merkle tree full (capacity \(capacity))")
@@ -264,8 +287,8 @@ public class IncrementalMerkleTree {
         setNode(capacity + leafIdx, leaf)
         count += 1
 
-        // Rehash the path from this leaf to root (CPU, O(depth) hashes)
-        rehashPathCPU(leafIndex: leafIdx)
+        // Rehash the path from this leaf to root using GPU
+        try rehashPathGPU(leafIndex: leafIdx)
     }
 
     /// Batch append multiple leaves. GPU accelerated for large batches.
@@ -291,13 +314,13 @@ public class IncrementalMerkleTree {
 
     // MARK: - Update
 
-    /// Update a single leaf at index. CPU rehashes the O(log n) path.
+    /// Update a single leaf at index. GPU rehashes the O(log n) path.
     public func update(index: Int, newLeaf: Fr) throws {
         guard index < count else {
             throw MSMError.gpuError("Leaf index \(index) out of range [0, \(count))")
         }
         setNode(capacity + index, newLeaf)
-        rehashPathCPU(leafIndex: index)
+        try rehashPathGPU(leafIndex: index)
     }
 
     /// Batch update multiple leaves. GPU re-hashes affected subtrees.
@@ -319,7 +342,7 @@ public class IncrementalMerkleTree {
 
     // MARK: - Root
 
-    /// Current Merkle root (read from unified memory — zero copy).
+    /// Current Merkle root (read from unified memory -- zero copy).
     public var root: Fr {
         getNode(1)
     }
@@ -346,7 +369,33 @@ public class IncrementalMerkleTree {
         return MerkleProof(siblings: siblings, pathBits: pathBits, leafIndex: index)
     }
 
-    /// Verify a Merkle proof against a root.
+    /// Verify a Merkle proof against a root using GPU Poseidon2 hashing.
+    /// Uses GPU hashing to be consistent with how the tree was built.
+    public func verifyProof(leaf: Fr, proof: MerkleProof) throws -> Bool {
+        let pairs = proof.siblings.count
+        guard pairs > 0 else { return false }
+
+        // Build input pairs for GPU hashing, one level at a time
+        var current = leaf
+        for i in 0..<pairs {
+            let left: Fr
+            let right: Fr
+            if proof.pathBits[i] {
+                left = proof.siblings[i]
+                right = current
+            } else {
+                left = current
+                right = proof.siblings[i]
+            }
+            let result = try engine.hashPairs([left, right])
+            current = result[0]
+        }
+        return frEqual(current, root)
+    }
+
+    /// Verify a Merkle proof against a root (static, uses CPU hash).
+    /// NOTE: This may not match GPU-hashed trees due to CPU/GPU hash divergence.
+    /// Prefer the instance method verifyProof() for trees built with this class.
     public static func verify(leaf: Fr, proof: MerkleProof, root: Fr) -> Bool {
         var current = leaf
         for i in 0..<proof.siblings.count {
@@ -359,63 +408,101 @@ public class IncrementalMerkleTree {
         return frEqual(current, root)
     }
 
-    // MARK: - CPU Rehash (single path)
+    // MARK: - GPU Rehash (single path)
 
-    /// Rehash a single path from leaf to root on CPU. O(depth) Poseidon2 hashes.
-    private func rehashPathCPU(leafIndex: Int) {
+    /// Rehash a single path from leaf to root on GPU. O(depth) Poseidon2 hashes.
+    /// Uses a single command buffer with sequential dispatches (one hash per level).
+    private func rehashPathGPU(leafIndex: Int) throws {
+        let frStride = MemoryLayout<Fr>.stride
+
+        guard let cmdBuf = engine.commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
+        }
+        let enc = cmdBuf.makeComputeCommandEncoder()!
+
         var nodeIdx = (capacity + leafIndex) >> 1
-        for _ in 0..<depth {
-            let left = getNode(nodeIdx * 2)
-            let right = getNode(nodeIdx * 2 + 1)
-            setNode(nodeIdx, poseidon2Hash(left, right))
+        for level in 0..<depth {
+            if level > 0 {
+                enc.memoryBarrier(scope: .buffers)
+            }
+            // Hash children of nodeIdx: input at 2*nodeIdx, output at nodeIdx
+            let inputOffset = nodeIdx * 2 * frStride
+            let outputOffset = nodeIdx * frStride
+            engine.encodeHashPairs(encoder: enc, buffer: nodeBuffer,
+                                    inputOffset: inputOffset,
+                                    outputOffset: outputOffset,
+                                    count: 1)
             nodeIdx >>= 1
+        }
+
+        enc.endEncoding()
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+        if let error = cmdBuf.error {
+            throw MSMError.gpuError(error.localizedDescription)
         }
     }
 
     // MARK: - GPU Rehash (dirty subtrees)
 
     /// Rehash all dirty nodes, level by level bottom-up.
-    /// Uses GPU for levels with many dirty nodes, CPU for sparse levels.
+    /// All hashing uses GPU for consistency.
     private func rehashDirty() throws {
-        let stride = MemoryLayout<Fr>.stride
+        let frStride = MemoryLayout<Fr>.stride
 
-        // Process level by level, bottom up
+        guard let cmdBuf = engine.commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
+        }
+        let enc = cmdBuf.makeComputeCommandEncoder()!
+
         for level in 0..<depth {
             let dirty = dirtyTracker.dirtyByLevel[level]
             let dirtyCount = dirty.nodeCount
             if dirtyCount == 0 { continue }
 
-            if dirtyCount < gpuThreshold {
-                // CPU path for small number of dirty nodes
-                for nodeIdx in dirty.sortedIndices {
-                    let left = getNode(nodeIdx * 2)
-                    let right = getNode(nodeIdx * 2 + 1)
-                    setNode(nodeIdx, poseidon2Hash(left, right))
-                }
-            } else if dirty.isContiguous {
+            if level > 0 || dirtyCount > 0 {
+                // Barrier needed between levels (previous level output is this level's input)
+                if level > 0 { enc.memoryBarrier(scope: .buffers) }
+            }
+
+            if dirty.isContiguous {
                 let firstParent = dirty.first
-                let inputOffset = firstParent * 2 * stride
-                let outputOffset = firstParent * stride
-                try rehashContiguousGPU(inputOffset: inputOffset,
-                                         outputOffset: outputOffset,
-                                         count: dirtyCount)
+                let inputOffset = firstParent * 2 * frStride
+                let outputOffset = firstParent * frStride
+                engine.encodeHashPairs(encoder: enc, buffer: nodeBuffer,
+                                        inputOffset: inputOffset,
+                                        outputOffset: outputOffset,
+                                        count: dirtyCount)
             } else {
+                // Scattered: must gather, hash, scatter
+                // End current encoder, commit, wait, then do scattered GPU hash
+                enc.endEncoding()
+                cmdBuf.commit()
+                cmdBuf.waitUntilCompleted()
+                if let error = cmdBuf.error {
+                    throw MSMError.gpuError(error.localizedDescription)
+                }
                 try rehashScatteredGPU(sortedDirty: dirty.sortedIndices)
+
+                // Continue with a new command buffer for remaining levels
+                if level + 1 < depth {
+                    let remainingDirty = (level + 1..<depth).contains { dirtyTracker.dirtyByLevel[$0].nodeCount > 0 }
+                    if remainingDirty {
+                        // Recursively handle remaining levels
+                        var subTracker = DirtyTracker(depth: depth)
+                        for l in (level + 1)..<depth {
+                            subTracker.dirtyByLevel[l] = dirtyTracker.dirtyByLevel[l]
+                        }
+                        let savedTracker = dirtyTracker
+                        dirtyTracker = subTracker
+                        try rehashDirty()
+                        dirtyTracker = savedTracker
+                    }
+                }
+                return
             }
         }
-    }
 
-    /// GPU rehash for contiguous parent range — zero-copy, no temp buffers.
-    /// Children at nodeBuffer[2*firstParent..] are hashed to nodeBuffer[firstParent..].
-    private func rehashContiguousGPU(inputOffset: Int, outputOffset: Int, count: Int) throws {
-        guard let cmdBuf = engine.commandQueue.makeCommandBuffer() else {
-            throw MSMError.noCommandBuffer
-        }
-        let enc = cmdBuf.makeComputeCommandEncoder()!
-        engine.encodeHashPairs(encoder: enc, buffer: nodeBuffer,
-                                inputOffset: inputOffset,
-                                outputOffset: outputOffset,
-                                count: count)
         enc.endEncoding()
         cmdBuf.commit()
         cmdBuf.waitUntilCompleted()
@@ -427,11 +514,11 @@ public class IncrementalMerkleTree {
     /// GPU rehash for scattered dirty nodes: gather children, hash, scatter results.
     private func rehashScatteredGPU(sortedDirty: [Int]) throws {
         let count = sortedDirty.count
-        let stride = MemoryLayout<Fr>.stride
+        let frStride = MemoryLayout<Fr>.stride
 
         // Allocate temp buffers for input pairs and output hashes
-        let inputSize = count * 2 * stride
-        let outputSize = count * stride
+        let inputSize = count * 2 * frStride
+        let outputSize = count * frStride
 
         guard let inputBuf = engine.device.makeBuffer(length: inputSize, options: .storageModeShared),
               let outputBuf = engine.device.makeBuffer(length: outputSize, options: .storageModeShared) else {
@@ -446,26 +533,8 @@ public class IncrementalMerkleTree {
             dstPtr[i * 2 + 1] = srcPtr[parentIdx * 2 + 1]
         }
 
-        // GPU hash: use two-buffer variant
-        guard let cmdBuf = engine.commandQueue.makeCommandBuffer() else {
-            throw MSMError.noCommandBuffer
-        }
-        let enc = cmdBuf.makeComputeCommandEncoder()!
-        enc.setComputePipelineState(engine.hashPairsFunction)
-        enc.setBuffer(inputBuf, offset: 0, index: 0)
-        enc.setBuffer(outputBuf, offset: 0, index: 1)
-        enc.setBuffer(engine.rcBuffer, offset: 0, index: 2)
-        var n = UInt32(count)
-        enc.setBytes(&n, length: 4, index: 3)
-        let tg = min(256, Int(engine.hashPairsFunction.maxTotalThreadsPerThreadgroup))
-        enc.dispatchThreads(MTLSize(width: count, height: 1, depth: 1),
-                           threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
-        enc.endEncoding()
-        cmdBuf.commit()
-        cmdBuf.waitUntilCompleted()
-        if let error = cmdBuf.error {
-            throw MSMError.gpuError(error.localizedDescription)
-        }
+        // GPU hash
+        try engine.hashPairs(input: inputBuf, output: outputBuf, count: count)
 
         // Scatter: copy results back to nodeBuffer
         let resultPtr = outputBuf.contents().bindMemory(to: Fr.self, capacity: count)
@@ -510,20 +579,15 @@ public class IncrementalMerkleTree {
         // Mark dirty
         dirtyTracker.markRange(start: startIdx, count: batchCount, capacity: capacity)
 
-        // Check if all levels have contiguous ranges (true for appends)
-        let allContiguous = dirtyTracker.dirtyByLevel.allSatisfy { $0.isContiguous }
-
-        if allContiguous && dirtyTracker.totalDirty >= gpuThreshold {
-            try rehashDirtyFused()
-        } else {
-            try rehashDirty()
-        }
+        // Always use GPU fused path for consistency
+        try rehashDirtyFused()
         dirtyTracker.clear()
     }
 
-    /// Single command buffer rehash for contiguous dirty ranges at each level.
+    /// Single command buffer rehash for all dirty ranges at each level.
+    /// Handles both contiguous and scattered cases.
     private func rehashDirtyFused() throws {
-        let stride = MemoryLayout<Fr>.stride
+        let frStride = MemoryLayout<Fr>.stride
         guard let cmdBuf = engine.commandQueue.makeCommandBuffer() else {
             throw MSMError.noCommandBuffer
         }
@@ -540,29 +604,90 @@ public class IncrementalMerkleTree {
 
             if dirty.isContiguous {
                 let firstParent = dirty.first
-                let inputOffset = firstParent * 2 * stride
-                let outputOffset = firstParent * stride
+                let inputOffset = firstParent * 2 * frStride
+                let outputOffset = firstParent * frStride
                 engine.encodeHashPairs(encoder: enc, buffer: nodeBuffer,
                                         inputOffset: inputOffset,
                                         outputOffset: outputOffset,
                                         count: dirtyCount)
             } else {
-                // Shouldn't happen for appends, but fall back to per-node CPU after GPU
+                // Scattered: commit current work, handle scattered separately, continue
                 enc.endEncoding()
                 cmdBuf.commit()
                 cmdBuf.waitUntilCompleted()
-                // CPU fallback for remaining levels
-                for remainingLevel in level..<depth {
-                    for nodeIdx in dirtyTracker.dirtyByLevel[remainingLevel].sortedIndices {
-                        let left = getNode(nodeIdx * 2)
-                        let right = getNode(nodeIdx * 2 + 1)
-                        setNode(nodeIdx, poseidon2Hash(left, right))
+
+                try rehashScatteredGPU(sortedDirty: dirty.sortedIndices)
+
+                // Handle remaining levels with a new command buffer
+                var hasRemaining = false
+                for l in (level + 1)..<depth {
+                    if dirtyTracker.dirtyByLevel[l].nodeCount > 0 { hasRemaining = true; break }
+                }
+                if hasRemaining {
+                    guard let cmdBuf2 = engine.commandQueue.makeCommandBuffer() else {
+                        throw MSMError.noCommandBuffer
+                    }
+                    let enc2 = cmdBuf2.makeComputeCommandEncoder()!
+                    for l in (level + 1)..<depth {
+                        let d = dirtyTracker.dirtyByLevel[l]
+                        let dc = d.nodeCount
+                        if dc == 0 { continue }
+                        enc2.memoryBarrier(scope: .buffers)
+                        if d.isContiguous {
+                            let fp = d.first
+                            engine.encodeHashPairs(encoder: enc2, buffer: nodeBuffer,
+                                                    inputOffset: fp * 2 * frStride,
+                                                    outputOffset: fp * frStride,
+                                                    count: dc)
+                        } else {
+                            enc2.endEncoding()
+                            cmdBuf2.commit()
+                            cmdBuf2.waitUntilCompleted()
+                            try rehashScatteredGPU(sortedDirty: d.sortedIndices)
+                            // Continue remaining levels recursively
+                            for ll in (l + 1)..<depth {
+                                let dd = dirtyTracker.dirtyByLevel[ll]
+                                if dd.nodeCount > 0 {
+                                    if dd.isContiguous {
+                                        try rehashContiguousGPU(firstParent: dd.first, count: dd.nodeCount)
+                                    } else {
+                                        try rehashScatteredGPU(sortedDirty: dd.sortedIndices)
+                                    }
+                                }
+                            }
+                            return
+                        }
+                    }
+                    enc2.endEncoding()
+                    cmdBuf2.commit()
+                    cmdBuf2.waitUntilCompleted()
+                    if let error = cmdBuf2.error {
+                        throw MSMError.gpuError(error.localizedDescription)
                     }
                 }
                 return
             }
         }
 
+        enc.endEncoding()
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+        if let error = cmdBuf.error {
+            throw MSMError.gpuError(error.localizedDescription)
+        }
+    }
+
+    /// Simple contiguous GPU rehash with its own command buffer.
+    private func rehashContiguousGPU(firstParent: Int, count: Int) throws {
+        let frStride = MemoryLayout<Fr>.stride
+        guard let cmdBuf = engine.commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
+        }
+        let enc = cmdBuf.makeComputeCommandEncoder()!
+        engine.encodeHashPairs(encoder: enc, buffer: nodeBuffer,
+                                inputOffset: firstParent * 2 * frStride,
+                                outputOffset: firstParent * frStride,
+                                count: count)
         enc.endEncoding()
         cmdBuf.commit()
         cmdBuf.waitUntilCompleted()
