@@ -68,28 +68,14 @@ public class KZGEngine {
         let pz = evals[0]
 
         // Compute quotient polynomial q(x) = (p(x) - p(z)) / (x - z)
-        // Using synthetic division: if p(x) = a_n x^n + ... + a_0,
-        // then q(x) = b_{n-1} x^{n-1} + ... + b_0
-        // where b_{n-1} = a_n, b_{i-1} = a_i + z * b_i
+        // Using GPU parallel synthetic division for large polynomials.
         let n = coeffs.count
         guard n >= 2 else {
             // Constant polynomial: quotient is zero, witness is identity
             return KZGProof(evaluation: pz, witness: pointIdentity())
         }
 
-        var quotient = [Fr](repeating: Fr.zero, count: n - 1)
-        coeffs.withUnsafeBytes { cBuf in
-            withUnsafeBytes(of: z) { zBuf in
-                quotient.withUnsafeMutableBytes { qBuf in
-                    bn254_fr_synthetic_div(
-                        cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                        zBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                        Int32(n),
-                        qBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
-                    )
-                }
-            }
-        }
+        let quotient = try polyEngine.divideByLinear(coeffs, z: z)
 
         // Witness = MSM(SRS[0..n-1], quotient)
         let srsSlice = Array(srs.prefix(n - 1))
@@ -165,19 +151,7 @@ public class KZGEngine {
             return BatchProof(commitments: commitments, proof: pointIdentity(), evaluations: evaluations)
         }
 
-        var quotient = [Fr](repeating: Fr.zero, count: deg - 1)
-        combined.withUnsafeBytes { cBuf in
-            withUnsafeBytes(of: point) { zBuf in
-                quotient.withUnsafeMutableBytes { qBuf in
-                    bn254_fr_synthetic_div(
-                        cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                        zBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                        Int32(deg),
-                        qBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
-                    )
-                }
-            }
-        }
+        let quotient = try polyEngine.divideByLinear(combined, z: point)
 
         // 5. Single MSM for the proof
         let srsSlice = Array(srs.prefix(deg - 1))
@@ -317,20 +291,8 @@ public class KZGEngine {
             var shifted = poly
             shifted[0] = frSub(shifted[0], evaluations[i])
 
-            // Synthetic division by (x - z_i)
-            var quotient = [Fr](repeating: Fr.zero, count: deg - 1)
-            shifted.withUnsafeBytes { cBuf in
-                withUnsafeBytes(of: points[i]) { zBuf in
-                    quotient.withUnsafeMutableBytes { qBuf in
-                        bn254_fr_synthetic_div(
-                            cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            zBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            Int32(deg),
-                            qBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
-                        )
-                    }
-                }
-            }
+            // Synthetic division by (x - z_i) using GPU parallel division
+            let quotient = try polyEngine.divideByLinear(shifted, z: points[i])
 
             // Accumulate gamma^i * q_i(x)
             for j in 0..<quotient.count {

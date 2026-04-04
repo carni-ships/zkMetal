@@ -11,7 +11,7 @@ public class Poseidon2Engine {
     let merkleFusedFunction: MTLComputePipelineState
     let merkleFusedFullFunction: MTLComputePipelineState
     let merkleFusedBatchFunction: MTLComputePipelineState
-    let rcBuffer: MTLBuffer  // round constants in Montgomery form
+    public let rcBuffer: MTLBuffer  // round constants in Montgomery form
 
     // Cached buffers for hashPairs to avoid per-call allocation
     private var cachedInputBuf: MTLBuffer?
