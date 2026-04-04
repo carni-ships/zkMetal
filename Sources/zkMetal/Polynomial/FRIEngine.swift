@@ -13,6 +13,7 @@ public class FRIEngine {
     let foldFused2Function: MTLComputePipelineState
     let foldFused4Function: MTLComputePipelineState
     let foldBy4Function: MTLComputePipelineState
+    let foldBy8Function: MTLComputePipelineState
     let queryExtractFunction: MTLComputePipelineState
     let cosetShiftFunction: MTLComputePipelineState
     let cosetUnshiftFunction: MTLComputePipelineState
@@ -55,6 +56,10 @@ public class FRIEngine {
     private var cachedLayer4Bufs: [MTLBuffer] = []
     private var cachedLayer4BufsLogN: Int = 0
 
+    // Cached per-layer buffers for commitPhase8 (fold-by-8, even fewer layers)
+    private var cachedLayer8Bufs: [MTLBuffer] = []
+    private var cachedLayer8BufsLogN: Int = 0
+
     private let tuning: TuningConfig
 
     public init() throws {
@@ -74,6 +79,7 @@ public class FRIEngine {
               let foldFused2Fn = library.makeFunction(name: "fri_fold_fused2"),
               let foldFused4Fn = library.makeFunction(name: "fri_fold_fused4"),
               let foldBy4Fn = library.makeFunction(name: "fri_fold_by4"),
+              let foldBy8Fn = library.makeFunction(name: "fri_fold_by8"),
               let queryFn = library.makeFunction(name: "fri_query_extract"),
               let shiftFn = library.makeFunction(name: "fri_coset_shift"),
               let unshiftFn = library.makeFunction(name: "fri_coset_unshift") else {
@@ -84,6 +90,7 @@ public class FRIEngine {
         self.foldFused2Function = try device.makeComputePipelineState(function: foldFused2Fn)
         self.foldFused4Function = try device.makeComputePipelineState(function: foldFused4Fn)
         self.foldBy4Function = try device.makeComputePipelineState(function: foldBy4Fn)
+        self.foldBy8Function = try device.makeComputePipelineState(function: foldBy8Fn)
         self.queryExtractFunction = try device.makeComputePipelineState(function: queryFn)
         self.cosetShiftFunction = try device.makeComputePipelineState(function: shiftFn)
         self.cosetUnshiftFunction = try device.makeComputePipelineState(function: unshiftFn)
@@ -1365,6 +1372,831 @@ public class FRIEngine {
                     var expected = frAdd(t0, frMul(r, t1))
                     expected = frAdd(expected, frMul(r2, t2))
                     expected = frAdd(expected, frMul(r3, t3))
+
+                    let nextEval = commitment.layers[layer + 1][Int(baseIdx)]
+                    if frToInt(expected) != frToInt(nextEval) { return false }
+                    idx = baseIdx
+                }
+            }
+        }
+        return true
+    }
+
+    // MARK: - FRI Fold-by-8
+
+    /// Perform one FRI fold-by-8 step: reduce domain size by 8x.
+    /// Uses 8th-root-of-unity decomposition for the polynomial.
+    /// Input: evaluations on domain of size n (must be divisible by 8)
+    /// Output: folded evaluations of size n/8
+    public func fold8(evals: MTLBuffer, folded: MTLBuffer, beta: Fr, logN: Int) throws {
+        let n = UInt32(1 << logN)
+        let eighth = Int(n) / 8
+        let invTwiddles = getInvTwiddles(logN: logN)
+
+        guard let betaBuf = createFrBuffer([beta]),
+              let cmdBuf = commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
+        }
+
+        var nVal = n
+        let enc = cmdBuf.makeComputeCommandEncoder()!
+        enc.setComputePipelineState(foldBy8Function)
+        enc.setBuffer(evals, offset: 0, index: 0)
+        enc.setBuffer(folded, offset: 0, index: 1)
+        enc.setBuffer(invTwiddles, offset: 0, index: 2)
+        enc.setBuffer(betaBuf, offset: 0, index: 3)
+        enc.setBytes(&nVal, length: 4, index: 4)
+        let tg = min(tuning.friThreadgroupSize, Int(foldBy8Function.maxTotalThreadsPerThreadgroup))
+        enc.dispatchThreads(MTLSize(width: eighth, height: 1, depth: 1),
+                           threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+        enc.endEncoding()
+
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+        if let error = cmdBuf.error {
+            throw MSMError.gpuError(error.localizedDescription)
+        }
+    }
+
+    /// High-level FRI fold-by-8: array in, array out.
+    public func fold8(evals: [Fr], beta: Fr) throws -> [Fr] {
+        let n = evals.count
+        precondition(n >= 8 && (n & (n - 1)) == 0, "Domain size must be power of 2 and >= 8")
+        let logN = Int(log2(Double(n)))
+        let eighth = n / 8
+        let stride = MemoryLayout<Fr>.stride
+
+        if n > singleFoldBufElements {
+            guard let inBuf = device.makeBuffer(length: n * stride, options: .storageModeShared),
+                  let outBuf = device.makeBuffer(length: n * stride, options: .storageModeShared) else {
+                throw MSMError.gpuError("Failed to create buffers")
+            }
+            singleFoldInputBuf = inBuf
+            singleFoldOutputBuf = outBuf
+            singleFoldBufElements = n
+        }
+
+        let evalsBuf = singleFoldInputBuf!
+        let foldedBuf = singleFoldOutputBuf!
+        evals.withUnsafeBytes { src in
+            memcpy(evalsBuf.contents(), src.baseAddress!, n * stride)
+        }
+
+        try fold8(evals: evalsBuf, folded: foldedBuf, beta: beta, logN: logN)
+
+        let ptr = foldedBuf.contents().bindMemory(to: Fr.self, capacity: eighth)
+        return Array(UnsafeBufferPointer(start: ptr, count: eighth))
+    }
+
+    /// Multi-round FRI using fold-by-8: fold repeatedly, each step divides by 8.
+    /// If logN % 3 != 0, uses fold-by-4 or fold-by-2 for remainder, then fold-by-8.
+    /// Uses a single command buffer with memory barriers.
+    public func multiFold8(evals: [Fr], betas: [Fr]) throws -> [Fr] {
+        let n = evals.count
+        precondition(n > 1 && (n & (n - 1)) == 0)
+        let logN = Int(log2(Double(n)))
+
+        // For fold-by-8 we consume 1 beta per fold-by-8 step (each step = 3 log-levels)
+        // Handle remainder: logN mod 3 can be 0, 1, or 2
+        let remainder = logN % 3
+        let fold8Count = (logN - remainder) / 3
+        // remainder handled by fold-by-4 (2 levels) + fold-by-2 (1 level) or combinations
+        let remainderBetas: Int
+        switch remainder {
+        case 0: remainderBetas = 0
+        case 1: remainderBetas = 1   // one fold-by-2
+        case 2: remainderBetas = 1   // one fold-by-4
+        default: remainderBetas = 0
+        }
+        let totalBetas = remainderBetas + fold8Count
+        precondition(betas.count >= totalBetas, "Need \(totalBetas) betas for fold-by-8, got \(betas.count)")
+
+        try ensureFoldBuffers(maxElements: max(n / 8, 1))
+
+        guard let cmdBuf = commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
+        }
+
+        let stride = MemoryLayout<Fr>.stride
+        if n > multiFoldInputBufElements {
+            guard let buf = device.makeBuffer(length: n * stride, options: .storageModeShared) else {
+                throw MSMError.gpuError("Failed to create multiFold input buffer")
+            }
+            multiFoldInputBuf = buf
+            multiFoldInputBufElements = n
+        }
+        evals.withUnsafeBytes { src in
+            memcpy(multiFoldInputBuf!.contents(), src.baseAddress!, n * stride)
+        }
+        var currentBuf = multiFoldInputBuf!
+        var useA = true
+        var curLogN = logN
+        var betaIdx = 0
+
+        let enc = cmdBuf.makeComputeCommandEncoder()!
+
+        // Handle remainder
+        if remainder == 1 {
+            // One fold-by-2
+            let curN = 1 << curLogN
+            let halfN = curN / 2
+            let outputBuf = useA ? foldBufA! : foldBufB!
+            let invTwiddles = getInvTwiddles(logN: curLogN)
+            var beta = betas[betaIdx]
+            var nVal = UInt32(curN)
+
+            enc.setComputePipelineState(foldFunction)
+            enc.setBuffer(currentBuf, offset: 0, index: 0)
+            enc.setBuffer(outputBuf, offset: 0, index: 1)
+            enc.setBuffer(invTwiddles, offset: 0, index: 2)
+            enc.setBytes(&beta, length: stride, index: 3)
+            enc.setBytes(&nVal, length: 4, index: 4)
+            let tg = min(tuning.friThreadgroupSize, Int(foldFunction.maxTotalThreadsPerThreadgroup))
+            enc.dispatchThreads(MTLSize(width: halfN, height: 1, depth: 1),
+                               threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+
+            currentBuf = outputBuf
+            useA = !useA
+            curLogN -= 1
+            betaIdx += 1
+            enc.memoryBarrier(scope: .buffers)
+        } else if remainder == 2 {
+            // One fold-by-4
+            let curN = 1 << curLogN
+            let quarterN = curN / 4
+            let outputBuf = useA ? foldBufA! : foldBufB!
+            let invTwiddles = getInvTwiddles(logN: curLogN)
+            var beta = betas[betaIdx]
+            var nVal = UInt32(curN)
+
+            enc.setComputePipelineState(foldBy4Function)
+            enc.setBuffer(currentBuf, offset: 0, index: 0)
+            enc.setBuffer(outputBuf, offset: 0, index: 1)
+            enc.setBuffer(invTwiddles, offset: 0, index: 2)
+            enc.setBytes(&beta, length: stride, index: 3)
+            enc.setBytes(&nVal, length: 4, index: 4)
+            let tg = min(tuning.friThreadgroupSize, Int(foldBy4Function.maxTotalThreadsPerThreadgroup))
+            enc.dispatchThreads(MTLSize(width: quarterN, height: 1, depth: 1),
+                               threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+
+            currentBuf = outputBuf
+            useA = !useA
+            curLogN -= 2
+            betaIdx += 1
+            enc.memoryBarrier(scope: .buffers)
+        }
+
+        // Now curLogN is divisible by 3; fold-by-8 until done
+        while betaIdx < totalBetas {
+            let curN = 1 << curLogN
+            let eighthN = curN / 8
+            let outputBuf = useA ? foldBufA! : foldBufB!
+            let invTwiddles = getInvTwiddles(logN: curLogN)
+            var beta = betas[betaIdx]
+            var nVal = UInt32(curN)
+
+            enc.setComputePipelineState(foldBy8Function)
+            enc.setBuffer(currentBuf, offset: 0, index: 0)
+            enc.setBuffer(outputBuf, offset: 0, index: 1)
+            enc.setBuffer(invTwiddles, offset: 0, index: 2)
+            enc.setBytes(&beta, length: stride, index: 3)
+            enc.setBytes(&nVal, length: 4, index: 4)
+            let tg = min(tuning.friThreadgroupSize, Int(foldBy8Function.maxTotalThreadsPerThreadgroup))
+            enc.dispatchThreads(MTLSize(width: eighthN, height: 1, depth: 1),
+                               threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+
+            currentBuf = outputBuf
+            useA = !useA
+            curLogN -= 3
+            betaIdx += 1
+
+            if betaIdx < totalBetas {
+                enc.memoryBarrier(scope: .buffers)
+            }
+        }
+        enc.endEncoding()
+
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+        if let error = cmdBuf.error {
+            throw MSMError.gpuError(error.localizedDescription)
+        }
+
+        let finalSize = 1 << curLogN
+        let ptr = currentBuf.contents().bindMemory(to: Fr.self, capacity: finalSize)
+        return Array(UnsafeBufferPointer(start: ptr, count: finalSize))
+    }
+
+    /// CPU FRI fold-by-8 for correctness verification.
+    /// Mirrors the GPU kernel logic: 8th-root-of-unity decomposition.
+    /// The /8 normalization factor is NOT applied (absorbed, same as fold-by-2/4).
+    public static func cpuFold8(evals: [Fr], beta: Fr, logN: Int) -> [Fr] {
+        let n = evals.count
+        precondition(n >= 8 && (n & (n - 1)) == 0)
+        let eighth = n / 8
+
+        let omega = frRootOfUnity(logN: logN)
+        let omegaInv = frInverse(omega)
+
+        // w8 = omega^{N/8}, w8_inv = omega^{-N/8}
+        // w4_inv = omega^{-N/4} = w8_inv^2
+        // w8_inv3 = omega^{-3N/8}
+        let w8_inv = frPow(omegaInv, UInt64(eighth))
+        let w4_inv = frMul(w8_inv, w8_inv)
+        let w8_inv3 = frMul(w4_inv, w8_inv)
+
+        var folded = [Fr](repeating: Fr.zero, count: eighth)
+        var inv_x = Fr.one
+
+        for i in 0..<eighth {
+            let e0 = evals[i]
+            let e1 = evals[i + eighth]
+            let e2 = evals[i + 2 * eighth]
+            let e3 = evals[i + 3 * eighth]
+            let e4 = evals[i + 4 * eighth]
+            let e5 = evals[i + 5 * eighth]
+            let e6 = evals[i + 6 * eighth]
+            let e7 = evals[i + 7 * eighth]
+
+            // Level 1: stride-4 butterflies
+            let s0 = frAdd(e0, e4)
+            let s1 = frAdd(e1, e5)
+            let s2 = frAdd(e2, e6)
+            let s3 = frAdd(e3, e7)
+            let d0 = frSub(e0, e4)
+            let d1 = frSub(e1, e5)
+            let d2 = frSub(e2, e6)
+            let d3 = frSub(e3, e7)
+
+            // Level 2: even 4-point DFT
+            let ss02 = frAdd(s0, s2)
+            let ds02 = frSub(s0, s2)
+            let ss13 = frAdd(s1, s3)
+            let ds13 = frSub(s1, s3)
+            let ds13_w4 = frMul(ds13, w4_inv)
+
+            let T0 = frAdd(ss02, ss13)
+            let T2 = frAdd(ds02, ds13_w4)
+            let T4 = frSub(ss02, ss13)
+            let T6 = frSub(ds02, ds13_w4)
+
+            // Level 2: odd 4-point DFT with twiddles
+            let d1_tw = frMul(d1, w8_inv)
+            let d2_tw = frMul(d2, w4_inv)
+            let d3_tw = frMul(d3, w8_inv3)
+
+            let sd02 = frAdd(d0, d2_tw)
+            let dd02 = frSub(d0, d2_tw)
+            let sd13 = frAdd(d1_tw, d3_tw)
+            let dd13 = frSub(d1_tw, d3_tw)
+            let dd13_w4 = frMul(dd13, w4_inv)
+
+            let T1 = frAdd(sd02, sd13)
+            let T3 = frAdd(dd02, dd13_w4)
+            let T5 = frSub(sd02, sd13)
+            let T7 = frSub(dd02, dd13_w4)
+
+            // Apply inv_x^k
+            let inv_x2 = frMul(inv_x, inv_x)
+            let inv_x3 = frMul(inv_x2, inv_x)
+            let inv_x4 = frMul(inv_x2, inv_x2)
+            let inv_x5 = frMul(inv_x4, inv_x)
+            let inv_x6 = frMul(inv_x4, inv_x2)
+            let inv_x7 = frMul(inv_x4, inv_x3)
+
+            let t1 = frMul(T1, inv_x)
+            let t2 = frMul(T2, inv_x2)
+            let t3 = frMul(T3, inv_x3)
+            let t4 = frMul(T4, inv_x4)
+            let t5 = frMul(T5, inv_x5)
+            let t6 = frMul(T6, inv_x6)
+            let t7 = frMul(T7, inv_x7)
+
+            // Horner: result = T0 + r*(t1 + r*(t2 + r*(t3 + r*(t4 + r*(t5 + r*(t6 + r*t7))))))
+            let r = beta
+            var result = frAdd(frMul(r, t7), t6)
+            result = frAdd(frMul(r, result), t5)
+            result = frAdd(frMul(r, result), t4)
+            result = frAdd(frMul(r, result), t3)
+            result = frAdd(frMul(r, result), t2)
+            result = frAdd(frMul(r, result), t1)
+            result = frAdd(frMul(r, result), T0)
+
+            folded[i] = result
+            inv_x = frMul(inv_x, omegaInv)
+        }
+
+        return folded
+    }
+
+    // MARK: - FRI Fold-by-8 Proof Protocol
+
+    /// Commit phase using fold-by-8: fold iteratively by 8x, reducing round count by ~3x
+    /// compared to fold-by-2. Each round consumes one beta and reduces domain by 8x.
+    /// Remainder (logN mod 3) handled by fold-by-4 or fold-by-2.
+    public func commitPhase8(evals: [Fr], betas: [Fr]) throws -> FRICommitment {
+        let n = evals.count
+        precondition(n > 1 && (n & (n - 1)) == 0)
+        let logN = Int(log2(Double(n)))
+
+        let remainder = logN % 3
+        let fold8Count = (logN - remainder) / 3
+        let remainderBetas: Int
+        switch remainder {
+        case 1: remainderBetas = 1   // one fold-by-2
+        case 2: remainderBetas = 1   // one fold-by-4
+        default: remainderBetas = 0
+        }
+        let totalBetas = remainderBetas + fold8Count
+        precondition(betas.count >= totalBetas, "Need \(totalBetas) betas for fold-by-8 commit, got \(betas.count)")
+
+        let merkle = merkleEngine
+        let stride = MemoryLayout<Fr>.stride
+
+        // Compute layer sizes
+        var layerSizes: [Int] = [n]
+        var curSize = n
+        var curLog = logN
+        if remainder == 1 {
+            curSize /= 2
+            curLog -= 1
+            layerSizes.append(curSize)
+        } else if remainder == 2 {
+            curSize /= 4
+            curLog -= 2
+            layerSizes.append(curSize)
+        }
+        for _ in 0..<fold8Count {
+            curSize /= 8
+            curLog -= 3
+            layerSizes.append(curSize)
+        }
+
+        // Allocate input buffer
+        if n > multiFoldInputBufElements {
+            guard let buf = device.makeBuffer(length: n * stride, options: .storageModeShared) else {
+                throw MSMError.gpuError("Failed to create multiFold input buffer")
+            }
+            multiFoldInputBuf = buf
+            multiFoldInputBufElements = n
+        }
+        evals.withUnsafeBytes { src in
+            memcpy(multiFoldInputBuf!.contents(), src.baseAddress!, n * stride)
+        }
+
+        // Allocate per-layer GPU buffers (cached)
+        let numFoldSteps = totalBetas
+        if cachedLayer8BufsLogN != logN || cachedLayer8Bufs.count != numFoldSteps {
+            cachedLayer8Bufs = []
+            for i in 0..<numFoldSteps {
+                let layerN = layerSizes[i + 1]
+                guard let buf = device.makeBuffer(length: max(layerN * stride, stride), options: .storageModeShared) else {
+                    throw MSMError.gpuError("Failed to create layer buffer")
+                }
+                cachedLayer8Bufs.append(buf)
+            }
+            cachedLayer8BufsLogN = logN
+        }
+        var layerBufs: [MTLBuffer] = [multiFoldInputBuf!]
+        layerBufs.append(contentsOf: cachedLayer8Bufs)
+
+        // Fold: single CB for all fold operations
+        var foldT0 = CFAbsoluteTimeGetCurrent()
+        guard let cmdBuf = commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
+        }
+        let enc = cmdBuf.makeComputeCommandEncoder()!
+        var betaIdx = 0
+        curLog = logN
+
+        // Handle remainder
+        if remainder == 1 {
+            let curN = layerSizes[0]
+            let halfN = curN / 2
+            let invTwiddles = getInvTwiddles(logN: curLog)
+            var beta = betas[betaIdx]
+            var nVal = UInt32(curN)
+            enc.setComputePipelineState(foldFunction)
+            enc.setBuffer(layerBufs[0], offset: 0, index: 0)
+            enc.setBuffer(layerBufs[1], offset: 0, index: 1)
+            enc.setBuffer(invTwiddles, offset: 0, index: 2)
+            enc.setBytes(&beta, length: stride, index: 3)
+            enc.setBytes(&nVal, length: 4, index: 4)
+            let tg = min(tuning.friThreadgroupSize, Int(foldFunction.maxTotalThreadsPerThreadgroup))
+            enc.dispatchThreads(MTLSize(width: halfN, height: 1, depth: 1),
+                               threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+            enc.memoryBarrier(scope: .buffers)
+            curLog -= 1
+            betaIdx += 1
+        } else if remainder == 2 {
+            let curN = layerSizes[0]
+            let quarterN = curN / 4
+            let invTwiddles = getInvTwiddles(logN: curLog)
+            var beta = betas[betaIdx]
+            var nVal = UInt32(curN)
+            enc.setComputePipelineState(foldBy4Function)
+            enc.setBuffer(layerBufs[0], offset: 0, index: 0)
+            enc.setBuffer(layerBufs[1], offset: 0, index: 1)
+            enc.setBuffer(invTwiddles, offset: 0, index: 2)
+            enc.setBytes(&beta, length: stride, index: 3)
+            enc.setBytes(&nVal, length: 4, index: 4)
+            let tg = min(tuning.friThreadgroupSize, Int(foldBy4Function.maxTotalThreadsPerThreadgroup))
+            enc.dispatchThreads(MTLSize(width: quarterN, height: 1, depth: 1),
+                               threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+            enc.memoryBarrier(scope: .buffers)
+            curLog -= 2
+            betaIdx += 1
+        }
+
+        // Fold-by-8 rounds
+        while betaIdx < totalBetas {
+            let layerIdx = betaIdx
+            let curN = layerSizes[layerIdx]
+            let eighthN = curN / 8
+            let invTwiddles = getInvTwiddles(logN: curLog)
+            var beta = betas[betaIdx]
+            var nVal = UInt32(curN)
+
+            enc.setComputePipelineState(foldBy8Function)
+            enc.setBuffer(layerBufs[layerIdx], offset: 0, index: 0)
+            enc.setBuffer(layerBufs[layerIdx + 1], offset: 0, index: 1)
+            enc.setBuffer(invTwiddles, offset: 0, index: 2)
+            enc.setBytes(&beta, length: stride, index: 3)
+            enc.setBytes(&nVal, length: 4, index: 4)
+            let tg = min(tuning.friThreadgroupSize, Int(foldBy8Function.maxTotalThreadsPerThreadgroup))
+            enc.dispatchThreads(MTLSize(width: eighthN, height: 1, depth: 1),
+                               threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+
+            curLog -= 3
+            betaIdx += 1
+            if betaIdx < totalBetas { enc.memoryBarrier(scope: .buffers) }
+        }
+        enc.endEncoding()
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+        if let error = cmdBuf.error {
+            throw MSMError.gpuError(error.localizedDescription)
+        }
+        let foldTime = (CFAbsoluteTimeGetCurrent() - foldT0) * 1000
+
+        // Read layers from GPU buffers
+        var layers: [[Fr]] = [evals]
+        for i in 1..<layerSizes.count {
+            let count = layerSizes[i]
+            let ptr = layerBufs[i].contents().bindMemory(to: Fr.self, capacity: count)
+            layers.append(Array(UnsafeBufferPointer(start: ptr, count: count)))
+        }
+
+        // Merkle: compute roots for each layer
+        let merkleT0 = CFAbsoluteTimeGetCurrent()
+        let subtreeSize = Poseidon2Engine.merkleSubtreeSize
+        let p2 = merkle.p2Engine
+        let cpuMerkleThreshold = 16
+
+        let numMerkleRoots = totalBetas
+        let rootsBufBytes = max(numMerkleRoots * stride, stride)
+        if merkleRootsBuf == nil || merkleRootsBufSize < rootsBufBytes {
+            merkleRootsBuf = device.makeBuffer(length: rootsBufBytes, options: .storageModeShared)
+            merkleRootsBufSize = rootsBufBytes
+        }
+        guard let rootsBuf = merkleRootsBuf else {
+            throw MSMError.gpuError("Failed to allocate merkle roots buffer")
+        }
+
+        let maxSubtreeRoots = max((layerSizes.count > 1 ? layerSizes[1] : 1) / subtreeSize, 1)
+        let subtreeRootBytes = maxSubtreeRoots * stride
+        if merkleSubtreeRootsBuf == nil || merkleSubtreeRootsBufSize < subtreeRootBytes {
+            merkleSubtreeRootsBuf = device.makeBuffer(length: subtreeRootBytes, options: .storageModeShared)
+            merkleSubtreeRootsBufSize = subtreeRootBytes
+        }
+        guard let subtreeRootsBuf = merkleSubtreeRootsBuf else {
+            throw MSMError.gpuError("Failed to allocate subtree roots buffer")
+        }
+
+        var roots = [Fr](repeating: Fr.zero, count: totalBetas)
+
+        var hasGPUMerkle = false
+        for i in 0..<totalBetas {
+            if layerSizes[i + 1] > cpuMerkleThreshold { hasGPUMerkle = true; break }
+        }
+
+        if hasGPUMerkle {
+            guard let merkleCB = commandQueue.makeCommandBuffer() else {
+                throw MSMError.noCommandBuffer
+            }
+            let mEnc = merkleCB.makeComputeCommandEncoder()!
+            var firstDispatch = true
+
+            for i in 0..<totalBetas {
+                let layerN = layerSizes[i + 1]
+                if layerN <= cpuMerkleThreshold { continue }
+                if !firstDispatch { mEnc.memoryBarrier(scope: .buffers) }
+                firstDispatch = false
+                encodeMerkleForLayer(encoder: mEnc, p2: p2, layerBuf: layerBufs[i + 1], layerN: layerN,
+                                     rootsBuf: rootsBuf, rootOffset: i * stride,
+                                     subtreeRootsBuf: subtreeRootsBuf, subtreeSize: subtreeSize, stride: stride)
+            }
+            mEnc.endEncoding()
+            merkleCB.commit()
+
+            // CPU merkle for small layers while GPU works
+            for i in 0..<totalBetas {
+                let layerN = layerSizes[i + 1]
+                if layerN > cpuMerkleThreshold { continue }
+                if layerN <= 1 {
+                    roots[i] = layers[i + 1][0]
+                } else {
+                    layers[i + 1].withUnsafeBufferPointer { bp in
+                        roots[i] = cpuMerkleRoot(bp)
+                    }
+                }
+            }
+
+            merkleCB.waitUntilCompleted()
+            if let error = merkleCB.error {
+                throw MSMError.gpuError(error.localizedDescription)
+            }
+
+            let rootPtr = rootsBuf.contents().bindMemory(to: Fr.self, capacity: numMerkleRoots)
+            for i in 0..<totalBetas {
+                if layerSizes[i + 1] > cpuMerkleThreshold {
+                    roots[i] = rootPtr[i]
+                }
+            }
+        } else {
+            for i in 0..<totalBetas {
+                let layerN = layerSizes[i + 1]
+                if layerN <= 1 {
+                    roots[i] = layers[i + 1][0]
+                } else {
+                    layers[i + 1].withUnsafeBufferPointer { bp in
+                        roots[i] = cpuMerkleRoot(bp)
+                    }
+                }
+            }
+        }
+
+        let merkleTime = (CFAbsoluteTimeGetCurrent() - merkleT0) * 1000
+        if profileCommit {
+            fputs(String(format: "  commitPhase8: fold %.1fms, merkle %.1fms, total %.1fms (%d layers)\n",
+                        foldTime, merkleTime, foldTime + merkleTime, layerSizes.count), stderr)
+        }
+
+        let current = layers.last!
+        let finalValue = current.count >= 1 ? current[0] : Fr.zero
+
+        return FRICommitment(
+            layers: layers,
+            roots: roots,
+            betas: betas,
+            finalValue: finalValue
+        )
+    }
+
+    /// Query phase for fold-by-8 commitment: extract evaluation octets and Merkle paths.
+    /// For fold-by-8 layers, each query extracts 8 evaluations at stride N/8.
+    /// For fold-by-4 layers, extracts quartets. For fold-by-2, extracts pairs.
+    public func queryPhase8(commitment: FRICommitment, queryIndices: [UInt32]) throws -> [FRIQueryProof] {
+        let numQueries = queryIndices.count
+        let merkle = merkleEngine
+
+        var proofs = [FRIQueryProof]()
+        proofs.reserveCapacity(numQueries)
+
+        for qi in 0..<numQueries {
+            var layerEvals: [(Fr, Fr)] = []
+            var merklePaths: [[[Fr]]] = []
+            var idx = queryIndices[qi]
+
+            for layer in 0..<commitment.layers.count - 1 {
+                let evals = commitment.layers[layer]
+                let n = evals.count
+                let nextN = commitment.layers[layer + 1].count
+
+                if nextN == n / 2 {
+                    // Fold-by-2 layer
+                    let halfN = UInt32(n / 2)
+                    let lowerIdx = idx < halfN ? idx : idx - halfN
+                    let upperIdx = lowerIdx + halfN
+                    layerEvals.append((evals[Int(lowerIdx)], evals[Int(upperIdx)]))
+
+                    let tree = try merkle.buildTree(evals)
+                    let path = extractMerklePath(tree: tree, leafCount: n, index: Int(idx))
+                    merklePaths.append([path])
+
+                    idx = lowerIdx
+                } else if nextN == n / 4 {
+                    // Fold-by-4 layer
+                    let quarterN = UInt32(n / 4)
+                    let baseIdx = idx % quarterN
+                    let e0 = evals[Int(baseIdx)]
+                    let e1 = evals[Int(baseIdx + quarterN)]
+                    let e2 = evals[Int(baseIdx + 2 * quarterN)]
+                    let e3 = evals[Int(baseIdx + 3 * quarterN)]
+
+                    layerEvals.append((e0, e1))
+                    layerEvals.append((e2, e3))
+
+                    let tree = try merkle.buildTree(evals)
+                    let path0 = extractMerklePath(tree: tree, leafCount: n, index: Int(baseIdx))
+                    let path1 = extractMerklePath(tree: tree, leafCount: n, index: Int(baseIdx + quarterN))
+                    let path2 = extractMerklePath(tree: tree, leafCount: n, index: Int(baseIdx + 2 * quarterN))
+                    let path3 = extractMerklePath(tree: tree, leafCount: n, index: Int(baseIdx + 3 * quarterN))
+                    merklePaths.append([path0, path1, path2, path3])
+
+                    idx = baseIdx
+                } else {
+                    // Fold-by-8 layer
+                    let eighthN = UInt32(n / 8)
+                    let baseIdx = idx % eighthN
+                    var octEvals: [Fr] = []
+                    var octPaths: [[Fr]] = []
+                    let tree = try merkle.buildTree(evals)
+                    for k in 0..<8 {
+                        let evalIdx = Int(baseIdx + UInt32(k) * eighthN)
+                        octEvals.append(evals[evalIdx])
+                        octPaths.append(extractMerklePath(tree: tree, leafCount: n, index: evalIdx))
+                    }
+
+                    // Store as 4 pairs for compatibility with FRIQueryProof
+                    layerEvals.append((octEvals[0], octEvals[1]))
+                    layerEvals.append((octEvals[2], octEvals[3]))
+                    layerEvals.append((octEvals[4], octEvals[5]))
+                    layerEvals.append((octEvals[6], octEvals[7]))
+                    merklePaths.append(octPaths)
+
+                    idx = baseIdx
+                }
+            }
+
+            proofs.append(FRIQueryProof(
+                initialIndex: queryIndices[qi],
+                layerEvals: layerEvals,
+                merklePaths: merklePaths
+            ))
+        }
+
+        return proofs
+    }
+
+    /// Verify a fold-by-8 FRI proof: check consistency of query responses.
+    public func verify8(commitment: FRICommitment, queries: [FRIQueryProof]) -> Bool {
+        for query in queries {
+            var idx = query.initialIndex
+            var evalIdx = 0
+
+            for layer in 0..<commitment.layers.count - 1 {
+                let n = commitment.layers[layer].count
+                let nextN = commitment.layers[layer + 1].count
+
+                if nextN == n / 2 {
+                    // Fold-by-2 verification
+                    let (evalA, evalB) = query.layerEvals[evalIdx]
+                    evalIdx += 1
+                    let halfN = UInt32(n / 2)
+                    let logN = Int(log2(Double(n)))
+                    let beta = commitment.betas[layer]
+
+                    let omega = frRootOfUnity(logN: logN)
+                    let omegaInv = frInverse(omega)
+                    let lowerIdx = idx < halfN ? idx : idx - halfN
+                    let w_inv = frPow(omegaInv, UInt64(lowerIdx))
+
+                    let sum = frAdd(evalA, evalB)
+                    let diff = frSub(evalA, evalB)
+                    let term = frMul(frMul(beta, w_inv), diff)
+                    let expected = frAdd(sum, term)
+
+                    let nextEval = commitment.layers[layer + 1][Int(lowerIdx)]
+                    if frToInt(expected) != frToInt(nextEval) { return false }
+                    idx = lowerIdx
+                } else if nextN == n / 4 {
+                    // Fold-by-4 verification
+                    let (e0, e1) = query.layerEvals[evalIdx]
+                    let (e2, e3) = query.layerEvals[evalIdx + 1]
+                    evalIdx += 2
+                    let quarterN = UInt32(n / 4)
+                    let logN = Int(log2(Double(n)))
+                    let beta = commitment.betas[layer]
+                    let baseIdx = idx % quarterN
+
+                    let omega = frRootOfUnity(logN: logN)
+                    let omegaInv = frInverse(omega)
+                    let w4_inv = frPow(omegaInv, UInt64(quarterN))
+
+                    let s02 = frAdd(e0, e2)
+                    let d02 = frSub(e0, e2)
+                    let s13 = frAdd(e1, e3)
+                    let d13 = frSub(e1, e3)
+                    let d13_w4inv = frMul(d13, w4_inv)
+
+                    var t0 = frAdd(s02, s13)
+                    var t1 = frAdd(d02, d13_w4inv)
+                    var t2 = frSub(s02, s13)
+                    var t3 = frSub(d02, d13_w4inv)
+
+                    let inv_x = frPow(omegaInv, UInt64(baseIdx))
+                    let inv_x2 = frMul(inv_x, inv_x)
+                    let inv_x3 = frMul(inv_x2, inv_x)
+
+                    t1 = frMul(t1, inv_x)
+                    t2 = frMul(t2, inv_x2)
+                    t3 = frMul(t3, inv_x3)
+
+                    let r = beta
+                    let r2 = frMul(r, r)
+                    let r3 = frMul(r2, r)
+
+                    var expected = frAdd(t0, frMul(r, t1))
+                    expected = frAdd(expected, frMul(r2, t2))
+                    expected = frAdd(expected, frMul(r3, t3))
+
+                    let nextEval = commitment.layers[layer + 1][Int(baseIdx)]
+                    if frToInt(expected) != frToInt(nextEval) { return false }
+                    idx = baseIdx
+                } else {
+                    // Fold-by-8 verification
+                    let e0 = query.layerEvals[evalIdx].0
+                    let e1 = query.layerEvals[evalIdx].1
+                    let e2 = query.layerEvals[evalIdx + 1].0
+                    let e3 = query.layerEvals[evalIdx + 1].1
+                    let e4 = query.layerEvals[evalIdx + 2].0
+                    let e5 = query.layerEvals[evalIdx + 2].1
+                    let e6 = query.layerEvals[evalIdx + 3].0
+                    let e7 = query.layerEvals[evalIdx + 3].1
+                    evalIdx += 4
+
+                    let eighthN = UInt32(n / 8)
+                    let logN = Int(log2(Double(n)))
+                    let beta = commitment.betas[layer]
+                    let baseIdx = idx % eighthN
+
+                    let omega = frRootOfUnity(logN: logN)
+                    let omegaInv = frInverse(omega)
+                    let w8_inv = frPow(omegaInv, UInt64(eighthN))
+                    let w4_inv = frMul(w8_inv, w8_inv)
+                    let w8_inv3 = frMul(w4_inv, w8_inv)
+
+                    // Same DFT as cpuFold8
+                    let s0 = frAdd(e0, e4)
+                    let s1 = frAdd(e1, e5)
+                    let s2 = frAdd(e2, e6)
+                    let s3 = frAdd(e3, e7)
+                    let d0v = frSub(e0, e4)
+                    let d1v = frSub(e1, e5)
+                    let d2v = frSub(e2, e6)
+                    let d3v = frSub(e3, e7)
+
+                    let ss02 = frAdd(s0, s2)
+                    let ds02 = frSub(s0, s2)
+                    let ss13 = frAdd(s1, s3)
+                    let ds13 = frSub(s1, s3)
+                    let ds13_w4 = frMul(ds13, w4_inv)
+
+                    let T0 = frAdd(ss02, ss13)
+                    let T2 = frAdd(ds02, ds13_w4)
+                    let T4 = frSub(ss02, ss13)
+                    let T6 = frSub(ds02, ds13_w4)
+
+                    let d1_tw = frMul(d1v, w8_inv)
+                    let d2_tw = frMul(d2v, w4_inv)
+                    let d3_tw = frMul(d3v, w8_inv3)
+
+                    let sd02 = frAdd(d0v, d2_tw)
+                    let dd02 = frSub(d0v, d2_tw)
+                    let sd13 = frAdd(d1_tw, d3_tw)
+                    let dd13 = frSub(d1_tw, d3_tw)
+                    let dd13_w4 = frMul(dd13, w4_inv)
+
+                    let T1 = frAdd(sd02, sd13)
+                    let T3 = frAdd(dd02, dd13_w4)
+                    let T5 = frSub(sd02, sd13)
+                    let T7 = frSub(dd02, dd13_w4)
+
+                    let inv_x = frPow(omegaInv, UInt64(baseIdx))
+                    let inv_x2 = frMul(inv_x, inv_x)
+                    let inv_x3 = frMul(inv_x2, inv_x)
+                    let inv_x4 = frMul(inv_x2, inv_x2)
+                    let inv_x5 = frMul(inv_x4, inv_x)
+                    let inv_x6 = frMul(inv_x4, inv_x2)
+                    let inv_x7 = frMul(inv_x4, inv_x3)
+
+                    let t1 = frMul(T1, inv_x)
+                    let t2 = frMul(T2, inv_x2)
+                    let t3 = frMul(T3, inv_x3)
+                    let t4 = frMul(T4, inv_x4)
+                    let t5 = frMul(T5, inv_x5)
+                    let t6 = frMul(T6, inv_x6)
+                    let t7 = frMul(T7, inv_x7)
+
+                    let r = beta
+                    var expected = frAdd(frMul(r, t7), t6)
+                    expected = frAdd(frMul(r, expected), t5)
+                    expected = frAdd(frMul(r, expected), t4)
+                    expected = frAdd(frMul(r, expected), t3)
+                    expected = frAdd(frMul(r, expected), t2)
+                    expected = frAdd(frMul(r, expected), t1)
+                    expected = frAdd(frMul(r, expected), T0)
 
                     let nextEval = commitment.layers[layer + 1][Int(baseIdx)]
                     if frToInt(expected) != frToInt(nextEval) { return false }

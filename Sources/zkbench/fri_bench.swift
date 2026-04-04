@@ -165,6 +165,73 @@ public func runFRIBench() {
                         logN, n, median, elemPerSec / 1e6))
         }
 
+        // Fold-by-8 correctness: verify GPU fold8 == CPU fold8
+        let test8LogN = 12
+        let test8N = 1 << test8LogN
+        var test8Evals = [Fr](repeating: Fr.zero, count: test8N)
+        for i in 0..<test8N {
+            rng = rng &* 6364136223846793005 &+ 1442695040888963407
+            test8Evals[i] = frFromInt(rng >> 32)
+        }
+        let beta8 = frFromInt(77)
+        let gpuFolded8 = try engine.fold8(evals: test8Evals, beta: beta8)
+        let cpuFolded8 = FRIEngine.cpuFold8(evals: test8Evals, beta: beta8, logN: test8LogN)
+        var correct8 = gpuFolded8.count == cpuFolded8.count
+        if correct8 {
+            for i in 0..<gpuFolded8.count {
+                if frToInt(gpuFolded8[i]) != frToInt(cpuFolded8[i]) {
+                    print("  FOLD8 MISMATCH at \(i)")
+                    correct8 = false
+                    break
+                }
+            }
+        }
+        print("  Fold-by-8: \(correct8 ? "PASS" : "FAIL") (2^\(test8LogN) → \(gpuFolded8.count))")
+
+        // multiFold8 correctness: fold from 2^18 down using fold-by-8
+        let mf8LogN = 18
+        let mf8N = 1 << mf8LogN
+        var mf8Evals = [Fr](repeating: Fr.zero, count: mf8N)
+        for i in 0..<mf8N {
+            rng = rng &* 6364136223846793005 &+ 1442695040888963407
+            mf8Evals[i] = frFromInt(rng >> 32)
+        }
+        // 18 % 3 == 0, so 6 betas needed (all fold-by-8)
+        let mf8Betas: [Fr] = (0..<6).map { frFromInt(UInt64($0 + 1) * 13) }
+        let finalGPU8 = try engine.multiFold8(evals: mf8Evals, betas: mf8Betas)
+        // CPU verification: sequential cpuFold8
+        var cpu8Current = mf8Evals
+        var cpu8LogN = mf8LogN
+        for i in 0..<mf8Betas.count {
+            cpu8Current = FRIEngine.cpuFold8(evals: cpu8Current, beta: mf8Betas[i], logN: cpu8LogN)
+            cpu8LogN -= 3
+        }
+        let mf8Correct = (finalGPU8.count == cpu8Current.count && finalGPU8.count == 1 && frToInt(finalGPU8[0]) == frToInt(cpu8Current[0]))
+        print("  MultiFold8 2^18→1: \(mf8Correct ? "PASS" : "FAIL") (\(finalGPU8.count) element(s))")
+
+        // MultiFold8 with remainder: logN=16 (16%3=1, one fold-by-2 then 5 fold-by-8)
+        let mf8r1LogN = 16
+        let mf8r1N = 1 << mf8r1LogN
+        var mf8r1Evals = [Fr](repeating: Fr.zero, count: mf8r1N)
+        for i in 0..<mf8r1N {
+            rng = rng &* 6364136223846793005 &+ 1442695040888963407
+            mf8r1Evals[i] = frFromInt(rng >> 32)
+        }
+        // 16%3=1: 1 fold-by-2 + 5 fold-by-8 = 6 betas
+        let mf8r1Betas: [Fr] = (0..<6).map { frFromInt(UInt64($0 + 1) * 17) }
+        let finalGPU8r1 = try engine.multiFold8(evals: mf8r1Evals, betas: mf8r1Betas)
+        // CPU: one fold-by-2 then fold-by-8
+        var cpu8r1 = mf8r1Evals
+        var cpu8r1LogN = mf8r1LogN
+        cpu8r1 = FRIEngine.cpuFold(evals: cpu8r1, beta: mf8r1Betas[0], logN: cpu8r1LogN)
+        cpu8r1LogN -= 1
+        for i in 1..<mf8r1Betas.count {
+            cpu8r1 = FRIEngine.cpuFold8(evals: cpu8r1, beta: mf8r1Betas[i], logN: cpu8r1LogN)
+            cpu8r1LogN -= 3
+        }
+        let mf8r1Correct = (finalGPU8r1.count == cpu8r1.count && finalGPU8r1.count == 1 && frToInt(finalGPU8r1[0]) == frToInt(cpu8r1[0]))
+        print("  MultiFold8 2^16→1 (rem=1): \(mf8r1Correct ? "PASS" : "FAIL") (\(finalGPU8r1.count) element(s))")
+
         // MultiFold4 benchmark
         print("\n--- Full FRI fold-by-4 protocol (fold to constant) ---")
         for startLogN in [16, 18, 20] {
@@ -279,9 +346,78 @@ public func runFRIBench() {
                         protoLogN, commitTimes4[2], numBetas4 + 1, protoLogN + 1))
         }
 
+        // Fold-by-8 performance
+        print("\n--- Fold-by-8 performance ---")
+        for logN in sizes {
+            let n = 1 << logN
+            var evals = [Fr](repeating: Fr.zero, count: n)
+            for i in 0..<n {
+                rng = rng &* 6364136223846793005 &+ 1442695040888963407
+                evals[i] = frFromInt(rng >> 32)
+            }
+
+            // Warmup
+            let _ = try engine.fold8(evals: evals, beta: beta)
+
+            var times = [Double]()
+            for _ in 0..<10 {
+                let t0 = CFAbsoluteTimeGetCurrent()
+                let _ = try engine.fold8(evals: evals, beta: beta)
+                let elapsed = (CFAbsoluteTimeGetCurrent() - t0) * 1000
+                times.append(elapsed)
+            }
+            times.sort()
+            let median = times[5]
+            let elemPerSec = Double(n) / (median / 1000)
+            print(String(format: "  2^%-2d = %7d | GPU fold8: %7.2fms | %.1fM elem/s",
+                        logN, n, median, elemPerSec / 1e6))
+        }
+
+        // FRI commit-by-8 → query → verify round-trip
+        print("\n--- FRI Proof Protocol fold-by-8 (commit → query → verify) ---")
+        do {
+            let protoLogN = 15  // 15%3=0, clean fold-by-8
+            let protoN = 1 << protoLogN
+            var protoEvals = [Fr](repeating: Fr.zero, count: protoN)
+            for i in 0..<protoN {
+                rng = rng &* 6364136223846793005 &+ 1442695040888963407
+                protoEvals[i] = frFromInt(rng >> 32)
+            }
+            let numBetas8 = protoLogN / 3  // 5 for logN=15
+            var protoBetas8 = [Fr]()
+            for i in 0..<numBetas8 {
+                protoBetas8.append(frFromInt(UInt64(i + 1) * 17))
+            }
+
+            let commitment8 = try engine.commitPhase8(evals: protoEvals, betas: protoBetas8)
+            print("  Commit8: \(commitment8.layers.count) layers, \(commitment8.roots.count) roots")
+
+            let queryIndices: [UInt32] = [0, 42, 1000, UInt32(protoN / 8 - 1)]
+            let queries8 = try engine.queryPhase8(commitment: commitment8, queryIndices: queryIndices)
+            print("  Query8: \(queries8.count) proofs extracted")
+
+            let verified8 = engine.verify8(commitment: commitment8, queries: queries8)
+            print("  Verify8: \(verified8 ? "PASS" : "FAIL")")
+
+            // Benchmark commit phase 8
+            let _ = try engine.commitPhase8(evals: protoEvals, betas: protoBetas8)  // warmup
+            engine.profileCommit = true
+            let _ = try engine.commitPhase8(evals: protoEvals, betas: protoBetas8)  // profile run
+            engine.profileCommit = false
+            var commitTimes8 = [Double]()
+            for _ in 0..<5 {
+                let t0 = CFAbsoluteTimeGetCurrent()
+                let _ = try engine.commitPhase8(evals: protoEvals, betas: protoBetas8)
+                commitTimes8.append((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+            }
+            commitTimes8.sort()
+            print(String(format: "  Commit8 2^%d: %.1fms (fold + Merkle, %d layers)",
+                        protoLogN, commitTimes8[2], numBetas8 + 1))
+        }
+
         // Commit phase comparison at multiple sizes
-        print("\n--- Commit phase: fold-by-2 vs fold-by-4 ---")
-        for commitLogN in [14, 16, 18] {
+        print("\n--- Commit phase: fold-by-2 vs fold-by-4 vs fold-by-8 ---")
+        for commitLogN in [15, 16, 18, 20] {
             let commitN = 1 << commitLogN
             var commitEvals = [Fr](repeating: Fr.zero, count: commitN)
             for i in 0..<commitN {
@@ -291,17 +427,25 @@ public func runFRIBench() {
             // fold-by-2 betas
             var betas2 = [Fr]()
             for i in 0..<commitLogN { betas2.append(frFromInt(UInt64(i + 1) * 23)) }
-            // fold-by-4 betas
-            let nb4 = commitLogN / 2
+            // fold-by-4 betas: oddStart + fold4Count
+            let odd4 = (commitLogN % 2 != 0) ? 1 : 0
+            let nb4 = odd4 + (commitLogN - odd4) / 2
             var betas4 = [Fr]()
             for i in 0..<nb4 { betas4.append(frFromInt(UInt64(i + 1) * 23)) }
+            // fold-by-8 betas: remainder betas + fold8Count
+            let rem8 = commitLogN % 3
+            let nb8 = (rem8 == 0 ? 0 : 1) + (commitLogN - (rem8 == 0 ? 0 : rem8)) / 3
+            var betas8 = [Fr]()
+            for i in 0..<nb8 { betas8.append(frFromInt(UInt64(i + 1) * 23)) }
 
             // Warmup
             let _ = try engine.commitPhase(evals: commitEvals, betas: betas2)
             let _ = try engine.commitPhase4(evals: commitEvals, betas: betas4)
+            let _ = try engine.commitPhase8(evals: commitEvals, betas: betas8)
 
             var times2 = [Double]()
             var times4 = [Double]()
+            var times8 = [Double]()
             for _ in 0..<5 {
                 let t0 = CFAbsoluteTimeGetCurrent()
                 let _ = try engine.commitPhase(evals: commitEvals, betas: betas2)
@@ -312,12 +456,19 @@ public func runFRIBench() {
                 let _ = try engine.commitPhase4(evals: commitEvals, betas: betas4)
                 times4.append((CFAbsoluteTimeGetCurrent() - t0) * 1000)
             }
+            for _ in 0..<5 {
+                let t0 = CFAbsoluteTimeGetCurrent()
+                let _ = try engine.commitPhase8(evals: commitEvals, betas: betas8)
+                times8.append((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+            }
             times2.sort()
             times4.sort()
+            times8.sort()
             let m2 = times2[2]
             let m4 = times4[2]
-            print(String(format: "  2^%-2d | fold-by-2: %7.1fms (%d layers) | fold-by-4: %7.1fms (%d layers) | %.1fx",
-                        commitLogN, m2, commitLogN + 1, m4, nb4 + 1, m2 / m4))
+            let m8 = times8[2]
+            print(String(format: "  2^%-2d | fold-by-2: %7.1fms (%d layers) | fold-by-4: %7.1fms (%d layers) | fold-by-8: %7.1fms (%d layers) | 4/2: %.1fx | 8/2: %.1fx",
+                        commitLogN, m2, commitLogN + 1, m4, nb4 + 1, m8, nb8 + 1, m2 / m4, m2 / m8))
         }
 
         // Multi-fold benchmark: full FRI protocol

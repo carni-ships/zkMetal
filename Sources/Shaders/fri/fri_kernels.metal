@@ -298,6 +298,165 @@ kernel void fri_fold_by4(
     folded[gid] = result;
 }
 
+// FRI fold-by-8: reduce polynomial degree by 8x in one round.
+// Uses 8th-root-of-unity decomposition:
+//   f(x) = f0(x^8) + x*f1(x^8) + x^2*f2(x^8) + ... + x^7*f7(x^8)
+//   f_folded(y) = f0(y) + r*f1(y) + r^2*f2(y) + ... + r^7*f7(y)
+//
+// Thread i reads evals at indices i, i+N/8, i+2N/8, ..., i+7N/8
+// and produces one output using challenge r and inverse twiddle factors.
+//
+// The domain has omega^{N/8} = w8 as the primitive 8th root of unity.
+// We recover the 8 coefficient components via 8-point inverse DFT using
+// w8 and its powers, then combine with powers of the challenge r.
+//
+// Recovery from 8 evaluations e0..e7 at x, w8*x, w8^2*x, ..., w8^7*x:
+// We need the inverse 8-point DFT to get t0..t7 = 8*x^k*fk(x^8), then
+// divide by x^k to get fk and combine: sum_k r^k * fk.
+//
+// The /8 normalization is absorbed (same convention as fold-by-2 and fold-by-4).
+kernel void fri_fold_by8(
+    device const Fr* evals          [[buffer(0)]],
+    device Fr* folded               [[buffer(1)]],
+    device const Fr* inv_twiddles   [[buffer(2)]],  // omega_N^{-i} for i in [0, N)
+    constant Fr* challenge          [[buffer(3)]],   // random challenge r
+    constant uint& n                [[buffer(4)]],   // current domain size (must be divisible by 8)
+    uint gid                        [[thread_position_in_grid]]
+) {
+    uint eighth = n >> 3;
+    if (gid >= eighth) return;
+
+    // Read 8 evaluations at stride N/8
+    Fr e0 = evals[gid];
+    Fr e1 = evals[gid + eighth];
+    Fr e2 = evals[gid + 2 * eighth];
+    Fr e3 = evals[gid + 3 * eighth];
+    Fr e4 = evals[gid + 4 * eighth];
+    Fr e5 = evals[gid + 5 * eighth];
+    Fr e6 = evals[gid + 6 * eighth];
+    Fr e7 = evals[gid + 7 * eighth];
+
+    // w8 = omega^{N/8} is the primitive 8th root of unity
+    // w8_inv = omega^{-N/8} = inv_twiddles[N/8] = inv_twiddles[eighth]
+    // w4_inv = w8_inv^2 = omega^{-N/4} = inv_twiddles[N/4] = inv_twiddles[2*eighth]
+    // w8_inv^3 = omega^{-3N/8} = inv_twiddles[3*eighth]
+    Fr w8_inv = inv_twiddles[eighth];
+    Fr w4_inv = inv_twiddles[2 * eighth];
+    Fr w8_inv3 = inv_twiddles[3 * eighth];
+
+    // 8-point inverse DFT via 3 stages of radix-2 butterflies.
+    // Stage 1: pairs at stride 4 (using w8^0=1, w8^{-0}=1 for even, w4^{-k} for k-th pair)
+    // After this stage, we have 4-point sub-DFTs to do.
+    //
+    // Actually, let's use the direct approach: compute t_k for k=0..7 where
+    // t_k = sum_{j=0}^{7} e_j * w8^{-jk}
+    // This gives us 8 * x^k * f_k(x^8).
+    //
+    // Using w8^{-1} = w8_inv, w8^{-2} = w4_inv, w8^{-3} = w8_inv3,
+    // w8^{-4} = -1 (since w8^4 = omega^{N/2} = -1, so w8^{-4} = -1 too)
+    // w8^{-5} = -w8_inv, w8^{-6} = -w4_inv, w8^{-7} = -w8_inv3
+
+    // Level 1: split into even/odd groups (stride 4)
+    // s0 = e0 + e4, s1 = e1 + e5, s2 = e2 + e6, s3 = e3 + e7
+    // d0 = e0 - e4, d1 = e1 - e5, d2 = e2 - e6, d3 = e3 - e7
+    Fr s0 = fr_add(e0, e4);
+    Fr s1 = fr_add(e1, e5);
+    Fr s2 = fr_add(e2, e6);
+    Fr s3 = fr_add(e3, e7);
+    Fr d0 = fr_sub(e0, e4);
+    Fr d1 = fr_sub(e1, e5);
+    Fr d2 = fr_sub(e2, e6);
+    Fr d3 = fr_sub(e3, e7);
+
+    // Level 2: 4-point DFT on (s0,s1,s2,s3) and (d0,d1,d2,d3)
+    // For the "even" 4-point DFT of (s0,s1,s2,s3) using w4:
+    Fr ss02 = fr_add(s0, s2);  // s0 + s2
+    Fr ds02 = fr_sub(s0, s2);  // s0 - s2
+    Fr ss13 = fr_add(s1, s3);  // s1 + s3
+    Fr ds13 = fr_sub(s1, s3);  // s1 - s3
+    // w4_inv applied to ds13 for the imaginary rotation
+    Fr ds13_w4 = fr_mul(ds13, w4_inv);
+
+    // 4-point DFT outputs for even part:
+    // T0 = ss02 + ss13 = e0+e1+e2+e3+e4+e5+e6+e7   (corresponds to t0 = 8*f0)
+    // T2 = ss02 - ss13                                (corresponds to t2 before twiddle)
+    // T4 = ds02 + ds13_w4                             (corresponds to t4 = t1 of 4pt)
+    // T6 = ds02 - ds13_w4                             (corresponds to t6 = t3 of 4pt)
+    // But we need to be careful about the bit-reversal ordering.
+    // Standard DIT butterfly output order for inputs (s0,s1,s2,s3):
+    // After level1 (stride 2): (s0+s2, s1+s3, s0-s2, s1-s3)
+    // After level2 (stride 1): (ss02+ss13, ss02-ss13, ds02+ds13*w4inv, ds02-ds13*w4inv)
+    // = (T0, T4, T2, T6) in bit-reversed order — actually this gives us
+    //   t_0 = ss02 + ss13
+    //   t_2 = ds02 + ds13_w4
+    //   t_4 = ss02 - ss13
+    //   t_6 = ds02 - ds13_w4
+    // These correspond to the DFT at indices 0,2,4,6 (even indices of the 8-point DFT).
+
+    Fr T0 = fr_add(ss02, ss13);
+    Fr T2 = fr_add(ds02, ds13_w4);
+    Fr T4 = fr_sub(ss02, ss13);
+    Fr T6 = fr_sub(ds02, ds13_w4);
+
+    // For the "odd" 4-point DFT of (d0,d1,d2,d3), we need twiddle factors w8^{-k}:
+    // The odd part gets multiplied by w8^{-k} before combining.
+    // d1 *= w8_inv, d2 *= w4_inv = w8_inv^2, d3 *= w8_inv^3
+    Fr d1_tw = fr_mul(d1, w8_inv);
+    Fr d2_tw = fr_mul(d2, w4_inv);
+    Fr d3_tw = fr_mul(d3, w8_inv3);
+
+    Fr sd02 = fr_add(d0, d2_tw);
+    Fr dd02 = fr_sub(d0, d2_tw);
+    Fr sd13 = fr_add(d1_tw, d3_tw);
+    Fr dd13 = fr_sub(d1_tw, d3_tw);
+    Fr dd13_w4 = fr_mul(dd13, w4_inv);
+
+    // Odd DFT outputs correspond to t_1, t_3, t_5, t_7
+    Fr T1 = fr_add(sd02, sd13);
+    Fr T3 = fr_add(dd02, dd13_w4);
+    Fr T5 = fr_sub(sd02, sd13);
+    Fr T7 = fr_sub(dd02, dd13_w4);
+
+    // Now T_k = sum_{j=0}^{7} e_j * w8^{-jk} = 8 * x^k * f_k(x^8)
+    // We need f_k = T_k / (8 * x^k)
+    // folded = sum_{k=0}^{7} r^k * f_k = sum_k r^k * T_k / (8 * x^k)
+    //        = (1/8) * sum_k (r/x)^k * T_k * (some correction)
+    // Actually: f_k = T_k * inv_x^k / 8, so:
+    // 8 * folded = T0 + r * T1 * inv_x + r^2 * T2 * inv_x^2 + ... + r^7 * T7 * inv_x^7
+    // We absorb the /8 as per convention.
+
+    Fr inv_x = inv_twiddles[gid];
+    Fr inv_x2 = fr_mul(inv_x, inv_x);
+    Fr inv_x3 = fr_mul(inv_x2, inv_x);
+    Fr inv_x4 = fr_mul(inv_x2, inv_x2);
+    Fr inv_x5 = fr_mul(inv_x4, inv_x);
+    Fr inv_x6 = fr_mul(inv_x4, inv_x2);
+    Fr inv_x7 = fr_mul(inv_x4, inv_x3);
+
+    // Apply inv_x^k to T_k
+    T1 = fr_mul(T1, inv_x);
+    T2 = fr_mul(T2, inv_x2);
+    T3 = fr_mul(T3, inv_x3);
+    T4 = fr_mul(T4, inv_x4);
+    T5 = fr_mul(T5, inv_x5);
+    T6 = fr_mul(T6, inv_x6);
+    T7 = fr_mul(T7, inv_x7);
+
+    // Combine with challenge powers using Horner's method:
+    // result = T0 + r*(T1 + r*(T2 + r*(T3 + r*(T4 + r*(T5 + r*(T6 + r*T7))))))
+    Fr r_val = challenge[0];
+
+    Fr result = fr_add(fr_mul(r_val, T7), T6);
+    result = fr_add(fr_mul(r_val, result), T5);
+    result = fr_add(fr_mul(r_val, result), T4);
+    result = fr_add(fr_mul(r_val, result), T3);
+    result = fr_add(fr_mul(r_val, result), T2);
+    result = fr_add(fr_mul(r_val, result), T1);
+    result = fr_add(fr_mul(r_val, result), T0);
+
+    folded[gid] = result;
+}
+
 // Batch FRI query: given a set of query positions, extract evaluations
 // from the polynomial at those positions (and their paired positions)
 kernel void fri_query_extract(
