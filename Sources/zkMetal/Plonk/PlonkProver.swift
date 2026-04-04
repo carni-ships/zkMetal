@@ -51,12 +51,6 @@ public class PlonkProver {
     public func prove(witness: [Fr], circuit: PlonkCircuit) throws -> PlonkProof {
         let n = setup.n
         let omega = setup.omega
-        var _t0 = CFAbsoluteTimeGetCurrent()
-        func _lap(_ label: String) {
-            let now = CFAbsoluteTimeGetCurrent()
-            fputs("  [plonk] \(label): \(String(format: "%.2f", (now - _t0) * 1000))ms\n", stderr)
-            _t0 = now
-        }
 
         // Build wire polynomials from witness and circuit wire assignments
         var aEvals = [Fr](repeating: Fr.zero, count: n)
@@ -81,7 +75,6 @@ public class PlonkProver {
             absorbPoint(transcript, c)
         }
 
-        _lap("setup")
         // ========== Round 1: Witness commitments ==========
 
         // Add random blinding: a(x) = a_eval(x) + (b1*x + b2) * Z_H(x)
@@ -99,7 +92,6 @@ public class PlonkProver {
         absorbPoint(transcript, bCommit)
         absorbPoint(transcript, cCommit)
 
-        _lap("R1 iNTT+MSM")
         // ========== Round 2: Permutation accumulator z(x) ==========
 
         let beta = transcript.squeeze()
@@ -149,7 +141,6 @@ public class PlonkProver {
         let zCommit = try kzg.commit(zCoeffs)
         absorbPoint(transcript, zCommit)
 
-        _lap("R2 perm+iNTT+MSM")
         // ========== Round 3: Quotient polynomial t(x) ==========
 
         let alpha = transcript.squeeze()
@@ -210,75 +201,44 @@ public class PlonkProver {
         let poseidonConstraint = try polyMulNTT(qPoseidonCoeffsR3, sboxDiff, ntt: ntt)
         gateCoeffs = polyAddCoeffs(gateCoeffs, poseidonConstraint)
 
-        // Permutation + boundary constraints computed on a 4n evaluation domain.
-        // NTT each factor once to 4n, multiply pointwise, iNTT once.
-        // This replaces 6 chained polyMulNTT calls (18+ NTT ops at various sizes)
-        // with 10 forward NTTs + 1 inverse NTT at 4n.
-        let m = 4 * n
-
-        // Helper: pad coefficients to size m and forward-NTT
-        func toEvals4n(_ c: [Fr]) throws -> [Fr] {
-            var padded = [Fr](repeating: Fr.zero, count: m)
-            for i in 0..<min(c.count, m) { padded[i] = c[i] }
-            return try ntt.ntt(padded)
-        }
-
-        // Build id_k(x): id1(x)=x, id2(x)=k1*x, id3(x)=k2*x
+        // Build id_k(x) polynomials: id1(x)=x, id2(x)=k1*x, id3(x)=k2*x
         var id1Coeffs = [Fr](repeating: Fr.zero, count: n); id1Coeffs[1] = Fr.one
         var id2Coeffs = [Fr](repeating: Fr.zero, count: n); id2Coeffs[1] = k1
         var id3Coeffs = [Fr](repeating: Fr.zero, count: n); id3Coeffs[1] = k2
 
-        // Permutation numerator factors
-        let permN1 = polyAddCoeffs(polyAddCoeffs(aCoeffs, polyScaleCoeffs(id1Coeffs, beta)), [gamma])
-        let permN2 = polyAddCoeffs(polyAddCoeffs(bCoeffs, polyScaleCoeffs(id2Coeffs, beta)), [gamma])
-        let permN3 = polyAddCoeffs(polyAddCoeffs(cCoeffs, polyScaleCoeffs(id3Coeffs, beta)), [gamma])
+        let gammaConst = [gamma]
 
-        // Permutation denominator factors
+        // Permutation numerator: (a + beta*id1 + gamma)(b + beta*id2 + gamma)(c + beta*id3 + gamma) * z
+        let permN1 = polyAddCoeffs(polyAddCoeffs(aCoeffs, polyScaleCoeffs(id1Coeffs, beta)), gammaConst)
+        let permN2 = polyAddCoeffs(polyAddCoeffs(bCoeffs, polyScaleCoeffs(id2Coeffs, beta)), gammaConst)
+        let permN3 = polyAddCoeffs(polyAddCoeffs(cCoeffs, polyScaleCoeffs(id3Coeffs, beta)), gammaConst)
+        let permNumPoly = try polyMulNTT(try polyMulNTT(try polyMulNTT(permN1, permN2, ntt: ntt), permN3, ntt: ntt), zCoeffs, ntt: ntt)
+
+        // Permutation denominator: (a + beta*sigma1 + gamma)(b + beta*sigma2 + gamma)(c + beta*sigma3 + gamma) * z(omega*x)
         let sigma1CoeffsR3 = setup.permutationPolys[0]
         let sigma2CoeffsR3 = setup.permutationPolys[1]
         let sigma3CoeffsR3 = setup.permutationPolys[2]
-        let permD1 = polyAddCoeffs(polyAddCoeffs(aCoeffs, polyScaleCoeffs(sigma1CoeffsR3, beta)), [gamma])
-        let permD2 = polyAddCoeffs(polyAddCoeffs(bCoeffs, polyScaleCoeffs(sigma2CoeffsR3, beta)), [gamma])
-        let permD3 = polyAddCoeffs(polyAddCoeffs(cCoeffs, polyScaleCoeffs(sigma3CoeffsR3, beta)), [gamma])
+        let permD1 = polyAddCoeffs(polyAddCoeffs(aCoeffs, polyScaleCoeffs(sigma1CoeffsR3, beta)), gammaConst)
+        let permD2 = polyAddCoeffs(polyAddCoeffs(bCoeffs, polyScaleCoeffs(sigma2CoeffsR3, beta)), gammaConst)
+        let permD3 = polyAddCoeffs(polyAddCoeffs(cCoeffs, polyScaleCoeffs(sigma3CoeffsR3, beta)), gammaConst)
         let zOmegaCoeffs = polyShift(zCoeffs, omega: omega)
+        let permDenPoly = try polyMulNTT(try polyMulNTT(try polyMulNTT(permD1, permD2, ntt: ntt), permD3, ntt: ntt), zOmegaCoeffs, ntt: ntt)
 
-        // Boundary: (z-1) * L_1
+        let permCoeffs = polySubCoeffs(permNumPoly, permDenPoly)
+
+        // Boundary constraint: (z(x) - 1) * L_1(x)
         var l1EvalsRaw = [Fr](repeating: Fr.zero, count: n)
         l1EvalsRaw[0] = Fr.one
         let l1Coeffs = try ntt.intt(l1EvalsRaw)
         var zMinus1Coeffs = zCoeffs
         zMinus1Coeffs[0] = frSub(zMinus1Coeffs[0], Fr.one)
+        let boundaryCoeffs = try polyMulNTT(zMinus1Coeffs, l1Coeffs, ntt: ntt)
 
-        // Forward-NTT all 10 polynomials to 4n domain
-        let n1E = try toEvals4n(permN1)
-        let n2E = try toEvals4n(permN2)
-        let n3E = try toEvals4n(permN3)
-        let zE  = try toEvals4n(zCoeffs)
-        let d1E = try toEvals4n(permD1)
-        let d2E = try toEvals4n(permD2)
-        let d3E = try toEvals4n(permD3)
-        let zwE = try toEvals4n(zOmegaCoeffs)
-        let l1E = try toEvals4n(l1Coeffs)
-        let zm1E = try toEvals4n(zMinus1Coeffs)
-
+        // Combine: numerator = gate + alpha * perm + alpha^2 * boundary
         let alpha2 = frSqr(alpha)
-
-        // Pointwise: alpha*(N1*N2*N3*z - D1*D2*D3*zOmega) + alpha^2*(z-1)*L1
-        var permBoundE = [Fr](repeating: Fr.zero, count: m)
-        for i in 0..<m {
-            let numVal = frMul(frMul(frMul(n1E[i], n2E[i]), n3E[i]), zE[i])
-            let denVal = frMul(frMul(frMul(d1E[i], d2E[i]), d3E[i]), zwE[i])
-            let permVal = frMul(alpha, frSub(numVal, denVal))
-            let boundVal = frMul(alpha2, frMul(zm1E[i], l1E[i]))
-            permBoundE[i] = frAdd(permVal, boundVal)
-        }
-
-        // iNTT back to coefficients
-        let permBoundCoeffs = try ntt.intt(permBoundE)
-
-        // Combine: numerator = gate + permBound
         var numCoeffs = gateCoeffs
-        numCoeffs = polyAddCoeffs(numCoeffs, permBoundCoeffs)
+        numCoeffs = polyAddCoeffs(numCoeffs, polyScaleCoeffs(permCoeffs, alpha))
+        numCoeffs = polyAddCoeffs(numCoeffs, polyScaleCoeffs(boundaryCoeffs, alpha2))
 
         // Divide by Z_H(x) = x^n - 1 in coefficient form
         // Since the numerator vanishes on the domain, it is divisible by Z_H
@@ -314,7 +274,6 @@ public class PlonkProver {
             absorbPoint(transcript, commit)
         }
 
-        _lap("R3 quotient+MSM")
         // ========== Round 4: Evaluate at challenge zeta ==========
 
         let zeta = transcript.squeeze()
@@ -334,7 +293,6 @@ public class PlonkProver {
         transcript.absorb(sigma2Zeta)
         transcript.absorb(zOmegaZeta)
 
-        _lap("R4 evals")
         // ========== Round 5: Opening proofs ==========
 
         let v = transcript.squeeze()  // batching challenge
@@ -473,7 +431,6 @@ public class PlonkProver {
         let wZetaOmegaCoeffs = syntheticDivide(zShifted, root: zetaOmega)
         let shiftedOpeningProof = try kzg.commit(wZetaOmegaCoeffs)
 
-        _lap("R5 openings")
         let tExtraCommits = numChunks > 3 ? Array(tChunkCommits.dropFirst(3)) : []
 
         return PlonkProof(
@@ -551,9 +508,18 @@ func polyMulCoeffs(_ a: [Fr], _ b: [Fr]) -> [Fr] {
     return result
 }
 
+/// Check if a polynomial is all zeros.
+func polyIsZero(_ a: [Fr]) -> Bool {
+    for c in a {
+        if !c.isZero { return false }
+    }
+    return true
+}
+
 /// NTT-based polynomial multiplication in O(n log n) using GPU NTT.
 func polyMulNTT(_ a: [Fr], _ b: [Fr], ntt: NTTEngine) throws -> [Fr] {
     if a.isEmpty || b.isEmpty { return [] }
+    if polyIsZero(a) || polyIsZero(b) { return [] }
     let resultLen = a.count + b.count - 1
     var logM = 0
     while (1 << logM) < resultLen { logM += 1 }
