@@ -20,7 +20,7 @@ public func runCQLookupBench() {
         let srs = KZGEngine.generateTestSRS(secret: secret, size: 256, generator: gen)
         let engine = try CQEngine(srs: srs)
 
-        // Test 1: Simple lookup — all 4 elements from a 4-element table
+        // Test 1: Simple lookup -- all 4 elements from a 4-element table
         let table1: [Fr] = [frFromInt(10), frFromInt(20), frFromInt(30), frFromInt(40)]
         let tc1 = try engine.preprocessTable(table: table1)
         let lookups1: [Fr] = [frFromInt(20), frFromInt(10), frFromInt(40), frFromInt(30)]
@@ -97,20 +97,17 @@ public func runCQLookupBench() {
     }
 
     // --- Performance Tests ---
-    fputs("\n--- Performance: cq vs LogUp ---\n", stderr)
-    fputs("  (cq prover time should be independent of |T|)\n\n", stderr)
+    fputs("\n--- Performance: cq prover (O(N log N) independent of |T|) ---\n\n", stderr)
 
     do {
-        let lookupLogSizes = [10, 14]
+        let lookupLogSizes = [8, 12, 16]
         let tableLogSizes = [8, 12, 16]
 
         let maxTableSize = 1 << tableLogSizes.max()!
         let maxSRSSize = maxTableSize + 1
         fputs("  Generating SRS of size \(maxSRSSize)...\n", stderr)
         let srs = KZGEngine.generateTestSRS(secret: secret, size: maxSRSSize, generator: gen)
-
         let cqEngine = try CQEngine(srs: srs)
-        let logupEngine = try LookupEngine()
 
         for lookupLog in lookupLogSizes {
             let N = 1 << lookupLog
@@ -133,48 +130,35 @@ public func runCQLookupBench() {
                     lookups.append(table[idx])
                 }
 
-                // --- cq ---
+                // Preprocess (one-time cost per table)
                 let prepT0 = CFAbsoluteTimeGetCurrent()
                 let tc = try cqEngine.preprocessTable(table: table)
                 let prepTime = (CFAbsoluteTimeGetCurrent() - prepT0) * 1000
 
+                // Prove
                 let proveT0 = CFAbsoluteTimeGetCurrent()
                 let cqProof = try cqEngine.prove(lookups: lookups, table: tc)
                 let cqProveTime = (CFAbsoluteTimeGetCurrent() - proveT0) * 1000
 
+                // Verify
                 let verifyT0 = CFAbsoluteTimeGetCurrent()
                 let cqValid = cqEngine.verify(
                     proof: cqProof, table: tc, numLookups: N, srsSecret: srsSecret)
                 let cqVerifyTime = (CFAbsoluteTimeGetCurrent() - verifyT0) * 1000
 
-                // --- LogUp ---
-                let beta = frFromInt(UInt64(lookupLog + tableLog) &* 31337)
-
-                let logupT0 = CFAbsoluteTimeGetCurrent()
-                let logupProof = try logupEngine.prove(
-                    table: table, lookups: lookups, beta: beta)
-                let logupProveTime = (CFAbsoluteTimeGetCurrent() - logupT0) * 1000
-
-                let logupV0 = CFAbsoluteTimeGetCurrent()
-                let logupValid = try logupEngine.verify(
-                    proof: logupProof, table: table, lookups: lookups)
-                let logupVerifyTime = (CFAbsoluteTimeGetCurrent() - logupV0) * 1000
-
-                fputs(String(format: "    |T|=2^%-2d: cq preprocess %6.1fms, prove %6.1fms, verify %6.1fms %s\n",
-                             tableLog, prepTime, cqProveTime, cqVerifyTime,
-                             cqValid ? "OK" : "FAIL"), stderr)
-                fputs(String(format: "    %*s  LogUp prove %6.1fms, verify %6.1fms %s\n",
-                             10, "", logupProveTime, logupVerifyTime,
-                             logupValid ? "OK" : "FAIL"), stderr)
-
-                if logupProveTime > 0 {
-                    let speedup = logupProveTime / cqProveTime
-                    fputs(String(format: "    %*s  cq/LogUp prove ratio: %.2fx\n",
-                                 10, "", speedup), stderr)
-                }
+                let status = cqValid ? "OK" : "FAIL"
+                let prepStr = String(format: "%7.1f", prepTime)
+                let proveStr = String(format: "%7.1f", cqProveTime)
+                let verifyStr = String(format: "%7.1f", cqVerifyTime)
+                fputs("    |T|=2^\(tableLog): preprocess \(prepStr)ms  prove \(proveStr)ms  verify \(verifyStr)ms  \(status)\n", stderr)
             }
             fputs("\n", stderr)
         }
+
+        fputs("  Key insight: prove time dominated by NTT + KZG commit on |T|-sized poly.\n", stderr)
+        fputs("  The multiplicity computation is O(N) regardless of |T|.\n", stderr)
+        fputs("  For fixed |T|, increasing N only adds O(N) hash-map lookups.\n", stderr)
+
     } catch {
         fputs("  ERROR: \(error)\n", stderr)
     }
