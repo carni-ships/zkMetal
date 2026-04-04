@@ -230,9 +230,9 @@ public class KeccakMerkleEngine {
     }
 
     /// Build a Merkle tree from 32-byte leaf hashes using Keccak-256.
-    /// Returns all tree nodes as 32-byte hashes: [leaves..., internal nodes..., root].
-    /// Optimized: single GPU buffer, single command buffer, all levels encoded with barriers.
-    public func buildTree(_ leaves: [[UInt8]]) throws -> [[UInt8]] {
+    /// Returns flat buffer: treeSize * 32 bytes. Node i is at bytes [i*32..<(i+1)*32].
+    /// Layout: nodes[0..<n] = leaves, nodes[n..<2n-1] = internal, node[2n-2] = root.
+    public func buildTree(_ leaves: [[UInt8]]) throws -> [UInt8] {
         let n = leaves.count
         precondition(n > 0 && (n & (n - 1)) == 0, "Leaf count must be power of 2")
         precondition(leaves.allSatisfy { $0.count == 32 }, "Leaves must be 32 bytes each")
@@ -276,12 +276,21 @@ public class KeccakMerkleEngine {
                                       rootsBuffer: treeBuf, rootsOffset: fusedOutputOffset,
                                       numSubtrees: numSubtrees)
 
-            // Phase 2: Continue level-by-level from the subtree roots
+            // Phase 2: Recursively fuse upper tree levels to minimize dispatches
             var levelStart = 2 * n - 2 * numSubtrees
             var levelSize = numSubtrees
 
             while levelSize > 1 {
                 enc.memoryBarrier(scope: .buffers)
+                if levelSize >= 4 && levelSize <= 1024 && (levelSize & (levelSize - 1)) == 0 {
+                    // Fused: process all remaining levels in one dispatch
+                    let outputOffset = (treeSize - 1) * 32
+                    engine.encodeMerkleFused(encoder: enc,
+                                              leavesBuffer: treeBuf, leavesOffset: levelStart * 32,
+                                              rootsBuffer: treeBuf, rootsOffset: outputOffset,
+                                              numSubtrees: 1, subtreeSize: levelSize)
+                    break
+                }
                 let parentCount = levelSize / 2
                 let inputOffset = levelStart * 32
                 let outputOffset = (levelStart + levelSize) * 32
@@ -325,22 +334,110 @@ public class KeccakMerkleEngine {
             throw MSMError.gpuError(error.localizedDescription)
         }
 
-        // Single flat copy, then slice into per-node arrays
+        // Single flat copy — no per-node slicing
         let readPtr = treeBuf.contents().assumingMemoryBound(to: UInt8.self)
-        let flat = Array(UnsafeBufferPointer(start: readPtr, count: treeSize * 32))
-        var tree = [[UInt8]]()
-        tree.reserveCapacity(treeSize)
-        for i in 0..<treeSize {
-            let start = i * 32
-            tree.append(Array(flat[start..<start + 32]))
-        }
-        return tree
+        return Array(UnsafeBufferPointer(start: readPtr, count: treeSize * 32))
+    }
+
+    /// Access a specific node from a flat tree buffer returned by buildTree.
+    /// Node index 0..n-1 = leaves, n..2n-2 = internal nodes, 2n-2 = root.
+    public static func node(_ tree: [UInt8], at index: Int) -> [UInt8] {
+        let start = index * 32
+        return Array(tree[start..<start + 32])
     }
 
     /// Get the Merkle root from 32-byte leaf hashes.
+    /// Optimized: avoids copying the full tree back from GPU — only reads the 32-byte root.
     public func merkleRoot(_ leaves: [[UInt8]]) throws -> [UInt8] {
-        let tree = try buildTree(leaves)
-        return tree.last!
+        let n = leaves.count
+        precondition(n > 0 && (n & (n - 1)) == 0, "Leaf count must be power of 2")
+        precondition(leaves.allSatisfy { $0.count == 32 }, "Leaves must be 32 bytes each")
+
+        let treeSize = 2 * n - 1
+
+        if treeSize > cachedTreeBufNodes {
+            guard let buf = engine.device.makeBuffer(length: treeSize * 32, options: .storageModeShared) else {
+                throw MSMError.gpuError("Failed to allocate Keccak Merkle buffer")
+            }
+            cachedTreeBuf = buf
+            cachedTreeBufNodes = treeSize
+        }
+        let treeBuf = cachedTreeBuf!
+
+        // Copy leaves to GPU buffer
+        let ptr = treeBuf.contents().assumingMemoryBound(to: UInt8.self)
+        for i in 0..<n {
+            leaves[i].withUnsafeBytes { src in
+                memcpy(ptr + i * 32, src.baseAddress!, 32)
+            }
+        }
+
+        guard let cmdBuf = engine.commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
+        }
+
+        let enc = cmdBuf.makeComputeCommandEncoder()!
+        let subtreeSize = Keccak256Engine.merkleSubtreeSize
+
+        if n >= subtreeSize {
+            let numSubtrees = n / subtreeSize
+            let fusedOutputOffset = (2 * n - 2 * numSubtrees) * 32
+
+            engine.encodeMerkleFused(encoder: enc,
+                                      leavesBuffer: treeBuf, leavesOffset: 0,
+                                      rootsBuffer: treeBuf, rootsOffset: fusedOutputOffset,
+                                      numSubtrees: numSubtrees)
+
+            var levelStart = 2 * n - 2 * numSubtrees
+            var levelSize = numSubtrees
+
+            while levelSize > 1 {
+                enc.memoryBarrier(scope: .buffers)
+                if levelSize >= 4 && levelSize <= 1024 && (levelSize & (levelSize - 1)) == 0 {
+                    let outputOffset = (treeSize - 1) * 32
+                    engine.encodeMerkleFused(encoder: enc,
+                                              leavesBuffer: treeBuf, leavesOffset: levelStart * 32,
+                                              rootsBuffer: treeBuf, rootsOffset: outputOffset,
+                                              numSubtrees: 1, subtreeSize: levelSize)
+                    break
+                }
+                let parentCount = levelSize / 2
+                let inputOffset = levelStart * 32
+                let outputOffset = (levelStart + levelSize) * 32
+                engine.encodeHash64(encoder: enc, buffer: treeBuf,
+                                    inputOffset: inputOffset,
+                                    outputOffset: outputOffset,
+                                    count: parentCount)
+                levelStart += levelSize
+                levelSize = parentCount
+            }
+        } else {
+            var levelStart = 0
+            var levelSize = n
+            while levelSize > 1 {
+                let parentCount = levelSize / 2
+                let inputOffset = levelStart * 32
+                let outputOffset = (levelStart + levelSize) * 32
+                engine.encodeHash64(encoder: enc, buffer: treeBuf,
+                                    inputOffset: inputOffset,
+                                    outputOffset: outputOffset,
+                                    count: parentCount)
+                levelStart += levelSize
+                levelSize = parentCount
+                if levelSize > 1 { enc.memoryBarrier(scope: .buffers) }
+            }
+        }
+        enc.endEncoding()
+
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+        if let error = cmdBuf.error {
+            throw MSMError.gpuError(error.localizedDescription)
+        }
+
+        // Only read the 32-byte root
+        let rootPtr = treeBuf.contents().advanced(by: (treeSize - 1) * 32).assumingMemoryBound(to: UInt8.self)
+        return Array(UnsafeBufferPointer(start: rootPtr, count: 32))
     }
 }
 
@@ -356,9 +453,8 @@ public class Blake3MerkleEngine {
     }
 
     /// Build a Merkle tree from 32-byte leaf hashes using Blake3 parent compression.
-    /// Returns all tree nodes as 32-byte hashes: [leaves..., internal nodes..., root].
-    /// For n >= 1024, uses fused subtree kernel for bottom 10 levels, then level-by-level.
-    public func buildTree(_ leaves: [[UInt8]]) throws -> [[UInt8]] {
+    /// Returns flat buffer: treeSize * 32 bytes. Node i is at bytes [i*32..<(i+1)*32].
+    public func buildTree(_ leaves: [[UInt8]]) throws -> [UInt8] {
         let n = leaves.count
         precondition(n > 0 && (n & (n - 1)) == 0, "Leaf count must be power of 2")
         precondition(leaves.allSatisfy { $0.count == 32 }, "Leaves must be 32 bytes each")
@@ -419,19 +515,19 @@ public class Blake3MerkleEngine {
         }
 
         let readPtr = treeBuf.contents().assumingMemoryBound(to: UInt8.self)
-        let flat = Array(UnsafeBufferPointer(start: readPtr, count: treeSize * 32))
-        var tree = [[UInt8]]()
-        tree.reserveCapacity(treeSize)
-        for i in 0..<treeSize {
-            let start = i * 32
-            tree.append(Array(flat[start..<start + 32]))
-        }
-        return tree
+        return Array(UnsafeBufferPointer(start: readPtr, count: treeSize * 32))
+    }
+
+    /// Access a specific node from a flat tree buffer returned by buildTree.
+    public static func node(_ tree: [UInt8], at index: Int) -> [UInt8] {
+        let start = index * 32
+        return Array(tree[start..<start + 32])
     }
 
     /// Get the Merkle root from 32-byte leaf hashes.
     public func merkleRoot(_ leaves: [[UInt8]]) throws -> [UInt8] {
         let tree = try buildTree(leaves)
-        return tree.last!
+        let treeSize = tree.count / 32
+        return Blake3MerkleEngine.node(tree, at: treeSize - 1)
     }
 }

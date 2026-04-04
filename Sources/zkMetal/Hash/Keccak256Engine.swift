@@ -136,19 +136,19 @@ public class Keccak256Engine {
         }
     }
 
-    /// Encode fused Merkle subtree dispatch (1024 leaves per threadgroup).
+    /// Encode fused Merkle subtree dispatch.
     /// Reads 32-byte leaves from leavesBuffer, writes one 32-byte root per subtree to rootsBuffer.
+    /// subtreeSize must be a power of 2, max 1024. Default 1024.
     public func encodeMerkleFused(encoder: MTLComputeCommandEncoder,
                                    leavesBuffer: MTLBuffer, leavesOffset: Int,
                                    rootsBuffer: MTLBuffer, rootsOffset: Int,
-                                   numSubtrees: Int) {
+                                   numSubtrees: Int, subtreeSize: Int = 1024) {
         encoder.setComputePipelineState(merkleFusedFunction)
         encoder.setBuffer(leavesBuffer, offset: leavesOffset, index: 0)
         encoder.setBuffer(rootsBuffer, offset: rootsOffset, index: 1)
-        var numLevels = UInt32(10)  // log2(1024) = 10
+        var numLevels = UInt32(subtreeSize.trailingZeroBitCount)
         encoder.setBytes(&numLevels, length: 4, index: 2)
-        // 512 threads per threadgroup (handles 1024 leaves: each thread loads 2)
-        let tgSize = 512
+        let tgSize = min(subtreeSize / 2, 512)
         encoder.dispatchThreadgroups(MTLSize(width: numSubtrees, height: 1, depth: 1),
                                      threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
     }

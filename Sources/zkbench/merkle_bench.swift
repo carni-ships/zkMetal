@@ -144,6 +144,19 @@ public func runMerkleBench() {
                 print(String(format: "  Keccak Merkle   2^%-2d = %6d leaves: GPU %7.2f ms",
                             logN, n, gpuMedian))
             }
+
+            // merkleRoot timing (avoids output copy)
+            let _ = try engine.merkleRoot(leaves)
+            var rootTimes = [Double]()
+            for _ in 0..<5 {
+                let t0 = CFAbsoluteTimeGetCurrent()
+                let _ = try engine.merkleRoot(leaves)
+                rootTimes.append((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+            }
+            rootTimes.sort()
+            let rootMedian = rootTimes[2]
+            let copyOverhead = gpuMedian - rootMedian
+            print(String(format: "    merkleRoot:  %7.2f ms  (output copy overhead: %.1f ms)", rootMedian, copyOverhead))
         }
         // Correctness: verify GPU Merkle root matches CPU level-by-level
         let testN = 1024
@@ -155,6 +168,7 @@ public func runMerkleBench() {
             testLeaves.append(leaf)
         }
         let gpuTree = try engine.buildTree(testLeaves)
+        let gpuRoot = KeccakMerkleEngine.node(gpuTree, at: 2 * testN - 2)
         var cpuNodes = testLeaves
         while cpuNodes.count > 1 {
             var next = [[UInt8]]()
@@ -163,12 +177,12 @@ public func runMerkleBench() {
             }
             cpuNodes = next
         }
-        if cpuNodes[0] == gpuTree.last! {
+        if cpuNodes[0] == gpuRoot {
             print("  [pass] Keccak fused Merkle root matches CPU (\(testN) leaves)")
         } else {
             print("  [FAIL] Keccak fused root mismatch!")
             print("    CPU: \(cpuNodes[0].map{String(format:"%02x",$0)}.joined())")
-            print("    GPU: \(gpuTree.last!.map{String(format:"%02x",$0)}.joined())")
+            print("    GPU: \(gpuRoot.map{String(format:"%02x",$0)}.joined())")
         }
 
     } catch {
@@ -234,6 +248,7 @@ public func runMerkleBench() {
             testLeaves.append(leaf)
         }
         let gpuTree = try engine.buildTree(testLeaves)
+        let gpuRoot = Blake3MerkleEngine.node(gpuTree, at: 2 * testN - 2)
         var cpuNodes = testLeaves
         while cpuNodes.count > 1 {
             var next = [[UInt8]]()
@@ -242,12 +257,12 @@ public func runMerkleBench() {
             }
             cpuNodes = next
         }
-        if cpuNodes[0] == gpuTree.last! {
+        if cpuNodes[0] == gpuRoot {
             print("  [pass] Blake3 Merkle root matches CPU (\(testN) leaves)")
         } else {
             print("  [FAIL] Blake3 root mismatch!")
             print("    CPU: \(cpuNodes[0].map{String(format:"%02x",$0)}.joined())")
-            print("    GPU: \(gpuTree.last!.map{String(format:"%02x",$0)}.joined())")
+            print("    GPU: \(gpuRoot.map{String(format:"%02x",$0)}.joined())")
         }
 
     } catch {

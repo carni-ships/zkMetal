@@ -301,23 +301,22 @@ kernel void keccak256_hash_64(
     }
 }
 
-// Inline Keccak-256 hash of two 32-byte inputs → 32-byte output (for Merkle)
-void keccak256_hash_pair(threadgroup ulong* left, threadgroup ulong* right,
-                          threadgroup ulong* out) {
-    ulong state[25];
-    for (uint i = 0; i < 25; i++) state[i] = 0;
-    // Absorb 64 bytes: left (32 bytes = 4 ulongs) + right (32 bytes = 4 ulongs)
+// Bit-interleaved hash of two 32-byte inputs for Merkle (shared memory, uint2 format)
+void keccak256_hash_pair_il(threadgroup uint2* left, threadgroup uint2* right,
+                             threadgroup uint2* out) {
+    uint2 state[25];
+    for (uint i = 0; i < 25; i++) state[i] = uint2(0, 0);
     for (uint i = 0; i < 4; i++) state[i] = left[i];
     for (uint i = 0; i < 4; i++) state[4 + i] = right[i];
-    state[8] ^= 0x01UL;
-    state[16] ^= 0x8000000000000000UL;
-    keccak_f1600(state);
+    state[8] ^= uint2(0x00000001u, 0x00000000u);
+    state[16] ^= uint2(0x00000000u, 0x80000000u);
+    keccak_f1600_il(state);
     for (uint i = 0; i < 4; i++) out[i] = state[i];
 }
 
 // Fused multi-level Keccak Merkle tree: each threadgroup processes a subtree
-// Shared memory: 1024 * 4 ulongs = 32KB
-#define KECCAK_SUBTREE_SIZE 1024
+// Shared memory: 1024 * 4 uint2 = 32KB max (bit-interleaved format)
+// Subtree size determined by num_levels: subtree_size = 1 << num_levels (max 1024)
 
 kernel void keccak256_merkle_fused(
     device const uchar* leaves    [[buffer(0)]],
@@ -327,27 +326,27 @@ kernel void keccak256_merkle_fused(
     uint tgid                     [[threadgroup_position_in_grid]],
     uint tg_size                  [[threads_per_threadgroup]]
 ) {
-    // Each node is 4 ulongs = 32 bytes
-    threadgroup ulong shared_data[KECCAK_SUBTREE_SIZE * 4];
+    threadgroup uint2 shared_data[1024 * 4];
 
-    // Load leaves (32 bytes each = 4 ulongs each)
-    uint leaf_base = tgid * KECCAK_SUBTREE_SIZE;
+    uint subtree_size = 1u << num_levels;
+    uint leaf_base = tgid * subtree_size;
     device const ulong* leaves64 = (device const ulong*)leaves;
-    uint src_lo = (leaf_base + tid) * 4;
-    uint src_hi = (leaf_base + tid + tg_size) * 4;
-    uint dst_lo = tid * 4;
-    uint dst_hi = (tid + tg_size) * 4;
-    for (uint i = 0; i < 4; i++) shared_data[dst_lo + i] = leaves64[src_lo + i];
-    for (uint i = 0; i < 4; i++) shared_data[dst_hi + i] = leaves64[src_hi + i];
+
+    // Load leaves and convert to bit-interleaved format (generic stride loop)
+    for (uint i = tid; i < subtree_size; i += tg_size) {
+        for (uint j = 0; j < 4; j++) {
+            shared_data[i * 4 + j] = to_interleaved(leaves64[(leaf_base + i) * 4 + j]);
+        }
+    }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    uint active = KECCAK_SUBTREE_SIZE;
+    uint active = subtree_size;
     for (uint level = 0; level < num_levels; level++) {
         uint pairs = active >> 1;
         if (tid < pairs) {
-            keccak256_hash_pair(&shared_data[tid * 2 * 4],
-                                &shared_data[(tid * 2 + 1) * 4],
-                                &shared_data[tid * 4]);
+            keccak256_hash_pair_il(&shared_data[tid * 2 * 4],
+                                   &shared_data[(tid * 2 + 1) * 4],
+                                   &shared_data[tid * 4]);
         }
         active = pairs;
         threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -355,7 +354,7 @@ kernel void keccak256_merkle_fused(
 
     if (tid == 0) {
         device ulong* out64 = (device ulong*)(roots + tgid * 32);
-        for (uint i = 0; i < 4; i++) out64[i] = shared_data[i];
+        for (uint i = 0; i < 4; i++) out64[i] = from_interleaved(shared_data[i]);
     }
 }
 
