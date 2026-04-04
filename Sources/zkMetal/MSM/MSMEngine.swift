@@ -15,6 +15,7 @@ public enum MSMError: Error {
 }
 
 public class MetalMSM {
+    public static let version = Versions.msmBN254
     public let device: MTLDevice
     public let commandQueue: MTLCommandQueue
     public let reduceSortedFunction: MTLComputePipelineState

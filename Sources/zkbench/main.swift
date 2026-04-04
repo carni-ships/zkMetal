@@ -123,10 +123,14 @@ if cmd == "calibrate" {
     runNTTBench()
 } else if cmd == "poseidon2" || cmd == "p2" {
     runPoseidon2Bench()
+} else if cmd == "poseidon2-m31" || cmd == "p2m31" {
+    runPoseidon2M31Bench()
 } else if cmd == "keccak" || cmd == "k256" {
     runKeccakBench()
 } else if cmd == "merkle" {
     runMerkleBench()
+} else if cmd == "imerkle" || cmd == "incremental-merkle" {
+    runIncrementalMerkleBench()
 } else if cmd == "poly" {
     runPolyBench()
 } else if cmd == "fields" {
@@ -137,12 +141,16 @@ if cmd == "calibrate" {
     runSumcheckBench()
 } else if cmd == "kzg" {
     runKZGBench()
+} else if cmd == "kzg-batch" {
+    runKZGBatchBench()
 } else if cmd == "bls377" || cmd == "bls12377" {
     runBLS12377NTTBench()
 } else if cmd == "bls377msm" || cmd == "bls12377msm" {
     runBLS12377MSMBench()
 } else if cmd == "bls377glv" {
     runBLS12377GLVTest()
+} else if cmd == "bls381" || cmd == "bls12381" {
+    runBLS12381Test()
 } else if cmd == "blake3" || cmd == "b3" {
     runBlake3Bench()
 } else if cmd == "secp256k1" || cmd == "secp" {
@@ -159,14 +167,62 @@ if cmd == "calibrate" {
     runVerkleBench()
 } else if cmd == "lookup" || cmd == "logup" {
     runLookupBench()
+} else if cmd == "lasso" {
+    runLassoBench()
+// } else if cmd == "cq" || cmd == "cached-quotients" {
+//     runCQBench()
 } else if cmd == "sparse" || cmd == "sparse-sumcheck" {
     runSparseSumcheckBench()
+} else if cmd == "batch-field" || cmd == "bf" {
+    runBatchFieldBench()
+} else if cmd == "witness" || cmd == "trace" {
+    runWitnessBench()
+} else if cmd == "constraint" || cmd == "ir" {
+    runConstraintBench()
+} else if cmd == "fused" || cmd == "fused-ntt" {
+    runFusedConstraintBench()
+} else if cmd == "circle" || cmd == "m31" {
+    runCircleBench()
+} else if cmd == "circle-stark" || cmd == "cstark" {
+    runCircleSTARKBench()
+} else if cmd == "circle-fri" || cmd == "cfri" {
+    runCircleFRIBench()
+} else if cmd == "transcript" || cmd == "ts" {
+    runTranscriptBench()
+} else if cmd == "serial" || cmd == "serialize" {
+    runSerializationBench()
+} else if cmd == "basefold" || cmd == "bf-pcs" {
+    runBasefoldBench()
+} else if cmd == "brakedown" || cmd == "bk" {
+    runBrakedownBench()
+} else if cmd == "pasta" {
+    runPastaTest()
+} else if cmd == "pastamsm" || cmd == "pasta-msm" {
+    runPastaMSMBench()
+} else if cmd == "binius" || cmd == "binary" || cmd == "bt" {
+    runBiniusBench()
+} else if cmd == "fold" || cmd == "nova" || cmd == "hypernova" {
+    runFoldingBench()
+} else if cmd == "gkr" {
+    runGKRBench()
+} else if cmd == "batch-verify" || cmd == "bv" {
+    runBatchVerifyBench()
 } else if cmd == "sort" || cmd == "radix" {
     runSortBench()
 } else if cmd == "test-parallel-ntt" {
     runParallelNTTTests()
+} else if cmd == "versions" || cmd == "version" {
+    Versions.printAll()
 } else if cmd == "test" {
     runAllCorrectnessTests()
+} else if cmd == "asm" || cmd == "asm-mont" {
+    runAsmMontBench()
+} else if cmd == "gl-neon" {
+    runGoldilocksNeonBench()
+} else if cmd == "keccak-neon" || cmd == "kn" {
+    runKeccakNeonBench()
+} else if cmd == "blake3-neon" || cmd == "b3-neon" {
+    runBlake3NeonBench()
 } else if cmd == "cpu" {
     runCPUBench()
 } else if cmd == "cpu-msm" {
@@ -188,9 +244,15 @@ if cmd == "calibrate" {
     runIPABench()
     runVerkleBench()
     runLookupBench()
+    runLassoBench()
     runSparseSumcheckBench()
     runSortBench()
     runECDSABench()
+    runCircleBench()
+    runCircleFRIBench()
+    runTranscriptBench()
+    runBasefoldBench()
+    runGKRBench()
 } else {
     try runMSMBench()
 }

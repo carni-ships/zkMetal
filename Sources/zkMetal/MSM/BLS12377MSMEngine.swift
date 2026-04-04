@@ -5,6 +5,7 @@ import Foundation
 import Metal
 
 public class BLS12377MSM {
+    public static let version = Versions.msmBLS12377
     public let device: MTLDevice
     public let commandQueue: MTLCommandQueue
     private let reduceSortedFunction: MTLComputePipelineState

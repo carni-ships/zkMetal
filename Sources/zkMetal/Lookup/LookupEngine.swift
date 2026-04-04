@@ -45,6 +45,7 @@ public struct LookupProof {
 }
 
 public class LookupEngine {
+    public static let version = Versions.lookup
     public let polyEngine: PolyEngine
     public let sumcheckEngine: SumcheckEngine
 

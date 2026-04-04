@@ -6,6 +6,7 @@ import Foundation
 import Metal
 
 public class NTTEngine {
+    public static let version = Versions.nttBN254
     public let device: MTLDevice
     public let commandQueue: MTLCommandQueue
     let butterflyFunction: MTLComputePipelineState

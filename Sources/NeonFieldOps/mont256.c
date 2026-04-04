@@ -474,3 +474,43 @@ void bn254_fr_intt(uint64_t *data, int logN) {
         mont_mul_4limb(&data[i * 4], n_inv, BN254_FR_P, BN254_FR_INV, &data[i * 4]);
     }
 }
+
+// ============================================================
+// Exported C wrapper for benchmarking (matches mont_mul_asm signature)
+// ============================================================
+void mont_mul_c(uint64_t *result, const uint64_t *a, const uint64_t *b) {
+    mont_mul_4limb(a, b, BN254_FR_P, BN254_FR_INV, result);
+}
+
+// C batch multiply: data[i] *= multiplier (for fair comparison with ASM batch)
+void mont_mul_batch_c(uint64_t *data, const uint64_t *multiplier, int n) {
+    for (int i = 0; i < n; i++) {
+        mont_mul_4limb(data + i * 4, multiplier, BN254_FR_P, BN254_FR_INV, data + i * 4);
+    }
+}
+
+// C pair batch multiply: result[i] = a[i] * b[i]
+void mont_mul_pair_batch_c(uint64_t *result, const uint64_t *a, const uint64_t *b, int n) {
+    for (int i = 0; i < n; i++) {
+        mont_mul_4limb(a + i * 4, b + i * 4, BN254_FR_P, BN254_FR_INV, result + i * 4);
+    }
+}
+
+// Test function to verify assembly correctness from C
+int mont_mul_asm_test(void) {
+    uint64_t one[4] = {
+        0xac96341c4ffffffbULL, 0x36fc76959f60cd29ULL,
+        0x666ea36f7879462eULL, 0x0e0a77c19a07df2fULL
+    };
+    uint64_t asm_result[4] = {0};
+    uint64_t c_result[4] = {0};
+
+    // extern declared in header
+    mont_mul_asm(asm_result, one, one);
+    mont_mul_c(c_result, one, one);
+
+    for (int i = 0; i < 4; i++) {
+        if (asm_result[i] != c_result[i]) return -1;
+    }
+    return 0;
+}

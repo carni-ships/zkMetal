@@ -6,6 +6,7 @@ import Metal
 // MARK: - Poseidon2 Merkle Tree
 
 public class Poseidon2MerkleEngine {
+    public static let version = Versions.poseidon2Merkle
     private let engine: Poseidon2Engine
     private var cachedTreeBuf: MTLBuffer?
     private var cachedTreeBufNodes: Int = 0
@@ -13,8 +14,79 @@ public class Poseidon2MerkleEngine {
     private var cachedRootBuf: MTLBuffer?
     private var treeSize2: Int = 0
 
+    /// Expose engine for advanced encoding
+    public var p2Engine: Poseidon2Engine { engine }
+
     public init() throws {
         self.engine = try Poseidon2Engine()
+    }
+
+    /// Encode Merkle root computation into an existing encoder.
+    /// treeBuf layout: leaves at [treeOffset, treeOffset + n*stride),
+    /// internal nodes at [treeOffset + n*stride, treeOffset + (2n-1)*stride).
+    /// After CB completes, root is at treeBuf offset treeOffset + (2n-2)*stride.
+    /// Caller must add memoryBarrier before/after if needed.
+    public func encodeMerkleRoot(encoder: MTLComputeCommandEncoder,
+                                  treeBuf: MTLBuffer, treeOffset: Int,
+                                  n: Int) {
+        let stride = MemoryLayout<Fr>.stride
+        let subtreeSize = Poseidon2Engine.merkleSubtreeSize  // 1024
+
+        if n >= 2 && n <= subtreeSize && (n & (n - 1)) == 0 {
+            // Small tree: single fused dispatch covers all levels
+            let rootOffset = treeOffset + (2 * n - 2) * stride
+            engine.encodeMerkleFused(encoder: encoder,
+                                      leavesBuffer: treeBuf, leavesOffset: treeOffset,
+                                      rootsBuffer: treeBuf, rootsOffset: rootOffset,
+                                      numSubtrees: 1, subtreeSize: n)
+        } else if n >= subtreeSize && n <= 65536 {
+            let numSubtrees = n / subtreeSize
+            let rootsOffset = treeOffset + n * stride
+            engine.encodeMerkleFused(encoder: encoder,
+                                      leavesBuffer: treeBuf, leavesOffset: treeOffset,
+                                      rootsBuffer: treeBuf, rootsOffset: rootsOffset,
+                                      numSubtrees: numSubtrees)
+
+            var levelStart = n
+            var levelSize = numSubtrees
+            while levelSize > 1 {
+                encoder.memoryBarrier(scope: .buffers)
+                // Fuse remaining upper levels if they fit in one subtree
+                if levelSize >= 2 && levelSize <= subtreeSize && (levelSize & (levelSize - 1)) == 0 {
+                    let rootOffset = treeOffset + (2 * n - 2) * stride
+                    engine.encodeMerkleFused(encoder: encoder,
+                                              leavesBuffer: treeBuf, leavesOffset: treeOffset + levelStart * stride,
+                                              rootsBuffer: treeBuf, rootsOffset: rootOffset,
+                                              numSubtrees: 1, subtreeSize: levelSize)
+                    break
+                }
+                let parentCount = levelSize / 2
+                let inputOffset = treeOffset + levelStart * stride
+                let outputOffset = treeOffset + (levelStart + levelSize) * stride
+                engine.encodeHashPairs(encoder: encoder, buffer: treeBuf,
+                                       inputOffset: inputOffset,
+                                       outputOffset: outputOffset,
+                                       count: parentCount)
+                levelStart += levelSize
+                levelSize = parentCount
+            }
+        } else {
+            // Large tree: level-by-level
+            var levelStart = 0
+            var levelSize = n
+            while levelSize > 1 {
+                let parentCount = levelSize / 2
+                let inputOffset = treeOffset + levelStart * stride
+                let outputOffset = treeOffset + (levelStart + levelSize) * stride
+                engine.encodeHashPairs(encoder: encoder, buffer: treeBuf,
+                                       inputOffset: inputOffset,
+                                       outputOffset: outputOffset,
+                                       count: parentCount)
+                levelStart += levelSize
+                levelSize = parentCount
+                if levelSize > 1 { encoder.memoryBarrier(scope: .buffers) }
+            }
+        }
     }
 
     /// Build a Merkle tree from leaf Fr elements using Poseidon2 2-to-1 hashing.
@@ -221,6 +293,7 @@ public class Poseidon2MerkleEngine {
 // MARK: - Keccak Merkle Tree
 
 public class KeccakMerkleEngine {
+    public static let version = Versions.keccakMerkle
     private let engine: Keccak256Engine
     private var cachedTreeBuf: MTLBuffer?
     private var cachedTreeBufNodes: Int = 0
@@ -444,6 +517,7 @@ public class KeccakMerkleEngine {
 // MARK: - Blake3 Merkle Tree
 
 public class Blake3MerkleEngine {
+    public static let version = Versions.blake3Merkle
     private let engine: Blake3Engine
     private var cachedTreeBuf: MTLBuffer?
     private var cachedTreeBufNodes: Int = 0

@@ -6,6 +6,7 @@ import Metal
 import NeonFieldOps
 
 public class Secp256k1MSM {
+    public static let version = Versions.msmSecp256k1
     public let device: MTLDevice
     public let commandQueue: MTLCommandQueue
     private let reduceSortedFunction: MTLComputePipelineState

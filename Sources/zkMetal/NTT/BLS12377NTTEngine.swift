@@ -6,6 +6,7 @@ import Foundation
 import Metal
 
 public class BLS12377NTTEngine {
+    public static let version = Versions.nttBLS12377
     public let device: MTLDevice
     public let commandQueue: MTLCommandQueue
     let butterflyFunction: MTLComputePipelineState

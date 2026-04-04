@@ -1,0 +1,369 @@
+// BLS12-381 elliptic curve G1 and G2 point operations (CPU-side)
+// G1: y^2 = x^3 + 4 over Fp
+// G2: y^2 = x^3 + 4(1+u) over Fp2 = Fp[u]/(u^2+1)
+// Jacobian projective coordinates: (X, Y, Z) represents affine (X/Z^2, Y/Z^3)
+
+import Foundation
+
+// MARK: - G1 Point Types
+
+public struct G1Affine381 {
+    public var x: Fp381
+    public var y: Fp381
+
+    public init(x: Fp381, y: Fp381) {
+        self.x = x
+        self.y = y
+    }
+}
+
+public struct G1Projective381 {
+    public var x: Fp381
+    public var y: Fp381
+    public var z: Fp381
+
+    public init(x: Fp381, y: Fp381, z: Fp381) {
+        self.x = x
+        self.y = y
+        self.z = z
+    }
+}
+
+public func g1_381Identity() -> G1Projective381 {
+    G1Projective381(x: .one, y: .one, z: .zero)
+}
+
+public func g1_381IsIdentity(_ p: G1Projective381) -> Bool {
+    p.z.isZero
+}
+
+public func g1_381FromAffine(_ a: G1Affine381) -> G1Projective381 {
+    G1Projective381(x: a.x, y: a.y, z: .one)
+}
+
+// Point doubling for y^2 = x^3 + b (a=0)
+public func g1_381Double(_ p: G1Projective381) -> G1Projective381 {
+    if g1_381IsIdentity(p) { return p }
+
+    let a = fp381Sqr(p.x)
+    let b = fp381Sqr(p.y)
+    let c = fp381Sqr(b)
+
+    let d = fp381Double(fp381Sub(fp381Sqr(fp381Add(p.x, b)), fp381Add(a, c)))
+    let e = fp381Add(fp381Double(a), a) // 3*x^2 (since a_coeff = 0)
+    let f = fp381Sqr(e)
+
+    let x3 = fp381Sub(f, fp381Double(d))
+    let y3 = fp381Sub(fp381Mul(e, fp381Sub(d, x3)), fp381Double(fp381Double(fp381Double(c))))
+    let z3 = fp381Sub(fp381Sqr(fp381Add(p.y, p.z)), fp381Add(b, fp381Sqr(p.z)))
+    return G1Projective381(x: x3, y: y3, z: z3)
+}
+
+// Full addition: projective + projective
+public func g1_381Add(_ p: G1Projective381, _ q: G1Projective381) -> G1Projective381 {
+    if g1_381IsIdentity(p) { return q }
+    if g1_381IsIdentity(q) { return p }
+
+    let z1z1 = fp381Sqr(p.z)
+    let z2z2 = fp381Sqr(q.z)
+    let u1 = fp381Mul(p.x, z2z2)
+    let u2 = fp381Mul(q.x, z1z1)
+    let s1 = fp381Mul(p.y, fp381Mul(q.z, z2z2))
+    let s2 = fp381Mul(q.y, fp381Mul(p.z, z1z1))
+
+    let h = fp381Sub(u2, u1)
+    let r = fp381Double(fp381Sub(s2, s1))
+
+    if h.isZero {
+        if r.isZero { return g1_381Double(p) }
+        return g1_381Identity()
+    }
+
+    let i = fp381Sqr(fp381Double(h))
+    let j = fp381Mul(h, i)
+    let vv = fp381Mul(u1, i)
+
+    let x3 = fp381Sub(fp381Sub(fp381Sqr(r), j), fp381Double(vv))
+    let y3 = fp381Sub(fp381Mul(r, fp381Sub(vv, x3)), fp381Double(fp381Mul(s1, j)))
+    let z3 = fp381Mul(fp381Sub(fp381Sqr(fp381Add(p.z, q.z)), fp381Add(z1z1, z2z2)), h)
+    return G1Projective381(x: x3, y: y3, z: z3)
+}
+
+// Mixed addition: projective + affine (Z=1 optimization)
+public func g1_381AddMixed(_ p: G1Projective381, _ q: G1Affine381) -> G1Projective381 {
+    if g1_381IsIdentity(p) { return g1_381FromAffine(q) }
+
+    let z1z1 = fp381Sqr(p.z)
+    let u2 = fp381Mul(q.x, z1z1)
+    let s2 = fp381Mul(q.y, fp381Mul(p.z, z1z1))
+
+    let h = fp381Sub(u2, p.x)
+    let r = fp381Double(fp381Sub(s2, p.y))
+
+    if h.isZero {
+        if r.isZero { return g1_381Double(p) }
+        return g1_381Identity()
+    }
+
+    let hh = fp381Sqr(h)
+    let i = fp381Double(fp381Double(hh))
+    let j = fp381Mul(h, i)
+    let vv = fp381Mul(p.x, i)
+
+    let x3 = fp381Sub(fp381Sub(fp381Sqr(r), j), fp381Double(vv))
+    let y3 = fp381Sub(fp381Mul(r, fp381Sub(vv, x3)), fp381Double(fp381Mul(p.y, j)))
+    let z3 = fp381Sub(fp381Sqr(fp381Add(p.z, h)), fp381Add(fp381Sqr(p.z), hh))
+    return G1Projective381(x: x3, y: y3, z: z3)
+}
+
+// Convert to affine
+public func g1_381ToAffine(_ p: G1Projective381) -> G1Affine381? {
+    if g1_381IsIdentity(p) { return nil }
+    let zinv = fp381Inverse(p.z)
+    let zinv2 = fp381Sqr(zinv)
+    let zinv3 = fp381Mul(zinv2, zinv)
+    return G1Affine381(x: fp381Mul(p.x, zinv2), y: fp381Mul(p.y, zinv3))
+}
+
+// Negate a point
+public func g1_381NegateAffine(_ p: G1Affine381) -> G1Affine381 {
+    G1Affine381(x: p.x, y: fp381Neg(p.y))
+}
+
+public func g1_381Negate(_ p: G1Projective381) -> G1Projective381 {
+    G1Projective381(x: p.x, y: fp381Neg(p.y), z: p.z)
+}
+
+// Scalar multiplication using double-and-add
+public func g1_381ScalarMul(_ p: G1Projective381, _ scalar: [UInt64]) -> G1Projective381 {
+    var result = g1_381Identity()
+    var base = p
+    for i in 0..<scalar.count {
+        var word = scalar[i]
+        for _ in 0..<64 {
+            if word & 1 == 1 {
+                result = g1_381Add(result, base)
+            }
+            base = g1_381Double(base)
+            word >>= 1
+        }
+    }
+    return result
+}
+
+// Integer scalar mul (for small scalars)
+public func g1_381MulInt(_ p: G1Projective381, _ n: Int) -> G1Projective381 {
+    if n == 0 { return g1_381Identity() }
+    if n == 1 { return p }
+    var result = g1_381Identity()
+    var base = p
+    var k = n
+    while k > 0 {
+        if k & 1 == 1 {
+            result = g1_381IsIdentity(result) ? base : g1_381Add(result, base)
+        }
+        base = g1_381Double(base)
+        k >>= 1
+    }
+    return result
+}
+
+// Batch affine conversion using Montgomery's trick
+public func batchG1_381ToAffine(_ points: [G1Projective381]) -> [G1Affine381] {
+    let n = points.count
+    if n == 0 { return [] }
+
+    var prods = [Fp381](repeating: .one, count: n)
+    prods[0] = points[0].z
+    for i in 1..<n {
+        prods[i] = g1_381IsIdentity(points[i]) ? prods[i-1] : fp381Mul(prods[i-1], points[i].z)
+    }
+
+    var inv = fp381Inverse(prods[n - 1])
+    var result = [G1Affine381](repeating: G1Affine381(x: .one, y: .one), count: n)
+    for i in stride(from: n - 1, through: 0, by: -1) {
+        if g1_381IsIdentity(points[i]) { continue }
+        let zinv = (i > 0) ? fp381Mul(inv, prods[i - 1]) : inv
+        if i > 0 { inv = fp381Mul(inv, points[i].z) }
+        let zinv2 = fp381Sqr(zinv)
+        let zinv3 = fp381Mul(zinv2, zinv)
+        result[i] = G1Affine381(x: fp381Mul(points[i].x, zinv2), y: fp381Mul(points[i].y, zinv3))
+    }
+    return result
+}
+
+// BLS12-381 G1 generator point
+// gx = 0x17f1d3a73197d7942695638c4fa9ac0fc3688c4f9774b905a14e3a3f171bac586c55e83ff97a1aeffb3af00adb22c6bb
+// gy = 0x08b3f481e3aaa0f1a09e30ed741d8ae4fcf5e095d5d00af600db18cb2c04b3edd03cc744a2888ae40caa232946c5e7e1
+public func bls12381G1Generator() -> G1Affine381 {
+    let gx = fp381Mul(Fp381.from64([
+        0xfb3af00adb22c6bb, 0x6c55e83ff97a1aef,
+        0xa14e3a3f171bac58, 0xc3688c4f9774b905,
+        0x2695638c4fa9ac0f, 0x17f1d3a73197d794
+    ]), Fp381.from64(Fp381.R2_MOD_P))
+    let gy = fp381Mul(Fp381.from64([
+        0x0caa232946c5e7e1, 0xd03cc744a2888ae4,
+        0x00db18cb2c04b3ed, 0xfcf5e095d5d00af6,
+        0xa09e30ed741d8ae4, 0x08b3f481e3aaa0f1
+    ]), Fp381.from64(Fp381.R2_MOD_P))
+    return G1Affine381(x: gx, y: gy)
+}
+
+// MARK: - G2 Point Types
+
+public struct G2Affine381 {
+    public var x: Fp2_381
+    public var y: Fp2_381
+
+    public init(x: Fp2_381, y: Fp2_381) {
+        self.x = x
+        self.y = y
+    }
+}
+
+public struct G2Projective381 {
+    public var x: Fp2_381
+    public var y: Fp2_381
+    public var z: Fp2_381
+
+    public init(x: Fp2_381, y: Fp2_381, z: Fp2_381) {
+        self.x = x
+        self.y = y
+        self.z = z
+    }
+}
+
+public func g2_381Identity() -> G2Projective381 {
+    G2Projective381(x: .one, y: .one, z: .zero)
+}
+
+public func g2_381IsIdentity(_ p: G2Projective381) -> Bool {
+    p.z.isZero
+}
+
+public func g2_381FromAffine(_ a: G2Affine381) -> G2Projective381 {
+    G2Projective381(x: a.x, y: a.y, z: .one)
+}
+
+// Point doubling for y^2 = x^3 + b' (a=0)
+public func g2_381Double(_ p: G2Projective381) -> G2Projective381 {
+    if g2_381IsIdentity(p) { return p }
+
+    let a = fp2_381Sqr(p.x)
+    let b = fp2_381Sqr(p.y)
+    let c = fp2_381Sqr(b)
+
+    let d = fp2_381Double(fp2_381Sub(fp2_381Sqr(fp2_381Add(p.x, b)), fp2_381Add(a, c)))
+    let e = fp2_381Add(fp2_381Double(a), a) // 3*x^2
+    let f = fp2_381Sqr(e)
+
+    let x3 = fp2_381Sub(f, fp2_381Double(d))
+    let y3 = fp2_381Sub(fp2_381Mul(e, fp2_381Sub(d, x3)),
+                        fp2_381Double(fp2_381Double(fp2_381Double(c))))
+    let z3 = fp2_381Sub(fp2_381Sqr(fp2_381Add(p.y, p.z)), fp2_381Add(b, fp2_381Sqr(p.z)))
+    return G2Projective381(x: x3, y: y3, z: z3)
+}
+
+// Full addition over Fp2
+public func g2_381Add(_ p: G2Projective381, _ q: G2Projective381) -> G2Projective381 {
+    if g2_381IsIdentity(p) { return q }
+    if g2_381IsIdentity(q) { return p }
+
+    let z1z1 = fp2_381Sqr(p.z)
+    let z2z2 = fp2_381Sqr(q.z)
+    let u1 = fp2_381Mul(p.x, z2z2)
+    let u2 = fp2_381Mul(q.x, z1z1)
+    let s1 = fp2_381Mul(p.y, fp2_381Mul(q.z, z2z2))
+    let s2 = fp2_381Mul(q.y, fp2_381Mul(p.z, z1z1))
+
+    let h = fp2_381Sub(u2, u1)
+    let r = fp2_381Double(fp2_381Sub(s2, s1))
+
+    if h.isZero {
+        if r.isZero { return g2_381Double(p) }
+        return g2_381Identity()
+    }
+
+    let i = fp2_381Sqr(fp2_381Double(h))
+    let j = fp2_381Mul(h, i)
+    let vv = fp2_381Mul(u1, i)
+
+    let x3 = fp2_381Sub(fp2_381Sub(fp2_381Sqr(r), j), fp2_381Double(vv))
+    let y3 = fp2_381Sub(fp2_381Mul(r, fp2_381Sub(vv, x3)), fp2_381Double(fp2_381Mul(s1, j)))
+    let z3 = fp2_381Mul(fp2_381Sub(fp2_381Sqr(fp2_381Add(p.z, q.z)),
+                                    fp2_381Add(z1z1, z2z2)), h)
+    return G2Projective381(x: x3, y: y3, z: z3)
+}
+
+// Convert to affine
+public func g2_381ToAffine(_ p: G2Projective381) -> G2Affine381? {
+    if g2_381IsIdentity(p) { return nil }
+    let zinv = fp2_381Inverse(p.z)
+    let zinv2 = fp2_381Sqr(zinv)
+    let zinv3 = fp2_381Mul(zinv2, zinv)
+    return G2Affine381(x: fp2_381Mul(p.x, zinv2), y: fp2_381Mul(p.y, zinv3))
+}
+
+// Negate G2 point
+public func g2_381Negate(_ p: G2Projective381) -> G2Projective381 {
+    G2Projective381(x: p.x, y: fp2_381Neg(p.y), z: p.z)
+}
+
+public func g2_381NegateAffine(_ p: G2Affine381) -> G2Affine381 {
+    G2Affine381(x: p.x, y: fp2_381Neg(p.y))
+}
+
+// Scalar multiplication for G2
+public func g2_381ScalarMul(_ p: G2Projective381, _ scalar: [UInt64]) -> G2Projective381 {
+    var result = g2_381Identity()
+    var base = p
+    for i in 0..<scalar.count {
+        var word = scalar[i]
+        for _ in 0..<64 {
+            if word & 1 == 1 {
+                result = g2_381Add(result, base)
+            }
+            base = g2_381Double(base)
+            word >>= 1
+        }
+    }
+    return result
+}
+
+// Integer scalar mul for G2
+public func g2_381MulInt(_ p: G2Projective381, _ n: Int) -> G2Projective381 {
+    if n == 0 { return g2_381Identity() }
+    if n == 1 { return p }
+    var result = g2_381Identity()
+    var base = p
+    var k = n
+    while k > 0 {
+        if k & 1 == 1 {
+            result = g2_381IsIdentity(result) ? base : g2_381Add(result, base)
+        }
+        base = g2_381Double(base)
+        k >>= 1
+    }
+    return result
+}
+
+// BLS12-381 G2 generator: a verified point on E': y^2 = x^3 + 4(1+u) at x = (1, 1)
+// This is a simple point; for the standard generator, use cofactor clearing.
+public func bls12381G2SimplePoint() -> G2Affine381 {
+    // x = 1 + u, y computed to satisfy y^2 = x^3 + 4(1+u)
+    let xc0 = fp381FromInt(1)
+    let xc1 = fp381FromInt(1)
+    // y_c0 = 3690720871793337241455685075743049883097434000553861439128973496444191283866836383567731089800858963424329464681674
+    // y_c1 = 122693191027751655510194168700308213538794246775313976814212532628791625595109057816964505439501482194282347419502
+    let yc0 = fp381Mul(Fp381.from64([
+        0x3c3a315aa7de14ca, 0x9fce4e8ea2d9d28e,
+        0x773abc1eef6d193b, 0x9f2a5b83388e4b10,
+        0x270b858dad946208, 0x17faa6201231304f
+    ]), Fp381.from64(Fp381.R2_MOD_P))
+    let yc1 = fp381Mul(Fp381.from64([
+        0x6569345eb41ed76e, 0xa1a534757df374dd,
+        0xad397c1837a90f0e, 0xc4fb4c39325d3164,
+        0x7f367e7242250427, 0x00cc12449be6ac4e
+    ]), Fp381.from64(Fp381.R2_MOD_P))
+    return G2Affine381(x: Fp2_381(c0: xc0, c1: xc1), y: Fp2_381(c0: yc0, c1: yc1))
+}

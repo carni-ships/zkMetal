@@ -161,6 +161,143 @@ kernel void fri_fold_fused4(
     }
 }
 
+// FRI fold-by-4: reduce polynomial degree by 4x in one round.
+// Uses 4th-root-of-unity decomposition:
+//   f(x) = f0(x^4) + x*f1(x^4) + x^2*f2(x^4) + x^3*f3(x^4)
+//   f_folded(y) = f0(y) + r*f1(y) + r^2*f2(y) + r^3*f3(y)
+//
+// Thread i reads evals at indices i, i+N/4, i+N/2, i+3N/4
+// and produces one output using challenge r and inverse twiddle factors.
+//
+// The recovery formulas from evaluations at x, w*x, w^2*x, w^3*x:
+//   f0(x^4) = (e0 + e1 + e2 + e3) / 4
+//   f1(x^4) = (e0 - e1 + e2 - e3) * inv_x / 4    [using w^2 = -1 for quartic root]
+//   ... but this requires working with 4th roots in the evaluation domain.
+//
+// For our domain layout (omega^i for i in [0,N)), the 4 coset elements for index i are:
+//   evals[i], evals[i + N/4], evals[i + N/2], evals[i + 3N/4]
+// which correspond to omega^i, omega^{i+N/4}, omega^{i+N/2}, omega^{i+3N/4}
+// The stride N/4 means omega^{N/4} is a primitive 4th root of unity.
+//
+// Using inv_twiddles (omega^{-i}):
+//   inv_x = inv_twiddles[i]
+//   inv_x2 = inv_twiddles[2*i]  (or fr_mul(inv_x, inv_x))
+//   inv_x3 = inv_twiddles[3*i]  (or fr_mul(inv_x2, inv_x))
+kernel void fri_fold_by4(
+    device const Fr* evals          [[buffer(0)]],
+    device Fr* folded               [[buffer(1)]],
+    device const Fr* inv_twiddles   [[buffer(2)]],  // omega_N^{-i} for i in [0, N)
+    constant Fr* challenge          [[buffer(3)]],   // random challenge r
+    constant uint& n                [[buffer(4)]],   // current domain size (must be divisible by 4)
+    uint gid                        [[thread_position_in_grid]]
+) {
+    uint quarter = n >> 2;
+    if (gid >= quarter) return;
+
+    // Read 4 evaluations at stride N/4
+    Fr e0 = evals[gid];
+    Fr e1 = evals[gid + quarter];
+    Fr e2 = evals[gid + 2 * quarter];
+    Fr e3 = evals[gid + 3 * quarter];
+
+    // Compute sums/differences (butterfly-like)
+    // s02 = e0 + e2,  d02 = e0 - e2
+    // s13 = e1 + e3,  d13 = e1 - e3
+    Fr s02 = fr_add(e0, e2);
+    Fr d02 = fr_sub(e0, e2);
+    Fr s13 = fr_add(e1, e3);
+    Fr d13 = fr_sub(e1, e3);
+
+    // f0_coeff = s02 + s13 = e0 + e1 + e2 + e3  (sum of all)
+    // f2_coeff = s02 - s13 = e0 - e1 + e2 - e3  (alternating sum)
+    // f1_coeff = d02 + d13 = e0 + e1 - e2 - e3  ... wait
+    // Actually for our domain layout:
+    // omega^{N/4} is a primitive 4th root, call it w4.
+    // evals at omega^i, omega^{i+N/4}, omega^{i+N/2}, omega^{i+3N/4}
+    // = f(x), f(w4*x), f(w4^2*x), f(w4^3*x) where x = omega^i, w4^2 = omega^{N/2} = -1
+    //
+    // So: f(x) = f0(x^4) + x*f1(x^4) + x^2*f2(x^4) + x^3*f3(x^4)
+    // f(w4*x) = f0 + w4*x*f1 + w4^2*x^2*f2 + w4^3*x^3*f3
+    //         = f0 + w4*x*f1 - x^2*f2 - w4*x^3*f3
+    // f(w4^2*x) = f0 - x*f1 + x^2*f2 - x^3*f3
+    // f(w4^3*x) = f0 - w4*x*f1 - x^2*f2 + w4*x^3*f3
+    //
+    // Summing:
+    // e0 + e2 = 2*f0 + 2*x^2*f2  =>  s02 = 2*(f0 + x^2*f2)
+    // e0 - e2 = 2*x*f1 + 2*x^3*f3  =>  d02 = 2*x*(f1 + x^2*f3)
+    // e1 + e3 = 2*f0 - 2*x^2*f2  =>  s13 = 2*(f0 - x^2*f2)
+    // e1 - e3 = 2*w4*x*f1 - 2*w4*x^3*f3 = 2*w4*x*(f1 - x^2*f3)
+    //         =>  d13 = 2*w4*x*(f1 - x^2*f3)
+    //
+    // Therefore:
+    // f0 = (s02 + s13) / 4
+    // x^2*f2 = (s02 - s13) / 4  =>  f2 = (s02 - s13) / (4*x^2)
+    // x*(f1 + x^2*f3) = d02/2
+    // w4*x*(f1 - x^2*f3) = d13/2
+    // => x*f1 = (d02/2 + d13/(2*w4)) / 2 = (d02 + d13*w4_inv) / 4
+    //    f1 = (d02 + d13*w4_inv) / (4*x)
+    // x^3*f3 = (d02/2 - d13/(2*w4)) / 2 = (d02 - d13*w4_inv) / 4
+    //    f3 = (d02 - d13*w4_inv) / (4*x^3)
+    //
+    // folded = f0 + r*f1 + r^2*f2 + r^3*f3
+    //
+    // To avoid computing 1/4 explicitly (it gets absorbed or we can multiply at the end),
+    // we compute 4*folded and then multiply by inv4 at the end:
+    // 4*folded = (s02 + s13)
+    //          + r * (d02 + d13*w4_inv) * inv_x
+    //          + r^2 * (s02 - s13) * inv_x2
+    //          + r^3 * (d02 - d13*w4_inv) * inv_x3
+
+    Fr r_val = challenge[0];
+
+    // Compute w4_inv: w4 = omega^{N/4}, so w4_inv = omega^{-N/4} = inv_twiddles[N/4]
+    // But N/4 = quarter, and inv_twiddles has size N, so inv_twiddles[quarter] is valid.
+    Fr w4_inv = inv_twiddles[quarter];
+
+    // d13_w4inv = d13 * w4_inv
+    Fr d13_w4inv = fr_mul(d13, w4_inv);
+
+    // The 4 "numerator" terms (before dividing by x powers):
+    Fr t0 = fr_add(s02, s13);                // 4*f0
+    Fr t1 = fr_add(d02, d13_w4inv);          // 4*x*f1
+    Fr t2 = fr_sub(s02, s13);                // 4*x^2*f2
+    Fr t3 = fr_sub(d02, d13_w4inv);          // 4*x^3*f3
+
+    // Multiply by inverse twiddles to remove x powers
+    Fr inv_x = inv_twiddles[gid];
+    Fr inv_x2 = fr_mul(inv_x, inv_x);
+    Fr inv_x3 = fr_mul(inv_x2, inv_x);
+
+    t1 = fr_mul(t1, inv_x);
+    t2 = fr_mul(t2, inv_x2);
+    t3 = fr_mul(t3, inv_x3);
+
+    // Combine with challenge: folded*4 = t0 + r*t1 + r^2*t2 + r^3*t3
+    // Use Horner: ((r*t3 + t2)*r + t1)*r + t0
+    Fr r2 = fr_mul(r_val, r_val);
+    Fr r3 = fr_mul(r2, r_val);
+
+    Fr result = fr_add(t0, fr_mul(r_val, t1));
+    result = fr_add(result, fr_mul(r2, t2));
+    result = fr_add(result, fr_mul(r3, t3));
+
+    // Multiply by inv4 to get the actual folded value
+    // inv4 = inverse of 4 in Fr = (r+1)/4 mod r
+    // For BN254 Fr: 4^{-1} mod r
+    // r = 21888242871839275222246405745257275088548364400416034343698204186575808495617
+    // inv4 = (r+1)/4 = 5472060717959818805561601436314318772137091100104008585924551046643952123905
+    // In 8x32-bit limbs (little-endian Montgomery form):
+    // We compute it as fr_mul(result, INV4) where INV4 is a constant.
+    // INV4 in standard form: 0x0c19139c_b84c680a_6e14116d_a0601950_0a0d9a5e_ee5c5386_50f5a7b6_c4000001
+    // But we need Montgomery form. Easiest: use fr_inv on the Montgomery form of 4.
+    // Actually: in the fold-by-2 kernel, there's no /2 either — it's absorbed.
+    // We follow the same convention: absorb the /4 into subsequent rounds or final check.
+    // The fold-by-2 comment says: "where the /2 is absorbed into the next round or final check"
+    // So we do the same: skip the /4 division.
+
+    folded[gid] = result;
+}
+
 // Batch FRI query: given a set of query positions, extract evaluations
 // from the polynomial at those positions (and their paired positions)
 kernel void fri_query_extract(

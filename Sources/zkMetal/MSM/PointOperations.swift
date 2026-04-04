@@ -150,6 +150,11 @@ public func batchToAffine(_ points: [PointProjective]) -> [PointAffine] {
     return result
 }
 
+// Negate a point in projective: -P = (x, -y, z)
+public func pointNeg(_ p: PointProjective) -> PointProjective {
+    return PointProjective(x: p.x, y: fpNeg(p.y), z: p.z)
+}
+
 // Negate a point in affine: -P = (x, -y)
 public func pointNegateAffine(_ p: PointAffine) -> PointAffine {
     return PointAffine(x: p.x, y: fpNeg(p.y))

@@ -3,6 +3,7 @@ import Foundation
 import Metal
 
 public class Blake3Engine {
+    public static let version = Versions.blake3
     public let device: MTLDevice
     public let commandQueue: MTLCommandQueue
     let hash64Function: MTLComputePipelineState   // hash 64-byte inputs

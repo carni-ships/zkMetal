@@ -36,12 +36,14 @@ public func runAllCorrectnessTests() {
     testParallelMerkle()
     testParallelMSM()
     testCNTT()
+    testMersenne31()
 
     // GPU tests (create Metal engines)
     testNTT_BN254()
     testNTT_BabyBear()
     testNTT_Goldilocks()
     testNTT_BLS12377()
+    testCircleNTT()
     testPoseidon2()
     testKeccak()
     testBlake3()
@@ -1644,6 +1646,87 @@ private func testCPippengerMSM() {
               secpToInt(cAff.x) == secpToInt(gpuAff.x) && secpToInt(cAff.y) == secpToInt(gpuAff.y))
     } catch {
         print("  [FAIL] secp256k1 C Pippenger error: \(error)")
+        _testFailed += 1
+    }
+}
+
+// MARK: - Mersenne31 + Circle NTT
+
+private func testMersenne31() {
+    print("\n--- Mersenne31 Field ---")
+
+    // Basic arithmetic
+    let a = M31(v: 42), b = M31(v: 100)
+    check("M31 add", m31Add(a, b).v == 142)
+    check("M31 mul", m31Mul(a, b).v == 4200)
+    check("M31 sub", m31Sub(b, a).v == 58)
+
+    // Inverse
+    let aInv = m31Inverse(a)
+    check("M31 inverse", m31Mul(a, aInv).v == 1)
+
+    // Edge cases
+    check("M31 (p-1)*(p-2)=2", m31Mul(M31(v: M31.P - 1), M31(v: M31.P - 2)).v == 2)
+    check("M31 wraparound", m31Add(M31(v: M31.P - 1), M31.one).v == 0)
+    check("M31 negation", m31Add(a, m31Neg(a)).v == 0)
+
+    // CM31
+    let c1 = CM31(a: M31(v: 3), b: M31(v: 4))
+    let cInv = cm31Inverse(c1)
+    let cOne = cm31Mul(c1, cInv)
+    check("CM31 inverse", cOne.a.v == 1 && cOne.b.v == 0)
+
+    // Circle group
+    let gen = CirclePoint.generator
+    check("Generator on circle", gen.isOnCircle)
+    var gPow = gen
+    for _ in 0..<31 { gPow = circleGroupMul(gPow, gPow) }
+    check("Circle gen order 2^31", gPow == CirclePoint.identity)
+
+    // CPU Circle NTT roundtrip
+    for logN in 1...6 {
+        let n = 1 << logN
+        var coeffs = [M31](repeating: M31.zero, count: n)
+        var rng: UInt64 = 0xDEAD + UInt64(logN)
+        for i in 0..<n {
+            rng = rng &* 6364136223846793005 &+ 1442695040888963407
+            coeffs[i] = M31(v: UInt32(rng >> 33) % M31.P)
+        }
+        let evals = CircleNTTEngine.cpuNTT(coeffs, logN: logN)
+        let recovered = CircleNTTEngine.cpuINTT(evals, logN: logN)
+        var match = true
+        for i in 0..<n { if recovered[i].v != coeffs[i].v { match = false; break } }
+        check("CPU Circle NTT roundtrip N=\(n)", match)
+    }
+}
+
+private func testCircleNTT() {
+    print("\n--- Circle NTT (GPU) ---")
+    do {
+        let engine = try CircleNTTEngine()
+
+        for logN in 1...10 {
+            let n = 1 << logN
+            var coeffs = [M31](repeating: M31.zero, count: n)
+            var rng: UInt64 = 0xCAFE + UInt64(logN)
+            for i in 0..<n {
+                rng = rng &* 6364136223846793005 &+ 1442695040888963407
+                coeffs[i] = M31(v: UInt32(rng >> 33) % M31.P)
+            }
+
+            let cpuEvals = CircleNTTEngine.cpuNTT(coeffs, logN: logN)
+            let gpuEvals = try engine.ntt(coeffs)
+            var fwdMatch = true
+            for i in 0..<n { if gpuEvals[i].v != cpuEvals[i].v { fwdMatch = false; break } }
+
+            let gpuRecovered = try engine.intt(gpuEvals)
+            var invMatch = true
+            for i in 0..<n { if gpuRecovered[i].v != coeffs[i].v { invMatch = false; break } }
+
+            check("GPU Circle NTT N=\(n)", fwdMatch && invMatch)
+        }
+    } catch {
+        print("  [FAIL] Circle NTT GPU error: \(error)")
         _testFailed += 1
     }
 }

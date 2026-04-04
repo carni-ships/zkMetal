@@ -3,6 +3,7 @@ import Foundation
 import Metal
 
 public class Keccak256Engine {
+    public static let version = Versions.keccak256
     public let device: MTLDevice
     public let commandQueue: MTLCommandQueue
     let hash64Function: MTLComputePipelineState   // hash 64-byte inputs

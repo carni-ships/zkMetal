@@ -7,6 +7,7 @@ import Foundation
 import Metal
 
 public class RadixSortEngine {
+    public static let version = Versions.radixSort
     public let device: MTLDevice
     public let commandQueue: MTLCommandQueue
 

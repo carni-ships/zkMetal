@@ -1,6 +1,6 @@
 # zkMetal
 
-GPU-accelerated zero-knowledge cryptography primitives for Apple Silicon, written in Metal and Swift.
+GPU-accelerated zero-knowledge cryptography library for Apple Silicon, written in Metal and Swift. 50+ primitives spanning field arithmetic, MSM, NTT, hash functions, polynomial commitments, proof protocols, post-quantum crypto, and homomorphic encryption across 12+ fields and 7 elliptic curves.
 
 ## Contents
 
@@ -52,6 +52,27 @@ GPU-accelerated zero-knowledge cryptography primitives for Apple Silicon, writte
 | **ECDSA** | secp256k1 batch verification (probabilistic + individual) |
 | **Radix Sort** | GPU 32-bit LSD radix sort (4-pass, 8-bit radix) |
 | **Polynomial Ops** | Evaluation, interpolation, subproduct trees |
+| **Lasso** | Structured lookup via tensor decomposition of large tables |
+| **Circle NTT** | Circle-group NTT over Mersenne31 (order 2^31, full 2-adicity) |
+| **Circle FRI** | FRI protocol adapted for circle domain over M31 |
+| **Poseidon2 M31** | Poseidon2 hash over Mersenne31 (t=16, rate=8) with GPU Merkle |
+| **Circle STARK** | Full STARK prover/verifier over M31 circle domain |
+| **Basefold** | NTT-free multilinear polynomial commitment via sumcheck folding |
+| **Transcript** | Fiat-Shamir duplex sponge (Poseidon2 + Keccak backends) |
+| **Serialization** | Proof serialization/deserialization (ProofWriter/ProofReader) |
+| **Witness Gen** | GPU witness trace evaluation (instruction-stream architecture) |
+| **Constraint IR** | Runtime constraint compilation (IR → Metal source → GPU pipeline) |
+| **Batch KZG** | Batch polynomial openings via random linear combination |
+| **BLS12-381** | Full tower arithmetic (Fp/Fp2/Fp6/Fp12), G1/G2, Miller loop, pairings |
+| **Pasta Curves** | Pallas/Vesta cycle (recursive proof composition ready) |
+| **Binius** | Binary tower field arithmetic (GF(2^8)→GF(2^128)), additive FFT |
+| **HyperNova** | CCS folding scheme for incremental verifiable computation |
+| **GKR** | Goldwasser-Kalai-Rothblum interactive proof for layered circuits |
+| **Brakedown** | Linear-code polynomial commitment (NTT-free, expander-based) |
+| **Plonk** | Preprocessed polynomial IOP prover with KZG commitments |
+| **Kyber/Dilithium** | Post-quantum lattice crypto (GPU-accelerated NTT) |
+| **HE NTT** | RNS-based NTT for homomorphic encryption (CKKS/BFV) |
+| **Reed-Solomon** | GPU erasure coding for data availability sampling |
 
 ## Performance
 
@@ -297,6 +318,13 @@ Notes: IPA/Verkle dramatically improved (14-21×) by replacing Swift scalar mult
 - **secp256k1 Fr** (scalar field) -- for ECDSA signature verification
 - **Goldilocks** (p = 2^64 - 2^32 + 1) -- native 64-bit reduction
 - **BabyBear** (p = 2^31 - 2^27 + 1) -- 32-bit arithmetic
+- **Mersenne31** (p = 2^31 - 1) -- single-word arithmetic, circle group order 2^31
+- **CM31** -- complex extension M31[i]/(i^2+1) for Circle STARK challenges
+- **BLS12-381 Fr** -- 256-bit scalar field, Montgomery CIOS, TWO_ADICITY=32
+- **BLS12-381 Fp** -- 381-bit base field (12x32-bit limbs), Fp2/Fp6/Fp12 tower
+- **Pallas Fp** -- 255-bit base field for Pallas curve (cycle with Vesta)
+- **Vesta Fp** -- 255-bit base field for Vesta curve (cycle with Pallas)
+- **Binary Tower** -- GF(2^8)→GF(2^16)→GF(2^32)→GF(2^64)→GF(2^128) (XOR addition)
 
 ## Architecture
 
@@ -305,15 +333,20 @@ Metal GPU shaders handle compute-intensive operations. The Swift engine layer ma
 ```
 Sources/
   Shaders/         # Metal GPU kernels
-    fields/        # Field arithmetic (BN254 Fr/Fp, BLS12-377 Fr, Goldilocks, BabyBear)
-    geometry/      # Elliptic curve operations (BN254 G1, BLS12-377 G1, secp256k1)
+    fields/        # Field arithmetic (BN254, BLS12-377/381, secp256k1, Goldilocks, BabyBear, M31, Pallas, Vesta, binary tower)
+    geometry/      # Elliptic curve operations (BN254 G1, BLS12-377 G1, secp256k1, Pallas, Vesta)
     msm/           # Multi-scalar multiplication kernels
-    ntt/           # NTT butterfly + fused sub-block kernels
-    hash/          # Poseidon2, Keccak-256, Blake3
-    fri/           # FRI folding kernels
+    ntt/           # NTT butterfly + fused sub-block + Circle NTT kernels
+    hash/          # Poseidon2 (BN254 + M31), Keccak-256, Blake3
+    fri/           # FRI + Circle FRI folding kernels
     sumcheck/      # Sumcheck round kernels
     poly/          # Polynomial evaluation/interpolation
     sort/          # GPU radix sort kernels
+    witness/       # GPU witness trace evaluation
+    constraint/    # Fused NTT+constraint kernels
+    basefold/      # Basefold fold kernels
+    lattice/       # Kyber/Dilithium NTT kernels
+    erasure/       # Reed-Solomon erasure coding
   NeonFieldOps/    # C/ARM64 optimized CPU primitives
     babybear_ntt.c       # NEON SIMD NTT (4-wide Montgomery)
     goldilocks_ntt.c     # __uint128_t optimized NTT
@@ -321,18 +354,33 @@ Sources/
     bn254_msm.c          # BN254 Pippenger MSM + synthetic division
     secp256k1_ops.c      # secp256k1 field/curve ops + Pippenger MSM
   zkMetal/         # Swift engine layer
-    Fields/        # CPU-side field arithmetic (BN254, BLS12-377, secp256k1)
-    MSM/           # MSM engines (BN254, BLS12-377, secp256k1)
-    NTT/           # NTT engines (BN254, BLS12-377, Goldilocks, BabyBear)
-    Hash/          # Poseidon2, Keccak, Blake3, Merkle tree engines
-    Polynomial/    # FRI, Sumcheck, Sparse Sumcheck engines
+    Fields/        # CPU-side field arithmetic (BN254, BLS12-377/381, secp256k1, M31, Pallas, Vesta, binary tower)
+    MSM/           # MSM engines (BN254, BLS12-377, secp256k1, Pallas, Vesta)
+    NTT/           # NTT engines (BN254, BLS12-377, Goldilocks, BabyBear, Circle NTT M31, RNS/HE)
+    Hash/          # Poseidon2 (BN254 + M31), Keccak, Blake3, Merkle tree engines
+    Polynomial/    # FRI, Circle FRI, Sumcheck, Sparse Sumcheck engines
     Poly/          # Polynomial operations engine
-    KZG/           # KZG polynomial commitment engine
+    PCS/           # Basefold, Brakedown polynomial commitment engines
+    KZG/           # KZG polynomial commitment engine (single + batch)
     IPA/           # Inner product argument (Bulletproofs-style)
     Verkle/        # Verkle tree engine (Pedersen + IPA)
     ECDSA/         # secp256k1 batch ECDSA verification
-    Lookup/        # LogUp lookup argument + range proofs
+    Lookup/        # LogUp, Lasso, cq lookup argument engines
     Sort/          # GPU radix sort engine
+    Curve/         # BLS12-381 G1/G2 + pairings
+    CircleSTARK/   # Full Circle STARK prover/verifier over M31
+    Folding/       # HyperNova CCS folding scheme
+    GKR/           # GKR interactive proof for layered circuits
+    Plonk/         # Plonk preprocessed prover/verifier
+    Witness/       # GPU witness trace evaluation engine
+    Constraint/    # Constraint IR compiler + fused evaluation
+    Transcript/    # Fiat-Shamir transcript (Poseidon2 + Keccak)
+    Serialization/ # Proof serialization/deserialization
+    Accumulation/  # Halo-style accumulation schemes (IPA + Pasta)
+    Lattice/       # Post-quantum crypto (Kyber KEM, Dilithium signatures)
+    HE/            # Homomorphic encryption (RNS NTT for CKKS/BFV)
+    ErasureCoding/ # Reed-Solomon erasure coding
+    Verifier/      # Streaming/batch proof verification
     CPU/           # GCD parallel CPU implementations
   zkbench/         # Benchmark harness
   zkmsm-cli/       # Standalone MSM CLI tool
@@ -403,6 +451,31 @@ let pathProof = try verkle.provePathProof(tree: tree, leafIndex: 0)
 let ecdsa = ECDSAEngine()
 let valid = try ecdsa.batchVerifyProbabilistic(signatures: sigs, messages: msgs, publicKeys: keys)
 
+// Circle NTT (Mersenne31)
+let circleNTT = try CircleNTTEngine()
+let transformed = try circleNTT.ntt(m31Values)
+
+// Circle FRI
+let circleFRI = try CircleFRIEngine()
+let commitment = try circleFRI.commitPhase(evaluations: evals, challenges: challenges)
+
+// Basefold PCS (NTT-free)
+let basefold = try BasefoldEngine()
+let bfCommit = try basefold.commit(evaluations: multilinearEvals)
+let bfProof = try basefold.open(commitment: bfCommit, point: evalPoint)
+
+// Fiat-Shamir transcript
+let transcript = Transcript(backend: .keccak256)
+transcript.absorb(commitment)
+let challenge = transcript.squeeze()
+
+// BLS12-381 pairing
+let engine = BLS12381Engine()
+let pairingResult = engine.pairing(g1Point, g2Point)
+
+// Poseidon2 over M31
+let p2m31 = try Poseidon2M31Engine()
+let merkleRoot = try p2m31.merkleCommit(leaves: m31Leaves)
 ```
 
 ### Benchmarks
@@ -427,6 +500,24 @@ swift run -c release zkbench verkle     # Verkle trees
 swift run -c release zkbench lookup     # LogUp lookup argument
 swift run -c release zkbench sparse     # Sparse sumcheck
 swift run -c release zkbench sort       # GPU radix sort
+swift run -c release zkbench lasso      # Lasso structured lookups
+swift run -c release zkbench circle     # Circle NTT + M31 benchmarks
+swift run -c release zkbench circle-fri # Circle FRI over M31
+swift run -c release zkbench p2m31      # Poseidon2 over Mersenne31
+swift run -c release zkbench basefold   # Basefold PCS
+swift run -c release zkbench transcript # Fiat-Shamir transcript
+swift run -c release zkbench witness    # GPU witness generation
+swift run -c release zkbench constraint # Constraint IR evaluation
+swift run -c release zkbench kzg-batch  # Batch KZG openings
+swift run -c release zkbench bls381     # BLS12-381 field + curve + pairing
+swift run -c release zkbench pasta      # Pasta curves (Pallas/Vesta)
+swift run -c release zkbench pastamsm   # Pasta MSM
+swift run -c release zkbench binius     # Binary tower fields
+swift run -c release zkbench fold       # HyperNova folding
+swift run -c release zkbench gkr        # GKR protocol
+swift run -c release zkbench plonk      # Plonk prover
+swift run -c release zkbench serialize  # Proof serialization
+swift run -c release zkbench versions   # Print primitive versions
 swift run -c release zkbench all        # Everything
 swift run -c release zkbench test       # Correctness tests (all primitives)
 swift run -c release zkbench cpu        # CPU-optimized vs GPU comparison

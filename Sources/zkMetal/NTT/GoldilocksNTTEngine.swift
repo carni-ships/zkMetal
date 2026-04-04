@@ -7,6 +7,7 @@ import Foundation
 import Metal
 
 public class GoldilocksNTTEngine {
+    public static let version = Versions.nttGoldilocks
     public let device: MTLDevice
     public let commandQueue: MTLCommandQueue
     let butterflyFunction: MTLComputePipelineState

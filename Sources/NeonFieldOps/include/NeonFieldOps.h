@@ -126,4 +126,125 @@ void secp256k1_point_to_affine(const uint64_t *p, uint64_t *ax, uint64_t *ay);
 void secp256k1_pippenger_msm(const uint64_t *points, const uint32_t *scalars,
                               int n, uint64_t *result);
 
+/// Forward NTT on Goldilocks field using ARM NEON intrinsics.
+/// NEON-vectorized add/sub butterflies with interleaved scalar mul for ILP.
+/// @param data Array of n = 2^logN uint64_t elements in [0, p).
+/// @param logN Log2 of the transform size (1..32).
+void goldilocks_ntt_neon(uint64_t *data, int logN);
+
+/// Inverse NTT on Goldilocks field using ARM NEON intrinsics.
+/// DIF + bit-reversal + 1/n scaling.
+void goldilocks_intt_neon(uint64_t *data, int logN);
+
+/// Batch add: out[i] = a[i] + b[i] mod p, using NEON uint64x2_t.
+void gl_batch_add_neon(const uint64_t *a, const uint64_t *b, uint64_t *out, int n);
+
+/// Batch sub: out[i] = a[i] - b[i] mod p, using NEON uint64x2_t.
+void gl_batch_sub_neon(const uint64_t *a, const uint64_t *b, uint64_t *out, int n);
+
+/// Batch mul: out[i] = a[i] * b[i] mod p, using interleaved scalar for ILP.
+void gl_batch_mul_neon(const uint64_t *a, const uint64_t *b, uint64_t *out, int n);
+
+/// Batch DIT butterfly for NTT stages using NEON add/sub.
+void gl_batch_butterfly_neon(uint64_t *data, const uint64_t *twiddles, int halfBlock, int nBlocks);
+
+/// Batch DIF butterfly for inverse NTT stages using NEON add/sub.
+void gl_batch_butterfly_dif_neon(uint64_t *data, const uint64_t *twiddles, int halfBlock, int nBlocks);
+
+/// ARM64 assembly CIOS Montgomery multiplication for BN254 Fr.
+/// Computes result = a * b * R^{-1} mod p (4-limb, little-endian).
+/// @param result  Output 4 x uint64_t.
+/// @param a       Input 4 x uint64_t (Montgomery form).
+/// @param b       Input 4 x uint64_t (Montgomery form).
+void mont_mul_asm(uint64_t *result, const uint64_t *a, const uint64_t *b);
+
+/// C CIOS Montgomery multiplication for BN254 Fr (for benchmarking comparison).
+/// Same interface as mont_mul_asm.
+void mont_mul_c(uint64_t *result, const uint64_t *a, const uint64_t *b);
+
+/// Batch multiply: data[i] *= multiplier for i in 0..n-1 (ARM64 assembly).
+/// Amortizes function call overhead over n multiplications.
+/// @param data       Array of n elements (4 uint64_t each, modified in-place).
+/// @param multiplier Single element (4 uint64_t).
+/// @param n          Number of elements.
+void mont_mul_batch_asm(uint64_t *data, const uint64_t *multiplier, int n);
+
+/// Batch pairwise multiply: result[i] = a[i] * b[i] for i in 0..n-1.
+void mont_mul_pair_batch_asm(uint64_t *result, const uint64_t *a, const uint64_t *b, int n);
+
+/// C batch multiply (for fair comparison): data[i] *= multiplier.
+void mont_mul_batch_c(uint64_t *data, const uint64_t *multiplier, int n);
+
+/// C pair batch multiply: result[i] = a[i] * b[i].
+void mont_mul_pair_batch_c(uint64_t *result, const uint64_t *a, const uint64_t *b, int n);
+
+/// Test ASM correctness from C. Returns 0 on success, -1 on failure.
+int mont_mul_asm_test(void);
+
+/// Keccak-f1600 permutation (24 rounds on 25x64-bit state) using ARM NEON.
+/// @param state  25 x uint64_t (200 bytes), modified in-place.
+void keccak_f1600_neon(uint64_t state[25]);
+
+/// Keccak-256 hash of arbitrary input using NEON-optimized f1600.
+/// @param input  Input bytes.
+/// @param len    Input length in bytes.
+/// @param output 32-byte output buffer.
+void keccak256_hash_neon(const uint8_t *input, size_t len, uint8_t output[32]);
+
+/// Keccak-256 hash of two concatenated 32-byte inputs (Merkle inner node).
+/// Optimized: 64 bytes < 136-byte rate, so only one f1600 call needed.
+void keccak256_hash_pair_neon(const uint8_t a[32], const uint8_t b[32], uint8_t output[32]);
+
+/// Batch Keccak-256 hash of n pairs of 32-byte inputs.
+/// @param inputs  n x 64 bytes (pairs concatenated).
+/// @param outputs n x 32 bytes.
+/// @param n       Number of pairs.
+void keccak256_batch_hash_pairs_neon(const uint8_t *inputs, uint8_t *outputs, size_t n);
+
+/// Blake3 NEON-optimized parent node hash.
+/// Hashes left(32B) || right(32B) -> output(32B) using Blake3 parent compression.
+/// @param left   32-byte left child hash.
+/// @param right  32-byte right child hash.
+/// @param output 32-byte parent hash output.
+void blake3_hash_pair_neon(const uint8_t left[32], const uint8_t right[32],
+                           uint8_t output[32]);
+
+/// Batch Blake3 parent hashing: n pairs -> n parent hashes.
+/// @param inputs  n * 64 bytes (pairs of 32-byte child hashes, contiguous).
+/// @param outputs n * 32 bytes output.
+/// @param n       Number of pairs.
+void blake3_batch_hash_pairs_neon(const uint8_t *inputs, uint8_t *outputs, size_t n);
+
+/// Batch modular add: result[i] = (a[i] + b[i]) mod p for BN254 Fr.
+/// All arrays are n elements, each 4 uint64_t in Montgomery form.
+/// Branchless conditional subtract, 2x unrolled with prefetch.
+void bn254_fr_batch_add_neon(uint64_t *result, const uint64_t *a,
+                              const uint64_t *b, int n);
+
+/// Batch modular subtract: result[i] = (a[i] - b[i]) mod p.
+void bn254_fr_batch_sub_neon(uint64_t *result, const uint64_t *a,
+                              const uint64_t *b, int n);
+
+/// Batch negate: result[i] = (-a[i]) mod p = p - a[i].
+void bn254_fr_batch_neg_neon(uint64_t *result, const uint64_t *a, int n);
+
+/// Batch scalar multiply: result[i] = a[i] * scalar mod p (Montgomery).
+void bn254_fr_batch_mul_scalar_neon(uint64_t *result, const uint64_t *a,
+                                     const uint64_t *scalar, int n);
+
+/// Multi-threaded batch add (auto-threads for n >= 4096).
+void bn254_fr_batch_add_parallel(uint64_t *result, const uint64_t *a,
+                                  const uint64_t *b, int n);
+
+/// Multi-threaded batch subtract.
+void bn254_fr_batch_sub_parallel(uint64_t *result, const uint64_t *a,
+                                  const uint64_t *b, int n);
+
+/// Multi-threaded batch negate.
+void bn254_fr_batch_neg_parallel(uint64_t *result, const uint64_t *a, int n);
+
+/// Multi-threaded batch scalar multiply.
+void bn254_fr_batch_mul_scalar_parallel(uint64_t *result, const uint64_t *a,
+                                         const uint64_t *scalar, int n);
+
 #endif // NEON_FIELD_OPS_H

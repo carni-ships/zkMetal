@@ -195,27 +195,71 @@ Fr p2_hash_pair(Fr a, Fr b, constant Fr* rc) {
 
 // Fused multi-level Merkle tree: each threadgroup processes a subtree
 // of SUBTREE_SIZE leaves down to 1 hash, eliminating log2(SUBTREE_SIZE)-1 barriers.
-// tg_size must be SUBTREE_SIZE/2 = 512. Shared memory: 1024 Fr = 32KB.
+// Variable-size fused Merkle: subtree_size = 1 << num_levels (max 1024).
+// Shared memory: 1024 Fr max = 32KB.
 #define MERKLE_SUBTREE_SIZE 1024
 
-kernel void poseidon2_merkle_fused(
-    device const Fr* leaves       [[buffer(0)]],    // SUBTREE_SIZE * num_groups leaves
-    device Fr* roots              [[buffer(1)]],    // one result per threadgroup
-    constant Fr* rc               [[buffer(2)]],    // constant address space for uniform broadcast
-    constant uint& num_levels     [[buffer(3)]],    // log2(SUBTREE_SIZE) = 10
+// Batch fused Merkle: each threadgroup processes a different-sized tree.
+// tree_params[tgid*2] = leaf_offset (in Fr elements), tree_params[tgid*2+1] = num_levels
+// Eliminates per-tree dispatch overhead by batching all independent trees into one dispatch.
+kernel void poseidon2_merkle_fused_batch(
+    device const Fr* all_leaves   [[buffer(0)]],
+    device Fr* all_roots          [[buffer(1)]],
+    constant Fr* rc               [[buffer(2)]],
+    device const uint* tree_params [[buffer(3)]],
     uint tid                      [[thread_index_in_threadgroup]],
     uint tgid                     [[threadgroup_position_in_grid]],
     uint tg_size                  [[threads_per_threadgroup]]
 ) {
     threadgroup Fr shared_data[MERKLE_SUBTREE_SIZE];
 
-    // Load leaves into shared memory
-    uint leaf_base = tgid * MERKLE_SUBTREE_SIZE;
-    shared_data[tid] = leaves[leaf_base + tid];
-    shared_data[tid + tg_size] = leaves[leaf_base + tid + tg_size];
+    uint leaf_offset = tree_params[tgid * 2];
+    uint num_levels = tree_params[tgid * 2 + 1];
+    uint subtree_size = 1u << num_levels;
+
+    for (uint i = tid; i < subtree_size; i += tg_size) {
+        shared_data[i] = all_leaves[leaf_offset + i];
+    }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    uint active = MERKLE_SUBTREE_SIZE;
+    uint active = subtree_size;
+    for (uint level = 0; level < num_levels; level++) {
+        uint pairs = active >> 1;
+        if (tid < pairs) {
+            Fr a = shared_data[tid * 2];
+            Fr b = shared_data[tid * 2 + 1];
+            shared_data[tid] = p2_hash_pair(a, b, rc);
+        }
+        active = pairs;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    if (tid == 0) {
+        all_roots[tgid] = shared_data[0];
+    }
+}
+
+kernel void poseidon2_merkle_fused(
+    device const Fr* leaves       [[buffer(0)]],
+    device Fr* roots              [[buffer(1)]],
+    constant Fr* rc               [[buffer(2)]],
+    constant uint& num_levels     [[buffer(3)]],
+    uint tid                      [[thread_index_in_threadgroup]],
+    uint tgid                     [[threadgroup_position_in_grid]],
+    uint tg_size                  [[threads_per_threadgroup]]
+) {
+    threadgroup Fr shared_data[MERKLE_SUBTREE_SIZE];
+
+    uint subtree_size = 1u << num_levels;
+    uint leaf_base = tgid * subtree_size;
+
+    // Generic load: stride loop for variable subtree sizes
+    for (uint i = tid; i < subtree_size; i += tg_size) {
+        shared_data[i] = leaves[leaf_base + i];
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    uint active = subtree_size;
     for (uint level = 0; level < num_levels; level++) {
         uint pairs = active >> 1;
         if (tid < pairs) {

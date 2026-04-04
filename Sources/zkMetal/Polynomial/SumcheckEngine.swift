@@ -6,6 +6,7 @@ import Foundation
 import Metal
 
 public class SumcheckEngine {
+    public static let version = Versions.sumcheck
     public let device: MTLDevice
     public let commandQueue: MTLCommandQueue
     let reduceFunction: MTLComputePipelineState

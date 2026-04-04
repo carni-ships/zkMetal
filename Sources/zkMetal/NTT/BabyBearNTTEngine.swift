@@ -7,6 +7,7 @@ import Foundation
 import Metal
 
 public class BabyBearNTTEngine {
+    public static let version = Versions.nttBabyBear
     public let device: MTLDevice
     public let commandQueue: MTLCommandQueue
     let butterflyFunction: MTLComputePipelineState

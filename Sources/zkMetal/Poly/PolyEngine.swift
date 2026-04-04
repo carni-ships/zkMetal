@@ -4,6 +4,7 @@ import Foundation
 import Metal
 
 public class PolyEngine {
+    public static let version = Versions.poly
     public let device: MTLDevice
     public let commandQueue: MTLCommandQueue
     public let nttEngine: NTTEngine

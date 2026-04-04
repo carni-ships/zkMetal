@@ -34,6 +34,7 @@ public struct ECDSASignature {
 }
 
 public class ECDSAEngine {
+    public static let version = Versions.ecdsa
     public let msmEngine: Secp256k1MSM
 
     public init() throws {

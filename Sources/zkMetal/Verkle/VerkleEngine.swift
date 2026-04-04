@@ -30,6 +30,7 @@ public struct VerklePathProof {
 }
 
 public class VerkleEngine {
+    public static let version = Versions.verkle
     /// Tree branching factor (children per node)
     public let width: Int
     /// IPA engine with width-many generators

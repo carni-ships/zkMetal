@@ -16,9 +16,16 @@ public struct IPAProof {
     public let L: [PointProjective]  // left commitments per round
     public let R: [PointProjective]  // right commitments per round
     public let a: Fr                  // final scalar (length-1 vector)
+
+    public init(L: [PointProjective], R: [PointProjective], a: Fr) {
+        self.L = L
+        self.R = R
+        self.a = a
+    }
 }
 
 public class IPAEngine {
+    public static let version = Versions.ipa
     public let msmEngine: MetalMSM
     let device: MTLDevice
     let commandQueue: MTLCommandQueue
