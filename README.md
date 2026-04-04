@@ -298,11 +298,12 @@ Sparse wiring predicate evaluation: previous dense implementation 3728ms at 2^6 
 
 | Points | BN254 GPU | BLS12-377 GPU | secp256k1 GPU | secp256k1 C Pip | Pallas GPU | Vesta GPU |
 |--------|-----------|---------------|---------------|-----------------|------------|-----------|
-| 2^8 | 1.1ms | 9ms | 1.3ms | 1.4ms | 5.9ms | 4.4ms |
-| 2^10 | 3.0ms | 35ms | 4.3ms | 4.3ms | 12ms | 11ms |
-| 2^14 | 22ms | 36ms | 22ms | 31ms | 194ms | 204ms |
-| 2^16 | 27ms | 176ms | 38ms | 92ms | 40ms | 51ms |
-| 2^18 | 45ms | 205ms | 78ms | 339ms | -- | -- |
+| 2^8 | 1.1ms | 9ms | 1.3ms | 1.4ms | 5.3ms | 4.9ms |
+| 2^10 | 3.0ms | 35ms | 4.3ms | 4.3ms | 12ms | 10ms |
+| 2^12 | -- | -- | -- | -- | 17ms | 17ms |
+| 2^14 | 22ms | 36ms | 22ms | 31ms | 20ms | 20ms |
+| 2^16 | 27ms | 176ms | 38ms | 92ms | 39ms | 39ms |
+| 2^18 | 45ms | 205ms | 78ms | 339ms | 66ms | 65ms |
 
 ### CPU Optimizations
 

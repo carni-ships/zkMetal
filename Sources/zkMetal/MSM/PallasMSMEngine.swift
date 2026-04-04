@@ -257,10 +257,8 @@ public class PallasMSM {
             windowBits = 8
         } else if effectiveN <= 4096 {
             windowBits = 10
-        } else if effectiveN <= 16384 {
-            windowBits = 11
         } else if effectiveN <= 65536 {
-            windowBits = 13
+            windowBits = 13  // Skip wb=11/12: avoids M3 GPU pathology at 1025/2049 bucket counts
         } else {
             windowBits = 15
         }

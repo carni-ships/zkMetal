@@ -200,7 +200,7 @@ public func runPastaMSMBench() {
         let pGen = pallasGenerator()
         let pGProj = pallasPointFromAffine(pGen)
 
-        let logSizes = [8, 10, 12, 14, 16]
+        let logSizes = [8, 10, 12, 14, 16, 18]
         let maxN = 1 << logSizes.last!
 
         fputs("Generating \(maxN) Pallas points...\n", stderr)
