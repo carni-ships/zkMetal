@@ -53,6 +53,7 @@ runHyperNovaTests()
 runTranscriptHardeningTests()
 runAIRTraceGenTests()
 runNovaFoldingTests()
+runLogUpGKRTests()
 
 let elapsed = CFAbsoluteTimeGetCurrent() - t0
 print(String(format: "\nCompleted in %.1fs", elapsed))
