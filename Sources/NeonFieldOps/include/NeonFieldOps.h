@@ -720,6 +720,29 @@ void ed25519_direct_to_mont(const uint64_t direct[4], uint64_t mont[4]);
 void ed25519_pippenger_msm(const uint64_t *points, const uint32_t *scalars,
                             int n, uint64_t *result);
 
+// Ed25519 scalar field Fq (order q = 2^252 + 27742317777372353535851937790883648493)
+void ed25519_fq_mul(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]);
+void ed25519_fq_add(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]);
+void ed25519_fq_sub(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]);
+void ed25519_fq_from_raw(const uint64_t raw[4], uint64_t mont[4]);
+void ed25519_fq_to_raw(const uint64_t mont[4], uint64_t raw[4]);
+void ed25519_fq_from_bytes64(const uint8_t bytes[64], uint64_t mont[4]);
+void ed25519_fq_to_bytes(const uint64_t mont[4], uint8_t bytes[32]);
+
+// Ed25519 Shamir's trick: simultaneous s*G + h*A
+void ed25519_shamir_double_mul(const uint64_t G[16], const uint64_t s[4],
+                                const uint64_t A[16], const uint64_t h[4],
+                                uint64_t result[16]);
+
+// Ed25519 EdDSA sign/verify helpers
+void ed25519_eddsa_sign_compute_r(const uint64_t gen[16], const uint64_t r_scalar[4],
+                                   uint64_t r_point[16]);
+void ed25519_eddsa_sign_compute_s(const uint64_t r_mont[4], const uint64_t k_mont[4],
+                                   const uint64_t a_mont[4], uint64_t s_mont[4]);
+int ed25519_eddsa_verify(const uint64_t gen[16], const uint64_t s_raw[4],
+                          const uint64_t r_point[16], const uint64_t h_raw[4],
+                          const uint64_t pub_key[16]);
+
 // ============================================================
 // Pallas curve (y^2 = x^3 + 5 over Fp)
 // ============================================================

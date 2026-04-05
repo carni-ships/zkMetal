@@ -7,6 +7,7 @@
 // Uses SHA-512 for hashing (via CommonCrypto).
 
 import Foundation
+import NeonFieldOps
 #if canImport(CryptoKit)
 import CryptoKit
 #endif
@@ -91,32 +92,54 @@ public class EdDSAEngine {
 
     public init() {}
 
-    /// Sign a message using Ed25519 (RFC 8032)
+    /// Sign a message using Ed25519 (RFC 8032) — C-accelerated
     public func sign(message: [UInt8], secretKey: EdDSASecretKey) -> EdDSASignature {
         // r = SHA-512(nonceSeed || message) mod q
         let rHash = sha512(secretKey.nonceSeed + message)
-        let r = ed25519FqFromBytes64(rHash)
 
-        // R = r * G
+        // Use C for hash-to-scalar
+        var rMont = [UInt64](repeating: 0, count: 4)
+        rHash.withUnsafeBufferPointer { hashPtr in
+            ed25519_fq_from_bytes64(hashPtr.baseAddress!, &rMont)
+        }
+
+        // Get r as raw integer for scalar mul
+        var rRaw = [UInt64](repeating: 0, count: 4)
+        ed25519_fq_to_raw(&rMont, &rRaw)
+
+        // R = r * G using C scalar mul
         let gen = ed25519Generator()
-        let genExt = ed25519PointFromAffine(gen)
-        let rPoint = ed25519PointMulScalar(genExt, ed25519FqToInt(r))
-        let rAff = ed25519PointToAffine(rPoint)
-        let rEncoded = ed25519PointEncode(rAff)
+        var genExt = ed25519PointToExtLimbs(ed25519PointFromAffine(gen))
+        var rPointExt = [UInt64](repeating: 0, count: 16)
+        ed25519_eddsa_sign_compute_r(&genExt, &rRaw, &rPointExt)
 
-        // k = SHA-512(R || A || M) mod q
+        // Convert R to affine and encode
+        var rAff = [UInt64](repeating: 0, count: 8)
+        ed25519_point_to_affine(&rPointExt, &rAff)
+        let rAffine = ed25519AffineFromLimbs(rAff)
+        let rEncoded = ed25519PointEncode(rAffine)
+
+        // k = SHA-512(R || A || M) mod q using C
         let kHash = sha512(rEncoded + secretKey.publicKey.encoded + message)
-        let k = ed25519FqFromBytes64(kHash)
+        var kMont = [UInt64](repeating: 0, count: 4)
+        kHash.withUnsafeBufferPointer { hashPtr in
+            ed25519_fq_from_bytes64(hashPtr.baseAddress!, &kMont)
+        }
 
-        // S = (r + k * a) mod q
-        let s = ed25519FqAdd(r, ed25519FqMul(k, secretKey.scalar))
-        let sBytes = ed25519FqToBytes(s)
+        // S = (r + k * a) mod q using C
+        var aMont = secretKey.scalar.toLimbs()
+        var sMont = [UInt64](repeating: 0, count: 4)
+        ed25519_eddsa_sign_compute_s(&rMont, &kMont, &aMont, &sMont)
+
+        // Convert S to bytes
+        var sBytes = [UInt8](repeating: 0, count: 32)
+        ed25519_fq_to_bytes(&sMont, &sBytes)
 
         return EdDSASignature(r: rEncoded, s: sBytes)
     }
 
-    /// Verify an Ed25519 signature (RFC 8032)
-    /// Check: [S]G = R + [k]A
+    /// Verify an Ed25519 signature (RFC 8032) — C-accelerated with Shamir's trick
+    /// Check: s*G == R + h*A (equivalently, s*G + h*(-A) == R)
     public func verify(signature: EdDSASignature, message: [UInt8], publicKey: EdDSAPublicKey) -> Bool {
         // Decode R
         guard let rPoint = ed25519PointDecode(signature.r) else { return false }
@@ -131,55 +154,73 @@ public class EdDSAEngine {
         // S must be < q
         if ed25519FqGte(sLimbs, Ed25519Fq.Q) { return false }
 
-        // k = SHA-512(R || A || M) mod q
+        // k = SHA-512(R || A || M) mod q using C
         let kHash = sha512(signature.r + publicKey.encoded + message)
-        let k = ed25519FqFromBytes64(kHash)
+        var kMont = [UInt64](repeating: 0, count: 4)
+        kHash.withUnsafeBufferPointer { hashPtr in
+            ed25519_fq_from_bytes64(hashPtr.baseAddress!, &kMont)
+        }
+        var hRaw = [UInt64](repeating: 0, count: 4)
+        ed25519_fq_to_raw(&kMont, &hRaw)
 
-        // Verify: [S]G == R + [k]A
+        // Convert points to C format (16 x uint64 extended coords)
         let gen = ed25519Generator()
-        let genExt = ed25519PointFromAffine(gen)
-        let sG = ed25519PointMulScalar(genExt, sLimbs)
+        var genExt = ed25519PointToExtLimbs(ed25519PointFromAffine(gen))
+        var rExt = ed25519PointToExtLimbs(ed25519PointFromAffine(rPoint))
+        var aExt = ed25519PointToExtLimbs(ed25519PointFromAffine(publicKey.point))
 
-        let rExt = ed25519PointFromAffine(rPoint)
-        let aExt = ed25519PointFromAffine(publicKey.point)
-        let kA = ed25519PointMulScalar(aExt, ed25519FqToInt(k))
-        let rPlusKA = ed25519PointAdd(rExt, kA)
-
-        // Compare by converting to affine
-        let lhs = ed25519PointToAffine(sG)
-        let rhs = ed25519PointToAffine(rPlusKA)
-        return ed25519FpToInt(lhs.x) == ed25519FpToInt(rhs.x) &&
-               ed25519FpToInt(lhs.y) == ed25519FpToInt(rhs.y)
+        // C verify: Shamir's trick s*G + h*(-A) == R
+        let valid = ed25519_eddsa_verify(&genExt, &sLimbs, &rExt, &hRaw, &aExt)
+        return valid != 0
     }
 
-    /// Batch verify N signatures using random linear combination
+    /// Batch verify N signatures using random linear combination — C-accelerated
     /// Returns true iff ALL signatures are valid (with negligible false positive probability ~2^-128)
     ///
     /// Algorithm: choose random z_i, check:
     ///   [sum(z_i * S_i)]G - sum(z_i * R_i) - sum(z_i * k_i * A_i) == identity
+    ///
+    /// Uses the C Pippenger MSM for the multi-scalar multiplication.
     public func batchVerify(signatures: [EdDSASignature], messages: [[UInt8]],
                             publicKeys: [EdDSAPublicKey]) -> Bool {
         let n = signatures.count
         precondition(messages.count == n && publicKeys.count == n)
         if n == 0 { return true }
+        if n == 1 { return verify(signature: signatures[0], message: messages[0], publicKey: publicKeys[0]) }
 
-        // Generate random 128-bit weights
+        // Generate random 128-bit weights using C Fq ops
         var rng: UInt64 = UInt64(CFAbsoluteTimeGetCurrent().bitPattern) ^ 0xDEADBEEFCAFEBABE
-        var weights = [Ed25519Fq]()
-        for _ in 0..<n {
+        var weights = [[UInt64]](repeating: [UInt64](repeating: 0, count: 4), count: n)
+        for i in 0..<n {
             rng = rng &* 6364136223846793005 &+ 1442695040888963407
             let w0 = rng
             rng = rng &* 6364136223846793005 &+ 1442695040888963407
             let w1 = rng
-            weights.append(ed25519FqFromRaw([w0, w1, 0, 0]))
+            var raw: [UInt64] = [w0, w1, 0, 0]
+            var mont = [UInt64](repeating: 0, count: 4)
+            ed25519_fq_from_raw(&raw, &mont)
+            weights[i] = mont
         }
 
-        // Accumulate: sum(z_i * S_i) for G scalar
-        var gScalar = Ed25519Fq.zero
+        // Build MSM: we need 2*n+1 points and scalars
+        // Points:  G, R_0, ..., R_{n-1}, A_0, ..., A_{n-1}
+        // Scalars: sum(z_i*S_i), -z_0, ..., -z_{n-1}, -z_0*k_0, ..., -z_{n-1}*k_{n-1}
+        //
+        // Final: sum(z_i*S_i)*G - sum(z_i*R_i) - sum(z_i*k_i*A_i) == identity
+        //
+        // For efficiency, collect all points and scalars for the C Pippenger MSM.
 
-        // Sum up: result = sum(z_i * S_i) * G - sum(z_i * R_i) - sum(z_i * k_i * A_i)
-        var rAccum = ed25519PointIdentity()
-        var aAccum = ed25519PointIdentity()
+        let totalPoints = 2 * n + 1
+        var affPoints = [UInt64](repeating: 0, count: totalPoints * 8)
+        var scalars32 = [UInt32](repeating: 0, count: totalPoints * 8)
+
+        // Point 0: Generator G
+        let gen = ed25519Generator()
+        let genFp = ed25519PointToAffineLimbs(gen)
+        for j in 0..<8 { affPoints[j] = genFp[j] }
+
+        // Accumulate gScalar = sum(z_i * S_i) in Montgomery
+        var gScalarMont = [UInt64](repeating: 0, count: 4)
 
         for i in 0..<n {
             // Decode S_i
@@ -190,38 +231,111 @@ public class EdDSAEngine {
                 }
             }
             if ed25519FqGte(sLimbs, Ed25519Fq.Q) { return false }
-            let sMont = ed25519FqFromRaw(sLimbs)
+            var sMont = [UInt64](repeating: 0, count: 4)
+            ed25519_fq_from_raw(&sLimbs, &sMont)
+
+            // gScalar += z_i * S_i
+            var ziSi = [UInt64](repeating: 0, count: 4)
+            ed25519_fq_mul(&weights[i], &sMont, &ziSi)
+            var tmp = [UInt64](repeating: 0, count: 4)
+            ed25519_fq_add(&gScalarMont, &ziSi, &tmp)
+            gScalarMont = tmp
 
             // k_i = H(R_i || A_i || M_i)
             let kHash = sha512(signatures[i].r + publicKeys[i].encoded + messages[i])
-            let k = ed25519FqFromBytes64(kHash)
+            var kMont = [UInt64](repeating: 0, count: 4)
+            kHash.withUnsafeBufferPointer { hashPtr in
+                ed25519_fq_from_bytes64(hashPtr.baseAddress!, &kMont)
+            }
 
-            // Decode R_i
-            guard let rPoint = ed25519PointDecode(signatures[i].r) else { return false }
+            // Decode R_i and set as point (1 + i)
+            guard let rAff = ed25519PointDecode(signatures[i].r) else { return false }
+            let rLimbs = ed25519PointToAffineLimbs(rAff)
+            let rIdx = (1 + i) * 8
+            for j in 0..<8 { affPoints[rIdx + j] = rLimbs[j] }
 
-            // Accumulate: gScalar += z_i * S_i
-            gScalar = ed25519FqAdd(gScalar, ed25519FqMul(weights[i], sMont))
+            // Scalar for R_i: negate z_i (we subtract R_i contribution)
+            // In Fq: neg(z_i) = q - z_i
+            var negZi = [UInt64](repeating: 0, count: 4)
+            var zeroFq = [UInt64](repeating: 0, count: 4)
+            ed25519_fq_sub(&zeroFq, &weights[i], &negZi)
+            var negZiRaw = [UInt64](repeating: 0, count: 4)
+            ed25519_fq_to_raw(&negZi, &negZiRaw)
+            let rSIdx = (1 + i) * 8
+            for j in 0..<4 {
+                scalars32[rSIdx + j * 2] = UInt32(negZiRaw[j] & 0xFFFFFFFF)
+                scalars32[rSIdx + j * 2 + 1] = UInt32(negZiRaw[j] >> 32)
+            }
 
-            // rAccum += z_i * R_i
-            let rExt = ed25519PointFromAffine(rPoint)
-            let ziRi = ed25519PointMulScalar(rExt, ed25519FqToInt(weights[i]))
-            rAccum = ed25519PointAdd(rAccum, ziRi)
+            // Set A_i as point (1 + n + i)
+            let aLimbs = ed25519PointToAffineLimbs(publicKeys[i].point)
+            let aIdx = (1 + n + i) * 8
+            for j in 0..<8 { affPoints[aIdx + j] = aLimbs[j] }
 
-            // aAccum += z_i * k_i * A_i
-            let zk = ed25519FqMul(weights[i], k)
-            let aExt = ed25519PointFromAffine(publicKeys[i].point)
-            let zkA = ed25519PointMulScalar(aExt, ed25519FqToInt(zk))
-            aAccum = ed25519PointAdd(aAccum, zkA)
+            // Scalar for A_i: negate z_i * k_i
+            var zkMont = [UInt64](repeating: 0, count: 4)
+            ed25519_fq_mul(&weights[i], &kMont, &zkMont)
+            var negZk = [UInt64](repeating: 0, count: 4)
+            ed25519_fq_sub(&zeroFq, &zkMont, &negZk)
+            var negZkRaw = [UInt64](repeating: 0, count: 4)
+            ed25519_fq_to_raw(&negZk, &negZkRaw)
+            let aSIdx = (1 + n + i) * 8
+            for j in 0..<4 {
+                scalars32[aSIdx + j * 2] = UInt32(negZkRaw[j] & 0xFFFFFFFF)
+                scalars32[aSIdx + j * 2 + 1] = UInt32(negZkRaw[j] >> 32)
+            }
         }
 
-        // Final check: gScalar * G - rAccum - aAccum == identity
-        let gen = ed25519Generator()
-        let genExt = ed25519PointFromAffine(gen)
-        let sG = ed25519PointMulScalar(genExt, ed25519FqToInt(gScalar))
-        let result = ed25519PointAdd(sG, ed25519PointNeg(ed25519PointAdd(rAccum, aAccum)))
+        // Set G scalar (index 0)
+        var gScalarRaw = [UInt64](repeating: 0, count: 4)
+        ed25519_fq_to_raw(&gScalarMont, &gScalarRaw)
+        for j in 0..<4 {
+            scalars32[j * 2] = UInt32(gScalarRaw[j] & 0xFFFFFFFF)
+            scalars32[j * 2 + 1] = UInt32(gScalarRaw[j] >> 32)
+        }
 
-        return ed25519PointIsIdentity(result)
+        // Run C Pippenger MSM
+        var result = [UInt64](repeating: 0, count: 16)
+        ed25519_pippenger_msm(&affPoints, &scalars32, Int32(totalPoints), &result)
+
+        // Check if result is identity
+        let resultExt = ed25519ExtFromLimbs(result)
+        return ed25519PointIsIdentity(resultExt)
     }
+}
+
+// MARK: - Swift <-> C limb conversion helpers
+
+/// Convert Swift extended point to 16 x UInt64 limb array for C
+func ed25519PointToExtLimbs(_ p: Ed25519PointExtended) -> [UInt64] {
+    [p.x.v.0, p.x.v.1, p.x.v.2, p.x.v.3,
+     p.y.v.0, p.y.v.1, p.y.v.2, p.y.v.3,
+     p.z.v.0, p.z.v.1, p.z.v.2, p.z.v.3,
+     p.t.v.0, p.t.v.1, p.t.v.2, p.t.v.3]
+}
+
+/// Convert 16 x UInt64 limb array back to Swift extended point
+func ed25519ExtFromLimbs(_ l: [UInt64]) -> Ed25519PointExtended {
+    Ed25519PointExtended(
+        x: Ed25519Fp(v: (l[0], l[1], l[2], l[3])),
+        y: Ed25519Fp(v: (l[4], l[5], l[6], l[7])),
+        z: Ed25519Fp(v: (l[8], l[9], l[10], l[11])),
+        t: Ed25519Fp(v: (l[12], l[13], l[14], l[15]))
+    )
+}
+
+/// Convert Swift affine point to 8 x UInt64 limb array for C
+func ed25519PointToAffineLimbs(_ p: Ed25519PointAffine) -> [UInt64] {
+    [p.x.v.0, p.x.v.1, p.x.v.2, p.x.v.3,
+     p.y.v.0, p.y.v.1, p.y.v.2, p.y.v.3]
+}
+
+/// Convert 8 x UInt64 limb array to Swift affine point
+func ed25519AffineFromLimbs(_ l: [UInt64]) -> Ed25519PointAffine {
+    Ed25519PointAffine(
+        x: Ed25519Fp(v: (l[0], l[1], l[2], l[3])),
+        y: Ed25519Fp(v: (l[4], l[5], l[6], l[7]))
+    )
 }
 
 // MARK: - SHA-512 helper

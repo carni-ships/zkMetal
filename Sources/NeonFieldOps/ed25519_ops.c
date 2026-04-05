@@ -977,3 +977,313 @@ void ed25519_pippenger_msm(
     free(tasks);
     free(threads);
 }
+
+// ============================================================
+// Ed25519 Scalar Field Fq (order of the curve)
+// q = 2^252 + 27742317777372353535851937790883648493
+//   = 0x1000000000000000000000000000000014def9dea2f79cd65812631a5cf5d3ed
+//
+// Montgomery form with R = 2^256
+// CIOS multiplication
+// ============================================================
+
+static const uint64_t ED_Q[4] = {
+    0x5812631a5cf5d3edULL, 0x14def9dea2f79cd6ULL,
+    0x0000000000000000ULL, 0x1000000000000000ULL
+};
+
+// -q^{-1} mod 2^64
+static const uint64_t ED_Q_INV = 0xd2b51da312547e1bULL;
+
+// R mod q = 2^256 mod q
+static const uint64_t ED_R_MOD_Q[4] = {
+    0xd6ec31748d98951dULL, 0xc6ef5bf4737dcf70ULL,
+    0xfffffffffffffffeULL, 0x0fffffffffffffffULL
+};
+
+// R^2 mod q
+static const uint64_t ED_R2_MOD_Q[4] = {
+    0xa40611e3449c0f01ULL, 0xd00e1ba768859347ULL,
+    0xceec73d217f5be65ULL, 0x0399411b7c309a3dULL
+};
+
+// Fq comparison: return 1 if a >= b
+static inline int ed_fq_gte(const uint64_t a[4], const uint64_t b[4]) {
+    for (int i = 3; i >= 0; i--) {
+        if (a[i] > b[i]) return 1;
+        if (a[i] < b[i]) return 0;
+    }
+    return 1;  // equal
+}
+
+// Fq conditional subtract: if a >= q, set a -= q
+static inline void ed_fq_reduce(uint64_t a[4]) {
+    if (!ed_fq_gte(a, ED_Q)) return;
+    uint128_t w = (uint128_t)a[0] - ED_Q[0];
+    a[0] = (uint64_t)w;
+    int borrow = (w >> 127) ? 1 : 0;
+    w = (uint128_t)a[1] - ED_Q[1] - borrow;
+    a[1] = (uint64_t)w;
+    borrow = (w >> 127) ? 1 : 0;
+    w = (uint128_t)a[2] - ED_Q[2] - borrow;
+    a[2] = (uint64_t)w;
+    borrow = (w >> 127) ? 1 : 0;
+    a[3] = a[3] - ED_Q[3] - borrow;
+}
+
+// Fq CIOS Montgomery multiplication
+void ed25519_fq_mul(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]) {
+    uint64_t t[6] = {0};
+
+    for (int i = 0; i < 4; i++) {
+        // Multiply: t += a[i] * b
+        uint64_t carry = 0;
+        for (int j = 0; j < 4; j++) {
+            uint128_t w = (uint128_t)a[i] * b[j] + t[j] + carry;
+            t[j] = (uint64_t)w;
+            carry = (uint64_t)(w >> 64);
+        }
+        uint128_t w = (uint128_t)t[4] + carry;
+        t[4] = (uint64_t)w;
+        t[5] = (uint64_t)(w >> 64);
+
+        // Reduce: m = t[0] * (-q^{-1}) mod 2^64, then t += m * q, shift right
+        uint64_t m = t[0] * ED_Q_INV;
+        carry = 0;
+        for (int j = 0; j < 4; j++) {
+            uint128_t w2 = (uint128_t)m * ED_Q[j] + t[j] + carry;
+            t[j] = (uint64_t)w2;
+            carry = (uint64_t)(w2 >> 64);
+        }
+        w = (uint128_t)t[4] + carry;
+        t[4] = (uint64_t)w;
+        t[5] = t[5] + (uint64_t)(w >> 64);
+
+        // Shift right by one limb
+        t[0] = t[1]; t[1] = t[2]; t[2] = t[3]; t[3] = t[4]; t[4] = t[5]; t[5] = 0;
+    }
+
+    memcpy(r, t, 32);
+    if (t[4] || ed_fq_gte(r, ED_Q)) {
+        uint128_t w = (uint128_t)r[0] - ED_Q[0];
+        r[0] = (uint64_t)w;
+        int borrow = (w >> 127) ? 1 : 0;
+        w = (uint128_t)r[1] - ED_Q[1] - borrow;
+        r[1] = (uint64_t)w;
+        borrow = (w >> 127) ? 1 : 0;
+        w = (uint128_t)r[2] - ED_Q[2] - borrow;
+        r[2] = (uint64_t)w;
+        borrow = (w >> 127) ? 1 : 0;
+        r[3] = r[3] - ED_Q[3] - borrow;
+    }
+}
+
+void ed25519_fq_add(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]) {
+    uint64_t carry = 0;
+    for (int i = 0; i < 4; i++) {
+        uint128_t w = (uint128_t)a[i] + b[i] + carry;
+        r[i] = (uint64_t)w;
+        carry = (uint64_t)(w >> 64);
+    }
+    if (carry || ed_fq_gte(r, ED_Q)) {
+        uint128_t w = (uint128_t)r[0] - ED_Q[0];
+        r[0] = (uint64_t)w;
+        int borrow = (w >> 127) ? 1 : 0;
+        w = (uint128_t)r[1] - ED_Q[1] - borrow;
+        r[1] = (uint64_t)w;
+        borrow = (w >> 127) ? 1 : 0;
+        w = (uint128_t)r[2] - ED_Q[2] - borrow;
+        r[2] = (uint64_t)w;
+        borrow = (w >> 127) ? 1 : 0;
+        r[3] = r[3] - ED_Q[3] - borrow;
+    }
+}
+
+void ed25519_fq_sub(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]) {
+    uint128_t w = (uint128_t)a[0] - b[0];
+    r[0] = (uint64_t)w;
+    int borrow = (w >> 127) ? 1 : 0;
+    w = (uint128_t)a[1] - b[1] - borrow;
+    r[1] = (uint64_t)w;
+    borrow = (w >> 127) ? 1 : 0;
+    w = (uint128_t)a[2] - b[2] - borrow;
+    r[2] = (uint64_t)w;
+    borrow = (w >> 127) ? 1 : 0;
+    w = (uint128_t)a[3] - b[3] - borrow;
+    r[3] = (uint64_t)w;
+    borrow = (w >> 127) ? 1 : 0;
+    if (borrow) {
+        w = (uint128_t)r[0] + ED_Q[0];
+        r[0] = (uint64_t)w;
+        uint64_t c = (uint64_t)(w >> 64);
+        w = (uint128_t)r[1] + ED_Q[1] + c;
+        r[1] = (uint64_t)w;
+        c = (uint64_t)(w >> 64);
+        w = (uint128_t)r[2] + ED_Q[2] + c;
+        r[2] = (uint64_t)w;
+        c = (uint64_t)(w >> 64);
+        r[3] = r[3] + ED_Q[3] + c;
+    }
+}
+
+// Convert raw integer to Montgomery: result = raw * R^2 mod q (via CIOS)
+void ed25519_fq_from_raw(const uint64_t raw[4], uint64_t mont[4]) {
+    ed25519_fq_mul(raw, ED_R2_MOD_Q, mont);
+}
+
+// Convert Montgomery to raw integer: result = mont * 1 (CIOS with b=1)
+void ed25519_fq_to_raw(const uint64_t mont[4], uint64_t raw[4]) {
+    uint64_t one[4] = {1, 0, 0, 0};
+    ed25519_fq_mul(mont, one, raw);
+}
+
+// Reduce a 512-bit (64-byte) value mod q, result in Montgomery form.
+// Used for hash-to-scalar in EdDSA.
+// Method: split into lo[0..31] and hi[0..31], compute hi * 2^256 + lo mod q.
+// 2^256 mod q = R_MOD_Q (constant).
+void ed25519_fq_from_bytes64(const uint8_t bytes[64], uint64_t mont[4]) {
+    uint64_t lo[4] = {0}, hi[4] = {0};
+    for (int i = 0; i < 4; i++) {
+        for (int j = 0; j < 8; j++) {
+            lo[i] |= (uint64_t)bytes[i * 8 + j] << (j * 8);
+            hi[i] |= (uint64_t)bytes[32 + i * 8 + j] << (j * 8);
+        }
+    }
+    // Convert to Montgomery: lo_mont = lo * R^2, hi_mont = hi * R^2
+    uint64_t lo_mont[4], hi_mont[4];
+    ed25519_fq_from_raw(lo, lo_mont);
+    ed25519_fq_from_raw(hi, hi_mont);
+    // R_MOD_Q in Montgomery = R_MOD_Q * R^2 / R = R_MOD_Q * R mod q
+    // Actually we need R_MOD_Q in Montgomery form
+    uint64_t r_mod_q_mont[4];
+    ed25519_fq_from_raw(ED_R_MOD_Q, r_mod_q_mont);
+    // hi_mont * r_mod_q_mont = hi * R_MOD_Q in Montgomery
+    uint64_t hi_times_r[4];
+    ed25519_fq_mul(hi_mont, r_mod_q_mont, hi_times_r);
+    ed25519_fq_add(hi_times_r, lo_mont, mont);
+}
+
+// Convert Montgomery Fq to 32-byte little-endian output
+void ed25519_fq_to_bytes(const uint64_t mont[4], uint8_t bytes[32]) {
+    uint64_t raw[4];
+    ed25519_fq_to_raw(mont, raw);
+    for (int i = 0; i < 4; i++) {
+        for (int j = 0; j < 8; j++) {
+            bytes[i * 8 + j] = (uint8_t)(raw[i] >> (j * 8));
+        }
+    }
+}
+
+// ============================================================
+// Shamir's Trick: simultaneous double-scalar multiplication
+// Computes s*G + h*A using a joint scan (Straus/Shamir method).
+//
+// For Ed25519 verify: check s*G == R + h*A, i.e. s*G - h*A == R.
+// We compute s*G + h*(-A) and compare with R.
+//
+// This uses a 2-bit window (one bit from each scalar) for ~25% savings.
+// ============================================================
+
+void ed25519_shamir_double_mul(
+    const uint64_t G[16],     // base point (extended)
+    const uint64_t s[4],      // scalar for G (raw integer, NOT Montgomery)
+    const uint64_t A[16],     // second point (extended)
+    const uint64_t h[4],      // scalar for A (raw integer, NOT Montgomery)
+    uint64_t result[16])      // output (extended)
+{
+    // Precompute: table[0] = identity, table[1] = G, table[2] = A, table[3] = G+A
+    uint64_t table[4][16];
+    ed_identity(table[0]);
+    memcpy(table[1], G, 128);
+    memcpy(table[2], A, 128);
+    ed_point_add(G, A, table[3]);
+
+    ed_identity(result);
+
+    // Scan from MSB to LSB
+    for (int i = 252; i >= 0; i--) {
+        // Double
+        uint64_t tmp[16];
+        ed_point_double(result, tmp);
+        memcpy(result, tmp, 128);
+
+        // Extract bits
+        int word_s = i / 64, bit_s = i % 64;
+        int word_h = i / 64, bit_h = i % 64;
+        int bs = (s[word_s] >> bit_s) & 1;
+        int bh = (h[word_h] >> bit_h) & 1;
+        int idx = bs | (bh << 1);
+
+        if (idx != 0) {
+            ed_point_add(result, table[idx], tmp);
+            memcpy(result, tmp, 128);
+        }
+    }
+}
+
+// ============================================================
+// Ed25519 EdDSA Sign (C-accelerated)
+//
+// Given nonce scalar r (raw), compute R = r*G and return R as
+// extended point. The caller handles hashing.
+// ============================================================
+
+void ed25519_eddsa_sign_compute_r(
+    const uint64_t gen[16],     // generator (extended)
+    const uint64_t r_scalar[4], // nonce scalar (raw integer)
+    uint64_t r_point[16])       // output R (extended)
+{
+    ed25519_scalar_mul(gen, r_scalar, r_point);
+}
+
+// Compute S = (r + k * a) mod q, all in Montgomery form
+void ed25519_eddsa_sign_compute_s(
+    const uint64_t r_mont[4],   // nonce in Montgomery form
+    const uint64_t k_mont[4],   // challenge hash in Montgomery form
+    const uint64_t a_mont[4],   // secret scalar in Montgomery form
+    uint64_t s_mont[4])         // output S in Montgomery form
+{
+    uint64_t ka[4];
+    ed25519_fq_mul(k_mont, a_mont, ka);
+    ed25519_fq_add(r_mont, ka, s_mont);
+}
+
+// ============================================================
+// Ed25519 EdDSA Verify (C-accelerated)
+//
+// Check: s*G == R + h*A
+// Equivalently: s*G + h*(-A) - R == identity
+// Using Shamir's trick for s*G + h*(-A)
+// ============================================================
+
+int ed25519_eddsa_verify(
+    const uint64_t gen[16],     // generator (extended)
+    const uint64_t s_raw[4],    // S scalar (raw integer, NOT Montgomery)
+    const uint64_t r_point[16], // R point (extended)
+    const uint64_t h_raw[4],    // challenge hash (raw integer)
+    const uint64_t pub_key[16]) // public key A (extended)
+{
+    // Negate A: for twisted Edwards, neg(X,Y,Z,T) = (-X,Y,Z,-T)
+    uint64_t neg_a[16];
+    ed25519_fp_neg(pub_key, neg_a);          // -X
+    memcpy(neg_a + 4, pub_key + 4, 32);     // Y
+    memcpy(neg_a + 8, pub_key + 8, 32);     // Z
+    ed25519_fp_neg(pub_key + 12, neg_a + 12); // -T
+
+    // Compute s*G + h*(-A) using Shamir's trick
+    uint64_t lhs[16];
+    ed25519_shamir_double_mul(gen, s_raw, neg_a, h_raw, lhs);
+
+    // Compare lhs with R by converting both to affine
+    uint64_t lhs_aff[8], r_aff[8];
+    ed25519_point_to_affine(lhs, lhs_aff);
+    ed25519_point_to_affine(r_point, r_aff);
+
+    // Final reduce both for comparison
+    ed_final_reduce(lhs_aff);
+    ed_final_reduce(lhs_aff + 4);
+    ed_final_reduce(r_aff);
+    ed_final_reduce(r_aff + 4);
+
+    return memcmp(lhs_aff, r_aff, 64) == 0;
+}
