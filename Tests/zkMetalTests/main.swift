@@ -30,6 +30,7 @@ runCosetLDETests()
 runAIRDSLTests()
 runPlonkGateTests()
 runTranscriptTests()
+runGPUBufferPoolTests()
 
 let elapsed = CFAbsoluteTimeGetCurrent() - t0
 print(String(format: "\nCompleted in %.1fs", elapsed))
