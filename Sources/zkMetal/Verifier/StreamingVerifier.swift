@@ -831,7 +831,8 @@ public class StreamingVerifier {
 
     /// Sequential (non-pipelined) FRI verification for benchmarking comparison.
     /// Does everything on CPU without GPU batch verification.
+    /// Supports fold-by-2, fold-by-4, and fold-by-8 commitments via auto-detection.
     public func verifyFRISequential(commitment: FRICommitment, queries: [FRIQueryProof]) -> Bool {
-        return friEngine.verify(commitment: commitment, queries: queries)
+        return friEngine.verifyProof(commitment: commitment, queries: queries)
     }
 }

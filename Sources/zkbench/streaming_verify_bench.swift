@@ -37,18 +37,18 @@ public func runStreamingVerifyBench() {
                 evals.append(frFromInt(rng >> 32))
             }
 
-            // Generate FRI challenges
-            let numFolds = min(logN, logN)  // fold all the way down
+            // Generate FRI challenges (using fold-by-4 default)
+            let numBetas = friEngine.defaultFoldMode.betaCount(logN: logN)
             var betas = [Fr]()
-            for i in 0..<numFolds {
+            for i in 0..<numBetas {
                 betas.append(frFromInt(UInt64(i + 1) * 13 + 7))
             }
 
-            // Commit phase
+            // Commit phase (fold-by-4 default)
             let commitT0 = CFAbsoluteTimeGetCurrent()
-            let commitment = try friEngine.commitPhase(evals: evals, betas: betas)
+            let commitment = try friEngine.commit(evals: evals, betas: betas)
             let commitTime = (CFAbsoluteTimeGetCurrent() - commitT0) * 1000
-            print("  Commit: \(String(format: "%.1f", commitTime)) ms")
+            print("  Commit (\(friEngine.defaultFoldMode)): \(String(format: "%.1f", commitTime)) ms")
 
             // Query phase
             let numQueries = min(16, n / 4)
@@ -59,7 +59,7 @@ public func runStreamingVerifyBench() {
             }
 
             let queryT0 = CFAbsoluteTimeGetCurrent()
-            let queries = try friEngine.queryPhase(commitment: commitment, queryIndices: queryIndices)
+            let queries = try friEngine.query(commitment: commitment, queryIndices: queryIndices)
             let queryTime = (CFAbsoluteTimeGetCurrent() - queryT0) * 1000
             print("  Query:  \(String(format: "%.1f", queryTime)) ms (\(numQueries) queries)")
 
@@ -253,18 +253,19 @@ public func runStreamingVerifyBench() {
             rng2 = rng2 &* 6364136223846793005 &+ 1442695040888963407
             testEvals.append(frFromInt(rng2 >> 32))
         }
+        let testNumBetas = friEngine.defaultFoldMode.betaCount(logN: testLogN)
         var testBetas = [Fr]()
-        for i in 0..<testLogN {
+        for i in 0..<testNumBetas {
             testBetas.append(frFromInt(UInt64(i + 1) * 11))
         }
 
-        let testCommitment = try friEngine.commitPhase(evals: testEvals, betas: testBetas)
+        let testCommitment = try friEngine.commit(evals: testEvals, betas: testBetas)
         var testQueryIndices = [UInt32]()
         for i in 0..<8 {
             rng2 = rng2 &* 6364136223846793005 &+ 1442695040888963407
             testQueryIndices.append(UInt32(rng2 >> 32) % UInt32(testN))
         }
-        let testQueries = try friEngine.queryPhase(commitment: testCommitment, queryIndices: testQueryIndices)
+        let testQueries = try friEngine.query(commitment: testCommitment, queryIndices: testQueryIndices)
 
         let seqOk = streamVerifier.verifyFRISequential(commitment: testCommitment, queries: testQueries)
         let pipeOk = try streamVerifier.verifyFRIProofPipelined(commitment: testCommitment, queries: testQueries)

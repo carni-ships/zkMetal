@@ -907,7 +907,8 @@ public class FRIEngine {
             layers: layers,
             roots: roots,
             betas: betas,
-            finalValue: finalValue
+            finalValue: finalValue,
+            foldMode: .foldBy2
         )
     }
 
@@ -1229,7 +1230,8 @@ public class FRIEngine {
             layers: layers,
             roots: roots,
             betas: betas,
-            finalValue: finalValue
+            finalValue: finalValue,
+            foldMode: .foldBy4
         )
     }
 
@@ -1949,7 +1951,8 @@ public class FRIEngine {
             layers: layers,
             roots: roots,
             betas: betas,
-            finalValue: finalValue
+            finalValue: finalValue,
+            foldMode: .foldBy8
         )
     }
 
@@ -2207,6 +2210,67 @@ public class FRIEngine {
         return true
     }
 
+    // MARK: - Unified FRI API (mode-dispatched)
+
+    /// Default fold mode. Set to `.foldBy4` for optimal round/commitment tradeoff.
+    /// Change to `.foldBy2` for maximum compatibility or `.foldBy8` for fewest rounds.
+    public var defaultFoldMode: FRIFoldMode = .foldBy4
+
+    /// Unified commit phase: dispatches to commitPhase, commitPhase4, or commitPhase8
+    /// based on the current `defaultFoldMode`.
+    ///
+    /// Automatically computes the correct number of betas from the provided array.
+    /// If `betas` has more entries than needed, only the required prefix is used.
+    public func commit(evals: [Fr], betas: [Fr], mode: FRIFoldMode? = nil) throws -> FRICommitment {
+        let m = mode ?? defaultFoldMode
+        let logN = Int(log2(Double(evals.count)))
+        let needed = m.betaCount(logN: logN)
+        let useBetas = Array(betas.prefix(needed))
+        switch m {
+        case .foldBy2: return try commitPhase(evals: evals, betas: useBetas)
+        case .foldBy4: return try commitPhase4(evals: evals, betas: useBetas)
+        case .foldBy8: return try commitPhase8(evals: evals, betas: useBetas)
+        }
+    }
+
+    /// Unified query phase: dispatches based on the commitment's structure.
+    /// Automatically detects fold mode from layer size ratios.
+    public func query(commitment: FRICommitment, queryIndices: [UInt32], mode: FRIFoldMode? = nil) throws -> [FRIQueryProof] {
+        let m = mode ?? detectFoldMode(commitment: commitment)
+        switch m {
+        case .foldBy2: return try queryPhase(commitment: commitment, queryIndices: queryIndices)
+        case .foldBy4: return try queryPhase4(commitment: commitment, queryIndices: queryIndices)
+        case .foldBy8: return try queryPhase8(commitment: commitment, queryIndices: queryIndices)
+        }
+    }
+
+    /// Unified verify: dispatches based on the commitment's structure.
+    /// Automatically detects fold mode from layer size ratios.
+    public func verifyProof(commitment: FRICommitment, queries: [FRIQueryProof], mode: FRIFoldMode? = nil) -> Bool {
+        let m = mode ?? detectFoldMode(commitment: commitment)
+        switch m {
+        case .foldBy2: return verify(commitment: commitment, queries: queries)
+        case .foldBy4: return verify4(commitment: commitment, queries: queries)
+        case .foldBy8: return verify8(commitment: commitment, queries: queries)
+        }
+    }
+
+    /// Detect fold mode from a commitment's stored mode or layer size progression.
+    private func detectFoldMode(commitment: FRICommitment) -> FRIFoldMode {
+        // Use stored mode if available (set by unified API or tagged commitPhase methods)
+        if let mode = commitment.foldMode { return mode }
+        // Fallback: infer from layer sizes
+        let layers = commitment.layers
+        guard layers.count >= 2 else { return .foldBy2 }
+        for i in 0..<layers.count - 1 {
+            let cur = layers[i].count
+            let next = layers[i + 1].count
+            if next == cur / 8 { return .foldBy8 }
+            if next == cur / 4 { return .foldBy4 }
+        }
+        return .foldBy2
+    }
+
     /// Batch query extraction on GPU: extract evaluation pairs for multiple query indices.
     public func batchQueryExtract(evals: [Fr], queryIndices: [UInt32]) throws -> [(Fr, Fr)] {
         let n = evals.count
@@ -2265,6 +2329,33 @@ public class FRIEngine {
     }
 }
 
+// MARK: - FRI Fold Mode
+
+/// Controls how many log-levels each FRI folding round reduces.
+/// - `foldBy2`: Standard FRI, one fold per round (N -> N/2). Most rounds, most Merkle commits.
+/// - `foldBy4`: Two log-levels per round (N -> N/4). Half the rounds of foldBy2. Default.
+/// - `foldBy8`: Three log-levels per round (N -> N/8). Fewest rounds.
+public enum FRIFoldMode: String, CaseIterable, Sendable {
+    case foldBy2
+    case foldBy4
+    case foldBy8
+
+    /// Number of betas needed for a given logN.
+    public func betaCount(logN: Int) -> Int {
+        switch self {
+        case .foldBy2:
+            return logN
+        case .foldBy4:
+            let oddStart = (logN % 2 != 0) ? 1 : 0
+            return oddStart + (logN - oddStart) / 2
+        case .foldBy8:
+            let remainder = logN % 3
+            let remainderBetas = remainder == 0 ? 0 : 1
+            return remainderBetas + (logN - (remainder == 0 ? 0 : remainder)) / 3
+        }
+    }
+}
+
 // MARK: - FRI Proof Data Structures
 
 /// Commitment produced during FRI commit phase.
@@ -2277,12 +2368,15 @@ public struct FRICommitment {
     public let betas: [Fr]
     /// Final constant value after all folds
     public let finalValue: Fr
+    /// Fold mode used to produce this commitment (nil for legacy commitments)
+    public let foldMode: FRIFoldMode?
 
-    public init(layers: [[Fr]], roots: [Fr], betas: [Fr], finalValue: Fr) {
+    public init(layers: [[Fr]], roots: [Fr], betas: [Fr], finalValue: Fr, foldMode: FRIFoldMode? = nil) {
         self.layers = layers
         self.roots = roots
         self.betas = betas
         self.finalValue = finalValue
+        self.foldMode = foldMode
     }
 }
 

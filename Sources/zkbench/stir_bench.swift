@@ -122,30 +122,31 @@ public func runSTIRBench() {
                     + " proof \(String(format: "%.1f", Double(wps)/1024))KB\n", stderr)
             }
 
-            // FRI comparison (GPU fold, only for larger sizes)
+            // FRI comparison (GPU fold-by-4 default, only for larger sizes)
             if logN >= 14 {
                 do {
                     let friEngine = try FRIEngine()
                     var betas = [Fr]()
-                    for i in 0..<logN { betas.append(frFromInt(UInt64(i + 1) * 17)) }
-                    let _ = try friEngine.commitPhase(evals: benchEvals, betas: betas)  // warmup
+                    let numBetas = friEngine.defaultFoldMode.betaCount(logN: logN)
+                    for i in 0..<numBetas { betas.append(frFromInt(UInt64(i + 1) * 17)) }
+                    let _ = try friEngine.commit(evals: benchEvals, betas: betas)  // warmup
 
                     var ft = [Double]()
                     for _ in 0..<5 {
                         let t0 = CFAbsoluteTimeGetCurrent()
-                        let _ = try friEngine.commitPhase(evals: benchEvals, betas: betas)
+                        let _ = try friEngine.commit(evals: benchEvals, betas: betas)
                         ft.append((CFAbsoluteTimeGetCurrent() - t0) * 1000)
                     }
                     ft.sort()
 
-                    let fc = try friEngine.commitPhase(evals: benchEvals, betas: betas)
+                    let fc = try friEngine.commit(evals: benchEvals, betas: betas)
                     let frSize = MemoryLayout<Fr>.stride
                     var fps = fc.roots.count * frSize + frSize
                     for layer in fc.layers {
                         let depth = max(1, Int(log2(Double(max(2, layer.count)))))
                         fps += 2 * (2 * frSize + depth * frSize)
                     }
-                    fputs("  FRI  (GPU):     \(logN) rnds, prove \(String(format: "%.1f", ft[2]))ms,"
+                    fputs("  FRI  (GPU \(friEngine.defaultFoldMode)):  \(numBetas) rnds, prove \(String(format: "%.1f", ft[2]))ms,"
                         + " proof ~\(String(format: "%.1f", Double(fps)/1024))KB\n", stderr)
                 }
             }

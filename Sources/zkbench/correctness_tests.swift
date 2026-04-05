@@ -374,7 +374,7 @@ private func testFRI() {
         check("Multi-fold 2^16->1 GPU=CPU",
               finalGPU.count == 1 && cpuCurrent.count == 1 && frToInt(finalGPU[0]) == frToInt(cpuCurrent[0]))
 
-        // FRI protocol: commit -> query -> verify
+        // FRI protocol: commit -> query -> verify (fold-by-2)
         let protoLogN = 14
         let protoN = 1 << protoLogN
         var protoEvals = [Fr](repeating: Fr.zero, count: protoN)
@@ -388,7 +388,27 @@ private func testFRI() {
         let queryIndices: [UInt32] = [0, 42, 1000, UInt32(protoN / 2 - 1)]
         let queries = try engine.queryPhase(commitment: commitment, queryIndices: queryIndices)
         let verified = engine.verify(commitment: commitment, queries: queries)
-        check("FRI protocol verify (2^14)", verified)
+        check("FRI protocol verify fold-by-2 (2^14)", verified)
+
+        // FRI protocol: unified API with fold-by-4 (default)
+        let numBetas4 = FRIFoldMode.foldBy4.betaCount(logN: protoLogN)
+        var betas4 = [Fr]()
+        for i in 0..<numBetas4 { betas4.append(frFromInt(UInt64(i + 1) * 17)) }
+        let commit4 = try engine.commit(evals: protoEvals, betas: betas4, mode: .foldBy4)
+        let q4Indices: [UInt32] = [0, 42, 1000, UInt32(protoN / 4 - 1)]
+        let queries4 = try engine.query(commitment: commit4, queryIndices: q4Indices)
+        let verified4 = engine.verifyProof(commitment: commit4, queries: queries4)
+        check("FRI protocol verify fold-by-4 (2^14)", verified4)
+
+        // FRI protocol: unified API with fold-by-8
+        let numBetas8 = FRIFoldMode.foldBy8.betaCount(logN: protoLogN)
+        var betas8 = [Fr]()
+        for i in 0..<numBetas8 { betas8.append(frFromInt(UInt64(i + 1) * 17)) }
+        let commit8 = try engine.commit(evals: protoEvals, betas: betas8, mode: .foldBy8)
+        let q8Indices: [UInt32] = [0, 42, 1000, UInt32(protoN / 8 - 1)]
+        let queries8 = try engine.query(commitment: commit8, queryIndices: q8Indices)
+        let verified8 = engine.verifyProof(commitment: commit8, queries: queries8)
+        check("FRI protocol verify fold-by-8 (2^14)", verified8)
     } catch {
         print("  [FAIL] FRI error: \(error)")
         _testFailed += 1
