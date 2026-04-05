@@ -164,10 +164,31 @@ public class IPAEngine {
         return (generators: Array(affine.prefix(n)), Q: affine[n])
     }
 
+    /// GPU MSM threshold: use GPU Metal MSM for commits larger than this.
+    /// Below this, BGMW fixed-base is faster due to precomputed tables.
+    public static let gpuCommitThreshold = 4096
+
     /// Commit to a vector: C = MSM(G, a)
     /// Uses BGMW fixed-base precomputed tables for fast scalar multiplication.
     /// Decomposes each scalar into base-2^w digits and sums table lookups (additions only).
     public func commit(_ a: [Fr]) throws -> PointProjective {
+        precondition(a.count == generators.count)
+        let n = a.count
+
+        // For large vectors, try GPU MSM (Metal-accelerated Pippenger)
+        if n >= IPAEngine.gpuCommitThreshold {
+            if let result = try? commitGPU(a) {
+                return result
+            }
+            // Fall through to BGMW if GPU fails
+        }
+
+        return commitBGMW(a)
+    }
+
+    /// Commit using BGMW fixed-base precomputed tables (CPU).
+    /// Optimal for small-to-medium vectors where table precomputation amortizes.
+    public func commitBGMW(_ a: [Fr]) -> PointProjective {
         precondition(a.count == generators.count)
         let n = a.count
         let w = IPAEngine.bgmwWindowBits
@@ -199,6 +220,17 @@ public class IPAEngine {
             }
         }
         return result
+    }
+
+    /// Commit using GPU Metal MSM (Pippenger).
+    /// Best for large vectors (>= gpuCommitThreshold) where GPU parallelism wins.
+    public func commitGPU(_ a: [Fr]) throws -> PointProjective {
+        precondition(a.count == generators.count)
+        let n = a.count
+
+        // Convert Fr scalars to limb format for MSM
+        let scalarLimbs: [[UInt32]] = a.map { frToLimbs($0) }
+        return try msmEngine.msm(points: generators, scalars: scalarLimbs)
     }
 
     /// CPU multi-scalar multiplication using C Pippenger for speed.

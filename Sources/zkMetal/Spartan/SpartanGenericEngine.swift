@@ -33,6 +33,17 @@ public struct SpartanGenericProof<PCS: SpartanPCSBackend> {
     public let zEval: Fr
     /// PCS opening proof at ry
     public let openingProof: PCS.Opening
+
+    public init(witnessCommitment: PCS.Commitment, sc1Rounds: [(Fr, Fr, Fr, Fr)],
+                azRx: Fr, bzRx: Fr, czRx: Fr,
+                sc2Rounds: [(Fr, Fr, Fr)], zEval: Fr, openingProof: PCS.Opening) {
+        self.witnessCommitment = witnessCommitment
+        self.sc1Rounds = sc1Rounds
+        self.azRx = azRx; self.bzRx = bzRx; self.czRx = czRx
+        self.sc2Rounds = sc2Rounds
+        self.zEval = zEval
+        self.openingProof = openingProof
+    }
 }
 
 // MARK: - Engine

@@ -5,6 +5,7 @@
 // open at a multilinear point, and verify the opening can serve as backend.
 
 import Foundation
+import NeonFieldOps
 
 /// A commitment handle returned by a multilinear PCS.
 /// Carries whatever the PCS needs (root hash, curve point, etc.)
@@ -82,11 +83,14 @@ public struct BasefoldPCSAdapter: SpartanPCSBackend {
 /// IPA-based multilinear PCS: commits to evaluation vector,
 /// opens via inner product with the eq polynomial.
 ///
-/// Commitment: C = MSM(G, evals)
+/// Commitment: C = MSM(G, evals) — uses GPU Metal MSM for large vectors,
+///   BGMW fixed-base tables for small vectors.
 /// Opening claim: <evals, eq(point, .)> = value
-/// Proof: IPA proof for this inner product.
+/// Proof: IPA proof with log(n) halving rounds using dual MSM.
 ///
 /// Transparent: no trusted setup required.
+/// GPU-accelerated: commit uses Metal MSM (>= 4096 generators),
+///   IPA halving uses C Pippenger dual MSM.
 public struct IPAPCSAdapter: SpartanPCSBackend {
     public struct Commitment: SpartanCommitmentHandle {
         /// The Pedersen commitment point (affine x-coordinate as Fr for transcript)
@@ -106,13 +110,17 @@ public struct IPAPCSAdapter: SpartanPCSBackend {
         public let inner: IPAProof
     }
 
-    private let engine: IPAEngine
+    /// The underlying IPA engine with GPU MSM and BGMW fixed-base support.
+    public let engine: IPAEngine
 
     public init(engine: IPAEngine) {
         self.engine = engine
     }
 
+    /// Commit to evaluations using GPU-accelerated MSM (for large vectors)
+    /// or BGMW fixed-base tables (for small vectors).
     public func commit(evaluations: [Fr]) throws -> Commitment {
+        // engine.commit() automatically selects GPU vs BGMW based on size
         let C = try engine.commit(evaluations)
         return Commitment(point: C, evaluations: evaluations)
     }
@@ -125,12 +133,13 @@ public struct IPAPCSAdapter: SpartanPCSBackend {
         // b = eq(point, .) evaluated at all boolean hypercube points
         let numVars = point.count
         precondition((1 << numVars) == n)
-        let b = eqPolyExpand(point: point, size: n)
+        let b = cEqPolyExpand(point: point)
 
-        // value = <evals, b> = MLE evaluation at `point`
-        let value = IPAEngine.innerProduct(evaluations, b)
+        // value = <evals, b> via C-accelerated inner product
+        let value = cFrInnerProduct(evaluations, b)
 
         // IPA proof that <evals, b> = value
+        // Uses dual MSM + C Pippenger for halving rounds
         let proof = try engine.createProof(a: evaluations, b: b)
         return (value, Opening(inner: proof))
     }
@@ -140,7 +149,7 @@ public struct IPAPCSAdapter: SpartanPCSBackend {
         let numVars = point.count
         guard (1 << numVars) == n else { return false }
 
-        let b = eqPolyExpand(point: point, size: n)
+        let b = cEqPolyExpand(point: point)
 
         // Reconstruct bound commitment: C + v*Q
         let qProj = pointFromAffine(engine.Q)
@@ -151,21 +160,19 @@ public struct IPAPCSAdapter: SpartanPCSBackend {
                              innerProductValue: value, proof: proof.inner)
     }
 
-    /// Expand eq(point, .) to the full boolean hypercube.
-    /// eq(u, x) = prod_i (u_i * x_i + (1-u_i)*(1-x_i))
-    /// For x in {0,1}^n: eq(u, x) = prod_i [x_i*u_i + (1-x_i)*(1-u_i)]
-    private func eqPolyExpand(point: [Fr], size: Int) -> [Fr] {
+    /// C-accelerated eq polynomial expansion using spartan_eq_poly.
+    /// Much faster than the Swift loop for large vectors.
+    private func cEqPolyExpand(point: [Fr]) -> [Fr] {
         let n = point.count
+        let size = 1 << n
         var eq = [Fr](repeating: Fr.zero, count: size)
-        eq[0] = Fr.one
-        for i in 0..<n {
-            let ui = point[i]
-            let oneMinusUi = frSub(Fr.one, ui)
-            // Process in reverse to avoid overwriting
-            let half = 1 << i
-            for j in stride(from: half - 1, through: 0, by: -1) {
-                eq[2 * j + 1] = frMul(eq[j], ui)
-                eq[2 * j] = frMul(eq[j], oneMinusUi)
+        point.withUnsafeBytes { ptBuf in
+            eq.withUnsafeMutableBytes { eqBuf in
+                spartan_eq_poly(
+                    ptBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(n),
+                    eqBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                )
             }
         }
         return eq

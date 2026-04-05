@@ -269,4 +269,120 @@ func runSpartanTests() {
     } catch {
         expect(false, "Spartan 2^10 performance error: \(error)")
     }
+
+    // --- Test 10: Spartan+IPA with medium circuit (64 constraints) ---
+    // Exercises larger IPA proof with more halving rounds
+    do {
+        let (instance, publicInputs, witness) = SpartanR1CSBuilder.syntheticR1CS(numConstraints: 64)
+        let z = SpartanR1CS.buildZ(publicInputs: publicInputs, witness: witness)
+        expect(instance.isSatisfied(z: z), "IPA: Synthetic R1CS (64 constraints) satisfied")
+
+        let paddedN = instance.paddedN
+        let g = bn254G1Generator()
+        var generators = [PointAffine]()
+        generators.reserveCapacity(paddedN)
+        for i in 0..<paddedN {
+            let scalar = frFromInt(UInt64(i + 1) * 7 + 13)
+            let pt = cPointScalarMul(pointFromAffine(g), scalar)
+            if let aff = pointToAffine(pt) {
+                generators.append(aff)
+            }
+        }
+        let qScalar = frFromInt(UInt64(paddedN + 1) * 7 + 13)
+        let qPt = cPointScalarMul(pointFromAffine(g), qScalar)
+        guard let qAff = pointToAffine(qPt) else {
+            expect(false, "IPA Q generator affine conversion failed"); return
+        }
+
+        let ipaEngine = try IPAEngine(generators: generators, Q: qAff)
+        let adapter = IPAPCSAdapter(engine: ipaEngine)
+        let spartanIPA = SpartanGenericEngine(pcs: adapter)
+
+        let proof = try spartanIPA.prove(instance: instance, publicInputs: publicInputs, witness: witness)
+        let valid = spartanIPA.verify(instance: instance, publicInputs: publicInputs, proof: proof)
+        expect(valid, "Spartan+IPA prove+verify synthetic (64 constraints)")
+
+        // Verify rejection with wrong public input
+        let wrongPub: [Fr] = [frFromInt(999)]
+        let rejected = spartanIPA.verify(instance: instance, publicInputs: wrongPub, proof: proof)
+        expect(!rejected, "Spartan+IPA rejects wrong public input (64 constraints)")
+    } catch {
+        expect(false, "Spartan+IPA 64-constraint error: \(error)")
+    }
+
+    // --- Test 11: Spartan+IPA repeated prove/verify with different witnesses ---
+    do {
+        let (instance, gen) = SpartanR1CSBuilder.exampleQuadratic()
+        let paddedN = instance.paddedN
+        let g = bn254G1Generator()
+        var generators = [PointAffine]()
+        generators.reserveCapacity(paddedN)
+        for i in 0..<paddedN {
+            let scalar = frFromInt(UInt64(i + 1) * 7 + 13)
+            let pt = cPointScalarMul(pointFromAffine(g), scalar)
+            if let aff = pointToAffine(pt) { generators.append(aff) }
+        }
+        let qScalar = frFromInt(UInt64(paddedN + 1) * 7 + 13)
+        guard let qAff = pointToAffine(cPointScalarMul(pointFromAffine(g), qScalar)) else {
+            expect(false, "IPA Q gen failed"); return
+        }
+
+        let ipaEngine = try IPAEngine(generators: generators, Q: qAff)
+        let adapter = IPAPCSAdapter(engine: ipaEngine)
+        let spartanIPA = SpartanGenericEngine(pcs: adapter)
+
+        for x in [2, 7, 15] as [UInt64] {
+            let xVal = frFromInt(x)
+            let (pub, wit) = gen(xVal)
+            let proof = try spartanIPA.prove(instance: instance, publicInputs: pub, witness: wit)
+            let valid = spartanIPA.verify(instance: instance, publicInputs: pub, proof: proof)
+            expect(valid, "Spartan+IPA repeated prove x=\(x)")
+        }
+    } catch {
+        expect(false, "Spartan+IPA repeated prove error: \(error)")
+    }
+
+    // --- Test 12: Spartan+IPA forged proof rejection ---
+    do {
+        let (instance, gen) = SpartanR1CSBuilder.exampleQuadratic()
+        let xVal = frFromInt(6)
+        let (publicInputs, witness) = gen(xVal)
+
+        let paddedN = instance.paddedN
+        let g = bn254G1Generator()
+        var generators = [PointAffine]()
+        generators.reserveCapacity(paddedN)
+        for i in 0..<paddedN {
+            let scalar = frFromInt(UInt64(i + 1) * 7 + 13)
+            let pt = cPointScalarMul(pointFromAffine(g), scalar)
+            if let aff = pointToAffine(pt) { generators.append(aff) }
+        }
+        let qScalar = frFromInt(UInt64(paddedN + 1) * 7 + 13)
+        guard let qAff = pointToAffine(cPointScalarMul(pointFromAffine(g), qScalar)) else {
+            expect(false, "IPA Q gen failed"); return
+        }
+
+        let ipaEngine = try IPAEngine(generators: generators, Q: qAff)
+        let adapter = IPAPCSAdapter(engine: ipaEngine)
+        let spartanIPA = SpartanGenericEngine(pcs: adapter)
+
+        let proof = try spartanIPA.prove(instance: instance, publicInputs: publicInputs, witness: witness)
+
+        // Valid proof should pass
+        let valid = spartanIPA.verify(instance: instance, publicInputs: publicInputs, proof: proof)
+        expect(valid, "Spartan+IPA valid proof accepted (x=6)")
+
+        // Tamper: modify the claimed zEval
+        let forgedProof = SpartanGenericProof<IPAPCSAdapter>(
+            witnessCommitment: proof.witnessCommitment,
+            sc1Rounds: proof.sc1Rounds,
+            azRx: proof.azRx, bzRx: proof.bzRx, czRx: proof.czRx,
+            sc2Rounds: proof.sc2Rounds,
+            zEval: frAdd(proof.zEval, Fr.one),  // tampered
+            openingProof: proof.openingProof)
+        let rejected = spartanIPA.verify(instance: instance, publicInputs: publicInputs, proof: forgedProof)
+        expect(!rejected, "Spartan+IPA rejects forged zEval")
+    } catch {
+        expect(false, "Spartan+IPA forged proof error: \(error)")
+    }
 }
