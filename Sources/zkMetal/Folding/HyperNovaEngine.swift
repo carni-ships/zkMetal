@@ -169,26 +169,59 @@ public class HyperNovaEngine {
         let rhoC2 = cPointScalarMul(new.commitment, rho)
         let foldedCommitment = pointAdd(running.commitment, rhoC2)
 
-        // Fold public inputs, u, v, witnesses (explicit loops)
+        // Fold public inputs, u, v, witnesses using C-accelerated linear combine
         let numPub = running.publicInput.count
         var foldedPublicInput = [Fr](repeating: .zero, count: numPub)
-        for i in 0..<numPub {
-            foldedPublicInput[i] = frAdd(running.publicInput[i], frMul(rho, new.publicInput[i]))
+        if numPub > 0 {
+            running.publicInput.withUnsafeBytes { runBuf in
+            new.publicInput.withUnsafeBytes { newBuf in
+            withUnsafeBytes(of: rho) { rhoBuf in
+            foldedPublicInput.withUnsafeMutableBytes { resBuf in
+                bn254_fr_linear_combine(
+                    runBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    newBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    rhoBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    resBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(numPub)
+                )
+            }}}}
         }
 
         let foldedU = frAdd(running.u, rho)
 
         var foldedV = [Fr](repeating: .zero, count: t)
-        for i in 0..<t {
-            foldedV[i] = frAdd(sigmas[i], frMul(rho, thetas[i]))
+        if t > 0 {
+            sigmas.withUnsafeBytes { runBuf in
+            thetas.withUnsafeBytes { newBuf in
+            withUnsafeBytes(of: rho) { rhoBuf in
+            foldedV.withUnsafeMutableBytes { resBuf in
+                bn254_fr_linear_combine(
+                    runBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    newBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    rhoBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    resBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(t)
+                )
+            }}}}
         }
 
         let foldedR = running.r
 
         let witLen = runningWitness.count
         var foldedWitness = [Fr](repeating: .zero, count: witLen)
-        for i in 0..<witLen {
-            foldedWitness[i] = frAdd(runningWitness[i], frMul(rho, newWitness[i]))
+        if witLen > 0 {
+            runningWitness.withUnsafeBytes { runBuf in
+            newWitness.withUnsafeBytes { newBuf in
+            withUnsafeBytes(of: rho) { rhoBuf in
+            foldedWitness.withUnsafeMutableBytes { resBuf in
+                bn254_fr_linear_combine(
+                    runBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    newBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    rhoBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    resBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(witLen)
+                )
+            }}}}
         }
 
         // Build the sumcheck proof using cached matvec results (no re-computation)

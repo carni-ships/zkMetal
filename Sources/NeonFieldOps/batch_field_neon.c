@@ -583,3 +583,71 @@ void bn254_fr_batch_decompose(const uint64_t *lookups, int m,
     for (int t = 0; t < nThreads; t++)
         pthread_join(threads[t], NULL);
 }
+
+// ============================================================
+// Linear combine: result[i] = running[i] + rho * new_vals[i]
+// Used by HyperNova witness folding. Multi-threaded for large n.
+// ============================================================
+
+typedef struct {
+    const uint64_t *running;
+    const uint64_t *new_vals;
+    const uint64_t *rho;
+    uint64_t *result;
+    int start;
+    int end;
+} LinearCombineChunk;
+
+static void *linear_combine_worker(void *arg) {
+    LinearCombineChunk *c = (LinearCombineChunk *)arg;
+    const uint64_t *rho = c->rho;
+    for (int i = c->start; i < c->end; i++) {
+        if (i + 4 < c->end) {
+            __builtin_prefetch(&c->new_vals[(i + 4) * 4], 0, 1);
+            __builtin_prefetch(&c->running[(i + 4) * 4], 0, 1);
+        }
+        uint64_t tmp[4];
+        fr_mont_mul(rho, &c->new_vals[i * 4], tmp);
+        fr_add_branchless(&c->running[i * 4], tmp, &c->result[i * 4]);
+    }
+    return NULL;
+}
+
+void bn254_fr_linear_combine(const uint64_t *running, const uint64_t *new_vals,
+                              const uint64_t rho[4], uint64_t *result, int count)
+{
+    if (count <= 0) return;
+
+    if (count < 4096) {
+        // Single-threaded path
+        for (int i = 0; i < count; i++) {
+            if (i + 4 < count) {
+                __builtin_prefetch(&new_vals[(i + 4) * 4], 0, 1);
+                __builtin_prefetch(&running[(i + 4) * 4], 0, 1);
+            }
+            uint64_t tmp[4];
+            fr_mont_mul(rho, &new_vals[i * 4], tmp);
+            fr_add_branchless(&running[i * 4], tmp, &result[i * 4]);
+        }
+        return;
+    }
+
+    int nThreads = 8;
+    if (count < nThreads * 1024) nThreads = 4;
+    int perThread = (count + nThreads - 1) / nThreads;
+
+    pthread_t threads[8];
+    LinearCombineChunk chunks[8];
+    for (int t = 0; t < nThreads; t++) {
+        chunks[t].running = running;
+        chunks[t].new_vals = new_vals;
+        chunks[t].rho = rho;
+        chunks[t].result = result;
+        chunks[t].start = t * perThread;
+        chunks[t].end = (t + 1) * perThread;
+        if (chunks[t].end > count) chunks[t].end = count;
+        pthread_create(&threads[t], NULL, linear_combine_worker, &chunks[t]);
+    }
+    for (int t = 0; t < nThreads; t++)
+        pthread_join(threads[t], NULL);
+}

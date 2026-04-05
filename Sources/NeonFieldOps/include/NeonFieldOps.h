@@ -637,6 +637,15 @@ void grumpkin_point_double(const uint64_t p[12], uint64_t r[12]);
 void grumpkin_scalar_mul(const uint64_t p[12], const uint64_t scalar[4], uint64_t r[12]);
 
 // ============================================================
+// BN254 Fr linear combine (HyperNova witness fold)
+// ============================================================
+
+/// Linear combine: result[i] = running[i] + rho * new_vals[i].
+/// Multi-threaded for count >= 4096.
+void bn254_fr_linear_combine(const uint64_t *running, const uint64_t *new_vals,
+                              const uint64_t rho[4], uint64_t *result, int count);
+
+// ============================================================
 // CPU Poseidon2 (BN254 Fr CIOS)
 // ============================================================
 
