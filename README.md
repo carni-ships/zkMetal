@@ -1,6 +1,6 @@
 # zkMetal
 
-GPU-accelerated zero-knowledge cryptography library for Apple Silicon, written in Metal and Swift. 75+ primitives spanning field arithmetic, MSM, NTT, hash functions, polynomial commitments, proof systems (Plonk, Groth16, STARK, Spartan, Marlin), folding schemes (HyperNova, Protogalaxy, Nova IVC), zkVM (Jolt with RV32I), signatures, post-quantum crypto, and homomorphic encryption across 18 fields and 10 elliptic curves. FFI bindings for Rust, Go, C++/Barretenberg, and WebGPU/WGSL.
+GPU-accelerated zero-knowledge cryptography library for Apple Silicon, written in Metal and Swift. 87 primitives spanning field arithmetic, MSM, NTT, hash functions, polynomial commitments, proof systems (Plonk, Groth16, STARK, Spartan, Marlin, Varuna), folding schemes (HyperNova, Protogalaxy, Nova/SuperNova IVC), zkVM (Jolt with RV32I, RISC-V decoder), signatures, post-quantum crypto, homomorphic encryption, and application tooling (Circom R1CS parser, Plonk constraint compiler, AIR constraint DSL, Groth16 Solidity verifier, universal proof format, data availability sampling, Verkle tree proofs) across 18 fields and 10 elliptic curves. 39 test files with 36 test suites. FFI bindings for Rust, Go, C++/Barretenberg, and WebGPU/WGSL.
 
 ## Contents
 
@@ -83,6 +83,42 @@ GPU-accelerated zero-knowledge cryptography library for Apple Silicon, written i
 | **Shader Cache** | GPU | MTLBinaryArchive persistent cache + background parallel precompilation |
 | **Varuna** | CPU | Marlin/Varuna verifier with batched multi-pairing |
 | **Data-Parallel** | CPU | Repeated sub-circuit proving via GKR (O(\|C\| + N log N)) |
+| **Circom R1CS Parser** | CPU | Binary .r1cs/.wtns format parser for Groth16 proving |
+| **Plonk Constraint Compiler** | CPU | Gates to wire polynomials + sigma permutations |
+| **Protogalaxy Decider** | CPU | Plonk/Groth16 backend + IVC chain verification |
+| **Nova/SuperNova IVC** | CPU | Incremental verifiable computation with cross-term folding (2-circuit) |
+| **AIR Constraint DSL** | CPU/GPU | Fluent builder for CircleAIR STARK proving |
+| **Unified Lookup** | GPU | LogUp/Lasso/cq with auto-strategy selection |
+| **Fiat-Shamir Transcript** | CPU | TranscriptEngine protocol + Merlin STROBE-128 |
+| **GPU Buffer Pool** | GPU | Power-of-2 size-class recycling with scoped contexts |
+| **Coset LDE** | GPU | Fused zero-pad + coset-shift for BabyBear/Goldilocks/BN254 |
+| **Batch Field Ops** | GPU/CPU | Vectorized batch add/mul/sub/inverse across 12 fields |
+| **Parallel Reduction** | GPU | SIMD shuffle + shared memory for BN254/BabyBear |
+| **Prefix Scan** | GPU | GPU prefix product for Plonk grand product argument |
+| **Poseidon2 Sponge** | GPU | Duplex mode for BN254/BabyBear + batch + transcript integration |
+| **Data Availability Sampling** | GPU | EIP-4844 blob extension + cell proofs |
+| **RISC-V Decoder** | CPU | All 40 RV32I opcodes + execution trace for Jolt zkVM |
+| **Verkle Tree Proofs** | CPU | Banderwagon curve + IPA opening proofs |
+| **Multilinear Polynomial** | CPU | C-accelerated MLE + Hyrax/Gemini/Basefold PCS adapters |
+| **Groth16 Solidity Verifier** | CPU | Contract generation, snarkjs JSON, ABI calldata encoding |
+| **Universal Proof Format** | CPU | Binary/JSON serialization + extensible registry |
+| **Plonk Permutation Argument** | GPU | Grand product + GPU prefix product |
+| **STARK Trace Compression** | CPU/GPU | Algebraic/interleave/ZK + column analysis |
+| **Custom Gate Library** | CPU | ECC, hash, and binary operation gates (Halo2-compatible) |
+| **Pedersen Commitment** | CPU | Multi-curve engine + IPA vector commitments |
+| **Constraint Optimizer** | CPU | Dead elimination, constant fold, CSE, R1CS reduce |
+| **Plonky2 Recursive Verifier** | CPU | Proof composition bridge for Plonky2 circuits |
+| **Structured GKR** | CPU | Optimized GKR for structured/repeated sub-circuits |
+| **Grand Product GKR** | CPU | GKR-based grand product for memory checking |
+| **Memory Checking** | CPU | GKR-based read/write consistency for zkVM |
+| **Hyrax PCS** | CPU | Multilinear polynomial commitment via inner products |
+| **Fused NTT+Constraint** | GPU | Runtime IR to Metal source to GPU pipeline |
+| **BabyBear STARK** | GPU | SP1-compatible BabyBear Poseidon2 trace commitment |
+| **Proof Aggregation** | CPU | Multi-proof batching and recursive aggregation |
+| **SP1 Bridge** | CPU | SP1 proving system compatibility layer |
+| **Batch Verify** | CPU/GPU | Multi-proof batched verification (2.0) |
+| **Stream Verify** | GPU/CPU | Task-queue streaming proof verification (1.1) |
+| **Unified Verify** | CPU | Cross-system verification dispatcher |
 
 ## Performance
 
@@ -606,24 +642,28 @@ swift build -c release
 
 ## Correctness & Testing
 
-Run `swift run -c release zkbench test`. All GPU kernels verified against CPU reference implementations.
+Run `swift run -c release zkbench test`. 39 test files, 36 test suites. All GPU kernels verified against CPU reference implementations.
 
 | Category | Primitives | Verification |
 |----------|------------|-------------|
 | Field arithmetic | BN254, BLS12-377/381, secp256k1, Goldilocks, BabyBear, M31, Pallas/Vesta, Binary Tower | Unit tests + cross-checks (arithmetic properties, inverses, distributivity) |
-| MSM | BN254, BLS12-377, secp256k1, Pallas/Vesta, Ed25519, Grumpkin | GPU vs CPU cross-check, on-curve, determinism |
+| MSM | BN254, BLS12-377, secp256k1, Pallas/Vesta, Ed25519, Grumpkin, Multi-MSM | GPU vs CPU cross-check, on-curve, determinism |
 | NTT | BN254, BLS12-377, Goldilocks, BabyBear, Stark252, Circle NTT | Round-trip + CPU cross-check (all fields, sizes 2^2 through 2^22) |
-| Hashing | Poseidon2 (BN254+M31+BabyBear), Keccak-256, Blake3, SHA-256 | Known-answer tests (NIST, HorizenLabs, BLAKE3 spec) + GPU vs CPU batch |
+| Hashing | Poseidon2 (BN254+M31+BabyBear), Keccak-256, Blake3, SHA-256, Poseidon2 Sponge | Known-answer tests (NIST, HorizenLabs, BLAKE3 spec) + GPU vs CPU batch + duplex sponge |
 | Merkle trees | Poseidon2, Keccak, Blake3 backends | GPU vs CPU root comparison + parallel structure validation |
-| Polynomial protocols | FRI (fold-by-2/4/8), Sumcheck (dense+sparse), KZG, Batch KZG | S(0)+S(1)=sum, round-poly match, full protocol verify, tamper rejection |
-| PCS | Basefold, Tensor, WHIR | Fold correctness, compress+verify, proof verify+rejection |
-| Proof systems | Circle STARK, Plonk, Groth16, GKR | Prove+verify, tampered proof rejection, bilinearity |
-| Lookups | LogUp, Lasso, cq | Simple/repeated/multiplicities, tamper rejection |
+| Polynomial protocols | FRI (fold-by-2/4/8), Sumcheck (dense+sparse), KZG, Batch KZG, Coset LDE | S(0)+S(1)=sum, round-poly match, full protocol verify, tamper rejection |
+| PCS | Basefold, Tensor, WHIR, Zeromorph, Pedersen, Hyrax | Fold correctness, compress+verify, proof verify+rejection |
+| Proof systems | Circle STARK, Plonk, Groth16, GKR, Spartan, Protogalaxy, Nova/SuperNova IVC | Prove+verify, tampered proof rejection, bilinearity, fold+cross-term+error propagation |
+| Lookups | LogUp, Lasso, cq, Unified Lookup | Simple/repeated/multiplicities, tamper rejection, auto-strategy |
 | CPU optimized | C BN254/Goldilocks NTT, NEON BabyBear/Keccak/Blake3 | Cross-checked against vanilla CPU + round-trip |
 | Signatures | EdDSA (Ed25519+BabyJubjub), ECDSA (secp256k1), Schnorr (BIP 340) | RFC 8032, batch verification, tagged hashing |
-| Protocols | IPA, Verkle (CPU), HyperNova, IPA Accumulation | Prove+verify, wrong-value rejection, batch verification |
-| Infrastructure | Transcript, Serialization, Witness Gen, Constraint IR, Radix Sort | Determinism, roundtrip, domain/fork separation, tamper detection |
-| Applications | Kyber KEM, Dilithium signatures, Reed-Solomon, Streaming Verify | Shared secret agreement, signature verification, encode+decode |
+| Protocols | IPA, Verkle Proofs (CPU), HyperNova, IPA Accumulation | Prove+verify, wrong-value rejection, batch verification |
+| Constraint systems | Circom R1CS parser, Plonk constraint compiler, AIR DSL, constraint optimizer, Plonk custom gates, Plonk permutation argument | Binary format parsing, gate compilation, dead elimination, CSE, grand product |
+| zkVM | RISC-V decoder, Jolt VM, witness gen | All 40 RV32I opcodes, execution trace, instruction-stream architecture |
+| Infrastructure | Transcript (Merlin STROBE), Serialization, Witness Gen, Constraint IR, Radix Sort, GPU Buffer Pool | Determinism, roundtrip, domain/fork separation, tamper detection, pool recycling |
+| Interop | Groth16 Solidity verifier, Universal Proof Format, Plonky2 recursive verifier, SP1 bridge | Contract gen, binary/JSON roundtrip, snarkjs JSON, proof composition |
+| Advanced | STARK trace compression, Data availability sampling, Multilinear polynomial engine, Proof aggregation | Algebraic/interleave/ZK, EIP-4844 blobs, MLE + PCS adapters, multi-proof batching |
+| Applications | Kyber KEM, Dilithium signatures, Reed-Solomon, Streaming Verify, Batch Verify | Shared secret agreement, signature verification, encode+decode |
 
 ## Optimization
 
