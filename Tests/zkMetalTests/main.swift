@@ -74,6 +74,8 @@ runLatticeNTTTests()
 runWHIRProverTests()
 runLookupSingularityTests()
 runSpartanPolyIOPTests()
+runGPUWitnessTests()
+runHalo2PermutationTests()
 
 let elapsed = CFAbsoluteTimeGetCurrent() - t0
 print(String(format: "\nCompleted in %.1fs", elapsed))
