@@ -12,8 +12,8 @@ public func runBrakedownBench() {
         // --- Correctness Tests ---
         print("\n--- Correctness verification ---")
 
-        // Test 1: Linear code encode/decode consistency
-        let code = LinearCode(messageLength: 8, rateInverse: 4, seed: 0xBEEF)
+        // Test 1: Expander code encode/decode consistency
+        let code = ExpanderCode(messageLength: 8, rateInverse: 4, degree: 8, seed: 0xBEEF)
         var rng: UInt64 = 0xDEAD_BEEF_CAFE
         var msg = [Fr](repeating: Fr.zero, count: 8)
         for i in 0..<8 {
