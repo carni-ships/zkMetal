@@ -82,8 +82,10 @@ public class Ed25519MSM {
         self.signedDigitFunction = try device.makeComputePipelineState(function: signedDigitFn)
 
         // Pre-compute d in Montgomery form and store as GPU buffer
+        // CPU now uses direct integer form; GPU needs Montgomery form
         let dConst = ed25519D()
-        let dLimbs = dConst.to32()
+        let dMont = dConst.toMontgomery()
+        let dLimbs = dMont.to32()
         self.dBuffer = device.makeBuffer(bytes: dLimbs, length: 32, options: .storageModeShared)
     }
 
@@ -280,8 +282,12 @@ public class Ed25519MSM {
             throw MSMError.gpuError("Failed to allocate Metal buffers")
         }
 
+        // Convert points from direct integer form to Montgomery form for GPU
         let gpuPtsPtr = pointsBuffer.contents().bindMemory(to: Ed25519PointAffine.self, capacity: n)
-        centeredPoints.withUnsafeBufferPointer { src in
+        var montPoints = centeredPoints.map { pt in
+            Ed25519PointAffine(x: pt.x.toMontgomery(), y: pt.y.toMontgomery())
+        }
+        montPoints.withUnsafeBufferPointer { src in
             gpuPtsPtr.update(from: src.baseAddress!, count: n)
         }
 
@@ -454,10 +460,17 @@ public class Ed25519MSM {
 
         if let error = cb.error { throw MSMError.gpuError(error.localizedDescription) }
 
+        // Read GPU results (Montgomery form) and convert to direct integer form for CPU
         let winResultsPtr = windowResultsBuffer.contents().bindMemory(to: Ed25519PointExtended.self, capacity: nWindows)
         var windowResults = [Ed25519PointExtended](repeating: ed25519PointIdentity(), count: nWindows)
         for w in 0..<nWindows {
-            windowResults[w] = winResultsPtr[w]
+            let gpt = winResultsPtr[w]
+            windowResults[w] = Ed25519PointExtended(
+                x: Ed25519Fp.fromMontgomery(gpt.x),
+                y: Ed25519Fp.fromMontgomery(gpt.y),
+                z: Ed25519Fp.fromMontgomery(gpt.z),
+                t: Ed25519Fp.fromMontgomery(gpt.t)
+            )
         }
 
         // Horner's method on CPU

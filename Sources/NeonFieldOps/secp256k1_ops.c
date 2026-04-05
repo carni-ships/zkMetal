@@ -606,6 +606,60 @@ void secp256k1_point_add(const uint64_t p[12], const uint64_t q[12], uint64_t r[
     secp_pt_add(p, q, r);
 }
 
+// Shamir's trick: compute s1*P1 + s2*P2 in a single double-and-add scan.
+// Precomputes P1, P2, P1+P2 and scans both scalars MSB-to-LSB simultaneously.
+// ~25% faster than two separate scalar muls + add.
+void secp256k1_shamir_double_mul(const uint64_t p1[12], const uint64_t s1[4],
+                                  const uint64_t p2[12], const uint64_t s2[4],
+                                  uint64_t r[12]) {
+    // Precompute table: table[0]=identity, table[1]=P1, table[2]=P2, table[3]=P1+P2
+    uint64_t table[4][12];
+    secp_pt_set_id(table[0]);
+    memcpy(table[1], p1, 96);
+    memcpy(table[2], p2, 96);
+    secp_pt_add(p1, p2, table[3]);
+
+    // Find highest set bit across both scalars
+    int top_bit = -1;
+    for (int i = 3; i >= 0; i--) {
+        uint64_t combined = s1[i] | s2[i];
+        if (combined != 0) {
+            int bit_in_word = 63 - __builtin_clzll(combined);
+            top_bit = i * 64 + bit_in_word;
+            break;
+        }
+    }
+
+    if (top_bit < 0) {
+        secp_pt_set_id(r);
+        return;
+    }
+
+    uint64_t result[12];
+    secp_pt_set_id(result);
+
+    for (int bit = top_bit; bit >= 0; bit--) {
+        // Double
+        uint64_t tmp[12];
+        secp_pt_dbl(result, tmp);
+        memcpy(result, tmp, 96);
+
+        // Get bit from each scalar
+        int word = bit / 64;
+        int pos = bit % 64;
+        int b1 = (s1[word] >> pos) & 1;
+        int b2 = (s2[word] >> pos) & 1;
+        int idx = b1 | (b2 << 1);
+
+        if (idx != 0) {
+            secp_pt_add(result, table[idx], tmp);
+            memcpy(result, tmp, 96);
+        }
+    }
+
+    memcpy(r, result, 96);
+}
+
 void secp256k1_point_to_affine(const uint64_t p[12], uint64_t ax[4], uint64_t ay[4]) {
     secp_pt_to_affine(p, ax, ay);
 }

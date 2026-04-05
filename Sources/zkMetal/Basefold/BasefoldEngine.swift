@@ -154,9 +154,6 @@ public class BasefoldEngine {
     /// Open the committed polynomial at point (r_1, ..., r_n).
     /// Performs n rounds of multilinear folding, producing Merkle commitments at each level.
     /// Generates query proofs for random verification indices.
-    // Set to true temporarily to profile open() phases
-    private static let profileOpen = false
-
     public func open(commitment: BasefoldCommitment, point: [Fr]) throws -> BasefoldProof {
         let evals = commitment.evaluations
         let n = evals.count

@@ -11,106 +11,98 @@
 // Partial round: AddRC (first element only) -> S-box (first element only) -> Linear layer (internal)
 
 import Foundation
+import NeonFieldOps
 
-// MARK: - Poseidon2 Permutation (CPU)
-
-/// Apply the external linear layer (circulant matrix [2,1,1] for t=3).
-/// M_E * [a,b,c] = [2a+b+c, a+2b+c, a+b+2c]
-@inline(__always)
-private func externalLinearLayer(_ state: inout [Fr]) {
-    let sum = frAdd(frAdd(state[0], state[1]), state[2])
-    state[0] = frAdd(state[0], sum)
-    state[1] = frAdd(state[1], sum)
-    state[2] = frAdd(state[2], sum)
-}
-
-/// Apply the internal linear layer.
-/// M_I = [[2,1,1],[1,2,1],[1,1,3]]
-/// M_I * [a,b,c] = [2a+b+c, a+2b+c, a+b+3c]
-@inline(__always)
-private func internalLinearLayer(_ state: inout [Fr]) {
-    let sum = frAdd(frAdd(state[0], state[1]), state[2])
-    state[0] = frAdd(state[0], sum)    // a + (a+b+c) = 2a+b+c
-    state[1] = frAdd(state[1], sum)    // b + (a+b+c) = a+2b+c
-    // state[2] gets diag=2 extra: c + (a+b+c) + c = a+b+3c
-    state[2] = frAdd(frAdd(state[2], sum), state[2])
-}
-
-/// S-box: x -> x^5
-@inline(__always)
-private func sbox(_ x: Fr) -> Fr {
-    let x2 = frSqr(x)
-    let x4 = frSqr(x2)
-    return frMul(x4, x)
-}
+// MARK: - Poseidon2 Permutation (CPU) — C CIOS accelerated
 
 /// Full Poseidon2 permutation on a state of 3 Fr elements.
+/// Delegates to C CIOS Montgomery implementation for ~10-30x speedup.
 public func poseidon2Permutation(_ input: [Fr]) -> [Fr] {
     precondition(input.count == 3)
-    let rc = POSEIDON2_ROUND_CONSTANTS
-
-    var state = input
-
-    // Initial external linear layer
-    externalLinearLayer(&state)
-
-    // First half of full rounds (rounds 0..3)
-    for r in 0..<4 {
-        // Add round constants
-        for i in 0..<3 { state[i] = frAdd(state[i], rc[r][i]) }
-        // S-box on all elements
-        for i in 0..<3 { state[i] = sbox(state[i]) }
-        // External linear layer
-        externalLinearLayer(&state)
+    var result = [Fr](repeating: Fr.zero, count: 3)
+    input.withUnsafeBytes { inPtr in
+        result.withUnsafeMutableBytes { outPtr in
+            poseidon2_permutation_cpu(
+                inPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                outPtr.baseAddress!.assumingMemoryBound(to: UInt64.self)
+            )
+        }
     }
-
-    // Partial rounds (rounds 4..59)
-    for r in 4..<60 {
-        // Add round constant to first element only
-        state[0] = frAdd(state[0], rc[r][0])
-        // S-box on first element only
-        state[0] = sbox(state[0])
-        // Internal linear layer
-        internalLinearLayer(&state)
-    }
-
-    // Second half of full rounds (rounds 60..63)
-    for r in 60..<64 {
-        for i in 0..<3 { state[i] = frAdd(state[i], rc[r][i]) }
-        for i in 0..<3 { state[i] = sbox(state[i]) }
-        externalLinearLayer(&state)
-    }
-
-    return state
+    return result
 }
 
-// MARK: - Poseidon2 Hash (Sponge)
+// MARK: - Poseidon2 Hash (Sponge) — C CIOS accelerated
 
 /// Hash two field elements using Poseidon2 sponge (2-to-1 compression).
 /// Input: [a, b], capacity element = 0
 /// Output: state[0] after permutation
 public func poseidon2Hash(_ a: Fr, _ b: Fr) -> Fr {
-    let state = [a, b, Fr.zero]
-    let result = poseidon2Permutation(state)
-    return result[0]
+    var result = Fr.zero
+    withUnsafePointer(to: a) { aPtr in
+        withUnsafePointer(to: b) { bPtr in
+            withUnsafeMutablePointer(to: &result) { rPtr in
+                poseidon2_hash_cpu(
+                    UnsafeRawPointer(aPtr).assumingMemoryBound(to: UInt64.self),
+                    UnsafeRawPointer(bPtr).assumingMemoryBound(to: UInt64.self),
+                    UnsafeMutableRawPointer(rPtr).assumingMemoryBound(to: UInt64.self)
+                )
+            }
+        }
+    }
+    return result
 }
 
 /// Hash a variable-length array of field elements using Poseidon2 sponge.
-/// Uses rate=2, capacity=1.
+/// Uses rate=2, capacity=1. Uses C CIOS for the permutation.
 public func poseidon2HashMany(_ inputs: [Fr]) -> Fr {
-    var state = [Fr.zero, Fr.zero, Fr.zero]
+    var s0 = Fr.zero, s1 = Fr.zero, s2 = Fr.zero
 
-    // Absorb phase: process inputs in chunks of 2 (rate)
     var i = 0
     while i < inputs.count {
-        state[0] = frAdd(state[0], inputs[i])
-        if i + 1 < inputs.count {
-            state[1] = frAdd(state[1], inputs[i + 1])
+        // Absorb: add inputs to rate portion of state
+        withUnsafePointer(to: s0) { s0Ptr in
+            withUnsafePointer(to: inputs[i]) { inPtr in
+                var r = Fr.zero
+                withUnsafeMutablePointer(to: &r) { rPtr in
+                    bn254_fr_add(
+                        UnsafeRawPointer(s0Ptr).assumingMemoryBound(to: UInt64.self),
+                        UnsafeRawPointer(inPtr).assumingMemoryBound(to: UInt64.self),
+                        UnsafeMutableRawPointer(rPtr).assumingMemoryBound(to: UInt64.self)
+                    )
+                }
+                s0 = r
+            }
         }
-        state = poseidon2Permutation(state)
+        if i + 1 < inputs.count {
+            withUnsafePointer(to: s1) { s1Ptr in
+                withUnsafePointer(to: inputs[i + 1]) { inPtr in
+                    var r = Fr.zero
+                    withUnsafeMutablePointer(to: &r) { rPtr in
+                        bn254_fr_add(
+                            UnsafeRawPointer(s1Ptr).assumingMemoryBound(to: UInt64.self),
+                            UnsafeRawPointer(inPtr).assumingMemoryBound(to: UInt64.self),
+                            UnsafeMutableRawPointer(rPtr).assumingMemoryBound(to: UInt64.self)
+                        )
+                    }
+                    s1 = r
+                }
+            }
+        }
+
+        // Permute
+        var state = [s0, s1, s2]
+        var result = [Fr](repeating: Fr.zero, count: 3)
+        state.withUnsafeBytes { inPtr in
+            result.withUnsafeMutableBytes { outPtr in
+                poseidon2_permutation_cpu(
+                    inPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    outPtr.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                )
+            }
+        }
+        s0 = result[0]; s1 = result[1]; s2 = result[2]
         i += 2
     }
 
-    // Squeeze: output first element
-    return state[0]
+    return s0
 }

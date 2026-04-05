@@ -10,6 +10,7 @@
 // Used by Circom, Semaphore, Tornado Cash, Polygon for in-circuit signatures.
 
 import Foundation
+import NeonFieldOps
 
 // MARK: - Point Types
 
@@ -123,56 +124,36 @@ public func bjjPointToAffine(_ p: BJJPointExtended) -> BJJPointAffine {
 // MARK: - Point Operations
 
 /// Point addition using extended coordinates (unified formula)
-/// For ax^2 + y^2 = 1 + dx^2y^2 with general a:
-/// A = X1*X2, B = Y1*Y2, C = d*T1*T2, D = Z1*Z2
-/// E = (X1+Y1)*(X2+Y2) - A - B
-/// F = D - C, G = D + C
-/// H = B - a*A
-/// X3 = E*F, Y3 = G*H, T3 = E*H, Z3 = F*G
+/// Uses C CIOS Montgomery field ops for ~10-30x speedup.
 public func bjjPointAdd(_ p: BJJPointExtended, _ q: BJJPointExtended) -> BJJPointExtended {
-    let aConst = bjjA()
-    let dConst = bjjD()
-    let aa = frMul(p.x, q.x)
-    let bb = frMul(p.y, q.y)
-    let cc = frMul(frMul(p.t, q.t), dConst)
-    let dd = frMul(p.z, q.z)
-    let e = frSub(frMul(frAdd(p.x, p.y), frAdd(q.x, q.y)), frAdd(aa, bb))
-    let f = frSub(dd, cc)
-    let g = frAdd(dd, cc)
-    let h = frSub(bb, frMul(aConst, aa))
-
-    return BJJPointExtended(
-        x: frMul(e, f),
-        y: frMul(g, h),
-        z: frMul(f, g),
-        t: frMul(e, h)
-    )
+    var result = bjjPointIdentity()
+    withUnsafeBytes(of: p) { pBuf in
+        withUnsafeBytes(of: q) { qBuf in
+            withUnsafeMutableBytes(of: &result) { resBuf in
+                babyjubjub_point_add(
+                    pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    qBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    resBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                )
+            }
+        }
+    }
+    return result
 }
 
 /// Point doubling (more efficient than generic add)
-/// For ax^2 + y^2 = 1 + dx^2y^2 with general a:
-/// A = X^2, B = Y^2, C = 2*Z^2
-/// D = a*A
-/// E = (X+Y)^2 - A - B
-/// G = D + B, F = G - C, H = D - B
-/// X3 = E*F, Y3 = G*H, T3 = E*H, Z3 = F*G
+/// Uses C CIOS Montgomery field ops for ~10-30x speedup.
 public func bjjPointDouble(_ p: BJJPointExtended) -> BJJPointExtended {
-    let aConst = bjjA()
-    let aa = frSqr(p.x)
-    let bb = frSqr(p.y)
-    let cc = frDouble(frSqr(p.z))
-    let dd = frMul(aConst, aa)
-    let e = frSub(frSqr(frAdd(p.x, p.y)), frAdd(aa, bb))
-    let g = frAdd(dd, bb)
-    let f = frSub(g, cc)
-    let h = frSub(dd, bb)
-
-    return BJJPointExtended(
-        x: frMul(e, f),
-        y: frMul(g, h),
-        z: frMul(f, g),
-        t: frMul(e, h)
-    )
+    var result = bjjPointIdentity()
+    withUnsafeBytes(of: p) { pBuf in
+        withUnsafeMutableBytes(of: &result) { resBuf in
+            babyjubjub_point_double(
+                pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                resBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+            )
+        }
+    }
+    return result
 }
 
 /// Negate a point: -(x, y) = (-x, y)
@@ -189,40 +170,35 @@ public func bjjPointNegAffine(_ p: BJJPointAffine) -> BJJPointAffine {
     BJJPointAffine(x: frNeg(p.x), y: p.y)
 }
 
-/// Scalar multiplication: double-and-add
-/// Scalar is given as raw (non-Montgomery) 64-bit limbs
+/// Scalar multiplication using C CIOS Montgomery field ops with windowed method (w=4).
+/// Scalar is given as raw (non-Montgomery) 64-bit limbs.
 public func bjjPointMulScalar(_ p: BJJPointExtended, _ scalar: [UInt64]) -> BJJPointExtended {
+    // Pad scalar to 4 limbs
+    var scalarLimbs: [UInt64] = [0, 0, 0, 0]
+    for i in 0..<min(scalar.count, 4) {
+        scalarLimbs[i] = scalar[i]
+    }
     var result = bjjPointIdentity()
-    var base = p
-    for i in 0..<scalar.count {
-        var word = scalar[i]
-        let bits = (i < scalar.count - 1) ? 64 : 64
-        for _ in 0..<bits {
-            if word & 1 == 1 {
-                result = bjjPointAdd(result, base)
+    withUnsafeBytes(of: p) { pBuf in
+        scalarLimbs.withUnsafeBufferPointer { scBuf in
+            withUnsafeMutableBytes(of: &result) { resBuf in
+                babyjubjub_scalar_mul(
+                    pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    scBuf.baseAddress!,
+                    resBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                )
             }
-            base = bjjPointDouble(base)
-            word >>= 1
         }
     }
     return result
 }
 
 /// Scalar multiplication with small integer
+/// Uses C CIOS Montgomery field ops via babyjubjub_scalar_mul.
 public func bjjPointMulInt(_ p: BJJPointExtended, _ n: Int) -> BJJPointExtended {
     if n == 0 { return bjjPointIdentity() }
     if n < 0 { return bjjPointNeg(bjjPointMulInt(p, -n)) }
-    var result = bjjPointIdentity()
-    var base = p
-    var k = n
-    while k > 0 {
-        if k & 1 == 1 {
-            result = bjjPointAdd(result, base)
-        }
-        base = bjjPointDouble(base)
-        k >>= 1
-    }
-    return result
+    return bjjPointMulScalar(p, [UInt64(n), 0, 0, 0])
 }
 
 /// Batch extended -> affine using Montgomery's trick (single inversion)

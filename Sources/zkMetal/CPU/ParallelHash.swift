@@ -2,14 +2,29 @@
 // Does NOT replace vanilla poseidon2Hash/keccak256/blake3 (those remain as references).
 
 import Foundation
+import NeonFieldOps
 
 // MARK: - Parallel Poseidon2 batch hash
 
 /// Hash n pairs of field elements in parallel using Poseidon2 (2-to-1 compression).
+/// Uses C CIOS Montgomery implementation with multi-threading for large batches.
 public func parallelPoseidon2Batch(_ pairs: [(Fr, Fr)]) -> [Fr] {
-    var results = [Fr](repeating: Fr.zero, count: pairs.count)
-    DispatchQueue.concurrentPerform(iterations: pairs.count) { i in
-        results[i] = poseidon2Hash(pairs[i].0, pairs[i].1)
+    let n = pairs.count
+    // Pack pairs into flat array for C batch function
+    var flat = [Fr](repeating: Fr.zero, count: 2 * n)
+    for i in 0..<n {
+        flat[2 * i] = pairs[i].0
+        flat[2 * i + 1] = pairs[i].1
+    }
+    var results = [Fr](repeating: Fr.zero, count: n)
+    flat.withUnsafeBytes { inPtr in
+        results.withUnsafeMutableBytes { outPtr in
+            poseidon2_hash_batch_cpu(
+                inPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                Int32(n),
+                outPtr.baseAddress!.assumingMemoryBound(to: UInt64.self)
+            )
+        }
     }
     return results
 }

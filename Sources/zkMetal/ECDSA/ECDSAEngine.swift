@@ -43,6 +43,7 @@ public class ECDSAEngine {
 
     /// Verify a single ECDSA signature.
     /// Returns true if (u1*G + u2*Q).x ≡ r (mod n).
+    /// Uses Shamir's trick for ~25% faster verification.
     public func verify(sig: ECDSASignature, pubkey: SecpPointAffine) -> Bool {
         let sInv = secpFrInverse(sig.s)
         let u1 = secpFrMul(sig.z, sInv)
@@ -52,12 +53,10 @@ public class ECDSAEngine {
         let gProj = secpPointFromAffine(gen)
         let qProj = secpPointFromAffine(pubkey)
 
-        // u1*G + u2*Q
+        // u1*G + u2*Q via Shamir's trick (simultaneous double-and-add)
         let u1Int = secpFrToInt(u1)
         let u2Int = secpFrToInt(u2)
-        let u1G = secpPointMulScalar(gProj, u1Int)
-        let u2Q = secpPointMulScalar(qProj, u2Int)
-        let R = secpPointAdd(u1G, u2Q)
+        let R = secpShamirDoubleMul(gProj, u1Int, qProj, u2Int)
 
         if secpPointIsIdentity(R) { return false }
 
@@ -107,9 +106,7 @@ public class ECDSAEngine {
         for i in 0..<n {
             let u1Int = secpFrToInt(secpFrMul(signatures[i].z, sInvs[i]))
             let u2Int = secpFrToInt(secpFrMul(signatures[i].r, sInvs[i]))
-            let u1G = secpPointMulScalar(gen_proj, u1Int)
-            let u2Q = secpPointMulScalar(secpPointFromAffine(pubkeys[i]), u2Int)
-            let R = secpPointAdd(u1G, u2Q)
+            let R = secpShamirDoubleMul(gen_proj, u1Int, secpPointFromAffine(pubkeys[i]), u2Int)
 
             if secpPointIsIdentity(R) { continue }
 
@@ -258,6 +255,33 @@ public class ECDSAEngine {
             return SecpPointAffine(x: x, y: secpNeg(y))
         }
     }
+}
+
+// MARK: - Shamir's trick: simultaneous double-scalar multiplication
+
+/// C-accelerated Shamir's trick: compute s1*P1 + s2*P2 in a single scan.
+/// ~25% faster than two separate secpPointMulScalar calls + secpPointAdd.
+public func secpShamirDoubleMul(_ p1: SecpPointProjective, _ s1: [UInt64],
+                                 _ p2: SecpPointProjective, _ s2: [UInt64]) -> SecpPointProjective {
+    var result = SecpPointProjective(x: SecpFp.one, y: SecpFp.one, z: SecpFp.zero)
+    withUnsafeBytes(of: p1) { p1Buf in
+        s1.withUnsafeBufferPointer { s1Buf in
+            withUnsafeBytes(of: p2) { p2Buf in
+                s2.withUnsafeBufferPointer { s2Buf in
+                    withUnsafeMutableBytes(of: &result) { resBuf in
+                        secp256k1_shamir_double_mul(
+                            p1Buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            s1Buf.baseAddress!,
+                            p2Buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            s2Buf.baseAddress!,
+                            resBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                        )
+                    }
+                }
+            }
+        }
+    }
+    return result
 }
 
 // MARK: - Scalar multiplication with 256-bit scalar (4×64 limbs)

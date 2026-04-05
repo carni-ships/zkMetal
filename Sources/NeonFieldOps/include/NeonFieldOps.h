@@ -636,4 +636,51 @@ void grumpkin_point_double(const uint64_t p[12], uint64_t r[12]);
 /// @param r       Output projective point (12 uint64_t).
 void grumpkin_scalar_mul(const uint64_t p[12], const uint64_t scalar[4], uint64_t r[12]);
 
+// ============================================================
+// CPU Poseidon2 (BN254 Fr CIOS)
+// ============================================================
+
+/// CPU Poseidon2 full permutation on 3 Fr elements.
+void poseidon2_permutation_cpu(const uint64_t state[12], uint64_t result[12]);
+
+/// CPU Poseidon2 hash of two Fr elements (2-to-1 compression).
+void poseidon2_hash_cpu(const uint64_t a[4], const uint64_t b[4], uint64_t out[4]);
+
+/// Batch CPU Poseidon2 hash of pairs (multi-threaded for count >= 256).
+void poseidon2_hash_batch_cpu(const uint64_t *input, int count, uint64_t *output);
+
+// ============================================================
+// secp256k1 Shamir's trick
+// ============================================================
+
+/// Shamir's trick: compute s1*P1 + s2*P2 using simultaneous double-and-add.
+void secp256k1_shamir_double_mul(const uint64_t *p1, const uint64_t *s1,
+                                  const uint64_t *p2, const uint64_t *s2,
+                                  uint64_t *r);
+
+// ============================================================
+// BabyJubjub twisted Edwards curve (over BN254 Fr)
+// ============================================================
+
+void babyjubjub_point_add(const uint64_t p[16], const uint64_t q[16], uint64_t r[16]);
+void babyjubjub_point_double(const uint64_t p[16], uint64_t r[16]);
+void babyjubjub_scalar_mul(const uint64_t p[16], const uint64_t scalar[4], uint64_t r[16]);
+
+// ============================================================
+// Ed25519 Fp Solinas reduction (p = 2^255 - 19)
+// ============================================================
+
+void ed25519_fp_mul(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]);
+void ed25519_fp_sqr(const uint64_t a[4], uint64_t r[4]);
+void ed25519_fp_add(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]);
+void ed25519_fp_sub(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]);
+void ed25519_fp_neg(const uint64_t a[4], uint64_t r[4]);
+void ed25519_fp_inverse(const uint64_t a[4], uint64_t r[4]);
+void ed25519_scalar_mul(const uint64_t p[16], const uint64_t scalar[4], uint64_t r[16]);
+void ed25519_point_add_c(const uint64_t p[16], const uint64_t q[16], uint64_t r[16]);
+void ed25519_point_double_c(const uint64_t p[16], uint64_t r[16]);
+void ed25519_point_to_affine(const uint64_t p[16], uint64_t aff[8]);
+void ed25519_mont_to_direct(const uint64_t mont[4], uint64_t direct[4]);
+void ed25519_direct_to_mont(const uint64_t direct[4], uint64_t mont[4]);
+
 #endif // NEON_FIELD_OPS_H

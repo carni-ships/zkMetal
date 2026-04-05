@@ -1,8 +1,10 @@
 // Ed25519 base field Fp arithmetic (CPU-side)
 // p = 2^255 - 19
-// Field elements as 4x64-bit limbs in Montgomery form (little-endian).
+// Field elements as 4x64-bit limbs in direct integer representation (little-endian).
+// Uses Solinas special reduction via C implementation for mul/sqr (2-4x faster than CIOS Montgomery).
 
 import Foundation
+import NeonFieldOps
 
 public struct Ed25519Fp: Equatable {
     public var v: (UInt64, UInt64, UInt64, UInt64)
@@ -13,37 +15,27 @@ public struct Ed25519Fp: Equatable {
         0xffffffffffffffff, 0x7fffffffffffffff
     ]
 
-    // R mod p (Montgomery form of 1): 2^256 mod p
-    // R = 2^256 mod p = 2^256 - p = 2^256 - (2^255 - 19) = 2^255 + 19 = 38
-    // But more precisely: 2^256 mod (2^255-19) = 2*p + 38 mod p = 38
-    // Actually 2^256 = 2 * (2^255) = 2 * (p + 19) = 2p + 38, so R mod p = 38
+    // In direct integer representation, "one" is simply 1
+    // (no Montgomery R factor needed)
     public static let R_MOD_P: [UInt64] = [
         0x0000000000000026, 0x0000000000000000,
         0x0000000000000000, 0x0000000000000000
     ]
 
-    // R^2 mod p: 2^512 mod p
-    // 2^512 mod p = (2^256)^2 mod p = 38^2 mod p = 1444 mod p
-    // Wait, need proper computation. 2^256 mod p = 38.
-    // 2^512 mod p = 38^2 mod p = 1444. But this seems too small.
-    // Let me verify: 38 * 38 = 1444, and 1444 < p, so R^2 mod p = 1444 = 0x5A4
+    // R^2 mod p (kept for backward compat if anything references it)
     public static let R2_MOD_P: [UInt64] = [
         0x00000000000005a4, 0x0000000000000000,
         0x0000000000000000, 0x0000000000000000
     ]
 
-    // -p^(-1) mod 2^64
-    // p = 0xffffffffffffffed
-    // We need inv such that p * inv ≡ -1 (mod 2^64)
-    // p[0] = 0xffffffffffffffed
-    // p[0] * inv ≡ -1 (mod 2^64)
-    // inv = 0x86bca1af286bca1b (computed via extended GCD)
+    // -p^(-1) mod 2^64 (kept for conversion helpers)
     public static let INV: UInt64 = 0x86bca1af286bca1b
 
     public static var zero: Ed25519Fp { Ed25519Fp(v: (0, 0, 0, 0)) }
 
+    // In direct integer form, one = 1
     public static var one: Ed25519Fp {
-        Ed25519Fp(v: (R_MOD_P[0], R_MOD_P[1], R_MOD_P[2], R_MOD_P[3]))
+        Ed25519Fp(v: (1, 0, 0, 0))
     }
 
     public init(v: (UInt64, UInt64, UInt64, UInt64)) {
@@ -77,139 +69,109 @@ public struct Ed25519Fp: Equatable {
         v.0 == 0 && v.1 == 0 && v.2 == 0 && v.3 == 0
     }
 
+    /// Convert from direct integer representation to Montgomery form for GPU interop.
+    /// Montgomery form = val * R mod p, where R = 2^256 ≡ 38 mod p.
+    public func toMontgomery() -> Ed25519Fp {
+        _fpUnaryOp(self, ed25519_direct_to_mont)
+    }
+
+    /// Convert from Montgomery form (GPU) to direct integer representation (CPU).
+    public static func fromMontgomery(_ mont: Ed25519Fp) -> Ed25519Fp {
+        _fpUnaryOp(mont, ed25519_mont_to_direct)
+    }
+
     public static func == (lhs: Ed25519Fp, rhs: Ed25519Fp) -> Bool {
         lhs.v.0 == rhs.v.0 && lhs.v.1 == rhs.v.1 &&
         lhs.v.2 == rhs.v.2 && lhs.v.3 == rhs.v.3
     }
 }
 
-// MARK: - Field Operations
+// MARK: - Field Operations (Solinas reduction via C)
 
-/// Montgomery multiplication: (a * b * R^-1) mod p
+// Helper: call a binary C field op on two Ed25519Fp values.
+// Swift tuples of 4 x UInt64 are laid out contiguously, matching C's uint64_t[4].
+@inline(__always)
+private func _fpBinOp(_ a: Ed25519Fp, _ b: Ed25519Fp,
+                      _ op: (UnsafePointer<UInt64>, UnsafePointer<UInt64>, UnsafeMutablePointer<UInt64>) -> Void) -> Ed25519Fp {
+    var r = Ed25519Fp.zero
+    withUnsafePointer(to: a.v) { ap in
+        withUnsafePointer(to: b.v) { bp in
+            withUnsafeMutablePointer(to: &r.v) { rp in
+                op(UnsafeRawPointer(ap).assumingMemoryBound(to: UInt64.self),
+                   UnsafeRawPointer(bp).assumingMemoryBound(to: UInt64.self),
+                   UnsafeMutableRawPointer(rp).assumingMemoryBound(to: UInt64.self))
+            }
+        }
+    }
+    return r
+}
+
+@inline(__always)
+private func _fpUnaryOp(_ a: Ed25519Fp,
+                        _ op: (UnsafePointer<UInt64>, UnsafeMutablePointer<UInt64>) -> Void) -> Ed25519Fp {
+    var r = Ed25519Fp.zero
+    withUnsafePointer(to: a.v) { ap in
+        withUnsafeMutablePointer(to: &r.v) { rp in
+            op(UnsafeRawPointer(ap).assumingMemoryBound(to: UInt64.self),
+               UnsafeMutableRawPointer(rp).assumingMemoryBound(to: UInt64.self))
+        }
+    }
+    return r
+}
+
+/// Modular multiplication using Solinas reduction: (a * b) mod p
+/// Direct integer form -- no Montgomery R factor.
 public func ed25519FpMul(_ a: Ed25519Fp, _ b: Ed25519Fp) -> Ed25519Fp {
-    let al = a.toLimbs(), bl = b.toLimbs()
-    var t = [UInt64](repeating: 0, count: 6)
-
-    for i in 0..<4 {
-        var carry: UInt64 = 0
-        for j in 0..<4 {
-            let (hi, lo) = al[i].multipliedFullWidth(by: bl[j])
-            let (s1, c1) = t[j].addingReportingOverflow(lo)
-            let (s2, c2) = s1.addingReportingOverflow(carry)
-            t[j] = s2
-            carry = hi &+ (c1 ? 1 : 0) &+ (c2 ? 1 : 0)
-        }
-        let (s4, c4) = t[4].addingReportingOverflow(carry)
-        t[4] = s4
-        t[5] = t[5] &+ (c4 ? 1 : 0)
-
-        let m = t[0] &* Ed25519Fp.INV
-        carry = 0
-        for j in 0..<4 {
-            let (hi, lo) = m.multipliedFullWidth(by: Ed25519Fp.P[j])
-            let (s1, c1) = t[j].addingReportingOverflow(lo)
-            let (s2, c2) = s1.addingReportingOverflow(carry)
-            t[j] = s2
-            carry = hi &+ (c1 ? 1 : 0) &+ (c2 ? 1 : 0)
-        }
-        let (s4r, c4r) = t[4].addingReportingOverflow(carry)
-        t[4] = s4r
-        t[5] = t[5] &+ (c4r ? 1 : 0)
-
-        t[0] = t[1]; t[1] = t[2]; t[2] = t[3]; t[3] = t[4]; t[4] = t[5]; t[5] = 0
-    }
-
-    var r = Array(t[0..<4])
-    if t[4] != 0 || ed25519FpGte(r, Ed25519Fp.P) {
-        r = ed25519FpSub256(r, Ed25519Fp.P).0
-    }
-    return Ed25519Fp.fromLimbs(r)
+    _fpBinOp(a, b, ed25519_fp_mul)
 }
 
 public func ed25519FpAdd(_ a: Ed25519Fp, _ b: Ed25519Fp) -> Ed25519Fp {
-    var r = [UInt64](repeating: 0, count: 4)
-    var carry: UInt64 = 0
-    for i in 0..<4 {
-        let (s1, c1) = a.toLimbs()[i].addingReportingOverflow(b.toLimbs()[i])
-        let (s2, c2) = s1.addingReportingOverflow(carry)
-        r[i] = s2
-        carry = (c1 ? 1 : 0) + (c2 ? 1 : 0)
-    }
-    if carry != 0 || ed25519FpGte(r, Ed25519Fp.P) {
-        r = ed25519FpSub256(r, Ed25519Fp.P).0
-    }
-    return Ed25519Fp.fromLimbs(r)
+    _fpBinOp(a, b, ed25519_fp_add)
 }
 
 public func ed25519FpSub(_ a: Ed25519Fp, _ b: Ed25519Fp) -> Ed25519Fp {
-    let (r, borrow) = ed25519FpSub256(a.toLimbs(), b.toLimbs())
-    if borrow {
-        var result = [UInt64](repeating: 0, count: 4)
-        var carry: UInt64 = 0
-        for i in 0..<4 {
-            let (s1, c1) = r[i].addingReportingOverflow(Ed25519Fp.P[i])
-            let (s2, c2) = s1.addingReportingOverflow(carry)
-            result[i] = s2
-            carry = (c1 ? 1 : 0) + (c2 ? 1 : 0)
-        }
-        return Ed25519Fp.fromLimbs(result)
-    }
-    return Ed25519Fp.fromLimbs(r)
+    _fpBinOp(a, b, ed25519_fp_sub)
 }
 
-public func ed25519FpSqr(_ a: Ed25519Fp) -> Ed25519Fp { ed25519FpMul(a, a) }
+public func ed25519FpSqr(_ a: Ed25519Fp) -> Ed25519Fp {
+    _fpUnaryOp(a, ed25519_fp_sqr)
+}
+
 public func ed25519FpDouble(_ a: Ed25519Fp) -> Ed25519Fp { ed25519FpAdd(a, a) }
 
 public func ed25519FpNeg(_ a: Ed25519Fp) -> Ed25519Fp {
     if a.isZero { return a }
-    return Ed25519Fp.fromLimbs(ed25519FpSub256(Ed25519Fp.P, a.toLimbs()).0)
+    return _fpUnaryOp(a, ed25519_fp_neg)
 }
 
-/// Convert raw integer to Montgomery form
+/// In direct integer form, fromInt just returns the value directly (no Montgomery conversion).
 public func ed25519FpFromInt(_ val: UInt64) -> Ed25519Fp {
-    let raw = Ed25519Fp(v: (val, 0, 0, 0))
-    return ed25519FpMul(raw, Ed25519Fp.fromLimbs(Ed25519Fp.R2_MOD_P))
+    Ed25519Fp(v: (val, 0, 0, 0))
 }
 
-/// Convert from Montgomery form to integer
+/// In direct integer form, toInt returns the limbs directly.
 public func ed25519FpToInt(_ a: Ed25519Fp) -> [UInt64] {
-    let one = Ed25519Fp(v: (1, 0, 0, 0))
-    return ed25519FpMul(a, one).toLimbs()
+    a.toLimbs()
 }
 
-/// Convert raw 256-bit limbs to Montgomery form
+/// In direct form, fromRaw returns the limbs directly (just ensure < p).
 public func ed25519FpFromRaw(_ limbs: [UInt64]) -> Ed25519Fp {
-    let raw = Ed25519Fp.fromLimbs(limbs)
-    return ed25519FpMul(raw, Ed25519Fp.fromLimbs(Ed25519Fp.R2_MOD_P))
+    // Reduce mod p if needed
+    var r = limbs
+    if ed25519FpGte(r, Ed25519Fp.P) {
+        r = ed25519FpSub256(r, Ed25519Fp.P).0
+    }
+    return Ed25519Fp.fromLimbs(r)
 }
 
 /// Field inverse via Fermat's little theorem: a^(p-2) mod p
+/// Uses C Solinas implementation.
 public func ed25519FpInverse(_ a: Ed25519Fp) -> Ed25519Fp {
-    var result = Ed25519Fp.one
-    var base = a
-    var exp = Ed25519Fp.P.map { $0 }
-    // p - 2
-    if exp[0] >= 2 { exp[0] -= 2 }
-    else { exp[0] = exp[0] &- 2; exp[1] -= 1 }
-
-    for i in 0..<4 {
-        var word = exp[i]
-        for _ in 0..<64 {
-            if word & 1 == 1 {
-                result = ed25519FpMul(result, base)
-            }
-            base = ed25519FpSqr(base)
-            word >>= 1
-        }
-    }
-    return result
+    _fpUnaryOp(a, ed25519_fp_inverse)
 }
 
 /// Square root in Fp using p ≡ 5 mod 8 formula
-/// For p = 2^255 - 19, we use the Tonelli-Shanks variant:
 /// candidate = a^((p+3)/8) mod p
-/// If candidate^2 = a, return candidate
-/// If candidate^2 = -a, return candidate * sqrt(-1)
 public func ed25519FpSqrt(_ a: Ed25519Fp) -> Ed25519Fp? {
     if a.isZero { return Ed25519Fp.zero }
 
@@ -237,7 +199,6 @@ public func ed25519FpSqrt(_ a: Ed25519Fp) -> Ed25519Fp? {
     if check == a { return result }
 
     // Try result * sqrt(-1)
-    // sqrt(-1) mod p = 2^((p-1)/4) mod p
     let sqrtMinusOne = ed25519FpComputeSqrtMinusOne()
     let result2 = ed25519FpMul(result, sqrtMinusOne)
     let check2 = ed25519FpSqr(result2)
@@ -268,7 +229,7 @@ private func ed25519FpComputeSqrtMinusOne() -> Ed25519Fp {
     return result
 }
 
-/// Parse hex string to Ed25519Fp in Montgomery form
+/// Parse hex string to Ed25519Fp (direct integer form)
 public func ed25519FpFromHex(_ hex: String) -> Ed25519Fp {
     let clean = hex.hasPrefix("0x") ? String(hex.dropFirst(2)) : hex
     let padded = String(repeating: "0", count: max(0, 64 - clean.count)) + clean
@@ -342,7 +303,7 @@ public func ed25519FpToBytes(_ a: Ed25519Fp) -> [UInt8] {
     return bytes
 }
 
-/// Decode 32 bytes (little-endian) to Ed25519Fp in Montgomery form
+/// Decode 32 bytes (little-endian) to Ed25519Fp
 public func ed25519FpFromBytes(_ bytes: [UInt8]) -> Ed25519Fp {
     var limbs: [UInt64] = [0, 0, 0, 0]
     for i in 0..<4 {

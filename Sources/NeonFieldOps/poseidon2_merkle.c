@@ -412,6 +412,91 @@ static void *p2_merkle_thread(void *arg) {
     return NULL;
 }
 
+// Full Poseidon2 permutation on state[3] (each 4 x uint64_t, Montgomery form).
+// result[0..11] = permuted state.
+void poseidon2_permutation_cpu(const uint64_t state[12], uint64_t result[12]) {
+    uint64_t s0[4], s1[4], s2[4];
+    memcpy(s0, state, 32);
+    memcpy(s1, state + 4, 32);
+    memcpy(s2, state + 8, 32);
+
+    // Initial external layer
+    p2_external(s0, s1, s2);
+
+    // First half full rounds (0..3)
+    for (int r = 0; r < 4; r++) {
+        p2_add(s0, P2_RC[r][0], s0);
+        p2_add(s1, P2_RC[r][1], s1);
+        p2_add(s2, P2_RC[r][2], s2);
+        p2_sbox(s0); p2_sbox(s1); p2_sbox(s2);
+        p2_external(s0, s1, s2);
+    }
+
+    // Partial rounds (4..59)
+    for (int r = 4; r < 60; r++) {
+        p2_add(s0, P2_RC[r][0], s0);
+        p2_sbox(s0);
+        p2_internal(s0, s1, s2);
+    }
+
+    // Second half full rounds (60..63)
+    for (int r = 60; r < 64; r++) {
+        p2_add(s0, P2_RC[r][0], s0);
+        p2_add(s1, P2_RC[r][1], s1);
+        p2_add(s2, P2_RC[r][2], s2);
+        p2_sbox(s0); p2_sbox(s1); p2_sbox(s2);
+        p2_external(s0, s1, s2);
+    }
+
+    memcpy(result, s0, 32);
+    memcpy(result + 4, s1, 32);
+    memcpy(result + 8, s2, 32);
+}
+
+// Hash two Fr elements: hash(a, b) = permute([a, b, 0])[0]
+void poseidon2_hash_cpu(const uint64_t a[4], const uint64_t b[4], uint64_t out[4]) {
+    p2_hash(a, b, out);
+}
+
+// Batch hash pairs: input[2*i], input[2*i+1] -> output[i] for i in 0..count-1.
+// Multi-threaded for count >= 256.
+typedef struct {
+    const uint64_t *input;
+    uint64_t *output;
+    int start;
+    int end;
+} p2_batch_task_t;
+
+static void *p2_batch_thread(void *arg) {
+    p2_batch_task_t *t = (p2_batch_task_t *)arg;
+    for (int i = t->start; i < t->end; i++) {
+        p2_hash(t->input + i * 8, t->input + i * 8 + 4, t->output + i * 4);
+    }
+    return NULL;
+}
+
+void poseidon2_hash_batch_cpu(const uint64_t *input, int count, uint64_t *output) {
+    if (count >= 256) {
+        int numThreads = 4;
+        if (count < 1024) numThreads = 2;
+        pthread_t threads[8];
+        p2_batch_task_t tasks[8];
+        int chunk = count / numThreads;
+        for (int i = 0; i < numThreads; i++) {
+            tasks[i].input = input;
+            tasks[i].output = output;
+            tasks[i].start = i * chunk;
+            tasks[i].end = (i == numThreads - 1) ? count : (i + 1) * chunk;
+            pthread_create(&threads[i], NULL, p2_batch_thread, &tasks[i]);
+        }
+        for (int i = 0; i < numThreads; i++) pthread_join(threads[i], NULL);
+    } else {
+        for (int i = 0; i < count; i++) {
+            p2_hash(input + i * 8, input + i * 8 + 4, output + i * 4);
+        }
+    }
+}
+
 // Build Poseidon2 Merkle tree on CPU.
 // Layout: tree[0..n-1] = leaves, tree[n..2n-2] = internal, tree[2n-2] = root.
 // Each element is 4 x uint64_t (32 bytes, Montgomery form).

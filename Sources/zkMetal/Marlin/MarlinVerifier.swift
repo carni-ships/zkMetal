@@ -461,19 +461,27 @@ public class MarlinVerifier {
 
     // MARK: - KZG Opening Verification
 
-    /// Verify all KZG opening proofs via C batch verification.
-    /// Uses bn254_batch_kzg_verify for ~3x speedup over Swift scalar muls.
+    /// Verify all KZG opening proofs using optimized accumulation.
+    /// Uses 2n+1 scalar muls instead of 4n by accumulating:
+    ///   accumC = Σ rho^i * C_i, accumW = Σ rho^i * (s-z_i) * W_i
+    ///   accumEval = Σ rho^i * eval_i (Fr scalar)
+    /// Final: accumC + (-accumEval)*G - accumW == identity
     private func verifyOpenings(vk: MarlinVerifyingKey, proof: MarlinProof,
                                 beta: Fr, gamma: Fr, batchChallenge: Fr) -> Bool {
         let evals = proof.evaluations
+        let s = vk.srsSecret
+        let g1 = pointFromAffine(vk.srs[0])
 
         // Collect all (commitment, point, evaluation, witness) tuples
-        // Openings at beta: w, zA, zB, zC, t
-        var commitments = [PointProjective]()
-        var points = [Fr]()
-        var evaluations = [Fr]()
-        var witnesses = [PointProjective]()
+        struct KZGTuple {
+            let commitment: PointProjective
+            let point: Fr
+            let evaluation: Fr
+            let witness: PointProjective
+        }
+        var tuples = [KZGTuple]()
 
+        // Openings at beta: w, zA, zB, zC, t
         let betaOpenings: [(PointProjective, Fr)] = [
             (proof.wCommit, evals.wBeta),
             (proof.zACommit, evals.zABeta),
@@ -483,10 +491,8 @@ public class MarlinVerifier {
         ]
         for (i, (commit, eval)) in betaOpenings.enumerated() {
             if i < proof.openingProofs.count {
-                commitments.append(commit)
-                points.append(beta)
-                evaluations.append(eval)
-                witnesses.append(proof.openingProofs[i])
+                tuples.append(KZGTuple(commitment: commit, point: beta,
+                                       evaluation: eval, witness: proof.openingProofs[i]))
             }
         }
 
@@ -496,10 +502,8 @@ public class MarlinVerifier {
         for (i, (commit, eval)) in zip(gammaCommits, gammaEvals).enumerated() {
             let proofIdx = 5 + i
             if proofIdx < proof.openingProofs.count {
-                commitments.append(commit)
-                points.append(gamma)
-                evaluations.append(eval)
-                witnesses.append(proof.openingProofs[proofIdx])
+                tuples.append(KZGTuple(commitment: commit, point: gamma,
+                                       evaluation: eval, witness: proof.openingProofs[proofIdx]))
             }
         }
 
@@ -511,51 +515,42 @@ public class MarlinVerifier {
                 let commitIdx = m * 4 + k
                 let proofIdx = 7 + m * 4 + k
                 if commitIdx < vk.indexCommitments.count && proofIdx < proof.openingProofs.count {
-                    commitments.append(vk.indexCommitments[commitIdx])
-                    points.append(gamma)
-                    evaluations.append(matEvals[k])
-                    witnesses.append(proof.openingProofs[proofIdx])
+                    tuples.append(KZGTuple(commitment: vk.indexCommitments[commitIdx],
+                                           point: gamma, evaluation: matEvals[k],
+                                           witness: proof.openingProofs[proofIdx]))
                 }
             }
         }
 
-        let n = commitments.count
-        guard n > 0 else { return false }
+        guard !tuples.isEmpty else { return false }
 
-        // Pack data for C function
-        let srsG1 = vk.srs[0]
-        let srsG1Limbs = srsG1.x.to64() + srsG1.y.to64()
-        let srsSecretLimbs = vk.srsSecret.to64()
-        let batchLimbs = batchChallenge.to64()
+        // Optimized accumulation: 2 scalar muls per tuple + 1 final
+        var accumC = pointIdentity()
+        var accumW = pointIdentity()
+        var accumEval = Fr.zero
+        var rho = Fr.one
 
-        // Pack commitments as 12 uint64 each (projective)
-        var commitBuf = [UInt64](repeating: 0, count: n * 12)
-        var witnessBuf = [UInt64](repeating: 0, count: n * 12)
-        var pointBuf = [UInt64](repeating: 0, count: n * 4)
-        var evalBuf = [UInt64](repeating: 0, count: n * 4)
+        for t in tuples {
+            // accumC += rho * C_i
+            accumC = pointAdd(accumC, cPointScalarMul(t.commitment, rho))
 
-        for i in 0..<n {
-            let c = commitments[i]
-            let cLimbs = c.x.to64() + c.y.to64() + c.z.to64()
-            for j in 0..<12 { commitBuf[i * 12 + j] = cLimbs[j] }
+            // accumEval += rho * eval_i (Fr arithmetic, very fast)
+            accumEval = frAdd(accumEval, frMul(rho, t.evaluation))
 
-            let w = witnesses[i]
-            let wLimbs = w.x.to64() + w.y.to64() + w.z.to64()
-            for j in 0..<12 { witnessBuf[i * 12 + j] = wLimbs[j] }
+            // accumW += rho*(s-z_i) * W_i
+            let sMinusZ = frSub(s, t.point)
+            let rhoSz = frMul(rho, sMinusZ)
+            accumW = pointAdd(accumW, cPointScalarMul(t.witness, rhoSz))
 
-            let p = points[i].to64()
-            for j in 0..<4 { pointBuf[i * 4 + j] = p[j] }
-
-            let e = evaluations[i].to64()
-            for j in 0..<4 { evalBuf[i * 4 + j] = e[j] }
+            rho = frMul(rho, batchChallenge)
         }
 
-        let result = bn254_batch_kzg_verify(
-            srsG1Limbs, srsSecretLimbs,
-            commitBuf, pointBuf, evalBuf, witnessBuf,
-            batchLimbs, Int32(n))
+        // Final: accumC + (-accumEval)*G - accumW == identity
+        let negAccumEval = frNeg(accumEval)
+        let evalG = cPointScalarMul(g1, negAccumEval)
+        let lhs = pointAdd(pointAdd(accumC, evalG), pointNeg(accumW))
 
-        return result == 1
+        return pointIsIdentity(lhs)
     }
 
     // MARK: - Batch Verification
