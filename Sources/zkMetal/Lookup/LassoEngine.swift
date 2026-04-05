@@ -270,29 +270,11 @@ public class LassoEngine {
     /// Enable profiling output to identify which phases dominate.
     public var profileLasso = false
 
-    // Grow-only buffer cache: avoids per-call GPU allocation
-    private var cachedReadBuf: (MTLBuffer, Int)?      // for betaPlusRead (size m)
-    private var cachedReadOutBuf: (MTLBuffer, Int)?    // for hRead output (size m)
-    private var cachedTableBuf: (MTLBuffer, Int)?      // for betaPlusT (size S)
-    private var cachedTableOutBuf: (MTLBuffer, Int)?   // for invBetaPlusT output (size S)
-    private var cachedHadamardInBuf: (MTLBuffer, Int)? // for readCounts input (size S)
-    private var cachedHadamardOutBuf: (MTLBuffer, Int)? // for hTable output (size S)
-
     // Reusable C-allocated buffers for inverse evals (avoids Swift array zero-init)
     private var hReadBuf: UnsafeMutablePointer<UInt64>?
     private var hReadBufCount = 0
     private var hTableBuf: UnsafeMutablePointer<UInt64>?
     private var hTableBufCount = 0
-
-    /// Get or grow a cached buffer. Returns the buffer (capacity >= minBytes).
-    private func getCachedBuffer(_ cached: inout (MTLBuffer, Int)?, minBytes: Int) -> MTLBuffer {
-        if let (buf, cap) = cached, cap >= minBytes {
-            return buf
-        }
-        let buf = polyEngine.device.makeBuffer(length: minBytes, options: .storageModeShared)!
-        cached = (buf, minBytes)
-        return buf
-    }
 
     public init() throws {
         self.polyEngine = try PolyEngine()
@@ -591,61 +573,6 @@ public class LassoEngine {
         return LassoProof(numChunks: table.numChunks,
                           subtableProofs: subtableProofs,
                           indices: indices)
-    }
-
-    // MARK: - Cached GPU dispatch helpers
-
-    /// Fused GPU dispatch: batchInverse(read) + batchInverse(table) + hadamard(table)
-    /// in a single command buffer, saving 2 command buffer creation/commit/wait cycles.
-    private func encodeFusedInverseAndHadamard(
-        readIn: MTLBuffer, readOut: MTLBuffer, readN: Int,
-        tableIn: MTLBuffer, tableOut: MTLBuffer, tableN: Int,
-        hadA: MTLBuffer, hadB: MTLBuffer, hadOut: MTLBuffer, hadN: Int
-    ) throws {
-        guard let cmdBuf = polyEngine.commandQueue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
-
-        // Encode batchInverse for read-side (large: 262144)
-        let enc1 = cmdBuf.makeComputeCommandEncoder()!
-        enc1.setComputePipelineState(polyEngine.batchInverseFunction)
-        enc1.setBuffer(readIn, offset: 0, index: 0)
-        enc1.setBuffer(readOut, offset: 0, index: 1)
-        var readNVal = UInt32(readN)
-        enc1.setBytes(&readNVal, length: 4, index: 2)
-        let chunkSize = 512
-        let readGroups = (readN + chunkSize - 1) / chunkSize
-        let biTG = min(64, Int(polyEngine.batchInverseFunction.maxTotalThreadsPerThreadgroup))
-        enc1.dispatchThreadgroups(MTLSize(width: readGroups, height: 1, depth: 1),
-                                 threadsPerThreadgroup: MTLSize(width: biTG, height: 1, depth: 1))
-        enc1.endEncoding()
-
-        // Encode batchInverse for table-side (small: 256)
-        let enc2 = cmdBuf.makeComputeCommandEncoder()!
-        enc2.setComputePipelineState(polyEngine.batchInverseFunction)
-        enc2.setBuffer(tableIn, offset: 0, index: 0)
-        enc2.setBuffer(tableOut, offset: 0, index: 1)
-        var tableNVal = UInt32(tableN)
-        enc2.setBytes(&tableNVal, length: 4, index: 2)
-        let tableGroups = (tableN + chunkSize - 1) / chunkSize
-        enc2.dispatchThreadgroups(MTLSize(width: tableGroups, height: 1, depth: 1),
-                                 threadsPerThreadgroup: MTLSize(width: biTG, height: 1, depth: 1))
-        enc2.endEncoding()
-
-        // Encode hadamard: hadOut = hadA * hadB (uses tableOut from previous encoder)
-        let enc3 = cmdBuf.makeComputeCommandEncoder()!
-        enc3.setComputePipelineState(polyEngine.hadamardFunction)
-        enc3.setBuffer(hadA, offset: 0, index: 0)
-        enc3.setBuffer(hadB, offset: 0, index: 1)
-        enc3.setBuffer(hadOut, offset: 0, index: 2)
-        var hadNVal = UInt32(hadN)
-        enc3.setBytes(&hadNVal, length: 4, index: 3)
-        let hadTG = min(256, Int(polyEngine.hadamardFunction.maxTotalThreadsPerThreadgroup))
-        enc3.dispatchThreads(MTLSize(width: hadN, height: 1, depth: 1),
-                            threadsPerThreadgroup: MTLSize(width: hadTG, height: 1, depth: 1))
-        enc3.endEncoding()
-
-        cmdBuf.commit()
-        cmdBuf.waitUntilCompleted()
-        if let error = cmdBuf.error { throw MSMError.gpuError(error.localizedDescription) }
     }
 
     /// Verify a Lasso proof.

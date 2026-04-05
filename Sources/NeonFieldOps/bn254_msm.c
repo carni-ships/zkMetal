@@ -1090,6 +1090,14 @@ void bn254_point_scalar_mul(const uint64_t p[12], const uint32_t scalar[8], uint
     pt_scalar_mul(p, scalar, r);
 }
 
+void bn254_point_add_mixed(const uint64_t p[12], const uint64_t q_aff[8], uint64_t r[12]) {
+    pt_add_mixed(p, q_aff, r);
+}
+
+void bn254_point_add(const uint64_t p[12], const uint64_t q[12], uint64_t r[12]) {
+    pt_add(p, q, r);
+}
+
 void bn254_fr_inverse(const uint64_t a[4], uint64_t r[4]) {
     fr_inv(a, r);
 }

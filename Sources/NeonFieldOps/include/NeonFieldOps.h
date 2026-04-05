@@ -63,6 +63,17 @@ void bn254_fold_generators(const uint64_t *GL, const uint64_t *GR,
 /// @param r       Output projective point (12 uint64_t).
 void bn254_point_scalar_mul(const uint64_t *p, const uint32_t *scalar, uint64_t *r);
 
+/// Mixed addition: projective P + affine Q (saves 2 muls + 1 sqr vs full projective add).
+/// @param p       Projective point (12 uint64_t: x[4], y[4], z[4]).
+/// @param q_aff   Affine point (8 uint64_t: x[4], y[4]).
+/// @param r       Output projective point (12 uint64_t).
+void bn254_point_add_mixed(const uint64_t *p, const uint64_t *q_aff, uint64_t *r);
+
+/// Projective point addition.
+/// @param p, q    Projective points (12 uint64_t each).
+/// @param r       Output projective point (12 uint64_t).
+void bn254_point_add(const uint64_t *p, const uint64_t *q, uint64_t *r);
+
 /// Convert projective point to affine using C CIOS field ops.
 /// @param p      Projective point (12 uint64_t).
 /// @param affine Output affine point (8 uint64_t: x[4], y[4]).
