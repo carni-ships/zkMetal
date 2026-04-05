@@ -228,6 +228,15 @@ public class BabyBearSTARKProver {
 
     public let config: BabyBearSTARKConfig
 
+    /// Lazily-initialized GPU coset LDE engine (shared across prove calls).
+    private var _cosetLDEEngine: CosetLDEEngine?
+    private func getCosetLDEEngine() throws -> CosetLDEEngine {
+        if let e = _cosetLDEEngine { return e }
+        let e = try CosetLDEEngine()
+        _cosetLDEEngine = e
+        return e
+    }
+
     public init(config: BabyBearSTARKConfig = .fast) {
         self.config = config
     }
@@ -252,30 +261,33 @@ public class BabyBearSTARKProver {
             }
         }
 
-        // Step 2: Interpolate trace columns -> coefficient form (iNTT)
-        // Then evaluate on LDE coset domain (NTT at shifted domain)
-        let cosetShift = bbCosetGenerator(logN: logLDE)
-        var traceLDEs = [[Bb]]()
-        traceLDEs.reserveCapacity(air.numColumns)
-
-        for colIdx in 0..<air.numColumns {
-            // Pad trace column to LDE size
-            var coeffs = trace[colIdx]
-            coeffs.append(contentsOf: [Bb](repeating: Bb.zero, count: ldeLen - traceLen))
-            // iNTT to get polynomial coefficients
-            coeffs = BabyBearNTTEngine.cpuINTT(coeffs, logN: logTrace)
-            coeffs.append(contentsOf: [Bb](repeating: Bb.zero, count: ldeLen - traceLen))
-            // Evaluate on coset: multiply coefficients by coset shift powers, then NTT
-            var shifted = [Bb](repeating: Bb.zero, count: ldeLen)
-            var shiftPow = Bb.one
-            for i in 0..<ldeLen {
-                if i < traceLen {
-                    shifted[i] = bbMul(coeffs[i], shiftPow)
+        // Step 2: Coset LDE of all trace columns via GPU-fused pipeline
+        // (iNTT -> zero-pad + coset shift -> forward NTT)
+        let traceLDEs: [[Bb]]
+        let blowup = config.blowupFactor
+        if blowup <= 8 {
+            // GPU path: batch all columns through CosetLDEEngine
+            let engine = try getCosetLDEEngine()
+            traceLDEs = try engine.batchCosetLDE(polys: trace, blowupFactor: blowup)
+        } else {
+            // CPU fallback for blowupFactor > 8 (e.g. 16x)
+            let cosetShift = bbCosetGenerator(logN: logLDE)
+            var ldes = [[Bb]]()
+            ldes.reserveCapacity(air.numColumns)
+            for colIdx in 0..<air.numColumns {
+                var coeffs = trace[colIdx]
+                coeffs = BabyBearNTTEngine.cpuINTT(coeffs, logN: logTrace)
+                // Zero-pad to LDE size
+                coeffs.append(contentsOf: [Bb](repeating: Bb.zero, count: ldeLen - traceLen))
+                // Coset shift: coeffs[i] *= g^i
+                var shiftPow = Bb.one
+                for i in 0..<ldeLen {
+                    coeffs[i] = bbMul(coeffs[i], shiftPow)
+                    shiftPow = bbMul(shiftPow, cosetShift)
                 }
-                shiftPow = bbMul(shiftPow, cosetShift)
+                ldes.append(BabyBearNTTEngine.cpuNTT(coeffs, logN: logLDE))
             }
-            let lde = BabyBearNTTEngine.cpuNTT(shifted, logN: logLDE)
-            traceLDEs.append(lde)
+            traceLDEs = ldes
         }
 
         // Step 3: Commit trace LDE columns via Poseidon2 Merkle trees
@@ -297,6 +309,7 @@ public class BabyBearSTARKProver {
         // Step 5: Evaluate constraints over LDE domain, compute quotient
         let omega = bbRootOfUnity(logN: logLDE)
         let traceOmega = bbRootOfUnity(logN: logTrace)
+        let cosetShift = bbCosetGenerator(logN: logLDE)
 
         // Precompute vanishing polynomial evaluations: Z_H(x) = x^traceLen - 1
         // On the coset domain, x = cosetShift * omega_lde^i
