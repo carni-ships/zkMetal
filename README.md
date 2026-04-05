@@ -1,6 +1,6 @@
 # zkMetal
 
-GPU-accelerated zero-knowledge cryptography library for Apple Silicon, written in Metal and Swift. 60+ primitives spanning field arithmetic, MSM, NTT, hash functions, polynomial commitments, proof protocols, signatures, post-quantum crypto, and homomorphic encryption across 18 fields and 10 elliptic curves.
+GPU-accelerated zero-knowledge cryptography library for Apple Silicon, written in Metal and Swift. 75+ primitives spanning field arithmetic, MSM, NTT, hash functions, polynomial commitments, proof systems (Plonk, Groth16, STARK, Spartan, Marlin), folding schemes (HyperNova, Protogalaxy, Nova IVC), zkVM (Jolt with RV32I), signatures, post-quantum crypto, and homomorphic encryption across 18 fields and 10 elliptic curves. FFI bindings for Rust, Go, C++/Barretenberg, and WebGPU/WGSL.
 
 ## Contents
 
@@ -64,7 +64,7 @@ GPU-accelerated zero-knowledge cryptography library for Apple Silicon, written i
 | **STIR** | GPU | Shift-based proximity testing (FRI alternative) |
 | **Marlin** | GPU | Preprocessed SNARK with algebraic holographic proof + KZG |
 | **Spartan** | GPU | Transparent SNARK (no trusted setup) via multilinear extensions + sumcheck |
-| **Jolt** | GPU | zkVM via Lasso structured lookups (10 RISC-like opcodes) |
+| **Jolt** | GPU | zkVM via Lasso structured lookups (40 RV32I opcodes, byte-decomposable tables) |
 | **SHA-256** | GPU | SHA-256 hash (batch + fused Merkle subtree) |
 | **Ed25519** | GPU/CPU | Curve25519 field (Solinas reduction), twisted Edwards curve, EdDSA, GPU MSM |
 | **BabyJubjub** | GPU/CPU | Twisted Edwards over BN254 Fr, C windowed scalar mul, Pedersen hash, EdDSA |
@@ -73,6 +73,16 @@ GPU-accelerated zero-knowledge cryptography library for Apple Silicon, written i
 | **Schnorr** | CPU | BIP 340 Bitcoin Taproot signatures (x-only pubkeys, tagged hashing) |
 | **Poseidon2 BB** | GPU | Poseidon2 BabyBear width-16 (SP1/Plonky3 config, x^7 S-box) |
 | **Jubjub** | CPU | Twisted Edwards over BLS12-381 Fr (Zcash Sapling compatible) |
+| **Protogalaxy** | CPU | Plonk-native folding with O(k log k) per step |
+| **Recursive Proofs** | CPU | Groth16 verifier circuit + Nova IVC + BN254/Grumpkin & Pallas/Vesta curve cycles |
+| **CCS** | CPU | Customizable constraint system (unified R1CS/Plonk/AIR for folding) |
+| **Memory Checking** | CPU | GKR-based grand product for zkVM read/write consistency |
+| **Plonky3 AIR** | GPU | SP1-compatible BabyBear Poseidon2 config, trace commitment, duplex challenger |
+| **Plonk Custom Gates** | CPU | Halo2-compatible rotations, BoolCheck/RangeCheck/Lookup/Poseidon gates, Plookup |
+| **Proof Serialization** | CPU | BN254/BLS12-381 point compression, snarkjs JSON, EIP-4844 KZG, STARK binary |
+| **Shader Cache** | GPU | MTLBinaryArchive persistent cache + background parallel precompilation |
+| **Varuna** | CPU | Marlin/Varuna verifier with batched multi-pairing |
+| **Data-Parallel** | CPU | Repeated sub-circuit proving via GKR (O(\|C\| + N log N)) |
 
 ## Performance
 
@@ -275,7 +285,7 @@ C CIOS constraint evaluation, Keccak transcript, CPU NTT for small sizes, batche
 | 64 | 603ms | 13ms | 79ms |
 | 256 | 2.5s | 14ms | 73ms |
 
-Verification now **VALID**. Cached affine points, CPU NTT for small sizes, parallel BG2, C-accelerated polynomial ops. Prove **107x** improvement at n=256 (1.5s→14ms).
+Verification now **VALID** with C-accelerated pairing (30x faster than Swift path). Cached affine points, CPU NTT for small sizes, parallel BG2, C-accelerated polynomial ops. Prove **107x** improvement at n=256 (1.5s→14ms).
 
 ### GKR (BN254 Fr, Layered Circuits)
 
@@ -358,14 +368,14 @@ C CIOS Montgomery acceleration: pre-computed wiring topology, cached buffers, eq
 | LogUp 2^12 | 15ms prove, 16ms verify | Optimal for small-medium tables |
 | cq | Correctness passes | Crashes at larger benchmark sizes |
 | Binius FFT 2^16 | 21ms (CPU) | Binary tower GF(2^32) GPU batch: 0.67ms mul at 2^18 |
-| BLS12-381 | Sign 26ms, Verify 82ms, **Pairing 2.6ms** | C tower (Fp→Fp12) + Miller loop + final exp: **30×** (78→2.6ms) |
+| BLS12-381 | Sign 26ms, Verify 82ms, **Pairing 2.4ms** | C tower (Fp→Fp12) + Frobenius endomorphism + Granger-Scott cyclotomic sqr: **33×** (78→2.4ms) |
 | BN254 GPU Pairing (n=16) | 51ms (vs 239ms CPU = **4.7x**) | Projective Miller loop, batched final exp |
 | BN254 C Pairing | C-accelerated | CIOS Fp2/Fp6/Fp12 tower + Miller loop + final exp |
 | Schnorr BIP 340 | Sign 0.30ms, Batch verify 0.20ms/sig | x-only pubkeys, SHA-256 tagged hashing |
 | Stark252 NTT 2^20 | 238M elem/s (GPU) | StarkNet/Cairo native field |
 | Poseidon2 BabyBear (width-16) | 104M hash/s (GPU) | SP1/Plonky3 exact config |
 | Pasta curves | Pallas/Vesta cycle | C CIOS field+curve ops, Jacobian projective, windowed scalar mul |
-| Data-Parallel GKR | Experimental | Multi-instance correctness tests failing |
+| Data-Parallel GKR | O(|C| + N log N) | Repeated sub-circuit prover with cached wiring MLEs |
 | Incremental Merkle batch 256 | 13ms (vs 124ms full = **9.2x**) | Known regression on large sequential builds |
 
 ### Application Primitives
@@ -565,6 +575,15 @@ echo '{"points": [["0x1","0x2"]], "scalars": ["0x2a"]}' | swift run -c release z
 ## Auto-Tuning
 
 zkMetal automatically calibrates GPU parameters (threadgroup sizes, FFT thresholds, MSM window sizes) on first use. Results are cached to `~/.zkmetal/tuning.json` and reused across runs. Calibration re-triggers automatically when the GPU changes.
+
+## Language Bindings
+
+| Language | Location | Description |
+|----------|----------|-------------|
+| **Rust** | `bindings/rust/` | `zkmetal-sys` crate — safe wrappers for BN254 Fr, MSM, NTT, multi-curve ops |
+| **Go** | `bindings/go/` | cgo package — GPU MSM/NTT/hash/pairing/FRI for gnark integration |
+| **C++ (Barretenberg)** | `bindings/barretenberg/` | CMake find module + bridge headers for `libzkmetal.a` linking |
+| **WebGPU** | `Sources/zkMetal/WebGPU/` | WGSL shader codegen (u64 half-limb emulation) for browser-based proving |
 
 ## Building
 
