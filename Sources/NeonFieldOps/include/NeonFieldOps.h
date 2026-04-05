@@ -209,6 +209,9 @@ void keccak256_batch_hash_pairs_neon(const uint8_t *inputs, uint8_t *outputs, si
 void blake3_hash_pair_neon(const uint8_t left[32], const uint8_t right[32],
                            uint8_t output[32]);
 
+/// General-purpose Blake3 hash (single chunk, <=64B input -> 32B output, NEON).
+void blake3_hash_neon(const uint8_t *input, size_t len, uint8_t output[32]);
+
 /// Batch Blake3 parent hashing: n pairs -> n parent hashes.
 /// @param inputs  n * 64 bytes (pairs of 32-byte child hashes, contiguous).
 /// @param outputs n * 32 bytes output.
@@ -358,5 +361,16 @@ void gkr_sumcheck_step(
     const uint64_t *curVy, int vySize,
     int round, int nIn, int currentTableSize,
     uint64_t s0[4], uint64_t s1[4], uint64_t s2[4]);
+
+/// Dual projective MSM: compute two MSMs with shared thread pool.
+/// Avoids double thread-creation overhead.
+void bn254_dual_msm_projective(
+    const uint64_t *points1, const uint32_t *scalars1, int n1,
+    const uint64_t *points2, const uint32_t *scalars2, int n2,
+    uint64_t result1[12], uint64_t result2[12]);
+
+/// Fr modular inverse via Fermat's little theorem: r = a^(p-2) mod p.
+/// Uses C CIOS Montgomery mul (~100x faster than Swift frInverse).
+void bn254_fr_inverse(const uint64_t a[4], uint64_t r[4]);
 
 #endif // NEON_FIELD_OPS_H

@@ -61,6 +61,11 @@ public struct Groth16ProvingKey {
     public let b_g2_query: [G2ProjectivePoint]
     public let h_query: [PointProjective]
     public let l_query: [PointProjective]  // witness portion
+    // Cached affine conversions (computed once at setup time, reused across proofs)
+    public let a_query_affine: [PointAffine]
+    public let b_g1_query_affine: [PointAffine]
+    public let h_query_affine: [PointAffine]
+    public let l_query_affine: [PointAffine]
 }
 
 public struct Groth16VerificationKey {

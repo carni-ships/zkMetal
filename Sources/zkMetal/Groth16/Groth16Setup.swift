@@ -102,11 +102,19 @@ public class Groth16Setup {
             l_query.append(pointScalarMul(g1, coeff))
         }
 
+        // Pre-convert to affine once (avoids repeated batchToAffine during proving)
+        let a_aff = batchToAffine(a_query)
+        let b_g1_aff = batchToAffine(b_g1_query)
+        let h_aff = batchToAffine(h_query)
+        let l_aff = batchToAffine(l_query)
+
         let pk = Groth16ProvingKey(
             alpha_g1: alpha_g1, beta_g1: beta_g1, beta_g2: beta_g2,
             delta_g1: delta_g1, delta_g2: delta_g2,
             ic: ic, a_query: a_query, b_g1_query: b_g1_query,
-            b_g2_query: b_g2_query, h_query: h_query, l_query: l_query)
+            b_g2_query: b_g2_query, h_query: h_query, l_query: l_query,
+            a_query_affine: a_aff, b_g1_query_affine: b_g1_aff,
+            h_query_affine: h_aff, l_query_affine: l_aff)
 
         let vk = Groth16VerificationKey(
             alpha_g1: alpha_g1, beta_g2: beta_g2,

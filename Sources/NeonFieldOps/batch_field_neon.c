@@ -512,13 +512,27 @@ static inline uint64_t fr_to_uint64(const uint64_t a[4])
     return t0;
 }
 
-void bn254_fr_batch_decompose(const uint64_t *lookups, int m,
-                               int numChunks, int bitsPerChunk,
-                               int *indices)
-{
-    uint64_t chunkMask = ((uint64_t)1 << bitsPerChunk) - 1;
-    for (int i = 0; i < m; i++) {
-        if (i + 4 < m) {
+typedef struct {
+    const uint64_t *lookups;
+    int m;
+    int numChunks;
+    int bitsPerChunk;
+    uint64_t chunkMask;
+    int *indices;
+    int start;
+    int end;
+} DecomposeChunk;
+
+static void *decompose_worker(void *arg) {
+    DecomposeChunk *c = (DecomposeChunk *)arg;
+    const uint64_t *lookups = c->lookups;
+    int m = c->m;
+    int numChunks = c->numChunks;
+    int bitsPerChunk = c->bitsPerChunk;
+    uint64_t chunkMask = c->chunkMask;
+    int *indices = c->indices;
+    for (int i = c->start; i < c->end; i++) {
+        if (i + 4 < c->end) {
             __builtin_prefetch(&lookups[(i + 4) * 4], 0, 1);
         }
         uint64_t v = fr_to_uint64(&lookups[i * 4]);
@@ -526,4 +540,46 @@ void bn254_fr_batch_decompose(const uint64_t *lookups, int m,
             indices[k * m + i] = (int)((v >> (k * bitsPerChunk)) & chunkMask);
         }
     }
+    return NULL;
+}
+
+void bn254_fr_batch_decompose(const uint64_t *lookups, int m,
+                               int numChunks, int bitsPerChunk,
+                               int *indices)
+{
+    uint64_t chunkMask = ((uint64_t)1 << bitsPerChunk) - 1;
+    if (m < 8192) {
+        // Small: single-threaded
+        for (int i = 0; i < m; i++) {
+            if (i + 4 < m) {
+                __builtin_prefetch(&lookups[(i + 4) * 4], 0, 1);
+            }
+            uint64_t v = fr_to_uint64(&lookups[i * 4]);
+            for (int k = 0; k < numChunks; k++) {
+                indices[k * m + i] = (int)((v >> (k * bitsPerChunk)) & chunkMask);
+            }
+        }
+        return;
+    }
+    int nThreads = 8;
+    if (nThreads > m / 1024) nThreads = m / 1024;
+    if (nThreads < 1) nThreads = 1;
+    int perThread = (m + nThreads - 1) / nThreads;
+
+    pthread_t threads[8];
+    DecomposeChunk chunks[8];
+    for (int t = 0; t < nThreads; t++) {
+        chunks[t].lookups = lookups;
+        chunks[t].m = m;
+        chunks[t].numChunks = numChunks;
+        chunks[t].bitsPerChunk = bitsPerChunk;
+        chunks[t].chunkMask = chunkMask;
+        chunks[t].indices = indices;
+        chunks[t].start = t * perThread;
+        chunks[t].end = (t + 1) * perThread;
+        if (chunks[t].end > m) chunks[t].end = m;
+        pthread_create(&threads[t], NULL, decompose_worker, &chunks[t]);
+    }
+    for (int t = 0; t < nThreads; t++)
+        pthread_join(threads[t], NULL);
 }

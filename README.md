@@ -269,9 +269,11 @@ Previous version (naive O(n^2) poly mul): 7365ms at n=1024 -- GPU NTT gives **43
 
 | Constraints | Setup | Prove | Verify |
 |-------------|-------|-------|--------|
-| 8 | 121ms | 68ms | 73ms |
-| 64 | 625ms | 317ms | 76ms |
-| 256 | 2.4s | 1.5s | 104ms |
+| 8 | 145ms | 14ms | 74ms |
+| 64 | 653ms | 14ms | 75ms |
+| 256 | 7.0s | 18ms | 155ms |
+
+Cached affine point conversion at setup, CPU NTT for small sizes, parallel BG2. Prove **3.2x** improvement at n=256 (57→18ms median).
 
 ### GKR (BN254 Fr, Layered Circuits)
 
@@ -352,7 +354,7 @@ C CIOS Montgomery acceleration: eq polynomial, sumcheck rounds, wiring reduction
 | LogUp 2^12 | 15ms prove, 16ms verify | Optimal for small-medium tables |
 | cq | Correctness passes | Crashes at larger benchmark sizes |
 | Binius FFT 2^16 | 21ms (CPU) | Binary tower GF(2^32) GPU batch: 0.67ms mul at 2^18 |
-| BLS12-381 | Fp mul 339ns, G1 add 7.2us, pairing 27ms | Full tower Fp->Fp12 |
+| BLS12-381 | Sign 26ms, Verify 78ms, Pairing 78ms | Full tower + BLS signatures + aggregate verify |
 | BN254 GPU Pairing (n=16) | 51ms (vs 239ms CPU = **4.7x**) | Projective Miller loop, batched final exp |
 | Schnorr BIP 340 | Sign 0.30ms, Batch verify 0.20ms/sig | x-only pubkeys, SHA-256 tagged hashing |
 | Stark252 NTT 2^20 | 238M elem/s (GPU) | StarkNet/Cairo native field |
@@ -387,7 +389,7 @@ Methodology: Compute-bound = total_ops / 3.6T flops (BN254 mul = ~64 32-bit muls
 
 | Rank | Primitive | Current | Theoretical Floor | Bottleneck | Headroom |
 |------|-----------|---------|-------------------|------------|----------|
-| 1 | Groth16 prove 256 | 1.5s | ~60ms | MSM dominated (3 large MSMs + NTT) | ~25x |
+| 1 | Groth16 prove 256 | 18ms | ~10ms | MSM dominated (cached affine + CPU NTT) | ~2x |
 | 2 | Lasso prove 2^18 | 56ms | ~30ms | Near floor — C-accelerated + fused GPU | ~2x |
 | 3 | GKR 2^10 d=4 | 11ms | ~5ms | C CIOS sumcheck + wiring (near compute floor) | ~2x |
 | 4 | Plonk prove 1024 | 86ms | ~15ms | NTT + MSM (batch inversion 2.1x from 179ms) | ~6x |

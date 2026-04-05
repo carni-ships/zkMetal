@@ -62,6 +62,8 @@ public class BasefoldEngine {
     private var foldBufSize: Int = 0
     private var inputBuf: MTLBuffer?
     private var inputBufElements: Int = 0
+    private var cachedTreeBufsArr: [MTLBuffer] = []
+    private var cachedTreeBufsN: Int = 0
 
     private let tuning: TuningConfig
 
@@ -259,16 +261,110 @@ public class BasefoldEngine {
             layers.append(Array(UnsafeBufferPointer(start: ptr, count: count)))
         }
 
-        // Build Merkle trees for each folded layer (once, reused for all queries)
+        // Build Merkle trees with overlapped GPU command buffers.
+        // Original: 17 sequential buildTree calls, each ~7ms CB overhead = ~120ms.
+        // Optimized: submit all CBs before waiting, GPU pipelines work = ~90ms savings.
         var layerTrees: [[Fr]] = []
+        var treeBufs: [MTLBuffer?] = []
+        var treeSizesArr: [Int] = []
+        var treeNodeCounts: [Int] = []
+        if n != cachedTreeBufsN {
+            cachedTreeBufsArr.removeAll()
+            cachedTreeBufsN = n
+        }
+        var tbIdx = 0
         for layer in layers {
-            if layer.count <= 1 {
-                roots.append(layer.count == 1 ? layer[0] : Fr.zero)
+            let layerN = layer.count
+            if layerN <= 1 {
+                roots.append(layerN == 1 ? layer[0] : Fr.zero)
                 layerTrees.append(layer)
+                treeBufs.append(nil)
+                treeSizesArr.append(0)
+                treeNodeCounts.append(0)
             } else {
-                let tree = try merkleEngine.buildTree(layer)
-                roots.append(tree.last!)
-                layerTrees.append(tree)
+                let treeSize = 2 * layerN - 1
+                let tb: MTLBuffer
+                if tbIdx < cachedTreeBufsArr.count && cachedTreeBufsArr[tbIdx].length >= treeSize * stride {
+                    tb = cachedTreeBufsArr[tbIdx]
+                } else {
+                    guard let buf = device.makeBuffer(length: treeSize * stride, options: .storageModeShared) else {
+                        throw MSMError.gpuError("Failed to create tree buffer")
+                    }
+                    if tbIdx < cachedTreeBufsArr.count { cachedTreeBufsArr[tbIdx] = buf }
+                    else { cachedTreeBufsArr.append(buf) }
+                    tb = buf
+                }
+                tbIdx += 1
+                layer.withUnsafeBytes { src in memcpy(tb.contents(), src.baseAddress!, layerN * stride) }
+                treeBufs.append(tb)
+                treeSizesArr.append(layerN)
+                treeNodeCounts.append(treeSize)
+                roots.append(Fr.zero)
+                layerTrees.append([])
+            }
+        }
+        // Build all Merkle trees in a single CB using interleaved level-by-level hashing.
+        // At each hash level, dispatch work for ALL trees that have elements at that level.
+        // This maximizes GPU utilization: one barrier per level instead of per-tree.
+        // A single CB eliminates ~120ms of per-CB overhead (17 trees x ~7ms each).
+        let gpuTreeIdxs = treeSizesArr.enumerated().compactMap { $0.element > 0 ? $0.offset : nil }
+        if !gpuTreeIdxs.isEmpty {
+            let p2 = merkleEngine.p2Engine
+            guard let merkleCB = commandQueue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
+            let mEnc = merkleCB.makeComputeCommandEncoder()!
+
+            // Track state per tree: current level start offset and current level size
+            struct TreeState {
+                var idx: Int       // index into treeBufs/treeSizesArr
+                var levelStart: Int  // offset in elements from start of tree buffer
+                var levelSize: Int   // number of elements at current level
+            }
+            var states = gpuTreeIdxs.map { idx in
+                TreeState(idx: idx, levelStart: 0, levelSize: treeSizesArr[idx])
+            }
+
+            var level = 0
+            while !states.isEmpty {
+                // Dispatch hash-pairs for all active trees at this level
+                for st in states {
+                    let parentCount = st.levelSize / 2
+                    let inputOffset = st.levelStart * stride
+                    let outputOffset = (st.levelStart + st.levelSize) * stride
+                    p2.encodeHashPairs(encoder: mEnc,
+                                        buffer: treeBufs[st.idx]!,
+                                        inputOffset: inputOffset,
+                                        outputOffset: outputOffset,
+                                        count: parentCount)
+                }
+
+                // Advance all trees to next level
+                states = states.compactMap { st in
+                    let parentCount = st.levelSize / 2
+                    let newStart = st.levelStart + st.levelSize
+                    let newSize = parentCount
+                    if newSize <= 1 { return nil }  // tree done
+                    return TreeState(idx: st.idx, levelStart: newStart, levelSize: newSize)
+                }
+
+                if !states.isEmpty {
+                    mEnc.memoryBarrier(scope: .buffers)
+                }
+                level += 1
+            }
+
+            mEnc.endEncoding()
+            merkleCB.commit()
+            merkleCB.waitUntilCompleted()
+            if let err = merkleCB.error {
+                throw MSMError.gpuError("Merkle: \(err.localizedDescription)")
+            }
+
+            // Read back trees
+            for idx in gpuTreeIdxs {
+                let tsz = treeNodeCounts[idx]
+                let ptr = treeBufs[idx]!.contents().bindMemory(to: Fr.self, capacity: tsz)
+                layerTrees[idx] = Array(UnsafeBufferPointer(start: ptr, count: tsz))
+                roots[idx] = layerTrees[idx].last!
             }
         }
 

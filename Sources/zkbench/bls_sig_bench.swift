@@ -16,38 +16,8 @@ public func runBLSSignatureBench() {
     let pIsOne = fp12_381Equal(pairResult, .one)
     print("  e(G1,G2) != 1: \(!pIsOne ? "PASS" : "FAIL")")
 
-    // DEBUG: Check Miller loop properties
-    let negG2pt = g2_381NegateAffine(g2pt)
-    let fPQ = millerLoop381(g1gen, g2pt)
-    let fPnegQ = millerLoop381(g1gen, negG2pt)
-    let conjFPQ = fp12_381Conjugate(fPQ)
-    let millerConjCheck = fp12_381Equal(fPnegQ, conjFPQ)
-    print("  DEBUG ml(P,-Q)==conj(ml(P,Q)): \(millerConjCheck ? "PASS" : "FAIL")")
-
-    // Check if finalExp(f * conj(f)) == 1
-    let fTimesConjF = fp12_381Mul(fPQ, conjFPQ)
-    let feCheck = finalExponentiation381(fTimesConjF)
-    let feIsOne = fp12_381Equal(feCheck, .one)
-    print("  DEBUG finalExp(f*conj(f))==1: \(feIsOne ? "PASS" : "FAIL")")
-
-    // Check f * conj(f) is actually 1 in Fp12 (or at least in Fp, since it should be |f|^2)
-    // For a well-formed Miller loop output, f*conj(f) should be in Fp6 (c1 part = 0)
-    let prodC1zero = fTimesConjF.c1.c0.isZero && fTimesConjF.c1.c1.isZero && fTimesConjF.c1.c2.isZero
-    print("  DEBUG f*conj(f) c1==0: \(prodC1zero ? "PASS" : "FAIL")")
-
-    // Check finalExp on f alone
-    let feFPQ = finalExponentiation381(fPQ)
-    let feNonTrivial = !fp12_381Equal(feFPQ, .one)
-    print("  DEBUG finalExp(ml) != 1: \(feNonTrivial ? "PASS" : "FAIL")")
-
-    // Check: does the same P with different-scalar Q give bilinearity at the Miller loop level?
-    let twoG2check = g2_381ToAffine(g2_381Double(g2_381FromAffine(g2pt)))!
-    let fP2Q = millerLoop381(g1gen, twoG2check)
-    let fPQ_sq = fp12_381Sqr(fPQ)
-    let millerBilinCheck = fp12_381Equal(fP2Q, fPQ_sq)
-    print("  DEBUG ml(P,2Q)==ml(P,Q)^2: \(millerBilinCheck ? "PASS" : "FAIL")")
-
     // Negation check
+    let negG2pt = g2_381NegateAffine(g2pt)
     let pCheck = bls12381PairingCheck([(g1gen, g2pt), (g1gen, negG2pt)])
     print("  e(G1,G2)*e(G1,-G2)=1: \(pCheck ? "PASS" : "FAIL")")
 

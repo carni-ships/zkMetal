@@ -1010,11 +1010,88 @@ void bn254_msm_projective(
 }
 
 // ============================================================
+// Dual MSM: compute two projective MSMs with a shared thread pool.
+// Eliminates double thread-creation overhead for IPA L/R.
+// ============================================================
+
+typedef struct {
+    const uint64_t *points;
+    const uint32_t *scalars;
+    uint64_t partial[12];
+    int start, end;
+} DualMSMChunk;
+
+static void *dual_msm_worker(void *arg) {
+    DualMSMChunk *c = (DualMSMChunk *)arg;
+    pt_set_id(c->partial);
+    for (int i = c->start; i < c->end; i++) {
+        uint64_t term[12], tmp[12];
+        pt_scalar_mul(c->points + i * 12, c->scalars + i * 8, term);
+        pt_add(c->partial, term, tmp);
+        memcpy(c->partial, tmp, 96);
+    }
+    return NULL;
+}
+
+void bn254_dual_msm_projective(
+    const uint64_t *points1, const uint32_t *scalars1, int n1,
+    const uint64_t *points2, const uint32_t *scalars2, int n2,
+    uint64_t result1[12], uint64_t result2[12])
+{
+    if (n1 + n2 <= 4) {
+        bn254_msm_projective(points1, scalars1, n1, result1);
+        bn254_msm_projective(points2, scalars2, n2, result2);
+        return;
+    }
+    int total = n1 + n2;
+    int t1 = (n1 * 8 + total - 1) / total;
+    if (t1 < 1) t1 = 1; if (t1 > 7) t1 = 7;
+    int t2 = 8 - t1;
+    if (n1 < t1) t1 = n1; if (n2 < t2) t2 = n2;
+    int nThreads = t1 + t2;
+    pthread_t threads[16]; DualMSMChunk chunks[16];
+
+    int cs1 = (n1 + t1 - 1) / t1;
+    for (int t = 0; t < t1; t++) {
+        chunks[t].points = points1; chunks[t].scalars = scalars1;
+        chunks[t].start = t * cs1;
+        chunks[t].end = (t+1)*cs1 > n1 ? n1 : (t+1)*cs1;
+    }
+    int cs2 = (n2 + t2 - 1) / t2;
+    for (int t = 0; t < t2; t++) {
+        chunks[t1+t].points = points2; chunks[t1+t].scalars = scalars2;
+        chunks[t1+t].start = t * cs2;
+        chunks[t1+t].end = (t+1)*cs2 > n2 ? n2 : (t+1)*cs2;
+    }
+    for (int t = 0; t < nThreads; t++)
+        pthread_create(&threads[t], NULL, dual_msm_worker, &chunks[t]);
+    for (int t = 0; t < nThreads; t++)
+        pthread_join(threads[t], NULL);
+
+    pt_set_id(result1);
+    for (int t = 0; t < t1; t++) {
+        uint64_t tmp[12];
+        pt_add(result1, chunks[t].partial, tmp);
+        memcpy(result1, tmp, 96);
+    }
+    pt_set_id(result2);
+    for (int t = 0; t < t2; t++) {
+        uint64_t tmp[12];
+        pt_add(result2, chunks[t1+t].partial, tmp);
+        memcpy(result2, tmp, 96);
+    }
+}
+
+// ============================================================
 // Exported utility functions
 // ============================================================
 
 void bn254_point_scalar_mul(const uint64_t p[12], const uint32_t scalar[8], uint64_t r[12]) {
     pt_scalar_mul(p, scalar, r);
+}
+
+void bn254_fr_inverse(const uint64_t a[4], uint64_t r[4]) {
+    fr_inv(a, r);
 }
 
 void bn254_batch_to_affine(const uint64_t *proj, uint64_t *aff, int n) {
@@ -1258,11 +1335,10 @@ void bn254_fr_mle_eval(const uint64_t *evals, int numVars,
 // out[i] = 1/(beta + subtable[indices[i]])
 // Avoids separate gather step by combining with beta-add.
 // Single-chunk batch inverse on a contiguous range [base, base+chunk) of out[].
-// Assumes out[] already contains beta+values; writes inverses in-place.
+// Assumes out[] already contains values to invert; writes inverses in-place.
 static void batch_inverse_chunk(uint64_t *out, int base, int chunk) {
     if (chunk == 0) return;
     if (chunk == 1) { fr_inv(out + base * 4, out + base * 4); return; }
-    // Prefix products in-place using a temp buffer on stack/heap
     uint64_t *prefix = (uint64_t *)malloc(chunk * 32);
     memcpy(prefix, out + base * 4, 32);
     for (int i = 1; i < chunk; i++) {
@@ -1306,14 +1382,9 @@ void bn254_fr_inverse_evals_indexed(const uint64_t beta[4], const uint64_t *subt
         return;
     }
     // Phase 2: parallel chunked batch inverse
-    int CHUNK = 4096;  // elements per thread
-    int nChunks = (n + CHUNK - 1) / CHUNK;
-    if (nChunks <= 1) {
-        batch_inverse_chunk(out, 0, n);
-        return;
-    }
-    int nThreads = nChunks;
-    if (nThreads > 10) nThreads = 10;
+    int nThreads = 10;
+    if (n < nThreads * 1024) nThreads = (n + 1023) / 1024;
+    if (nThreads < 1) nThreads = 1;
     int perThread = (n + nThreads - 1) / nThreads;
 
     pthread_t threads[10];
@@ -1342,15 +1413,10 @@ void bn254_fr_inverse_evals(const uint64_t beta[4], const uint64_t *values,
         fr_inv(out, out);
         return;
     }
-    // Use parallel chunked batch inverse for large n
-    int CHUNK = 4096;
-    int nChunks = (n + CHUNK - 1) / CHUNK;
-    if (nChunks <= 1) {
-        batch_inverse_chunk(out, 0, n);
-        return;
-    }
-    int nThreads = nChunks;
-    if (nThreads > 10) nThreads = 10;
+    // Parallel chunked batch inverse for large n
+    int nThreads = 10;
+    if (n < nThreads * 1024) nThreads = (n + 1023) / 1024;
+    if (nThreads < 1) nThreads = 1;
     int perThread = (n + nThreads - 1) / nThreads;
 
     pthread_t threads[10];
@@ -1449,3 +1515,10 @@ void bn254_fr_inverse_mle_eval(const uint64_t beta[4], const uint64_t *subtable,
     free(d);
     free(prefix);
 }
+
+// ============================================================
+// IPA fused round: compute L, R, fold a, b, G in one C call.
+// Eliminates Swift array copies, repeated C call overhead, and
+// thread spawning per operation.
+// ============================================================
+

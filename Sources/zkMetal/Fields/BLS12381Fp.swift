@@ -662,10 +662,10 @@ public func fp12_381Frobenius3(_ a: Fp12_381) -> Fp12_381 {
     return Fp12_381(c0: c0, c1: c1)
 }
 
-/// Exponentiation by the BLS parameter x = 0xd201000000010000
-/// This is used in the final exponentiation hard part
+/// Exponentiation by the BLS parameter |x| = 0xd201000000010000
+/// Then conjugate since x < 0, giving a^x.
 public func fp12_381PowByX(_ a: Fp12_381) -> Fp12_381 {
-    // x = 0xd201000000010000 (the BLS12-381 parameter, used as positive)
+    // |x| = 0xd201000000010000
     // Binary: 1101001000000001000000000000000000000000000000010000000000000000
     let xBits: [UInt8] = [
         1,1,0,1,0,0,1,0,0,0,0,0,0,0,0,1,
@@ -681,6 +681,29 @@ public func fp12_381PowByX(_ a: Fp12_381) -> Fp12_381 {
             result = fp12_381Mul(result, a)
         }
     }
-    // x is negative in BLS12-381, so negate (conjugate for unitary elements)
+    // x is negative in BLS12-381, so conjugate for unitary inverse
+    return fp12_381Conjugate(result)
+}
+
+/// Exponentiation by |x|/2 = 0x6900800000008000, then conjugate (since x < 0).
+/// Used in the hard part of final exponentiation (gnark's ExptHalf).
+public func fp12_381PowByXHalf(_ a: Fp12_381) -> Fp12_381 {
+    // |x|/2 = 0x6900800000008000
+    // Binary: 0110100100000000100000000000000000000000000000001000000000000000
+    let xHalfBits: [UInt8] = [
+        0,1,1,0,1,0,0,1,0,0,0,0,0,0,0,0,
+        1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+        1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    ]
+
+    var result = Fp12_381.one
+    for bit in xHalfBits {
+        result = fp12_381Sqr(result)
+        if bit == 1 {
+            result = fp12_381Mul(result, a)
+        }
+    }
+    // x is negative, so conjugate
     return fp12_381Conjugate(result)
 }

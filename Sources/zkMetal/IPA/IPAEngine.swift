@@ -220,21 +220,16 @@ public class IPAEngine {
 
         let proofStart = profileIPA ? CFAbsoluteTimeGetCurrent() : 0
 
-        var a = inputA
-        var b = inputB
-        var G = generators.map { pointFromAffine($0) }
         let qProj = pointFromAffine(Q)
 
+        let logN = Int(log2(Double(n)))
         var Ls = [PointProjective]()
         var Rs = [PointProjective]()
-        let logN = Int(log2(Double(n)))
         Ls.reserveCapacity(logN)
         Rs.reserveCapacity(logN)
 
         // Transcript for Fiat-Shamir challenges
         var transcript = [UInt8]()
-        // Seed with bound commitment C_bound = MSM(G, a) + v*Q
-        // Must match what the verifier seeds with
         let C = try commit(inputA)
         let v = cFrInnerProduct(inputA, inputB)
         let vQ = cPointScalarMul(qProj, v)
@@ -247,27 +242,112 @@ public class IPAEngine {
             fputs(String(format: "  [ipa-profile] commit+setup: %.2f ms\n", (t - proofStart) * 1000), stderr)
         }
 
+        // Flat working buffers to avoid Swift array copies in the hot loop.
+        // a, b as raw UInt64 (Fr = 4 x UInt64), G as projective (12 x UInt64).
+        // Fold operates in-place on the first halfLen elements.
+        var aFlat = [UInt64](repeating: 0, count: n * 4)
+        var bFlat = [UInt64](repeating: 0, count: n * 4)
+        var gFlat = [UInt64](repeating: 0, count: n * 12)
+        var gFoldBuf = [UInt64](repeating: 0, count: n * 12)  // scratch for fold output
+
+        // Copy inputs into flat buffers
+        inputA.withUnsafeBytes { src in
+            aFlat.withUnsafeMutableBytes { dst in
+                dst.copyMemory(from: UnsafeRawBufferPointer(start: src.baseAddress, count: n * 32))
+            }
+        }
+        inputB.withUnsafeBytes { src in
+            bFlat.withUnsafeMutableBytes { dst in
+                dst.copyMemory(from: UnsafeRawBufferPointer(start: src.baseAddress, count: n * 32))
+            }
+        }
+        // Convert affine generators to projective in flat buffer
+        // FP_ONE = R mod p (Montgomery form of 1) for BN254 Fp
+        let fpOne: [UInt64] = [0xd35d438dc58f0d9d, 0x0a78eb28f5c70b3d, 0x666ea36f7879462c, 0x0e0a77c19a07df2f]
+        generators.withUnsafeBytes { src in
+            for i in 0..<n {
+                gFlat.withUnsafeMutableBytes { dst in
+                    dst.baseAddress!.advanced(by: i * 96).copyMemory(from: src.baseAddress!.advanced(by: i * 64), byteCount: 64)
+                }
+                gFlat[i * 12 + 8] = fpOne[0]
+                gFlat[i * 12 + 9] = fpOne[1]
+                gFlat[i * 12 + 10] = fpOne[2]
+                gFlat[i * 12 + 11] = fpOne[3]
+            }
+        }
+
         var halfLen = n / 2
+
+        // Pre-allocate scalar limb buffers to avoid per-round allocation
+        var aLoLimbs = [UInt32](repeating: 0, count: n * 8)
+        var aHiLimbs = [UInt32](repeating: 0, count: n * 8)
 
         for round in 0..<logN {
             let roundStart = profileIPA ? CFAbsoluteTimeGetCurrent() : 0
 
-            // Split vectors
-            let aL = Array(a.prefix(halfLen))
-            let aR = Array(a.suffix(halfLen))
-            let bL = Array(b.prefix(halfLen))
-            let bR = Array(b.suffix(halfLen))
-            let GL = Array(G.prefix(halfLen))
-            let GR = Array(G.suffix(halfLen))
+            // Compute cross inner products directly from flat buffers (no array copy)
+            var crossL = Fr.zero
+            var crossR = Fr.zero
+            aFlat.withUnsafeBufferPointer { aPtr in
+                bFlat.withUnsafeBufferPointer { bPtr in
+                    withUnsafeMutableBytes(of: &crossL) { clBuf in
+                        // cL = <a_lo, b_hi>
+                        bn254_fr_inner_product(
+                            aPtr.baseAddress!,
+                            bPtr.baseAddress! + halfLen * 4,
+                            Int32(halfLen),
+                            clBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                    }
+                    withUnsafeMutableBytes(of: &crossR) { crBuf in
+                        // cR = <a_hi, b_lo>
+                        bn254_fr_inner_product(
+                            aPtr.baseAddress! + halfLen * 4,
+                            bPtr.baseAddress!,
+                            Int32(halfLen),
+                            crBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                    }
+                }
+            }
 
-            // Compute cross inner products (C-accelerated)
-            let cL = cFrInnerProduct(aL, bR)
-            let cR = cFrInnerProduct(aR, bL)
+            // Convert a_lo, a_hi to uint32 limbs for MSM
+            aFlat.withUnsafeBufferPointer { aPtr in
+                aLoLimbs.withUnsafeMutableBufferPointer { loBuf in
+                    bn254_fr_batch_to_limbs(aPtr.baseAddress!, loBuf.baseAddress!, Int32(halfLen))
+                }
+                aHiLimbs.withUnsafeMutableBufferPointer { hiBuf in
+                    bn254_fr_batch_to_limbs(aPtr.baseAddress! + halfLen * 4, hiBuf.baseAddress!, Int32(halfLen))
+                }
+            }
 
-            // L = MSM(GR, aL) + cL * Q
-            let L = try computeLR(generators: GR, scalars: aL, crossIP: cL, Q: qProj)
-            // R = MSM(GL, aR) + cR * Q
-            let R = try computeLR(generators: GL, scalars: aR, crossIP: cR, Q: qProj)
+            // L = MSM(G_hi, a_lo) + cL*Q,  R = MSM(G_lo, a_hi) + cR*Q
+            // Use dual MSM to share a single thread pool for both computations
+            var msmL = PointProjective(x: .one, y: .one, z: .zero)
+            var msmR = PointProjective(x: .one, y: .one, z: .zero)
+
+            gFlat.withUnsafeBufferPointer { gPtr in
+                aLoLimbs.withUnsafeBufferPointer { alBuf in
+                    aHiLimbs.withUnsafeBufferPointer { ahBuf in
+                        withUnsafeMutableBytes(of: &msmL) { lBuf in
+                            withUnsafeMutableBytes(of: &msmR) { rBuf in
+                                bn254_dual_msm_projective(
+                                    UnsafeRawPointer(gPtr.baseAddress! + halfLen * 12).assumingMemoryBound(to: UInt64.self),
+                                    alBuf.baseAddress!,
+                                    Int32(halfLen),
+                                    UnsafeRawPointer(gPtr.baseAddress!).assumingMemoryBound(to: UInt64.self),
+                                    ahBuf.baseAddress!,
+                                    Int32(halfLen),
+                                    lBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                            }
+                        }
+                    }
+                }
+            }
+
+            let cLQ = cPointScalarMul(qProj, crossL)
+            let cRQ = cPointScalarMul(qProj, crossR)
+            let L = pointAdd(msmL, cLQ)
+            let R = pointAdd(msmR, cRQ)
 
             Ls.append(L)
             Rs.append(R)
@@ -276,44 +356,57 @@ public class IPAEngine {
             appendPoint(&transcript, L)
             appendPoint(&transcript, R)
             let x = deriveChallenge(transcript)
-            let xInv = frInverse(x)
+            // Use C CIOS Fr inverse (~100x faster than Swift Fermat inversion)
+            var xInv = Fr.zero
+            withUnsafeBytes(of: x) { xBuf in
+                withUnsafeMutableBytes(of: &xInv) { rBuf in
+                    bn254_fr_inverse(
+                        xBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                }
+            }
 
             let foldStart = profileIPA ? CFAbsoluteTimeGetCurrent() : 0
 
-            // Fold: a' = aL * x + aR * x^(-1), b' = bL * x^(-1) + bR * x
-            let newA = cFrVectorFold(aL, aR, x: x, xInv: xInv)
-            let newB = cFrVectorFold(bL, bR, x: xInv, xInv: x)
-
-            // Fold generators: G'_i = xInv * GL_i + x * GR_i
-            let newG: [PointProjective]
-            if halfLen >= IPAEngine.gpuFoldThreshold, let pipeline = foldGeneratorsFunction {
-                // GPU path with cached buffers and setBytes for scalars
-                newG = try gpuFoldGenerators(GL: GL, GR: GR, x: x, xInv: xInv,
-                                             halfLen: halfLen, pipelineState: pipeline)
-            } else {
-                // CPU path: C multi-threaded Straus fold
-                let xLimbs = frToLimbs(x)
-                let xInvLimbs = frToLimbs(xInv)
-                var cpuG = [PointProjective](repeating: pointIdentity(), count: halfLen)
-                GL.withUnsafeBytes { glBuf in
-                    GR.withUnsafeBytes { grBuf in
-                        xLimbs.withUnsafeBufferPointer { xBuf in
-                            xInvLimbs.withUnsafeBufferPointer { xiBuf in
-                                cpuG.withUnsafeMutableBytes { outBuf in
-                                    bn254_fold_generators(
-                                        glBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                                        grBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                                        xBuf.baseAddress!,
-                                        xiBuf.baseAddress!,
-                                        Int32(halfLen),
-                                        outBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
-                                    )
-                                }
-                            }
+            // Fold a, b in-place (output overwrites first halfLen elements)
+            aFlat.withUnsafeMutableBufferPointer { aPtr in
+                bFlat.withUnsafeMutableBufferPointer { bPtr in
+                    withUnsafeBytes(of: x) { xBuf in
+                        withUnsafeBytes(of: xInv) { xiBuf in
+                            let xp = xBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                            let xip = xiBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                            bn254_fr_vector_fold(aPtr.baseAddress!, aPtr.baseAddress! + halfLen * 4,
+                                                 xp, xip, Int32(halfLen), aPtr.baseAddress!)
+                            bn254_fr_vector_fold(bPtr.baseAddress!, bPtr.baseAddress! + halfLen * 4,
+                                                 xip, xp, Int32(halfLen), bPtr.baseAddress!)
                         }
                     }
                 }
-                newG = cpuG
+            }
+
+            // Fold generators using C multi-threaded Straus
+            let xLimbs = frToLimbs(x)
+            let xInvLimbs = frToLimbs(xInv)
+            gFlat.withUnsafeBufferPointer { glBuf in
+                xLimbs.withUnsafeBufferPointer { xBuf in
+                    xInvLimbs.withUnsafeBufferPointer { xiBuf in
+                        gFoldBuf.withUnsafeMutableBufferPointer { outBuf in
+                            bn254_fold_generators(
+                                UnsafeRawPointer(glBuf.baseAddress!).assumingMemoryBound(to: UInt64.self),
+                                UnsafeRawPointer(glBuf.baseAddress! + halfLen * 12).assumingMemoryBound(to: UInt64.self),
+                                xBuf.baseAddress!,
+                                xiBuf.baseAddress!,
+                                Int32(halfLen),
+                                UnsafeMutableRawPointer(outBuf.baseAddress!).assumingMemoryBound(to: UInt64.self))
+                        }
+                    }
+                }
+            }
+            // Copy folded generators back (only halfLen entries)
+            gFoldBuf.withUnsafeBytes { src in
+                gFlat.withUnsafeMutableBytes { dst in
+                    dst.baseAddress!.copyMemory(from: src.baseAddress!, byteCount: halfLen * 96)
+                }
             }
 
             if profileIPA {
@@ -325,9 +418,6 @@ public class IPAEngine {
                              (t - roundStart) * 1000), stderr)
             }
 
-            a = newA
-            b = newB
-            G = newG
             halfLen /= 2
         }
 
@@ -336,8 +426,11 @@ public class IPAEngine {
             fputs(String(format: "  [ipa-profile] total prove: %.2f ms\n", (t - proofStart) * 1000), stderr)
         }
 
-        precondition(a.count == 1)
-        return IPAProof(L: Ls, R: Rs, a: a[0])
+        // Extract final scalar
+        let finalA: Fr = aFlat.withUnsafeBytes { buf in
+            buf.load(as: Fr.self)
+        }
+        return IPAProof(L: Ls, R: Rs, a: finalA)
     }
 
     /// Verify an IPA proof.
@@ -515,42 +608,39 @@ public class IPAEngine {
     }
 
     private func appendPoint(_ transcript: inout [UInt8], _ p: PointProjective) {
-        // Use C CIOS field ops for projective-to-affine (much faster than Swift fpInverse)
-        var affine = [UInt64](repeating: 0, count: 8)
-        withUnsafeBytes(of: p) { pBuf in
-            affine.withUnsafeMutableBufferPointer { affBuf in
-                bn254_projective_to_affine(
-                    pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                    affBuf.baseAddress!
-                )
-            }
-        }
-        // Append x and y coordinates as bytes (already in Montgomery form)
-        // We need to convert from Montgomery to integer form for hashing
-        for limb in affine {
-            for byte in 0..<8 {
-                transcript.append(UInt8((limb >> (byte * 8)) & 0xFF))
-            }
+        // Append projective coordinates directly (x, y, z) — avoids expensive
+        // Fp inversion for affine conversion. Both prover and verifier use this
+        // representation consistently.
+        withUnsafeBytes(of: p) { buf in
+            let ptr = buf.baseAddress!.assumingMemoryBound(to: UInt8.self)
+            transcript.append(contentsOf: UnsafeBufferPointer(start: ptr, count: 96))
         }
     }
 
     private func appendFr(_ transcript: inout [UInt8], _ v: Fr) {
-        let vInt = frToInt(v)
-        for limb in vInt {
-            for byte in 0..<8 {
-                transcript.append(UInt8((limb >> (byte * 8)) & 0xFF))
-            }
+        // Append raw Montgomery representation directly (consistent for both prover/verifier)
+        withUnsafeBytes(of: v) { buf in
+            let ptr = buf.baseAddress!.assumingMemoryBound(to: UInt8.self)
+            transcript.append(contentsOf: UnsafeBufferPointer(start: ptr, count: 32))
         }
     }
 
     private func deriveChallenge(_ transcript: [UInt8]) -> Fr {
-        let hash = blake3(transcript)
+        // Use C NEON blake3 for speed
+        var hash = [UInt8](repeating: 0, count: 32)
+        transcript.withUnsafeBufferPointer { inp in
+            hash.withUnsafeMutableBufferPointer { out in
+                blake3_hash_neon(inp.baseAddress!, inp.count, out.baseAddress!)
+            }
+        }
         // Reduce hash to Fr: interpret as 256-bit integer and reduce mod r
         var limbs = [UInt64](repeating: 0, count: 4)
-        for i in 0..<4 {
-            for j in 0..<8 {
-                limbs[i] |= UInt64(hash[i * 8 + j]) << (j * 8)
-            }
+        hash.withUnsafeBytes { buf in
+            let ptr = buf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+            limbs[0] = ptr[0]
+            limbs[1] = ptr[1]
+            limbs[2] = ptr[2]
+            limbs[3] = ptr[3]
         }
         // Convert to Fr (handles modular reduction)
         let raw = Fr.from64(limbs)

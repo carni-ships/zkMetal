@@ -157,3 +157,22 @@ void blake3_batch_hash_pairs_neon(const uint8_t *inputs, uint8_t *outputs, size_
                               outputs + i * 32);
     }
 }
+
+// General-purpose Blake3 hash (single chunk, <=64 bytes input -> 32 bytes output).
+// For inputs > 64 bytes, uses only the first 64 bytes (matching Swift blake3 behavior).
+// Flags: CHUNK_START(1) | CHUNK_END(2) | ROOT(8) = 11
+void blake3_hash_neon(const uint8_t *input, size_t len, uint8_t output[32]) {
+    uint32_t msg[16];
+    memset(msg, 0, 64);
+
+    // Copy min(len, 64) bytes into message block
+    size_t block_len = len < 64 ? len : 64;
+    memcpy(msg, input, block_len);
+
+    uint32_t state[16];
+    // flags = CHUNK_START | CHUNK_END | ROOT = 1 | 2 | 8 = 11
+    blake3_compress_neon(BLAKE3_IV, msg, 0, 0, (uint32_t)block_len, 11, state);
+
+    // Output first 8 words = 32 bytes
+    memcpy(output, state, 32);
+}

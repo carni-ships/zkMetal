@@ -48,6 +48,25 @@ public func runGroth16Bench() {
                         sz, sT, pT, vT, valid ? "VALID" : "INVALID"), stderr)
         } catch { fputs("  n=\(sz): \(error)\n", stderr) }
     }
+    // Multi-iteration benchmark for n=256
+    fputs("\n[2b] n=256 timing (10 iterations after warmup)\n", stderr)
+    do {
+        let (br256, bp256, bw256) = buildBenchCircuit(numConstraints: 256)
+        let (bPk256, _) = setup.setup(r1cs: br256)
+        let prover256 = try Groth16Prover()
+        // Warmup (3 iterations)
+        for _ in 0..<3 { _ = try prover256.prove(pk: bPk256, r1cs: br256, publicInputs: bp256, witness: bw256) }
+        var times = [Double]()
+        for _ in 0..<10 {
+            let t = CFAbsoluteTimeGetCurrent()
+            _ = try prover256.prove(pk: bPk256, r1cs: br256, publicInputs: bp256, witness: bw256)
+            times.append((CFAbsoluteTimeGetCurrent() - t) * 1000)
+        }
+        times.sort()
+        fputs(String(format: "  n=256: median %.1fms, min %.1fms, max %.1fms\n",
+                     times[5], times[0], times[9]), stderr)
+    } catch { fputs("  Error: \(error)\n", stderr) }
+
     fputs("\n[3] BN254 Pairing Checks\n", stderr)
     let g1gen = bn254G1Generator()
     let g2gen = bn254G2Generator()

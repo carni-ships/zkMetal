@@ -347,28 +347,37 @@ public func g2_381MulInt(_ p: G2Projective381, _ n: Int) -> G2Projective381 {
     return result
 }
 
-// BLS12-381 G2 generator: a verified point on E': y^2 = x^3 + 4(1+u) at x = (1, 1)
-// This is a simple point; for the standard generator, use cofactor clearing.
-public func bls12381G2SimplePoint() -> G2Affine381 {
-    // x = 1 + u, y computed to satisfy y^2 = x^3 + 4(1+u)
-    let xc0 = fp381FromInt(1)
-    let xc1 = fp381FromInt(1)
-    // y_c0 = 3690720871793337241455685075743049883097434000553861439128973496444191283866836383567731089800858963424329464681674
-    // y_c1 = 122693191027751655510194168700308213538794246775313976814212532628791625595109057816964505439501482194282347419502
+// Standard BLS12-381 G2 generator on the twist curve E': y^2 = x^3 + 4(1+u)
+// This is the well-known generator in the r-torsion subgroup.
+// x = (0x024aa2b2f08f0a91260805272dc51051c6e47ad4fa403b02b4510b647ae3d1770bac0326a805bbefd48056c8c121bdb8,
+//      0x13e02b6052719f607dacd3a088274f65596bd0d09920b61ab5da61bbdc7f5049334cf11213945d57e5ac7d055d042b7e)
+// y = (0x0ce5d527727d6e118cc9cdc6da2e351aadfd9baa8cbdd3a76d429a695160d12c923ac9cc3baca289e193548608b82801,
+//      0x0606c4a02ea734cc32acd2b02bc28b99cb3e287e85a763af267492ab572e99ab3f370d275cec1da1aaa9075ff05f79be)
+public func bls12381G2Generator() -> G2Affine381 {
+    let xc0 = fp381Mul(Fp381.from64([
+        0xd48056c8c121bdb8, 0x0bac0326a805bbef,
+        0xb4510b647ae3d177, 0xc6e47ad4fa403b02,
+        0x260805272dc51051, 0x024aa2b2f08f0a91
+    ]), Fp381.from64(Fp381.R2_MOD_P))
+    let xc1 = fp381Mul(Fp381.from64([
+        0xe5ac7d055d042b7e, 0x334cf11213945d57,
+        0xb5da61bbdc7f5049, 0x596bd0d09920b61a,
+        0x7dacd3a088274f65, 0x13e02b6052719f60
+    ]), Fp381.from64(Fp381.R2_MOD_P))
     let yc0 = fp381Mul(Fp381.from64([
-        0x3c3a315aa7de14ca, 0x9fce4e8ea2d9d28e,
-        0x773abc1eef6d193b, 0x9f2a5b83388e4b10,
-        0x270b858dad946208, 0x17faa6201231304f
+        0xe193548608b82801, 0x923ac9cc3baca289,
+        0x6d429a695160d12c, 0xadfd9baa8cbdd3a7,
+        0x8cc9cdc6da2e351a, 0x0ce5d527727d6e11
     ]), Fp381.from64(Fp381.R2_MOD_P))
     let yc1 = fp381Mul(Fp381.from64([
-        0x6569345eb41ed76e, 0xa1a534757df374dd,
-        0xad397c1837a90f0e, 0xc4fb4c39325d3164,
-        0x7f367e7242250427, 0x00cc12449be6ac4e
+        0xaaa9075ff05f79be, 0x3f370d275cec1da1,
+        0x267492ab572e99ab, 0xcb3e287e85a763af,
+        0x32acd2b02bc28b99, 0x0606c4a02ea734cc
     ]), Fp381.from64(Fp381.R2_MOD_P))
     return G2Affine381(x: Fp2_381(c0: xc0, c1: xc1), y: Fp2_381(c0: yc0, c1: yc1))
 }
 
-/// Alias for the standard G2 generator point on BLS12-381
-public func bls12381G2Generator() -> G2Affine381 {
-    return bls12381G2SimplePoint()
+/// Alias for G2 generator, used in tests.
+public func bls12381G2SimplePoint() -> G2Affine381 {
+    bls12381G2Generator()
 }
