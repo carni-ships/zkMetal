@@ -102,6 +102,8 @@ public enum Versions {
     public static let spartan           = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let tensorCompressor  = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let joltVM            = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
+    public static let groth16Batch      = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let proofAggregation  = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
 
     /// Print all primitive versions
     public static func printAll() {
@@ -167,6 +169,8 @@ public enum Versions {
             ("Kyber KEM",        kyber),
             ("Dilithium Sig",    dilithium),
             ("Jolt VM",          joltVM),
+            ("Groth16 Batch",    groth16Batch),
+            ("Proof Aggregation", proofAggregation),
         ]
         print("=== zkMetal Primitive Versions ===")
         for (name, v) in entries {
