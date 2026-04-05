@@ -898,60 +898,66 @@ static void miller_loop(const uint64_t p_aff[12], const uint64_t q_aff[24], uint
 
 // ============================================================
 // Hard part of final exponentiation
-// Efficient 3-exp-by-x algorithm (Bowe, adapted from eprint 2020/875)
-// Uses only 3 fp12_pow_by_x instead of 4 + 1 fp12_pow_by_x_half
+// Hayashida-Hayasaka-Teruya (eprint 2020/875)
+// Optimized: direct pow_by_x(f) replaces cyc_sqr(f) + pow_by_x_half(f^2)
 // ============================================================
 
 static void hard_part_exp(const uint64_t f[FP12], uint64_t r[FP12]) {
-    uint64_t y0[72], y1[72], y2[72], y3[72], y4[72], y5[72], y6[72], tmp[72];
+    uint64_t t0[72], t1[72], t2[72], tmp[72];
 
-    // y0 = f^x
-    fp12_pow_by_x(f, y0);
+    // t0 = f^2 (cyclotomic squaring)
+    fp12_cyc_sqr(f, t0);
 
-    // y1 = y0^x = f^(x^2)
-    fp12_pow_by_x(y0, y1);
+    // t1 = f^x (direct: replaces pow_by_x_half(f^2))
+    fp12_pow_by_x(f, t1);
 
-    // y2 = y1^x = f^(x^3)
-    fp12_pow_by_x(y1, y2);
+    // t2 = f^(-1) = conjugate(f) [cyclotomic subgroup]
+    fp12_conj(f, t2);
 
-    // y3 = conj(f) = f^(-1) in cyclotomic subgroup
-    fp12_conj(f, y3);
+    // t1 = t1 * t2 = f^(x-1)
+    fp12_mul(t1, t2, tmp); fp12_copy(t1, tmp);
 
-    // y1 = y1 * y3 = f^(x^2 - 1)
-    fp12_mul(y1, y3, tmp); fp12_copy(y1, tmp);
+    // t2 = t1^x = f^(x(x-1))
+    fp12_pow_by_x(t1, t2);
 
-    // y1 = frob(y1) = f^((x^2-1)*p)
-    fp12_frobenius(y1, tmp); fp12_copy(y1, tmp);
+    // t1 = t1^(-1) = f^(1-x)
+    fp12_conj(t1, tmp); fp12_copy(t1, tmp);
 
-    // y4 = y0 * y3 = f^(x - 1)
-    fp12_mul(y0, y3, y4);
+    // t1 = t1 * t2 = f^(x^2-2x+1) = f^((x-1)^2)
+    fp12_mul(t1, t2, tmp); fp12_copy(t1, tmp);
 
-    // y4 = frob2(y4) = f^((x-1)*p^2)
-    fp12_frobenius2(y4, tmp); fp12_copy(y4, tmp);
+    // t2 = t1^x = f^(x(x-1)^2)
+    fp12_pow_by_x(t1, t2);
 
-    // y5 = conj(y0) = f^(-x)
-    fp12_conj(y0, y5);
+    // t1 = frob(t1) = f^((x-1)^2 * p)
+    fp12_frobenius(t1, tmp); fp12_copy(t1, tmp);
 
-    // y6 = y2 * y5 = f^(x^3 - x)
-    fp12_mul(y2, y5, y6);
+    // t1 = t1 * t2
+    fp12_mul(t1, t2, tmp); fp12_copy(t1, tmp);
 
-    // y6 = frob3(y6) = f^((x^3-x)*p^3)
-    fp12_frobenius3(y6, tmp); fp12_copy(y6, tmp);
+    // result = f * t0 = f * f^2 = f^3
+    fp12_mul(f, t0, r);
 
-    // y3 = cyc_sqr(f) = f^2
-    fp12_cyc_sqr(f, y3);
+    // t0 = t1^x
+    fp12_pow_by_x(t1, t0);
 
-    // y3 = y3 * f = f^3
-    fp12_mul(y3, f, tmp); fp12_copy(y3, tmp);
+    // t2 = t0^x
+    fp12_pow_by_x(t0, t2);
 
-    // y3 = y3 * y2 = f^(3 + x^3)
-    fp12_mul(y3, y2, tmp); fp12_copy(y3, tmp);
+    // t0 = frob2(t1)
+    fp12_frobenius2(t1, t0);
 
-    // Combine all Frobenius terms
-    // result = y1 * y4 * y6 * y3
-    fp12_mul(y1, y4, tmp); fp12_copy(y1, tmp);
-    fp12_mul(y1, y6, tmp); fp12_copy(y1, tmp);
-    fp12_mul(y1, y3, r);
+    // t1 = t1^(-1)
+    fp12_conj(t1, tmp); fp12_copy(t1, tmp);
+
+    // t1 = t1 * t2
+    fp12_mul(t1, t2, tmp); fp12_copy(t1, tmp);
+
+    // t1 = t1 * t0
+    fp12_mul(t1, t0, tmp); fp12_copy(t1, tmp);
+
+    // result = result * t1
+    fp12_mul(r, t1, tmp); fp12_copy(r, tmp);
 }
 
 // ============================================================
