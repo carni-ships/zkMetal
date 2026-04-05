@@ -11,6 +11,7 @@ public class Poseidon2Engine {
     let merkleFusedFunction: MTLComputePipelineState
     let merkleFusedFullFunction: MTLComputePipelineState
     let merkleFusedBatchFunction: MTLComputePipelineState
+    let merkleUpdateScatteredFunction: MTLComputePipelineState
     public let rcBuffer: MTLBuffer  // round constants in Montgomery form
 
     // Cached buffers for hashPairs to avoid per-call allocation
@@ -36,7 +37,8 @@ public class Poseidon2Engine {
               let hashPairsFn = library.makeFunction(name: "poseidon2_hash_pairs"),
               let merkleFusedFn = library.makeFunction(name: "poseidon2_merkle_fused"),
               let merkleFusedFullFn = library.makeFunction(name: "poseidon2_merkle_fused_full"),
-              let merkleFusedBatchFn = library.makeFunction(name: "poseidon2_merkle_fused_batch") else {
+              let merkleFusedBatchFn = library.makeFunction(name: "poseidon2_merkle_fused_batch"),
+              let merkleUpdateScatteredFn = library.makeFunction(name: "poseidon2_merkle_update_scattered") else {
             throw MSMError.missingKernel
         }
 
@@ -45,6 +47,7 @@ public class Poseidon2Engine {
         self.merkleFusedFunction = try device.makeComputePipelineState(function: merkleFusedFn)
         self.merkleFusedFullFunction = try device.makeComputePipelineState(function: merkleFusedFullFn)
         self.merkleFusedBatchFunction = try device.makeComputePipelineState(function: merkleFusedBatchFn)
+        self.merkleUpdateScatteredFunction = try device.makeComputePipelineState(function: merkleUpdateScatteredFn)
 
         // Create round constants buffer (64 rounds * 3 elements = 192 Fr values)
         let rc = POSEIDON2_ROUND_CONSTANTS
@@ -235,6 +238,25 @@ public class Poseidon2Engine {
         let tg = min(512, Int(merkleFusedBatchFunction.maxTotalThreadsPerThreadgroup))
         encoder.dispatchThreadgroups(MTLSize(width: numTrees, height: 1, depth: 1),
                                       threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+    }
+
+    /// Encode scattered incremental Merkle update into an existing compute encoder.
+    /// For each dirty parent index in dirtyIndicesBuf, reads children from the 1-indexed heap
+    /// in treeBuf, hashes them with Poseidon2, and writes the result back to the parent slot.
+    /// This eliminates CPU gather/scatter overhead for scattered updates.
+    public func encodeScatteredUpdate(encoder: MTLComputeCommandEncoder,
+                                      treeBuf: MTLBuffer,
+                                      dirtyIndicesBuf: MTLBuffer,
+                                      count: Int) {
+        encoder.setComputePipelineState(merkleUpdateScatteredFunction)
+        encoder.setBuffer(treeBuf, offset: 0, index: 0)
+        encoder.setBuffer(rcBuffer, offset: 0, index: 1)
+        encoder.setBuffer(dirtyIndicesBuf, offset: 0, index: 2)
+        var n = UInt32(count)
+        encoder.setBytes(&n, length: 4, index: 3)
+        let tg = min(tuning.hashThreadgroupSize, Int(merkleUpdateScatteredFunction.maxTotalThreadsPerThreadgroup))
+        encoder.dispatchThreads(MTLSize(width: count, height: 1, depth: 1),
+                               threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
     }
 
     /// Subtree size for fused Merkle kernel

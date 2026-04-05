@@ -209,6 +209,8 @@ if cmd == "calibrate" {
     runConstraintBench()
 } else if cmd == "fused" || cmd == "fused-ntt" {
     runFusedConstraintBench()
+} else if cmd == "fused-general" || cmd == "fg" {
+    runFusedGeneralConstraintBench()
 } else if cmd == "fused-circle" || cmd == "fc" {
     runFusedCircleConstraintBench()
 } else if cmd == "circle" || cmd == "m31" {

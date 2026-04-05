@@ -22,7 +22,7 @@ public struct Wire: Hashable {
 }
 
 /// An arithmetic expression over wires
-public indirect enum Expr {
+public indirect enum Expr: Hashable {
     case wire(Wire)
     case constant(Fr)
     case add(Expr, Expr)
@@ -46,6 +46,66 @@ public indirect enum Expr {
         }
     }
 
+    /// Constant-fold the expression: evaluate pure-constant subtrees at compile time.
+    /// Reduces generated shader complexity by eliminating runtime arithmetic on constants.
+    public func constantFolded() -> Expr {
+        switch self {
+        case .wire, .constant:
+            return self
+
+        case .add(let a, let b):
+            let fa = a.constantFolded()
+            let fb = b.constantFolded()
+            // 0 + x = x, x + 0 = x
+            if case .constant(let c) = fa, c.isZero { return fb }
+            if case .constant(let c) = fb, c.isZero { return fa }
+            // const + const = const
+            if case .constant(let ca) = fa, case .constant(let cb) = fb {
+                return .constant(frAdd(ca, cb))
+            }
+            return .add(fa, fb)
+
+        case .mul(let a, let b):
+            let fa = a.constantFolded()
+            let fb = b.constantFolded()
+            // 0 * x = 0, x * 0 = 0
+            if case .constant(let c) = fa, c.isZero { return .constant(Fr.zero) }
+            if case .constant(let c) = fb, c.isZero { return .constant(Fr.zero) }
+            // 1 * x = x, x * 1 = x
+            if case .constant(let c) = fa, c == Fr.one { return fb }
+            if case .constant(let c) = fb, c == Fr.one { return fa }
+            // const * const = const
+            if case .constant(let ca) = fa, case .constant(let cb) = fb {
+                return .constant(frMul(ca, cb))
+            }
+            return .mul(fa, fb)
+
+        case .neg(let a):
+            let fa = a.constantFolded()
+            // neg(const) = const
+            if case .constant(let c) = fa {
+                return .constant(frSub(Fr.zero, c))
+            }
+            // neg(neg(x)) = x
+            if case .neg(let inner) = fa {
+                return inner
+            }
+            return .neg(fa)
+
+        case .pow(let base, let n):
+            let fb = base.constantFolded()
+            // const^n = const
+            if case .constant(let c) = fb {
+                var result = c
+                for _ in 1..<n {
+                    result = frMul(result, c)
+                }
+                return .constant(result)
+            }
+            return .pow(fb, n)
+        }
+    }
+
     /// Collect all wire references used in this expression
     public var wires: Set<Wire> {
         switch self {
@@ -59,7 +119,7 @@ public indirect enum Expr {
 }
 
 /// A constraint: expr == 0
-public struct Constraint {
+public struct Constraint: Hashable {
     public let expr: Expr
     public let label: String?
 
@@ -114,6 +174,17 @@ public class ConstraintSystem {
     /// Total expression node count (complexity estimate)
     public var totalNodeCount: Int {
         constraints.reduce(0) { $0 + $1.expr.nodeCount }
+    }
+
+    /// Stable hash for caching compiled pipelines.
+    /// Two systems with identical structure produce the same hash.
+    public var stableHash: Int {
+        var hasher = Hasher()
+        hasher.combine(numWires)
+        for c in constraints {
+            hasher.combine(c)
+        }
+        return hasher.finalize()
     }
 }
 

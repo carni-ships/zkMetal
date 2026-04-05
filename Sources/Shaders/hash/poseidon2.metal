@@ -317,3 +317,23 @@ kernel void poseidon2_merkle_fused_full(
     }
 }
 
+// Scattered incremental Merkle update: each thread hashes one parent node in a 1-indexed heap.
+// dirty_indices[gid] = parent node index in the heap (1-indexed).
+// tree[i] is the node value. Children of tree[i] are tree[2*i] and tree[2*i+1].
+// Each thread reads its two children, hashes them, and writes the parent in-place.
+// This avoids CPU gather/scatter for scattered updates (e.g., random leaf modifications).
+kernel void poseidon2_merkle_update_scattered(
+    device Fr* tree                [[buffer(0)]],    // 1-indexed heap: tree[1]=root, tree[cap..2*cap-1]=leaves
+    constant Fr* rc               [[buffer(1)]],
+    device const uint* dirty_indices [[buffer(2)]],  // parent node indices to rehash
+    constant uint& count          [[buffer(3)]],     // number of dirty nodes
+    uint gid                      [[thread_position_in_grid]]
+) {
+    if (gid >= count) return;
+
+    uint parent = dirty_indices[gid];
+    Fr left  = tree[parent * 2];
+    Fr right = tree[parent * 2 + 1];
+    tree[parent] = p2_hash_pair(left, right, rc);
+}
+

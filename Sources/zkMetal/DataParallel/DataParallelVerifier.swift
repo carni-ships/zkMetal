@@ -85,6 +85,8 @@ public class DataParallelVerifier {
                 // Check: s(0) + s(1) == currentClaim
                 let sum = frAdd(msg.s0, msg.s1)
                 if !dpvFrEqual(sum, currentClaim) {
+                    print("  [DBG] Layer \(layerIdx) round \(roundIdx): sumcheck consistency fail")
+                    print("  [DBG]   sum=\(frToInt(sum)) vs claim=\(frToInt(currentClaim))")
                     return false
                 }
 
@@ -137,6 +139,12 @@ public class DataParallelVerifier {
             )
 
             if !dpvFrEqual(currentClaim, expected) {
+                print("  [DBG] Layer \(layerIdx): GKR equation mismatch")
+                print("  [DBG]   currentClaim = \(frToInt(currentClaim))")
+                print("  [DBG]   expected     = \(frToInt(expected))")
+                print("  [DBG]   eqRInst=\(frToInt(eqRInst)), eqXiYi=\(frToInt(eqXiYi))")
+                print("  [DBG]   addVal=\(frToInt(addVal)), mulVal=\(frToInt(mulVal))")
+                print("  [DBG]   vx=\(frToInt(layerProof.claimedVx)), vy=\(frToInt(layerProof.claimedVy))")
                 return false
             }
 
@@ -171,7 +179,11 @@ public class DataParallelVerifier {
         let totalInputVars = instBits + inputCircuitVars
         let inputMLE = MultilinearPoly(numVars: totalInputVars, values: combinedInput)
         let inputEval = inputMLE.evaluate(at: r)
-        return dpvFrEqual(claim, inputEval)
+        if !dpvFrEqual(claim, inputEval) {
+            print("  [DBG] Final input check FAIL: claim=\(frToInt(claim)), inputEval=\(frToInt(inputEval))")
+            return false
+        }
+        return true
     }
 
     // MARK: - Helpers

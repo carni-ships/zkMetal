@@ -33,17 +33,19 @@ public func runJoltBench() {
         let bitwiseValid = engine.verify(proof: bitwiseProof, program: bitwiseProg)
         fputs("  Mixed bitwise (4 instrs): \(bitwiseValid ? "PASS" : "FAIL")\n", stderr)
 
-        // Test 3: Non-decomposable ops (MUL, EQ, LT, SHR)
-        let directProg: [JoltInstruction] = [
+        // Test 3: Lasso-verified ops (LT, SHR, SHL, SUB) + algebraic fallback (MUL, EQ)
+        let mixedProg: [JoltInstruction] = [
             JoltInstruction(op: .mul, rs1: 0, rs2: 1, rd: 2),
             JoltInstruction(op: .eq,  rs1: 0, rs2: 0, rd: 3),
             JoltInstruction(op: .lt,  rs1: 0, rs2: 1, rd: 4),
             JoltInstruction(op: .shr, rs1: 0, rs2: 1, rd: 5),
+            JoltInstruction(op: .shl, rs1: 0, rs2: 1, rd: 6),
+            JoltInstruction(op: .sub, rs1: 0, rs2: 1, rd: 7),
         ]
-        let directTrace = joltExecute(program: directProg)
-        let directProof = try engine.prove(trace: directTrace)
-        let directValid = engine.verify(proof: directProof, program: directProg)
-        fputs("  Direct ops MUL/EQ/LT/SHR (4 instrs): \(directValid ? "PASS" : "FAIL")\n", stderr)
+        let mixedTrace = joltExecute(program: mixedProg)
+        let mixedProof = try engine.prove(trace: mixedTrace)
+        let mixedValid = engine.verify(proof: mixedProof, program: mixedProg)
+        fputs("  Lasso+algebraic ops (6 instrs): \(mixedValid ? "PASS" : "FAIL")\n", stderr)
 
         // Test 4: Random mixed program
         let randomProg = joltRandomProgram(count: 16, numRegisters: 8, seed: 42)
@@ -113,12 +115,14 @@ public func runJoltBench() {
             for instr in program {
                 opCounts[instr.op, default: 0] += 1
             }
-            let decompCount = (opCounts[.add] ?? 0) + (opCounts[.sub] ?? 0) +
-                              (opCounts[.and_] ?? 0) + (opCounts[.or_] ?? 0) + (opCounts[.xor_] ?? 0)
-            let directCount = n - decompCount
+            var lassoCount = 0
+            for lop: JoltOp in [.add, .sub, .and_, .or_, .xor_, .shl, .shr, .lt] {
+                lassoCount += opCounts[lop] ?? 0
+            }
+            let algebraicCount = n - lassoCount
 
-            fputs(String(format: "  2^%-2d = %5d instrs: exec %.1fms, prove %.1fms, verify %.1fms (decomp=%d, direct=%d)\n",
-                        logN, n, execTime, proveMedian, verifyMedian, decompCount, directCount), stderr)
+            fputs(String(format: "  2^%-2d = %5d instrs: exec %.1fms, prove %.1fms, verify %.1fms (lasso=%d, algebraic=%d)\n",
+                        logN, n, execTime, proveMedian, verifyMedian, lassoCount, algebraicCount), stderr)
         }
 
     } catch {

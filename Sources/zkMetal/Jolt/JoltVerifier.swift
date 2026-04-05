@@ -1,9 +1,13 @@
-// Jolt Verifier — Verify correct VM execution proof
+// Jolt Verifier — Verify correct VM execution proof via Lasso lookup verification
 //
 // Verification steps:
-//   1. Check operand commitments match claimed program execution
-//   2. Verify algebraic witnesses for all instruction types
-//   3. Verify Lasso range-check proof on all operand values (32-bit range)
+//   1. Re-execute program to get expected operand values
+//   2. Check operand commitments match expected execution
+//   3. For each opcode with a Lasso instruction lookup proof:
+//      - Re-encode the expected (a, b, result) as lookup values
+//      - Verify the Lasso proof against the instruction's decomposed table
+//   4. For fallback opcodes: verify algebraic witnesses match expected values
+//   5. Verify Lasso range-check proof on all operand values (32-bit range)
 
 import Foundation
 
@@ -12,10 +16,8 @@ extension JoltEngine {
     // MARK: - Verify
 
     /// Verify a Jolt execution proof against a program.
-    /// Re-executes the program to get expected operand values, then checks:
-    ///   - Operand commitments match execution
-    ///   - Each opcode has a valid algebraic witness
-    ///   - Lasso range-check covers all operand values
+    /// Checks Lasso instruction lookup proofs for supported ops,
+    /// algebraic witnesses for unsupported ops, and range-check for all values.
     public func verify(proof: JoltProof, program: [JoltInstruction],
                        numRegisters: Int = 32, initialRegs: [UInt32]? = nil) -> Bool {
         // Re-execute to get expected trace
@@ -44,13 +46,16 @@ extension JoltEngine {
         }
 
         var hasRangeCheck = false
+        var verifiedOps = Set<JoltOp>()
 
         // Verify each opcode proof
         for opcodeProof in proof.opcodeProofs {
             let op = opcodeProof.op
 
-            // Range-check proof: identified by having a Lasso proof and no algebraic witness
-            if opcodeProof.lassoProof != nil && opcodeProof.algebraicWitness == nil {
+            // Range-check proof: identified by having a Lasso proof, no algebraic witness,
+            // and not being an instruction lookup
+            if opcodeProof.lassoProof != nil && opcodeProof.algebraicWitness == nil
+                && !opcodeProof.isInstructionLookup {
                 if !verifyRangeCheck(proof: opcodeProof, trace: expectedTrace) {
                     return false
                 }
@@ -58,13 +63,25 @@ extension JoltEngine {
                 continue
             }
 
-            // Algebraic witness verification
+            // Instruction lookup proof (Jolt-style via Lasso)
+            if opcodeProof.isInstructionLookup {
+                guard let steps = stepsByOp[op], !steps.isEmpty else { return false }
+                guard opcodeProof.count == steps.count else { return false }
+                if !verifyInstructionLookup(op: op, proof: opcodeProof, steps: steps) {
+                    return false
+                }
+                verifiedOps.insert(op)
+                continue
+            }
+
+            // Algebraic witness verification (fallback)
             guard let steps = stepsByOp[op], !steps.isEmpty else { return false }
             guard opcodeProof.count == steps.count else { return false }
 
             if !verifyAlgebraic(op: op, proof: opcodeProof, steps: steps) {
                 return false
             }
+            verifiedOps.insert(op)
         }
 
         // Must have a range-check proof
@@ -72,11 +89,46 @@ extension JoltEngine {
 
         // Check all opcodes with steps are covered
         for (op, steps) in stepsByOp where !steps.isEmpty {
-            let hasProof = proof.opcodeProofs.contains { $0.op == op && $0.algebraicWitness != nil }
-            if !hasProof { return false }
+            if !verifiedOps.contains(op) { return false }
         }
 
         return true
+    }
+
+    // MARK: - Instruction Lookup Verification
+
+    /// Verify a Lasso instruction lookup proof for a batch of instructions.
+    /// Re-encodes the expected (a, b, result) tuples and verifies the Lasso proof.
+    private func verifyInstructionLookup(op: JoltOp, proof: OpcodeProof,
+                                          steps: [JoltStep]) -> Bool {
+        guard let lassoProof = proof.lassoProof else { return false }
+        guard let instrTable = instructionRegistry.table(for: op) else { return false }
+
+        let lassoTable = instrTable.buildLassoTable()
+
+        // Re-encode lookups from expected execution
+        var lookups = [Fr]()
+        lookups.reserveCapacity(steps.count)
+        for step in steps {
+            // First verify the instruction semantics
+            if step.result != executeOp(op, step.a, step.b) { return false }
+            let encoded = instrTable.encodeLookups(a: step.a, b: step.b, result: step.result)
+            lookups.append(contentsOf: encoded)
+        }
+
+        // Pad to power of 2 (must match prover padding)
+        var paddedCount = 1
+        while paddedCount < lookups.count { paddedCount <<= 1 }
+        let zeroLookup = instrTable.encodeLookups(a: 0, b: 0, result: 0)
+        while lookups.count < paddedCount {
+            lookups.append(contentsOf: zeroLookup)
+        }
+
+        do {
+            return try lassoEngine.verify(proof: lassoProof, lookups: lookups, table: lassoTable)
+        } catch {
+            return false
+        }
     }
 
     // MARK: - Algebraic Verification

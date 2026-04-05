@@ -357,11 +357,14 @@ public class FusedNTTConstraintEngine {
         return Array(UnsafeBufferPointer(start: ptr, count: n))
     }
 
-    // MARK: - General Constraint System (single command buffer)
+    // MARK: - General Constraint System (fully fused in shared memory)
 
-    /// Fused NTT + general constraint evaluation using single command buffer.
-    /// Takes column-major trace data, applies NTT to each column, then evaluates constraints.
-    /// This is the general-purpose API that works with any ConstraintSystem.
+    /// Fully fused NTT + general constraint evaluation in a single kernel dispatch.
+    /// NTT runs entirely in threadgroup shared memory, then constraints are evaluated
+    /// on the NTT'd values without ever writing NTT output to global memory.
+    ///
+    /// Supports logN <= maxFusedLogN(numCols). For larger sizes, falls back to
+    /// the barrier-based approach (separate NTT + constraint dispatches in one command buffer).
     public func evaluateQuotientFused(
         traceColumns: [[Fr]],
         system: ConstraintSystem,
@@ -375,9 +378,35 @@ public class FusedNTTConstraintEngine {
             precondition(col.count == n, "All columns must have 2^logN elements")
         }
 
+        let maxFused = MetalCodegen.maxFusedLogN(numCols: numCols)
+
+        if logN <= maxFused {
+            // Fully fused path: single kernel, NTT in shared memory + constraint eval
+            return try evaluateQuotientFullyFused(
+                traceColumns: traceColumns, system: system, alpha: alpha, logN: logN)
+        } else {
+            // Barrier path: NTT dispatches + constraint eval in one command buffer (no interleave)
+            return try evaluateQuotientBarrierGeneral(
+                traceColumns: traceColumns, system: system, alpha: alpha, logN: logN)
+        }
+    }
+
+    /// Fully fused path: single kernel does NTT in shared memory + constraint eval.
+    /// No global memory write of NTT output. This is the optimal path for small domains.
+    private func evaluateQuotientFullyFused(
+        traceColumns: [[Fr]],
+        system: ConstraintSystem,
+        alpha: Fr = Fr.one,
+        logN: Int
+    ) throws -> [Fr] {
+        let n = 1 << logN
+        let numCols = traceColumns.count
         let stride = MemoryLayout<Fr>.stride
 
-        // Create column buffers and NTT them
+        // Get or compile the fused pipeline for this constraint system
+        let pipeline = try getFusedGeneralPipeline(system: system)
+
+        // Create column buffers
         var colBufs: [MTLBuffer] = []
         for col in traceColumns {
             guard let buf = device.makeBuffer(bytes: col, length: n * stride, options: .storageModeShared) else {
@@ -386,15 +415,14 @@ public class FusedNTTConstraintEngine {
             colBufs.append(buf)
         }
 
-        // Compile constraint system quotient kernel
-        let compiled = try constraintEngine.compile(system: system, includeQuotient: true)
-
-        guard let quotientPipeline = compiled.quotientPipeline else {
-            throw MSMError.gpuError("No quotient pipeline compiled")
+        // Twiddle factors
+        let twiddles = precomputeTwiddles(logN: logN)
+        guard let twiddleBuf = device.makeBuffer(bytes: twiddles, length: twiddles.count * stride, options: .storageModeShared) else {
+            throw MSMError.gpuError("Failed to allocate twiddle buffer")
         }
 
         // Alpha powers
-        var alphaPowers = [Fr](repeating: Fr.zero, count: system.constraints.count)
+        var alphaPowers = [Fr](repeating: Fr.zero, count: max(system.constraints.count, 1))
         alphaPowers[0] = Fr.one
         for i in 1..<alphaPowers.count {
             alphaPowers[i] = frMul(alphaPowers[i - 1], alpha)
@@ -402,52 +430,204 @@ public class FusedNTTConstraintEngine {
         let alphaBuf = getAlphaBuffer(alphaPowers)
         let vanishingInvBuf = getVanishingInvBuffer(n: n)
 
-        // Build interleaved trace for constraint eval (row-major)
-        guard let traceBuf = device.makeBuffer(length: n * numCols * stride, options: .storageModeShared),
-              let quotientBuf = device.makeBuffer(length: n * stride, options: .storageModeShared) else {
-            throw MSMError.gpuError("Failed to allocate output buffers")
+        guard let quotientBuf = device.makeBuffer(length: n * stride, options: .storageModeShared) else {
+            throw MSMError.gpuError("Failed to allocate quotient buffer")
         }
 
-        // Single command buffer: NTTs + barrier + interleave + constraint eval
+        // Single dispatch
         guard let cmdBuf = commandQueue.makeCommandBuffer() else {
             throw MSMError.noCommandBuffer
         }
 
-        // Phase 1: NTT all columns
-        for buf in colBufs {
-            nttEngine.encodeNTT(data: buf, logN: logN, cmdBuf: cmdBuf)
+        let enc = cmdBuf.makeComputeCommandEncoder()!
+        enc.setComputePipelineState(pipeline)
+
+        // Set column buffers
+        for (i, buf) in colBufs.enumerated() {
+            enc.setBuffer(buf, offset: 0, index: i)
         }
+        enc.setBuffer(twiddleBuf, offset: 0, index: numCols)
+        enc.setBuffer(quotientBuf, offset: 0, index: numCols + 1)
+        enc.setBuffer(alphaBuf, offset: 0, index: numCols + 2)
+        enc.setBuffer(vanishingInvBuf, offset: 0, index: numCols + 3)
+        var nVal = UInt32(n)
+        var logNVal = UInt32(logN)
+        enc.setBytes(&nVal, length: 4, index: numCols + 4)
+        enc.setBytes(&logNVal, length: 4, index: numCols + 5)
 
-        // Phase 2: Interleave NTT'd columns into row-major trace
-        try encodeInterleave(cmdBuf: cmdBuf, colBufs: colBufs, traceBuf: traceBuf, n: n, numCols: numCols)
-
-        // Dispatch constraint quotient eval
-        let enc2 = cmdBuf.makeComputeCommandEncoder()!
-        enc2.memoryBarrier(scope: .buffers)
-        enc2.setComputePipelineState(quotientPipeline)
-        enc2.setBuffer(traceBuf, offset: 0, index: 0)
-        enc2.setBuffer(quotientBuf, offset: 0, index: 1)
-        var colsVal = UInt32(numCols)
-        var rowsVal = UInt32(n)
-        enc2.setBytes(&colsVal, length: 4, index: 2)
-        enc2.setBytes(&rowsVal, length: 4, index: 3)
-        enc2.setBuffer(alphaBuf, offset: 0, index: 4)
-        enc2.setBuffer(vanishingInvBuf, offset: 0, index: 5)
-
-        let tg = min(256, Int(quotientPipeline.maxTotalThreadsPerThreadgroup))
-        enc2.dispatchThreads(MTLSize(width: n, height: 1, depth: 1),
-                            threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
-        enc2.endEncoding()
+        let tgSize = n / 2  // each thread handles one butterfly pair
+        enc.dispatchThreadgroups(MTLSize(width: 1, height: 1, depth: 1),
+                                threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
+        enc.endEncoding()
 
         cmdBuf.commit()
         cmdBuf.waitUntilCompleted()
 
         if let error = cmdBuf.error {
-            throw MSMError.gpuError("Fused general constraint GPU error: \(error.localizedDescription)")
+            throw MSMError.gpuError("Fused NTT+constraint GPU error: \(error.localizedDescription)")
         }
 
         let ptr = quotientBuf.contents().bindMemory(to: Fr.self, capacity: n)
         return Array(UnsafeBufferPointer(start: ptr, count: n))
+    }
+
+    /// Barrier path for larger sizes: NTT dispatches + constraint eval reading
+    /// separate column buffers (no interleave step). Single command buffer, no host round-trip.
+    private func evaluateQuotientBarrierGeneral(
+        traceColumns: [[Fr]],
+        system: ConstraintSystem,
+        alpha: Fr = Fr.one,
+        logN: Int
+    ) throws -> [Fr] {
+        let n = 1 << logN
+        let numCols = traceColumns.count
+        let stride = MemoryLayout<Fr>.stride
+
+        // Create column buffers
+        var colBufs: [MTLBuffer] = []
+        for col in traceColumns {
+            guard let buf = device.makeBuffer(bytes: col, length: n * stride, options: .storageModeShared) else {
+                throw MSMError.gpuError("Failed to allocate column buffer")
+            }
+            colBufs.append(buf)
+        }
+
+        // Alpha powers
+        var alphaPowers = [Fr](repeating: Fr.zero, count: max(system.constraints.count, 1))
+        alphaPowers[0] = Fr.one
+        for i in 1..<alphaPowers.count {
+            alphaPowers[i] = frMul(alphaPowers[i - 1], alpha)
+        }
+        let alphaBuf = getAlphaBuffer(alphaPowers)
+        let vanishingInvBuf = getVanishingInvBuffer(n: n)
+
+        guard let quotientBuf = device.makeBuffer(length: n * stride, options: .storageModeShared) else {
+            throw MSMError.gpuError("Failed to allocate quotient buffer")
+        }
+
+        // Get or compile separate-column constraint eval pipeline
+        let pipeline = try getSeparateColumnGeneralPipeline(system: system)
+
+        guard let cmdBuf = commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
+        }
+
+        // Phase 1: NTT all columns (encoded into same command buffer)
+        for buf in colBufs {
+            nttEngine.encodeNTT(data: buf, logN: logN, cmdBuf: cmdBuf)
+        }
+
+        // Phase 2: Constraint evaluation reading from separate column buffers (no interleave)
+        let enc = cmdBuf.makeComputeCommandEncoder()!
+        enc.memoryBarrier(scope: .buffers)
+        enc.setComputePipelineState(pipeline)
+        for (i, buf) in colBufs.enumerated() {
+            enc.setBuffer(buf, offset: 0, index: i)
+        }
+        enc.setBuffer(quotientBuf, offset: 0, index: numCols)
+        enc.setBuffer(alphaBuf, offset: 0, index: numCols + 1)
+        enc.setBuffer(vanishingInvBuf, offset: 0, index: numCols + 2)
+        var nVal = UInt32(n)
+        enc.setBytes(&nVal, length: 4, index: numCols + 3)
+
+        let tg = min(256, Int(pipeline.maxTotalThreadsPerThreadgroup))
+        enc.dispatchThreads(MTLSize(width: n, height: 1, depth: 1),
+                           threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+        enc.endEncoding()
+
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+
+        if let error = cmdBuf.error {
+            throw MSMError.gpuError("Barrier general constraint GPU error: \(error.localizedDescription)")
+        }
+
+        let ptr = quotientBuf.contents().bindMemory(to: Fr.self, capacity: n)
+        return Array(UnsafeBufferPointer(start: ptr, count: n))
+    }
+
+    // MARK: - Runtime-compiled Pipeline Cache (general constraint systems)
+
+    private var _fusedGeneralPipelineCache: [String: MTLComputePipelineState] = [:]
+    private var _separateColGeneralPipelineCache: [String: MTLComputePipelineState] = [:]
+
+    /// Cache key for a constraint system (based on structure, not instance identity)
+    private func systemCacheKey(_ system: ConstraintSystem) -> String {
+        return "w\(system.numWires)_c\(system.constraints.count)_n\(system.totalNodeCount)"
+    }
+
+    /// Get or compile a fully-fused NTT+constraint pipeline for the given constraint system.
+    private func getFusedGeneralPipeline(system: ConstraintSystem) throws -> MTLComputePipelineState {
+        let key = systemCacheKey(system)
+        if let p = _fusedGeneralPipelineCache[key] { return p }
+
+        let codegen = MetalCodegen()
+        let kernelSource = codegen.generateFusedNTTConstraintEval(system: system)
+
+        // Strip #include and using directives (we prepend Fr source)
+        let cleanKernel = kernelSource.split(separator: "\n")
+            .filter { !$0.contains("#include") && !$0.contains("using namespace metal") }
+            .joined(separator: "\n")
+
+        let shaderDir = findShaderDir()
+        let rawFr = try String(contentsOfFile: shaderDir + "/fields/bn254_fr.metal", encoding: .utf8)
+        let frSource = rawFr
+            .replacingOccurrences(of: "#ifndef BN254_FR_METAL", with: "")
+            .replacingOccurrences(of: "#define BN254_FR_METAL", with: "")
+            .replacingOccurrences(of: "#endif // BN254_FR_METAL", with: "")
+
+        let combined = frSource + "\n" + cleanKernel
+        let options = MTLCompileOptions()
+        options.fastMathEnabled = true
+
+        do {
+            let library = try device.makeLibrary(source: combined, options: options)
+            guard let fn = library.makeFunction(name: "fused_ntt_constraint_eval") else {
+                throw MSMError.missingKernel
+            }
+            let pipeline = try device.makeComputePipelineState(function: fn)
+            _fusedGeneralPipelineCache[key] = pipeline
+            return pipeline
+        } catch {
+            throw MSMError.gpuError("Fused NTT+constraint compile error: \(error.localizedDescription)")
+        }
+    }
+
+    /// Get or compile a separate-column constraint eval pipeline (no interleave needed).
+    /// This reads each column from its own buffer rather than an interleaved trace.
+    private func getSeparateColumnGeneralPipeline(system: ConstraintSystem) throws -> MTLComputePipelineState {
+        let key = systemCacheKey(system)
+        if let p = _separateColGeneralPipelineCache[key] { return p }
+
+        let codegen = MetalCodegen()
+        let kernelSource = codegen.generateSeparateColumnQuotientEval(system: system)
+
+        let cleanKernel = kernelSource.split(separator: "\n")
+            .filter { !$0.contains("#include") && !$0.contains("using namespace metal") }
+            .joined(separator: "\n")
+
+        let shaderDir = findShaderDir()
+        let rawFr = try String(contentsOfFile: shaderDir + "/fields/bn254_fr.metal", encoding: .utf8)
+        let frSource = rawFr
+            .replacingOccurrences(of: "#ifndef BN254_FR_METAL", with: "")
+            .replacingOccurrences(of: "#define BN254_FR_METAL", with: "")
+            .replacingOccurrences(of: "#endif // BN254_FR_METAL", with: "")
+
+        let combined = frSource + "\n" + cleanKernel
+        let options = MTLCompileOptions()
+        options.fastMathEnabled = true
+
+        do {
+            let library = try device.makeLibrary(source: combined, options: options)
+            guard let fn = library.makeFunction(name: "eval_quotient_separate_cols") else {
+                throw MSMError.missingKernel
+            }
+            let pipeline = try device.makeComputePipelineState(function: fn)
+            _separateColGeneralPipelineCache[key] = pipeline
+            return pipeline
+        } catch {
+            throw MSMError.gpuError("Separate-column constraint compile error: \(error.localizedDescription)")
+        }
     }
 
     // MARK: - Interleave Kernel

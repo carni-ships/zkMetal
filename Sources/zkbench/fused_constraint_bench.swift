@@ -110,6 +110,104 @@ private func frEqual(_ a: Fr, _ b: Fr) -> Bool {
            a.v.4 == b.v.4 && a.v.5 == b.v.5 && a.v.6 == b.v.6 && a.v.7 == b.v.7
 }
 
+// MARK: - General Constraint System Fused Benchmark
+
+func runFusedGeneralConstraintBench() {
+    fputs("\n=== Fused NTT + General Constraint Benchmark ===\n", stderr)
+    fputs("Tests codegen-based fused kernel (any ConstraintSystem, not just Fibonacci)\n\n", stderr)
+
+    do {
+        let engine = try FusedNTTConstraintEngine()
+        let alpha = frFromInt(7)
+        let runs = 5
+
+        // Test with Fibonacci constraint system (should match hardcoded Fib path)
+        let fibSystem = ConstraintSystem.fibonacci(steps: 2)
+        // Add cross-row constraints: next(col0) - col1 = 0, next(col1) - (col0 + col1) = 0
+        let cs = ConstraintSystem(numWires: 2)
+        cs.assertEqual(.wire(.next(0)), .wire(.col(1)), label: "a_next = b")
+        cs.assertEqual(.wire(.next(1)), .wire(.col(0)) + .wire(.col(1)), label: "b_next = a + b")
+
+        let maxFusedLogN = MetalCodegen.maxFusedLogN(numCols: 2)
+        fputs("  Max fused logN for 2 cols: \(maxFusedLogN)\n", stderr)
+
+        for logN in [6, 8, maxFusedLogN, maxFusedLogN + 2, 14] {
+            let n = 1 << logN
+            let isFused = logN <= maxFusedLogN
+
+            // Generate trace
+            var colA = [Fr](repeating: Fr.zero, count: n)
+            var colB = [Fr](repeating: Fr.zero, count: n)
+            colA[0] = Fr.one
+            colB[0] = Fr.one
+            for i in 1..<n {
+                colA[i] = colB[i - 1]
+                colB[i] = frAdd(colA[i - 1], colB[i - 1])
+            }
+
+            // Warmup
+            let _ = try engine.evaluateQuotientFused(
+                traceColumns: [colA, colB], system: cs, alpha: alpha, logN: logN)
+
+            // Benchmark
+            var times = [Double]()
+            for _ in 0..<runs {
+                let t0 = CFAbsoluteTimeGetCurrent()
+                let _ = try engine.evaluateQuotientFused(
+                    traceColumns: [colA, colB], system: cs, alpha: alpha, logN: logN)
+                times.append((CFAbsoluteTimeGetCurrent() - t0) * 1000.0)
+            }
+            times.sort()
+            let median = times[runs / 2]
+
+            let path = isFused ? "fused-kernel" : "barrier"
+            let line = String(format: "  2^%-2d (%6d): %6.2fms [%@]",
+                            logN, n, median, path)
+            fputs(line + "\n", stderr)
+        }
+
+        // Test with R1CS constraint system (no cross-row refs)
+        fputs("\n  R1CS constraints (4 gates, 12 wires):\n", stderr)
+        let r1cs = ConstraintSystem.r1cs(numGates: 4)
+        let r1csMaxLogN = MetalCodegen.maxFusedLogN(numCols: r1cs.numWires)
+        fputs("  Max fused logN for \(r1cs.numWires) cols: \(r1csMaxLogN)\n", stderr)
+
+        for logN in [4, min(r1csMaxLogN, 6), 8] {
+            let n = 1 << logN
+            let isFused = logN <= r1csMaxLogN
+
+            // Random-ish trace
+            var cols = [[Fr]](repeating: [Fr](repeating: Fr.zero, count: n), count: r1cs.numWires)
+            for i in 0..<n {
+                for j in 0..<r1cs.numWires {
+                    cols[j][i] = frFromInt(UInt64(i * r1cs.numWires + j + 1))
+                }
+            }
+
+            let _ = try engine.evaluateQuotientFused(
+                traceColumns: cols, system: r1cs, alpha: alpha, logN: logN)
+
+            var times = [Double]()
+            for _ in 0..<runs {
+                let t0 = CFAbsoluteTimeGetCurrent()
+                let _ = try engine.evaluateQuotientFused(
+                    traceColumns: cols, system: r1cs, alpha: alpha, logN: logN)
+                times.append((CFAbsoluteTimeGetCurrent() - t0) * 1000.0)
+            }
+            times.sort()
+            let median = times[runs / 2]
+
+            let path = isFused ? "fused-kernel" : "barrier"
+            let line = String(format: "  2^%-2d (%6d): %6.2fms [%@]",
+                            logN, n, median, path)
+            fputs(line + "\n", stderr)
+        }
+
+    } catch {
+        fputs("Error: \(error)\n", stderr)
+    }
+}
+
 // MARK: - Circle STARK Fused NTT + Constraint Benchmark (M31)
 
 func runFusedCircleConstraintBench() {

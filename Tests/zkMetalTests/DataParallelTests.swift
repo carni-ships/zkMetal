@@ -76,6 +76,36 @@ func runDataParallelTests() {
         expectEqual(valid, true, "DP engine baseline: squaring proof verifies")
     }
 
+    // --- Minimal debug test ---
+    do {
+        // Simplest possible: 1 instance, 1 layer, 2 gates
+        let layer = CircuitLayer(gates: [
+            Gate(type: .add, leftInput: 0, rightInput: 1),
+            Gate(type: .mul, leftInput: 0, rightInput: 1),
+        ])
+        let template = LayeredCircuit(layers: [layer])
+        let inputs = [frFromInt(3), frFromInt(5)]
+
+        var dpCircuit = DataParallelCircuit(
+            template: template, instances: 1, inputs: [inputs])
+        dpCircuit.evaluateAll()
+
+        let out = dpCircuit.instanceOutputs![0]
+        expectEqual(frToInt(out[0])[0], 8, "DP minimal: 3+5=8")
+        expectEqual(frToInt(out[1])[0], 15, "DP minimal: 3*5=15")
+
+        let proverT = Transcript(label: "dp-minimal")
+        let prover = DataParallelProver()
+        let proof = prover.prove(circuit: &dpCircuit, transcript: proverT)
+
+        let verifierT = Transcript(label: "dp-minimal")
+        let verifier = DataParallelVerifier()
+        let valid = verifier.verify(
+            template: template, numInstances: 1,
+            inputs: [inputs], proof: proof, transcript: verifierT)
+        expectEqual(valid, true, "DP minimal 1-inst 1-layer: proof verifies")
+    }
+
     // --- Prover + Verifier round-trip tests ---
 
     // Test: 2 instances of repeated squaring (depth 3)

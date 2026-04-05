@@ -77,6 +77,30 @@ public struct Fr {
     }
 }
 
+// MARK: - Fr Equatable & Hashable
+
+extension Fr: Equatable {
+    public static func == (lhs: Fr, rhs: Fr) -> Bool {
+        lhs.v.0 == rhs.v.0 && lhs.v.1 == rhs.v.1 &&
+        lhs.v.2 == rhs.v.2 && lhs.v.3 == rhs.v.3 &&
+        lhs.v.4 == rhs.v.4 && lhs.v.5 == rhs.v.5 &&
+        lhs.v.6 == rhs.v.6 && lhs.v.7 == rhs.v.7
+    }
+}
+
+extension Fr: Hashable {
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(v.0)
+        hasher.combine(v.1)
+        hasher.combine(v.2)
+        hasher.combine(v.3)
+        hasher.combine(v.4)
+        hasher.combine(v.5)
+        hasher.combine(v.6)
+        hasher.combine(v.7)
+    }
+}
+
 // MARK: - Fr Field Operations
 
 public func frMul(_ a: Fr, _ b: Fr) -> Fr {

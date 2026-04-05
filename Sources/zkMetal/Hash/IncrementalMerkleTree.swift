@@ -175,6 +175,9 @@ public class IncrementalMerkleTree {
 
     private let engine: Poseidon2Engine
     private var dirtyTracker: DirtyTracker
+    /// Cached buffer for dirty node indices (GPU scattered update kernel)
+    private var cachedDirtyIndicesBuf: MTLBuffer?
+    private var cachedDirtyIndicesCap: Int = 0
 
     public init(depth: Int) throws {
         precondition(depth > 0 && depth <= 26, "Depth must be in [1, 26]")
@@ -395,7 +398,8 @@ public class IncrementalMerkleTree {
     // MARK: - GPU Rehash (dirty subtrees)
 
     /// Rehash all dirty nodes, level by level bottom-up.
-    /// All hashing uses GPU for consistency.
+    /// All hashing uses GPU for consistency. Both contiguous and scattered cases
+    /// stay in a single command buffer using the scattered update kernel.
     private func rehashDirty() throws {
         let frStride = MemoryLayout<Fr>.stride
 
@@ -409,10 +413,7 @@ public class IncrementalMerkleTree {
             let dirtyCount = dirty.nodeCount
             if dirtyCount == 0 { continue }
 
-            if level > 0 || dirtyCount > 0 {
-                // Barrier needed between levels (previous level output is this level's input)
-                if level > 0 { enc.memoryBarrier(scope: .buffers) }
-            }
+            if level > 0 { enc.memoryBarrier(scope: .buffers) }
 
             if dirty.isContiguous {
                 let firstParent = dirty.first
@@ -423,32 +424,8 @@ public class IncrementalMerkleTree {
                                         outputOffset: outputOffset,
                                         count: dirtyCount)
             } else {
-                // Scattered: must gather, hash, scatter
-                // End current encoder, commit, wait, then do scattered GPU hash
-                enc.endEncoding()
-                cmdBuf.commit()
-                cmdBuf.waitUntilCompleted()
-                if let error = cmdBuf.error {
-                    throw MSMError.gpuError(error.localizedDescription)
-                }
-                try rehashScatteredGPU(sortedDirty: dirty.sortedIndices)
-
-                // Continue with a new command buffer for remaining levels
-                if level + 1 < depth {
-                    let remainingDirty = (level + 1..<depth).contains { dirtyTracker.dirtyByLevel[$0].nodeCount > 0 }
-                    if remainingDirty {
-                        // Recursively handle remaining levels
-                        var subTracker = DirtyTracker(depth: depth)
-                        for l in (level + 1)..<depth {
-                            subTracker.dirtyByLevel[l] = dirtyTracker.dirtyByLevel[l]
-                        }
-                        let savedTracker = dirtyTracker
-                        dirtyTracker = subTracker
-                        try rehashDirty()
-                        dirtyTracker = savedTracker
-                    }
-                }
-                return
+                // Scattered: use GPU kernel that reads/writes the heap in-place
+                encodeScatteredUpdate(encoder: enc, sortedDirty: dirty.sortedIndices)
             }
         }
 
@@ -460,35 +437,60 @@ public class IncrementalMerkleTree {
         }
     }
 
-    /// GPU rehash for scattered dirty nodes: gather children, hash, scatter results.
+    /// Ensure the cached dirty indices buffer can hold `count` UInt32 values.
+    private func ensureDirtyIndicesBuf(count: Int) -> MTLBuffer {
+        if count > cachedDirtyIndicesCap {
+            let newCap = max(count, 256)  // minimum 256 to avoid frequent realloc
+            cachedDirtyIndicesBuf = engine.device.makeBuffer(length: newCap * MemoryLayout<UInt32>.stride,
+                                                              options: .storageModeShared)
+            cachedDirtyIndicesCap = newCap
+        }
+        return cachedDirtyIndicesBuf!
+    }
+
+    /// Encode scattered update into an existing compute encoder.
+    /// Writes dirty indices into a GPU buffer, then dispatches the scattered update kernel.
+    private func encodeScatteredUpdate(encoder: MTLComputeCommandEncoder, sortedDirty: [Int]) {
+        let count = sortedDirty.count
+        guard count > 0 else { return }
+
+        let indicesBuf = ensureDirtyIndicesBuf(count: count)
+        let ptr = indicesBuf.contents().bindMemory(to: UInt32.self, capacity: count)
+        for (i, idx) in sortedDirty.enumerated() {
+            ptr[i] = UInt32(idx)
+        }
+
+        engine.encodeScatteredUpdate(encoder: encoder,
+                                      treeBuf: nodeBuffer,
+                                      dirtyIndicesBuf: indicesBuf,
+                                      count: count)
+    }
+
+    /// GPU rehash for scattered dirty nodes using the dedicated scattered update kernel.
+    /// Each GPU thread reads children from the 1-indexed heap and writes the hash back in-place.
     private func rehashScatteredGPU(sortedDirty: [Int]) throws {
         let count = sortedDirty.count
-        let frStride = MemoryLayout<Fr>.stride
+        guard count > 0 else { return }
 
-        // Allocate temp buffers for input pairs and output hashes
-        let inputSize = count * 2 * frStride
-        let outputSize = count * frStride
-
-        guard let inputBuf = engine.device.makeBuffer(length: inputSize, options: .storageModeShared),
-              let outputBuf = engine.device.makeBuffer(length: outputSize, options: .storageModeShared) else {
-            throw MSMError.gpuError("Failed to allocate scatter buffers")
+        let indicesBuf = ensureDirtyIndicesBuf(count: count)
+        let ptr = indicesBuf.contents().bindMemory(to: UInt32.self, capacity: count)
+        for (i, idx) in sortedDirty.enumerated() {
+            ptr[i] = UInt32(idx)
         }
 
-        // Gather: copy children from nodeBuffer into contiguous inputBuf
-        let srcPtr = nodePtr
-        let dstPtr = inputBuf.contents().bindMemory(to: Fr.self, capacity: count * 2)
-        for (i, parentIdx) in sortedDirty.enumerated() {
-            dstPtr[i * 2] = srcPtr[parentIdx * 2]
-            dstPtr[i * 2 + 1] = srcPtr[parentIdx * 2 + 1]
+        guard let cmdBuf = engine.commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
         }
-
-        // GPU hash
-        try engine.hashPairs(input: inputBuf, output: outputBuf, count: count)
-
-        // Scatter: copy results back to nodeBuffer
-        let resultPtr = outputBuf.contents().bindMemory(to: Fr.self, capacity: count)
-        for (i, parentIdx) in sortedDirty.enumerated() {
-            srcPtr[parentIdx] = resultPtr[i]
+        let enc = cmdBuf.makeComputeCommandEncoder()!
+        engine.encodeScatteredUpdate(encoder: enc,
+                                      treeBuf: nodeBuffer,
+                                      dirtyIndicesBuf: indicesBuf,
+                                      count: count)
+        enc.endEncoding()
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+        if let error = cmdBuf.error {
+            throw MSMError.gpuError(error.localizedDescription)
         }
     }
 
@@ -534,7 +536,8 @@ public class IncrementalMerkleTree {
     }
 
     /// Single command buffer rehash for all dirty ranges at each level.
-    /// Handles both contiguous and scattered cases.
+    /// Both contiguous and scattered cases stay in one command buffer using the
+    /// scattered update kernel (reads/writes the 1-indexed heap directly on GPU).
     private func rehashDirtyFused() throws {
         let frStride = MemoryLayout<Fr>.stride
         guard let cmdBuf = engine.commandQueue.makeCommandBuffer() else {
@@ -552,6 +555,7 @@ public class IncrementalMerkleTree {
             }
 
             if dirty.isContiguous {
+                // Contiguous: use encodeHashPairs (reads consecutive pairs, writes consecutive outputs)
                 let firstParent = dirty.first
                 let inputOffset = firstParent * 2 * frStride
                 let outputOffset = firstParent * frStride
@@ -560,61 +564,9 @@ public class IncrementalMerkleTree {
                                         outputOffset: outputOffset,
                                         count: dirtyCount)
             } else {
-                // Scattered: commit current work, handle scattered separately, continue
-                enc.endEncoding()
-                cmdBuf.commit()
-                cmdBuf.waitUntilCompleted()
-
-                try rehashScatteredGPU(sortedDirty: dirty.sortedIndices)
-
-                // Handle remaining levels with a new command buffer
-                var hasRemaining = false
-                for l in (level + 1)..<depth {
-                    if dirtyTracker.dirtyByLevel[l].nodeCount > 0 { hasRemaining = true; break }
-                }
-                if hasRemaining {
-                    guard let cmdBuf2 = engine.commandQueue.makeCommandBuffer() else {
-                        throw MSMError.noCommandBuffer
-                    }
-                    let enc2 = cmdBuf2.makeComputeCommandEncoder()!
-                    for l in (level + 1)..<depth {
-                        let d = dirtyTracker.dirtyByLevel[l]
-                        let dc = d.nodeCount
-                        if dc == 0 { continue }
-                        enc2.memoryBarrier(scope: .buffers)
-                        if d.isContiguous {
-                            let fp = d.first
-                            engine.encodeHashPairs(encoder: enc2, buffer: nodeBuffer,
-                                                    inputOffset: fp * 2 * frStride,
-                                                    outputOffset: fp * frStride,
-                                                    count: dc)
-                        } else {
-                            enc2.endEncoding()
-                            cmdBuf2.commit()
-                            cmdBuf2.waitUntilCompleted()
-                            try rehashScatteredGPU(sortedDirty: d.sortedIndices)
-                            // Continue remaining levels recursively
-                            for ll in (l + 1)..<depth {
-                                let dd = dirtyTracker.dirtyByLevel[ll]
-                                if dd.nodeCount > 0 {
-                                    if dd.isContiguous {
-                                        try rehashContiguousGPU(firstParent: dd.first, count: dd.nodeCount)
-                                    } else {
-                                        try rehashScatteredGPU(sortedDirty: dd.sortedIndices)
-                                    }
-                                }
-                            }
-                            return
-                        }
-                    }
-                    enc2.endEncoding()
-                    cmdBuf2.commit()
-                    cmdBuf2.waitUntilCompleted()
-                    if let error = cmdBuf2.error {
-                        throw MSMError.gpuError(error.localizedDescription)
-                    }
-                }
-                return
+                // Scattered: use the dedicated GPU kernel that reads/writes the heap in-place.
+                // Each GPU thread independently hashes children of one dirty parent node.
+                encodeScatteredUpdate(encoder: enc, sortedDirty: dirty.sortedIndices)
             }
         }
 
@@ -626,22 +578,4 @@ public class IncrementalMerkleTree {
         }
     }
 
-    /// Simple contiguous GPU rehash with its own command buffer.
-    private func rehashContiguousGPU(firstParent: Int, count: Int) throws {
-        let frStride = MemoryLayout<Fr>.stride
-        guard let cmdBuf = engine.commandQueue.makeCommandBuffer() else {
-            throw MSMError.noCommandBuffer
-        }
-        let enc = cmdBuf.makeComputeCommandEncoder()!
-        engine.encodeHashPairs(encoder: enc, buffer: nodeBuffer,
-                                inputOffset: firstParent * 2 * frStride,
-                                outputOffset: firstParent * frStride,
-                                count: count)
-        enc.endEncoding()
-        cmdBuf.commit()
-        cmdBuf.waitUntilCompleted()
-        if let error = cmdBuf.error {
-            throw MSMError.gpuError(error.localizedDescription)
-        }
-    }
 }
