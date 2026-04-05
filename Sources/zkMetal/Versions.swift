@@ -111,6 +111,7 @@ public enum Versions {
     public static let groth16Batch      = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let proofAggregation  = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let sp1Bridge         = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let parallelReduce    = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
 
     /// Print all primitive versions
     public static func printAll() {
@@ -181,6 +182,7 @@ public enum Versions {
             ("Marlin",           marlin),
             ("Varuna",           varuna),
             ("Unified Verify",   unifiedVerify),
+            ("Parallel Reduce",  parallelReduce),
         ]
         print("=== zkMetal Primitive Versions ===")
         for (name, v) in entries {
