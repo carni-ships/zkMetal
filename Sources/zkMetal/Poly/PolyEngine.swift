@@ -173,7 +173,17 @@ public class PolyEngine {
     private func dispatchEW(_ function: MTLComputePipelineState,
                             _ buf0: MTLBuffer, _ buf1: MTLBuffer, _ buf2: MTLBuffer, n: Int) throws {
         guard let cmdBuf = commandQueue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
-        let enc = cmdBuf.makeComputeCommandEncoder()!
+        encodeEW(function, buf0, buf1, buf2, n: n, encoder: cmdBuf.makeComputeCommandEncoder()!)
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+        if let error = cmdBuf.error { throw MSMError.gpuError(error.localizedDescription) }
+    }
+
+    /// Encode an element-wise operation into an existing compute encoder (no submit).
+    /// Caller is responsible for endEncoding/commit/wait.
+    func encodeEW(_ function: MTLComputePipelineState,
+                  _ buf0: MTLBuffer, _ buf1: MTLBuffer, _ buf2: MTLBuffer,
+                  n: Int, encoder enc: MTLComputeCommandEncoder, endEncoder: Bool = true) {
         enc.setComputePipelineState(function)
         enc.setBuffer(buf0, offset: 0, index: 0)
         enc.setBuffer(buf1, offset: 0, index: 1)
@@ -183,10 +193,7 @@ public class PolyEngine {
         let tg = min(tuning.nttThreadgroupSize, Int(function.maxTotalThreadsPerThreadgroup))
         enc.dispatchThreads(MTLSize(width: n, height: 1, depth: 1),
                            threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
-        enc.endEncoding()
-        cmdBuf.commit()
-        cmdBuf.waitUntilCompleted()
-        if let error = cmdBuf.error { throw MSMError.gpuError(error.localizedDescription) }
+        if endEncoder { enc.endEncoding() }
     }
 
     // MARK: - Element-wise operations

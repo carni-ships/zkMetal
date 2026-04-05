@@ -757,39 +757,9 @@ public class FRIEngine {
         var layerBufs: [MTLBuffer] = [multiFoldInputBuf!]
         layerBufs.append(contentsOf: cachedLayerBufs)
 
-        // Fold: single CB for all fold operations
-        guard let cmdBuf = commandQueue.makeCommandBuffer() else {
-            throw MSMError.noCommandBuffer
-        }
-        let enc = cmdBuf.makeComputeCommandEncoder()!
-        for i in 0..<betas.count {
-            let curN = layerSizes[i]
-            let curLogN = logN - i
-            let halfN = curN / 2
-            let invTwiddles = getInvTwiddles(logN: curLogN)
-            var beta = betas[i]
-            var nVal = UInt32(curN)
-            enc.setComputePipelineState(foldFunction)
-            enc.setBuffer(layerBufs[i], offset: 0, index: 0)
-            enc.setBuffer(layerBufs[i + 1], offset: 0, index: 1)
-            enc.setBuffer(invTwiddles, offset: 0, index: 2)
-            enc.setBytes(&beta, length: stride, index: 3)
-            enc.setBytes(&nVal, length: 4, index: 4)
-            let tg = min(tuning.friThreadgroupSize, Int(foldFunction.maxTotalThreadsPerThreadgroup))
-            enc.dispatchThreads(MTLSize(width: halfN, height: 1, depth: 1),
-                               threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
-            if i + 1 < betas.count { enc.memoryBarrier(scope: .buffers) }
-        }
-        enc.endEncoding()
-        cmdBuf.commit()
-        cmdBuf.waitUntilCompleted()
-        if let error = cmdBuf.error {
-            throw MSMError.gpuError(error.localizedDescription)
-        }
-        let foldTime = (CFAbsoluteTimeGetCurrent() - foldT0) * 1000
-
-        // Merkle: compute roots from GPU layerBufs (zero-copy, no intermediate Swift arrays)
-        let merkleT0 = CFAbsoluteTimeGetCurrent()
+        // Fold + Merkle: CHAINED into single command buffer.
+        // Eliminates CPU-GPU round-trip between fold completion and merkle dispatch.
+        // Fold outputs feed directly into merkle reads via encoder memory barriers.
         let subtreeSize = Poseidon2Engine.merkleSubtreeSize  // 1024
         let p2 = merkle.p2Engine
         let cpuMerkleThreshold = 16  // CPU merkle for <= 16 leaves
@@ -818,17 +788,43 @@ public class FRIEngine {
 
         roots = [Fr](repeating: Fr.zero, count: betas.count)
 
-        // GPU merkle for large layers, then CPU for small layers concurrently with readback
+        // Check if any layers need GPU merkle
         var hasGPUMerkle = false
         for i in 0..<betas.count {
             if layerSizes[i + 1] > cpuMerkleThreshold { hasGPUMerkle = true; break }
         }
 
+        // Single CB: all folds + all GPU merkle dispatches
+        guard let cmdBuf = commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
+        }
+
+        // Phase 1: Encode all fold operations
+        let foldEnc = cmdBuf.makeComputeCommandEncoder()!
+        for i in 0..<betas.count {
+            let curN = layerSizes[i]
+            let curLogN = logN - i
+            let halfN = curN / 2
+            let invTwiddles = getInvTwiddles(logN: curLogN)
+            var beta = betas[i]
+            var nVal = UInt32(curN)
+            foldEnc.setComputePipelineState(foldFunction)
+            foldEnc.setBuffer(layerBufs[i], offset: 0, index: 0)
+            foldEnc.setBuffer(layerBufs[i + 1], offset: 0, index: 1)
+            foldEnc.setBuffer(invTwiddles, offset: 0, index: 2)
+            foldEnc.setBytes(&beta, length: stride, index: 3)
+            foldEnc.setBytes(&nVal, length: 4, index: 4)
+            let tg = min(tuning.friThreadgroupSize, Int(foldFunction.maxTotalThreadsPerThreadgroup))
+            foldEnc.dispatchThreads(MTLSize(width: halfN, height: 1, depth: 1),
+                               threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+            if i + 1 < betas.count { foldEnc.memoryBarrier(scope: .buffers) }
+        }
+        foldEnc.endEncoding()
+
+        // Phase 2: Encode GPU merkle dispatches into SAME command buffer
+        // New encoder acts as memory barrier — fold results are visible to merkle reads.
         if hasGPUMerkle {
-            guard let merkleCB = commandQueue.makeCommandBuffer() else {
-                throw MSMError.noCommandBuffer
-            }
-            let mEnc = merkleCB.makeComputeCommandEncoder()!
+            let mEnc = cmdBuf.makeComputeCommandEncoder()!
             var firstDispatch = true
 
             for i in 0..<betas.count {
@@ -840,55 +836,46 @@ public class FRIEngine {
                                      rootsBuf: rootsBuf, rootOffset: i * stride,
                                      subtreeRootsBuf: subtreeRootsBuf, subtreeSize: subtreeSize, stride: stride)
             }
-
             mEnc.endEncoding()
-            merkleCB.commit()
+        }
 
-            // While GPU runs merkle, read layers and compute small merkle roots on CPU
-            for i in 1...betas.count {
-                let count = layerSizes[i]
-                let ptr = layerBufs[i].contents().bindMemory(to: Fr.self, capacity: count)
-                layers.append(Array(UnsafeBufferPointer(start: ptr, count: count)))
-            }
-            for i in 0..<betas.count {
-                let layerN = layerSizes[i + 1]
-                if layerN > cpuMerkleThreshold { continue }
-                if layerN <= 1 {
-                    roots[i] = layers[i][0]
-                } else {
-                    layers[i].withUnsafeBufferPointer { bp in
-                        roots[i] = cpuMerkleRoot(bp)
-                    }
+        cmdBuf.commit()
+
+        // While GPU runs fold+merkle, we can't read layer data yet (unified memory
+        // is coherent only after completion). Wait first, then read.
+        cmdBuf.waitUntilCompleted()
+        if let error = cmdBuf.error {
+            throw MSMError.gpuError(error.localizedDescription)
+        }
+        let foldTime = (CFAbsoluteTimeGetCurrent() - foldT0) * 1000
+        let merkleT0 = CFAbsoluteTimeGetCurrent()
+
+        // Read layer data from GPU buffers (zero-copy with unified memory, just pointer wrap)
+        for i in 1...betas.count {
+            let count = layerSizes[i]
+            let ptr = layerBufs[i].contents().bindMemory(to: Fr.self, capacity: count)
+            layers.append(Array(UnsafeBufferPointer(start: ptr, count: count)))
+        }
+
+        // Compute small merkle roots on CPU
+        for i in 0..<betas.count {
+            let layerN = layerSizes[i + 1]
+            if layerN > cpuMerkleThreshold { continue }
+            if layerN <= 1 {
+                roots[i] = layers[i][0]
+            } else {
+                layers[i].withUnsafeBufferPointer { bp in
+                    roots[i] = cpuMerkleRoot(bp)
                 }
             }
+        }
 
-            merkleCB.waitUntilCompleted()
-            if let error = merkleCB.error {
-                throw MSMError.gpuError(error.localizedDescription)
-            }
-
-            // Read GPU roots
+        // Read GPU merkle roots
+        if hasGPUMerkle {
             let rootPtr = rootsBuf.contents().bindMemory(to: Fr.self, capacity: numMerkleRoots)
             for i in 0..<betas.count {
                 if layerSizes[i + 1] > cpuMerkleThreshold {
                     roots[i] = rootPtr[i]
-                }
-            }
-        } else {
-            // All layers small: CPU-only
-            for i in 1...betas.count {
-                let count = layerSizes[i]
-                let ptr = layerBufs[i].contents().bindMemory(to: Fr.self, capacity: count)
-                layers.append(Array(UnsafeBufferPointer(start: ptr, count: count)))
-            }
-            for i in 0..<betas.count {
-                let layerN = layerSizes[i + 1]
-                if layerN <= 1 {
-                    roots[i] = layers[i][0]
-                } else {
-                    layers[i].withUnsafeBufferPointer { bp in
-                        roots[i] = cpuMerkleRoot(bp)
-                    }
                 }
             }
         }
@@ -1059,77 +1046,10 @@ public class FRIEngine {
         var layerBufs: [MTLBuffer] = [multiFoldInputBuf!]
         layerBufs.append(contentsOf: cachedLayer4Bufs)
 
-        // Fold: single CB for all fold operations
+        // Fold + Merkle: CHAINED into single command buffer.
+        // Eliminates CPU-GPU round-trip between fold completion and merkle dispatch.
         var foldT0 = CFAbsoluteTimeGetCurrent()
-        guard let cmdBuf = commandQueue.makeCommandBuffer() else {
-            throw MSMError.noCommandBuffer
-        }
-        let enc = cmdBuf.makeComputeCommandEncoder()!
-        var betaIdx = 0
-        var curLogN = logN
 
-        // Handle odd logN: one fold-by-2 first
-        if oddStart == 1 {
-            let curN = layerSizes[0]
-            let halfN = curN / 2
-            let invTwiddles = getInvTwiddles(logN: curLogN)
-            var beta = betas[betaIdx]
-            var nVal = UInt32(curN)
-            enc.setComputePipelineState(foldFunction)
-            enc.setBuffer(layerBufs[0], offset: 0, index: 0)
-            enc.setBuffer(layerBufs[1], offset: 0, index: 1)
-            enc.setBuffer(invTwiddles, offset: 0, index: 2)
-            enc.setBytes(&beta, length: stride, index: 3)
-            enc.setBytes(&nVal, length: 4, index: 4)
-            let tg = min(tuning.friThreadgroupSize, Int(foldFunction.maxTotalThreadsPerThreadgroup))
-            enc.dispatchThreads(MTLSize(width: halfN, height: 1, depth: 1),
-                               threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
-            enc.memoryBarrier(scope: .buffers)
-            curLogN -= 1
-            betaIdx += 1
-        }
-
-        // Fold-by-4 rounds
-        while betaIdx < totalBetas {
-            let layerIdx = betaIdx
-            let curN = layerSizes[layerIdx]
-            let quarterN = curN / 4
-            let invTwiddles = getInvTwiddles(logN: curLogN)
-            var beta = betas[betaIdx]
-            var nVal = UInt32(curN)
-
-            enc.setComputePipelineState(foldBy4Function)
-            enc.setBuffer(layerBufs[layerIdx], offset: 0, index: 0)
-            enc.setBuffer(layerBufs[layerIdx + 1], offset: 0, index: 1)
-            enc.setBuffer(invTwiddles, offset: 0, index: 2)
-            enc.setBytes(&beta, length: stride, index: 3)
-            enc.setBytes(&nVal, length: 4, index: 4)
-            let tg = min(tuning.friThreadgroupSize, Int(foldBy4Function.maxTotalThreadsPerThreadgroup))
-            enc.dispatchThreads(MTLSize(width: quarterN, height: 1, depth: 1),
-                               threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
-
-            curLogN -= 2
-            betaIdx += 1
-            if betaIdx < totalBetas { enc.memoryBarrier(scope: .buffers) }
-        }
-        enc.endEncoding()
-        cmdBuf.commit()
-        cmdBuf.waitUntilCompleted()
-        if let error = cmdBuf.error {
-            throw MSMError.gpuError(error.localizedDescription)
-        }
-        let foldTime = (CFAbsoluteTimeGetCurrent() - foldT0) * 1000
-
-        // Read layers from GPU buffers
-        var layers: [[Fr]] = [evals]
-        for i in 1..<layerSizes.count {
-            let count = layerSizes[i]
-            let ptr = layerBufs[i].contents().bindMemory(to: Fr.self, capacity: count)
-            layers.append(Array(UnsafeBufferPointer(start: ptr, count: count)))
-        }
-
-        // Merkle: compute roots for each layer
-        let merkleT0 = CFAbsoluteTimeGetCurrent()
         let subtreeSize = Poseidon2Engine.merkleSubtreeSize
         let p2 = merkle.p2Engine
         let cpuMerkleThreshold = 16
@@ -1161,11 +1081,63 @@ public class FRIEngine {
             if layerSizes[i + 1] > cpuMerkleThreshold { hasGPUMerkle = true; break }
         }
 
+        // Single CB: all folds + all GPU merkle dispatches
+        guard let cmdBuf = commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
+        }
+
+        // Phase 1: Encode fold operations
+        let enc = cmdBuf.makeComputeCommandEncoder()!
+        var betaIdx = 0
+        var curLogN = logN
+
+        if oddStart == 1 {
+            let curN = layerSizes[0]
+            let halfN = curN / 2
+            let invTwiddles = getInvTwiddles(logN: curLogN)
+            var beta = betas[betaIdx]
+            var nVal = UInt32(curN)
+            enc.setComputePipelineState(foldFunction)
+            enc.setBuffer(layerBufs[0], offset: 0, index: 0)
+            enc.setBuffer(layerBufs[1], offset: 0, index: 1)
+            enc.setBuffer(invTwiddles, offset: 0, index: 2)
+            enc.setBytes(&beta, length: stride, index: 3)
+            enc.setBytes(&nVal, length: 4, index: 4)
+            let tg = min(tuning.friThreadgroupSize, Int(foldFunction.maxTotalThreadsPerThreadgroup))
+            enc.dispatchThreads(MTLSize(width: halfN, height: 1, depth: 1),
+                               threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+            enc.memoryBarrier(scope: .buffers)
+            curLogN -= 1
+            betaIdx += 1
+        }
+
+        while betaIdx < totalBetas {
+            let layerIdx = betaIdx
+            let curN = layerSizes[layerIdx]
+            let quarterN = curN / 4
+            let invTwiddles = getInvTwiddles(logN: curLogN)
+            var beta = betas[betaIdx]
+            var nVal = UInt32(curN)
+
+            enc.setComputePipelineState(foldBy4Function)
+            enc.setBuffer(layerBufs[layerIdx], offset: 0, index: 0)
+            enc.setBuffer(layerBufs[layerIdx + 1], offset: 0, index: 1)
+            enc.setBuffer(invTwiddles, offset: 0, index: 2)
+            enc.setBytes(&beta, length: stride, index: 3)
+            enc.setBytes(&nVal, length: 4, index: 4)
+            let tg = min(tuning.friThreadgroupSize, Int(foldBy4Function.maxTotalThreadsPerThreadgroup))
+            enc.dispatchThreads(MTLSize(width: quarterN, height: 1, depth: 1),
+                               threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+
+            curLogN -= 2
+            betaIdx += 1
+            if betaIdx < totalBetas { enc.memoryBarrier(scope: .buffers) }
+        }
+        enc.endEncoding()
+
+        // Phase 2: Encode GPU merkle into SAME command buffer
         if hasGPUMerkle {
-            guard let merkleCB = commandQueue.makeCommandBuffer() else {
-                throw MSMError.noCommandBuffer
-            }
-            let mEnc = merkleCB.makeComputeCommandEncoder()!
+            let mEnc = cmdBuf.makeComputeCommandEncoder()!
             var firstDispatch = true
 
             for i in 0..<totalBetas {
@@ -1178,41 +1150,43 @@ public class FRIEngine {
                                      subtreeRootsBuf: subtreeRootsBuf, subtreeSize: subtreeSize, stride: stride)
             }
             mEnc.endEncoding()
-            merkleCB.commit()
+        }
 
-            // CPU merkle for small layers while GPU works
-            for i in 0..<totalBetas {
-                let layerN = layerSizes[i + 1]
-                if layerN > cpuMerkleThreshold { continue }
-                if layerN <= 1 {
-                    roots[i] = layers[i + 1][0]
-                } else {
-                    layers[i + 1].withUnsafeBufferPointer { bp in
-                        roots[i] = cpuMerkleRoot(bp)
-                    }
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+        if let error = cmdBuf.error {
+            throw MSMError.gpuError(error.localizedDescription)
+        }
+        let foldTime = (CFAbsoluteTimeGetCurrent() - foldT0) * 1000
+        let merkleT0 = CFAbsoluteTimeGetCurrent()
+
+        // Read layers from GPU buffers (after completion)
+        var layers: [[Fr]] = [evals]
+        for i in 1..<layerSizes.count {
+            let count = layerSizes[i]
+            let ptr = layerBufs[i].contents().bindMemory(to: Fr.self, capacity: count)
+            layers.append(Array(UnsafeBufferPointer(start: ptr, count: count)))
+        }
+
+        // CPU merkle for small layers
+        for i in 0..<totalBetas {
+            let layerN = layerSizes[i + 1]
+            if layerN > cpuMerkleThreshold { continue }
+            if layerN <= 1 {
+                roots[i] = layers[i + 1][0]
+            } else {
+                layers[i + 1].withUnsafeBufferPointer { bp in
+                    roots[i] = cpuMerkleRoot(bp)
                 }
             }
+        }
 
-            merkleCB.waitUntilCompleted()
-            if let error = merkleCB.error {
-                throw MSMError.gpuError(error.localizedDescription)
-            }
-
+        // Read GPU merkle roots
+        if hasGPUMerkle {
             let rootPtr = rootsBuf.contents().bindMemory(to: Fr.self, capacity: numMerkleRoots)
             for i in 0..<totalBetas {
                 if layerSizes[i + 1] > cpuMerkleThreshold {
                     roots[i] = rootPtr[i]
-                }
-            }
-        } else {
-            for i in 0..<totalBetas {
-                let layerN = layerSizes[i + 1]
-                if layerN <= 1 {
-                    roots[i] = layers[i + 1][0]
-                } else {
-                    layers[i + 1].withUnsafeBufferPointer { bp in
-                        roots[i] = cpuMerkleRoot(bp)
-                    }
                 }
             }
         }
@@ -1762,16 +1736,51 @@ public class FRIEngine {
         var layerBufs: [MTLBuffer] = [multiFoldInputBuf!]
         layerBufs.append(contentsOf: cachedLayer8Bufs)
 
-        // Fold: single CB for all fold operations
+        // Fold + Merkle: CHAINED into single command buffer.
+        // Eliminates CPU-GPU round-trip between fold completion and merkle dispatch.
         var foldT0 = CFAbsoluteTimeGetCurrent()
+
+        let subtreeSize = Poseidon2Engine.merkleSubtreeSize
+        let p2 = merkle.p2Engine
+        let cpuMerkleThreshold = 16
+
+        let numMerkleRoots = totalBetas
+        let rootsBufBytes = max(numMerkleRoots * stride, stride)
+        if merkleRootsBuf == nil || merkleRootsBufSize < rootsBufBytes {
+            merkleRootsBuf = device.makeBuffer(length: rootsBufBytes, options: .storageModeShared)
+            merkleRootsBufSize = rootsBufBytes
+        }
+        guard let rootsBuf = merkleRootsBuf else {
+            throw MSMError.gpuError("Failed to allocate merkle roots buffer")
+        }
+
+        let maxSubtreeRoots = max((layerSizes.count > 1 ? layerSizes[1] : 1) / subtreeSize, 1)
+        let subtreeRootBytes = maxSubtreeRoots * stride
+        if merkleSubtreeRootsBuf == nil || merkleSubtreeRootsBufSize < subtreeRootBytes {
+            merkleSubtreeRootsBuf = device.makeBuffer(length: subtreeRootBytes, options: .storageModeShared)
+            merkleSubtreeRootsBufSize = subtreeRootBytes
+        }
+        guard let subtreeRootsBuf = merkleSubtreeRootsBuf else {
+            throw MSMError.gpuError("Failed to allocate subtree roots buffer")
+        }
+
+        var roots = [Fr](repeating: Fr.zero, count: totalBetas)
+
+        var hasGPUMerkle = false
+        for i in 0..<totalBetas {
+            if layerSizes[i + 1] > cpuMerkleThreshold { hasGPUMerkle = true; break }
+        }
+
+        // Single CB: all folds + all GPU merkle dispatches
         guard let cmdBuf = commandQueue.makeCommandBuffer() else {
             throw MSMError.noCommandBuffer
         }
+
+        // Phase 1: Encode fold operations
         let enc = cmdBuf.makeComputeCommandEncoder()!
         var betaIdx = 0
         curLog = logN
 
-        // Handle remainder
         if remainder == 1 {
             let curN = layerSizes[0]
             let halfN = curN / 2
@@ -1810,7 +1819,6 @@ public class FRIEngine {
             betaIdx += 1
         }
 
-        // Fold-by-8 rounds
         while betaIdx < totalBetas {
             let layerIdx = betaIdx
             let curN = layerSizes[layerIdx]
@@ -1834,59 +1842,10 @@ public class FRIEngine {
             if betaIdx < totalBetas { enc.memoryBarrier(scope: .buffers) }
         }
         enc.endEncoding()
-        cmdBuf.commit()
-        cmdBuf.waitUntilCompleted()
-        if let error = cmdBuf.error {
-            throw MSMError.gpuError(error.localizedDescription)
-        }
-        let foldTime = (CFAbsoluteTimeGetCurrent() - foldT0) * 1000
 
-        // Read layers from GPU buffers
-        var layers: [[Fr]] = [evals]
-        for i in 1..<layerSizes.count {
-            let count = layerSizes[i]
-            let ptr = layerBufs[i].contents().bindMemory(to: Fr.self, capacity: count)
-            layers.append(Array(UnsafeBufferPointer(start: ptr, count: count)))
-        }
-
-        // Merkle: compute roots for each layer
-        let merkleT0 = CFAbsoluteTimeGetCurrent()
-        let subtreeSize = Poseidon2Engine.merkleSubtreeSize
-        let p2 = merkle.p2Engine
-        let cpuMerkleThreshold = 16
-
-        let numMerkleRoots = totalBetas
-        let rootsBufBytes = max(numMerkleRoots * stride, stride)
-        if merkleRootsBuf == nil || merkleRootsBufSize < rootsBufBytes {
-            merkleRootsBuf = device.makeBuffer(length: rootsBufBytes, options: .storageModeShared)
-            merkleRootsBufSize = rootsBufBytes
-        }
-        guard let rootsBuf = merkleRootsBuf else {
-            throw MSMError.gpuError("Failed to allocate merkle roots buffer")
-        }
-
-        let maxSubtreeRoots = max((layerSizes.count > 1 ? layerSizes[1] : 1) / subtreeSize, 1)
-        let subtreeRootBytes = maxSubtreeRoots * stride
-        if merkleSubtreeRootsBuf == nil || merkleSubtreeRootsBufSize < subtreeRootBytes {
-            merkleSubtreeRootsBuf = device.makeBuffer(length: subtreeRootBytes, options: .storageModeShared)
-            merkleSubtreeRootsBufSize = subtreeRootBytes
-        }
-        guard let subtreeRootsBuf = merkleSubtreeRootsBuf else {
-            throw MSMError.gpuError("Failed to allocate subtree roots buffer")
-        }
-
-        var roots = [Fr](repeating: Fr.zero, count: totalBetas)
-
-        var hasGPUMerkle = false
-        for i in 0..<totalBetas {
-            if layerSizes[i + 1] > cpuMerkleThreshold { hasGPUMerkle = true; break }
-        }
-
+        // Phase 2: Encode GPU merkle into SAME command buffer
         if hasGPUMerkle {
-            guard let merkleCB = commandQueue.makeCommandBuffer() else {
-                throw MSMError.noCommandBuffer
-            }
-            let mEnc = merkleCB.makeComputeCommandEncoder()!
+            let mEnc = cmdBuf.makeComputeCommandEncoder()!
             var firstDispatch = true
 
             for i in 0..<totalBetas {
@@ -1899,41 +1858,43 @@ public class FRIEngine {
                                      subtreeRootsBuf: subtreeRootsBuf, subtreeSize: subtreeSize, stride: stride)
             }
             mEnc.endEncoding()
-            merkleCB.commit()
+        }
 
-            // CPU merkle for small layers while GPU works
-            for i in 0..<totalBetas {
-                let layerN = layerSizes[i + 1]
-                if layerN > cpuMerkleThreshold { continue }
-                if layerN <= 1 {
-                    roots[i] = layers[i + 1][0]
-                } else {
-                    layers[i + 1].withUnsafeBufferPointer { bp in
-                        roots[i] = cpuMerkleRoot(bp)
-                    }
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+        if let error = cmdBuf.error {
+            throw MSMError.gpuError(error.localizedDescription)
+        }
+        let foldTime = (CFAbsoluteTimeGetCurrent() - foldT0) * 1000
+        let merkleT0 = CFAbsoluteTimeGetCurrent()
+
+        // Read layers from GPU buffers (after completion)
+        var layers: [[Fr]] = [evals]
+        for i in 1..<layerSizes.count {
+            let count = layerSizes[i]
+            let ptr = layerBufs[i].contents().bindMemory(to: Fr.self, capacity: count)
+            layers.append(Array(UnsafeBufferPointer(start: ptr, count: count)))
+        }
+
+        // CPU merkle for small layers
+        for i in 0..<totalBetas {
+            let layerN = layerSizes[i + 1]
+            if layerN > cpuMerkleThreshold { continue }
+            if layerN <= 1 {
+                roots[i] = layers[i + 1][0]
+            } else {
+                layers[i + 1].withUnsafeBufferPointer { bp in
+                    roots[i] = cpuMerkleRoot(bp)
                 }
             }
+        }
 
-            merkleCB.waitUntilCompleted()
-            if let error = merkleCB.error {
-                throw MSMError.gpuError(error.localizedDescription)
-            }
-
+        // Read GPU merkle roots
+        if hasGPUMerkle {
             let rootPtr = rootsBuf.contents().bindMemory(to: Fr.self, capacity: numMerkleRoots)
             for i in 0..<totalBetas {
                 if layerSizes[i + 1] > cpuMerkleThreshold {
                     roots[i] = rootPtr[i]
-                }
-            }
-        } else {
-            for i in 0..<totalBetas {
-                let layerN = layerSizes[i + 1]
-                if layerN <= 1 {
-                    roots[i] = layers[i + 1][0]
-                } else {
-                    layers[i + 1].withUnsafeBufferPointer { bp in
-                        roots[i] = cpuMerkleRoot(bp)
-                    }
                 }
             }
         }

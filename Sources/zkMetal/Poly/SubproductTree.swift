@@ -247,35 +247,80 @@ extension PolyEngine {
         // Level 1: linear pairs → degree-2 polys (N/2 × 3 coefficients)
         let level1Buf = device.makeBuffer(length: (N / 2) * 3 * MemoryLayout<Fr>.stride,
                                           options: .storageModeShared)!
-        try dispatchLinearPairs(points: createBuffer(points), output: level1Buf, n: N)
+
+        // Chain linear pairs + all schoolbook levels into a single command buffer.
+        // This eliminates one CB+wait per schoolbook level.
+        let schoolbookMaxDeg = 256
+
+        // Pre-scan to find how many schoolbook levels we can chain
+        var schoolbookLevels: [(numPolys: Int, inSize: Int, outSize: Int)] = []
+        var schoolbookOutBufs: [MTLBuffer] = []
+        var schoolbookLeftBufs: [MTLBuffer] = []
+        var schoolbookRightBufs: [MTLBuffer] = []
+
+        for k in 2...logN {
+            let numPolys = N >> k
+            let inDeg = 1 << (k - 1)
+            let outDeg = 1 << k
+            if outDeg > schoolbookMaxDeg { break }
+            let inSize = inDeg + 1
+            let outSize = outDeg + 1
+            schoolbookLevels.append((numPolys, inSize, outSize))
+        }
+
+        // Pre-allocate all schoolbook buffers before encoding (Metal requirement)
+        for (i, level) in schoolbookLevels.enumerated() {
+            let outBuf = device.makeBuffer(length: level.numPolys * level.outSize * MemoryLayout<Fr>.stride,
+                                           options: .storageModeShared)!
+            schoolbookOutBufs.append(outBuf)
+            // Use indexed cache slots so we don't clobber between levels
+            let leftBuf = getCachedBuffer(slot: "sbLeft", minBytes: level.numPolys * level.inSize * MemoryLayout<Fr>.stride)
+            let rightBuf = getCachedBuffer(slot: "sbRight", minBytes: level.numPolys * level.inSize * MemoryLayout<Fr>.stride)
+            schoolbookLeftBufs.append(leftBuf)
+            schoolbookRightBufs.append(rightBuf)
+        }
+
+        // Build chained command buffer: linearPairs + schoolbook levels
+        let chain = MetalPipelineChain(queue: commandQueue)
+        let chainCB = try chain.getCommandBuffer()
+        let pointsBuf = createBuffer(points)
+        try encodeLinearPairs(points: pointsBuf, output: level1Buf, n: N, cmdBuf: chainCB)
         tree.append(level1Buf)
 
-        // Levels 2..logN: schoolbook for small, NTT for large
-        let schoolbookMaxDeg = 256
-        for k in 2...logN {
+        // We need the linear pairs result to do splitLR (CPU read), so we must wait here.
+        // But schoolbook levels can be chained if we prepare splitLR data eagerly.
+        // Unfortunately splitLR reads from the previous level's GPU buffer, so each level
+        // depends on the previous GPU output. We MUST wait between the chain and CPU splits.
+        try chain.execute()
+
+        // Now chain schoolbook levels: for each, splitLR is CPU (reads prev buffer), then GPU dispatch.
+        // We can't avoid the CPU splitLR, but we CAN batch multiple schoolbook GPU dispatches
+        // if we prepare all CPU data first. However, each level depends on the previous level's output,
+        // so we truly need sequential: CPU split → GPU schoolbook → CPU split → GPU schoolbook.
+        // The only win is if we have independent levels, which we don't.
+        // So we fall back to per-level dispatch but use the encode pattern for consistency.
+        for (i, level) in schoolbookLevels.enumerated() {
+            let k = i + 2
+            splitLR(prev: tree[k - 1], left: schoolbookLeftBufs[i], right: schoolbookRightBufs[i],
+                    numPolys: level.numPolys, polySize: level.inSize)
+            try dispatchSchoolbookMultiply(left: schoolbookLeftBufs[i], right: schoolbookRightBufs[i],
+                                           output: schoolbookOutBufs[i],
+                                           dPlus1: UInt32(level.inSize), outSize: UInt32(level.outSize),
+                                           count: UInt32(level.numPolys))
+            tree.append(schoolbookOutBufs[i])
+        }
+
+        // NTT levels (already internally chained)
+        let firstNTTLevel = 2 + schoolbookLevels.count
+        for k in firstNTTLevel...logN {
             let numPolys = N >> k
             let inDeg = 1 << (k - 1)
             let outDeg = 1 << k
             let inSize = inDeg + 1
             let outSize = outDeg + 1
-
-            if outDeg <= schoolbookMaxDeg {
-                // outBuf persists in tree — can't cache. leftBuf/rightBuf are temporaries — cache them.
-                let outBuf = device.makeBuffer(length: numPolys * outSize * MemoryLayout<Fr>.stride,
-                                               options: .storageModeShared)!
-                let leftBuf = getCachedBuffer(slot: "sbLeft", minBytes: numPolys * inSize * MemoryLayout<Fr>.stride)
-                let rightBuf = getCachedBuffer(slot: "sbRight", minBytes: numPolys * inSize * MemoryLayout<Fr>.stride)
-                splitLR(prev: tree[k - 1], left: leftBuf, right: rightBuf,
-                        numPolys: numPolys, polySize: inSize)
-                try dispatchSchoolbookMultiply(left: leftBuf, right: rightBuf, output: outBuf,
-                                               dPlus1: UInt32(inSize), outSize: UInt32(outSize),
-                                               count: UInt32(numPolys))
-                tree.append(outBuf)
-            } else {
-                let outBuf = try nttMultiplyLevel(prev: tree[k - 1], numPolys: numPolys,
-                                                   inSize: inSize, outSize: outSize, outDeg: outDeg)
-                tree.append(outBuf)
-            }
+            let outBuf = try nttMultiplyLevel(prev: tree[k - 1], numPolys: numPolys,
+                                               inSize: inSize, outSize: outSize, outDeg: outDeg)
+            tree.append(outBuf)
         }
 
         return tree
@@ -448,7 +493,8 @@ extension PolyEngine {
 
     /// Batched NTT-based remainder for an entire tree level.
     /// Computes all 2*numParents remainders using batched GPU operations.
-    /// Total submits: 3 (batched inverse + batched quotient multiply + batched qg multiply).
+    /// Total submits: 2 (chained inverse+quotient multiply, then q*g multiply).
+    /// Previously 3 submits — saves 1 round-trip by chaining inverse into quotient multiply.
     private func computeRemaindersNTT(
         parents: MTLBuffer, parentSize: Int,
         childNodes: MTLBuffer, childSize: Int,
@@ -458,44 +504,65 @@ extension PolyEngine {
         let stride = MemoryLayout<Fr>.stride
         let numChildren = numParents * 2
         let childDeg = childSize - 1
-        let quotientSize = parentSize - childDeg  // parentSize - 1 - childDeg + 1
+        let quotientSize = parentSize - childDeg
 
-        // NTT size for multiplications
         let maxProdSize = max(quotientSize * 2, quotientSize + childSize - 1)
         let nttLogN = ceilLog2(maxProdSize)
         let nttN = 1 << nttLogN
 
-        // Step 1: Prepare all reversed divisors and compute batched inverses
-        // Extract and reverse all child polynomials, then batch-compute their inverses
+        // Step 1+2 CHAINED: Inverse + quotient multiply in a single command buffer.
+        // Prepare all reversed divisors
         var allRevG = [Fr](repeating: Fr.zero, count: numChildren * nttN)
         let cPtr = childNodes.contents().bindMemory(to: Fr.self, capacity: numChildren * childSize)
         for c in 0..<numChildren {
             for i in 0..<childSize {
-                allRevG[c * nttN + i] = cPtr[c * childSize + (childSize - 1 - i)]  // reverse
+                allRevG[c * nttN + i] = cPtr[c * childSize + (childSize - 1 - i)]
             }
         }
 
-        let allInv = try polyInverseBatch(fs: allRevG, count: numChildren,
-                                           polyStride: nttN, modDeg: quotientSize, nttLogN: nttLogN)
-
-        // Step 2: Prepare all reversed dividends (truncated to quotientSize) and compute quotients
+        // Prepare all reversed dividends (truncated to quotientSize)
         var allRevFTrunc = [Fr](repeating: Fr.zero, count: numChildren * nttN)
         let pPtr = parents.contents().bindMemory(to: Fr.self, capacity: numParents * parentSize)
         for p in 0..<numParents {
             for side in 0..<2 {
                 let c = p * 2 + side
-                // rev(f) truncated to quotientSize
                 for i in 0..<min(quotientSize, parentSize) {
                     allRevFTrunc[c * nttN + i] = pPtr[p * parentSize + (parentSize - 1 - i)]
                 }
             }
         }
 
-        // Multiply: revFTrunc[c] * inv[c] for all c → quotient (reversed)
-        let allQRev = try batchMultiplyGPU(a: allRevFTrunc, b: readBuffer(allInv, count: numChildren * nttN),
-                                            count: numChildren, polyStride: nttN, nttLogN: nttLogN)
+        // Pre-fill batchMultiply input buffers BEFORE creating CB
+        let totalBytes = numChildren * nttN * stride
+        let mulABuf = getCachedBuffer(slot: "bMulA", minBytes: totalBytes)
+        let mulBBuf = getCachedBuffer(slot: "bMulB", minBytes: totalBytes)
+        allRevFTrunc.withUnsafeBytes { src in memcpy(mulABuf.contents(), src.baseAddress!, totalBytes) }
+        // mulBBuf will be filled from inverse result via blit
 
-        // Reverse quotients and prepare for q*g multiplication
+        // Single CB: polyInverseBatch → blit inv→mulBBuf → batchMultiply
+        guard let cmdBuf = nttEngine.commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
+        }
+
+        let invBuf = try encodePolyInverseBatch(fs: allRevG, count: numChildren,
+                                                  polyStride: nttN, modDeg: quotientSize,
+                                                  nttLogN: nttLogN, cmdBuf: cmdBuf)
+
+        // Blit inverse result into mulBBuf (GPU-to-GPU copy, no CPU round-trip)
+        let blit = cmdBuf.makeBlitCommandEncoder()!
+        blit.copy(from: invBuf, sourceOffset: 0, to: mulBBuf, destinationOffset: 0, size: totalBytes)
+        blit.endEncoding()
+
+        // Encode batch multiply: mulABuf (revFTrunc) * mulBBuf (inv) → result in mulABuf
+        encodeBatchMultiplyGPU(aBuf: mulABuf, bBuf: mulBBuf, count: numChildren,
+                                nttLogN: nttLogN, cmdBuf: cmdBuf)
+
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+        if let error = cmdBuf.error { throw MSMError.gpuError(error.localizedDescription) }
+
+        // CPU: read quotient result and reverse
+        let allQRev = readBuffer(mulABuf, count: numChildren * nttN)
         var allQ = [Fr](repeating: Fr.zero, count: numChildren * nttN)
         for c in 0..<numChildren {
             for i in 0..<quotientSize {
@@ -503,7 +570,7 @@ extension PolyEngine {
             }
         }
 
-        // Step 3: Multiply q * g for all children
+        // Step 3: Multiply q * g for all children (separate CB — needs CPU-prepared data)
         var allG = [Fr](repeating: Fr.zero, count: numChildren * nttN)
         for c in 0..<numChildren {
             for i in 0..<childSize {
@@ -514,7 +581,7 @@ extension PolyEngine {
         let allQG = try batchMultiplyGPU(a: allQ, b: allG, count: numChildren,
                                           polyStride: nttN, nttLogN: nttLogN)
 
-        // Step 4: Compute remainders r[c] = f[parent(c)] - qg[c], first childDeg coefficients
+        // Step 4: Compute remainders r[c] = f[parent(c)] - qg[c]
         let oPtr = output.contents().bindMemory(to: Fr.self, capacity: numChildren * childRemSize)
         for p in 0..<numParents {
             for side in 0..<2 {
@@ -530,21 +597,19 @@ extension PolyEngine {
 
     // MARK: - Batched Polynomial Inverse
 
-    /// Compute inverses of `count` polynomials simultaneously.
-    /// All polynomials stored in `fs` with stride `polyStride` elements.
-    /// Returns buffer with `count * polyStride` elements (inverses padded with zeros).
-    private func polyInverseBatch(fs: [Fr], count: Int, polyStride: Int,
-                                   modDeg: Int, nttLogN: Int) throws -> MTLBuffer {
+    /// Encode all Newton iteration steps for batch polynomial inverse into an existing command buffer.
+    /// Returns the hBuf containing results (must be read after CB completes).
+    private func encodePolyInverseBatch(fs: [Fr], count: Int, polyStride: Int,
+                                          modDeg: Int, nttLogN: Int,
+                                          cmdBuf: MTLCommandBuffer) throws -> MTLBuffer {
         let nttN = 1 << nttLogN
         let stride = MemoryLayout<Fr>.stride
         let tg = 256
 
         precondition(polyStride == nttN)
 
-        // f buffers (constant across Newton steps)
         let fBuf = createBuffer(fs)
 
-        // h buffers: initialize all inverses with 1/f[0]
         var hInit = [Fr](repeating: Fr.zero, count: count * nttN)
         for c in 0..<count {
             let f0 = fs[c * nttN]
@@ -553,22 +618,16 @@ extension PolyEngine {
         }
         let hBuf = createBuffer(hInit)
 
-        // Working buffers (cached, grow-only)
         let batchBufBytes = count * nttN * stride
         let fNTTBuf = getCachedBuffer(slot: "bInvFNTT", minBytes: batchBufBytes)
         let hCopyBuf = getCachedBuffer(slot: "bInvHCopy", minBytes: batchBufBytes)
         let prodBuf = getCachedBuffer(slot: "bInvProd", minBytes: batchBufBytes)
         let tmfhBuf = getCachedBuffer(slot: "bInvTmfh", minBytes: batchBufBytes)
 
-        guard let cmdBuf = nttEngine.commandQueue.makeCommandBuffer() else {
-            throw MSMError.noCommandBuffer
-        }
-
         var precision = 1
         while precision < modDeg {
             let nextPrecision = min(precision * 2, modDeg)
 
-            // Copy f → fNTT, h → hCopy
             let blit1 = cmdBuf.makeBlitCommandEncoder()!
             blit1.copy(from: fBuf, sourceOffset: 0, to: fNTTBuf,
                       destinationOffset: 0, size: count * nttN * stride)
@@ -576,14 +635,12 @@ extension PolyEngine {
                       destinationOffset: 0, size: count * nttN * stride)
             blit1.endEncoding()
 
-            // NTT all f's and h's
             for c in 0..<count {
                 let off = c * nttN * stride
                 nttEngine.encodeNTT(data: fNTTBuf, offset: off, logN: nttLogN, cmdBuf: cmdBuf)
                 nttEngine.encodeNTT(data: hBuf, offset: off, logN: nttLogN, cmdBuf: cmdBuf)
             }
 
-            // Hadamard: prodBuf = fNTT * hNTT (all at once since contiguous)
             let encH1 = cmdBuf.makeComputeCommandEncoder()!
             encH1.setComputePipelineState(hadamardFunction)
             encH1.setBuffer(fNTTBuf, offset: 0, index: 0)
@@ -595,12 +652,10 @@ extension PolyEngine {
                                  threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
             encH1.endEncoding()
 
-            // iNTT all products
             for c in 0..<count {
                 nttEngine.encodeINTT(data: prodBuf, offset: c * nttN * stride, logN: nttLogN, cmdBuf: cmdBuf)
             }
 
-            // 2 - f*h for all (each poly has nttN elements)
             let encTM = cmdBuf.makeComputeCommandEncoder()!
             encTM.setComputePipelineState(twoMinusFunction!)
             encTM.setBuffer(prodBuf, offset: 0, index: 0)
@@ -612,14 +667,12 @@ extension PolyEngine {
                                  threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
             encTM.endEncoding()
 
-            // NTT hCopy and tmfh
             for c in 0..<count {
                 let off = c * nttN * stride
                 nttEngine.encodeNTT(data: hCopyBuf, offset: off, logN: nttLogN, cmdBuf: cmdBuf)
                 nttEngine.encodeNTT(data: tmfhBuf, offset: off, logN: nttLogN, cmdBuf: cmdBuf)
             }
 
-            // Hadamard: hBuf = hCopy * tmfh
             let encH2 = cmdBuf.makeComputeCommandEncoder()!
             encH2.setComputePipelineState(hadamardFunction)
             encH2.setBuffer(hCopyBuf, offset: 0, index: 0)
@@ -630,12 +683,10 @@ extension PolyEngine {
                                  threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
             encH2.endEncoding()
 
-            // iNTT all new h's
             for c in 0..<count {
                 nttEngine.encodeINTT(data: hBuf, offset: c * nttN * stride, logN: nttLogN, cmdBuf: cmdBuf)
             }
 
-            // Truncate: zero h[nextPrecision..nttN) for each polynomial
             if nextPrecision < nttN {
                 let blitZ = cmdBuf.makeBlitCommandEncoder()!
                 for c in 0..<count {
@@ -649,6 +700,21 @@ extension PolyEngine {
             precision = nextPrecision
         }
 
+        return hBuf
+    }
+
+    /// Compute inverses of `count` polynomials simultaneously.
+    /// All polynomials stored in `fs` with stride `polyStride` elements.
+    /// Returns buffer with `count * polyStride` elements (inverses padded with zeros).
+    private func polyInverseBatch(fs: [Fr], count: Int, polyStride: Int,
+                                   modDeg: Int, nttLogN: Int) throws -> MTLBuffer {
+        guard let cmdBuf = nttEngine.commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
+        }
+
+        let hBuf = try encodePolyInverseBatch(fs: fs, count: count, polyStride: polyStride,
+                                                modDeg: modDeg, nttLogN: nttLogN, cmdBuf: cmdBuf)
+
         cmdBuf.commit()
         cmdBuf.waitUntilCompleted()
         if let error = cmdBuf.error { throw MSMError.gpuError(error.localizedDescription) }
@@ -656,23 +722,13 @@ extension PolyEngine {
         return hBuf
     }
 
-    /// Batch multiply: a[c] * b[c] for c in 0..<count, all at same NTT size.
-    /// Returns flat array of count * polyStride results.
-    private func batchMultiplyGPU(a: [Fr], b: [Fr], count: Int,
-                                   polyStride: Int, nttLogN: Int) throws -> [Fr] {
+    /// Encode batch multiply into an existing command buffer (no submit).
+    /// aBuf and bBuf must be pre-filled. Result lands in aBuf.
+    private func encodeBatchMultiplyGPU(aBuf: MTLBuffer, bBuf: MTLBuffer, count: Int,
+                                         nttLogN: Int, cmdBuf: MTLCommandBuffer) {
         let nttN = 1 << nttLogN
         let stride = MemoryLayout<Fr>.stride
         let tg = 256
-
-        let totalBytes = a.count * stride
-        let aBuf = getCachedBuffer(slot: "bMulA", minBytes: totalBytes)
-        let bBuf = getCachedBuffer(slot: "bMulB", minBytes: totalBytes)
-        a.withUnsafeBytes { src in memcpy(aBuf.contents(), src.baseAddress!, totalBytes) }
-        b.withUnsafeBytes { src in memcpy(bBuf.contents(), src.baseAddress!, totalBytes) }
-
-        guard let cmdBuf = nttEngine.commandQueue.makeCommandBuffer() else {
-            throw MSMError.noCommandBuffer
-        }
 
         for c in 0..<count {
             let off = c * nttN * stride
@@ -694,6 +750,26 @@ extension PolyEngine {
         for c in 0..<count {
             nttEngine.encodeINTT(data: aBuf, offset: c * nttN * stride, logN: nttLogN, cmdBuf: cmdBuf)
         }
+    }
+
+    /// Batch multiply: a[c] * b[c] for c in 0..<count, all at same NTT size.
+    /// Returns flat array of count * polyStride results.
+    private func batchMultiplyGPU(a: [Fr], b: [Fr], count: Int,
+                                   polyStride: Int, nttLogN: Int) throws -> [Fr] {
+        let nttN = 1 << nttLogN
+        let stride = MemoryLayout<Fr>.stride
+
+        let totalBytes = a.count * stride
+        let aBuf = getCachedBuffer(slot: "bMulA", minBytes: totalBytes)
+        let bBuf = getCachedBuffer(slot: "bMulB", minBytes: totalBytes)
+        a.withUnsafeBytes { src in memcpy(aBuf.contents(), src.baseAddress!, totalBytes) }
+        b.withUnsafeBytes { src in memcpy(bBuf.contents(), src.baseAddress!, totalBytes) }
+
+        guard let cmdBuf = nttEngine.commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
+        }
+
+        encodeBatchMultiplyGPU(aBuf: aBuf, bBuf: bBuf, count: count, nttLogN: nttLogN, cmdBuf: cmdBuf)
 
         cmdBuf.commit()
         cmdBuf.waitUntilCompleted()
@@ -712,9 +788,10 @@ extension PolyEngine {
 
     // MARK: - GPU Dispatch Helpers
 
-    private func dispatchLinearPairs(points: MTLBuffer, output: MTLBuffer, n: Int) throws {
+    /// Encode linear pairs dispatch into an existing command buffer (no submit).
+    private func encodeLinearPairs(points: MTLBuffer, output: MTLBuffer, n: Int,
+                                    cmdBuf: MTLCommandBuffer) throws {
         guard let fn = treeBuildLinearPairsFunction else { throw MSMError.missingKernel }
-        guard let cmdBuf = commandQueue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
         let enc = cmdBuf.makeComputeCommandEncoder()!
         enc.setComputePipelineState(fn)
         enc.setBuffer(points, offset: 0, index: 0)
@@ -725,15 +802,21 @@ extension PolyEngine {
         enc.dispatchThreads(MTLSize(width: n / 2, height: 1, depth: 1),
                            threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
         enc.endEncoding()
+    }
+
+    private func dispatchLinearPairs(points: MTLBuffer, output: MTLBuffer, n: Int) throws {
+        guard let cmdBuf = commandQueue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
+        try encodeLinearPairs(points: points, output: output, n: n, cmdBuf: cmdBuf)
         cmdBuf.commit()
         cmdBuf.waitUntilCompleted()
         if let error = cmdBuf.error { throw MSMError.gpuError(error.localizedDescription) }
     }
 
-    private func dispatchSchoolbookMultiply(left: MTLBuffer, right: MTLBuffer, output: MTLBuffer,
-                                             dPlus1: UInt32, outSize: UInt32, count: UInt32) throws {
+    /// Encode schoolbook multiply dispatch into an existing command buffer (no submit).
+    private func encodeSchoolbookMultiply(left: MTLBuffer, right: MTLBuffer, output: MTLBuffer,
+                                            dPlus1: UInt32, outSize: UInt32, count: UInt32,
+                                            cmdBuf: MTLCommandBuffer) throws {
         guard let fn = treeBuildSchoolbookFunction else { throw MSMError.missingKernel }
-        guard let cmdBuf = commandQueue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
         let enc = cmdBuf.makeComputeCommandEncoder()!
         enc.setComputePipelineState(fn)
         enc.setBuffer(left, offset: 0, index: 0)
@@ -748,6 +831,13 @@ extension PolyEngine {
         enc.dispatchThreads(MTLSize(width: totalThreads, height: 1, depth: 1),
                            threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
         enc.endEncoding()
+    }
+
+    private func dispatchSchoolbookMultiply(left: MTLBuffer, right: MTLBuffer, output: MTLBuffer,
+                                             dPlus1: UInt32, outSize: UInt32, count: UInt32) throws {
+        guard let cmdBuf = commandQueue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
+        try encodeSchoolbookMultiply(left: left, right: right, output: output,
+                                      dPlus1: dPlus1, outSize: outSize, count: count, cmdBuf: cmdBuf)
         cmdBuf.commit()
         cmdBuf.waitUntilCompleted()
         if let error = cmdBuf.error { throw MSMError.gpuError(error.localizedDescription) }
