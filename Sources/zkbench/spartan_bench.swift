@@ -67,6 +67,75 @@ public func runSpartanBench() {
         fputs("  Commitment: Basefold (Poseidon2 Merkle)\n", stderr)
         fputs("  Result: \(allPass ? "ALL PASS" : "SOME FAILED")\n", stderr)
         fputs("  Version: \(SpartanEngine.version.description)\n", stderr)
+
+        // ---- Spartan-IPA (transparent, Pedersen commitment) ----
+        fputs("\n--- Spartan-IPA (transparent, no trusted setup) ---\n", stderr)
+        do {
+            let (inst, gen) = SpartanR1CSBuilder.exampleQuadratic()
+            let paddedN = inst.paddedN
+
+            // IPA needs generators of size paddedN (= 2^logN where logN = ceil(log2(numVariables)))
+            let (gens, Q) = IPAEngine.generateTestGenerators(count: paddedN)
+            let ipaEngine = try IPAEngine(generators: gens, Q: Q)
+            let adapter = IPAPCSAdapter(engine: ipaEngine)
+            let spartanIPA = SpartanIPAEngine(pcs: adapter)
+
+            let xv = frFromInt(3)
+            let (pub, wit) = gen(xv)
+
+            let t0 = CFAbsoluteTimeGetCurrent()
+            let pf = try spartanIPA.prove(instance: inst, publicInputs: pub, witness: wit)
+            let proveMs = (CFAbsoluteTimeGetCurrent() - t0) * 1000
+
+            let t1 = CFAbsoluteTimeGetCurrent()
+            let ok = spartanIPA.verify(instance: inst, publicInputs: pub, proof: pf)
+            let verifyMs = (CFAbsoluteTimeGetCurrent() - t1) * 1000
+            fputs("  Prove: \(String(format: "%.1f", proveMs))ms\n", stderr)
+            fputs("  Verify: \(String(format: "%.1f", verifyMs))ms \(ok ? "PASS" : "FAIL")\n", stderr)
+
+            let bad = spartanIPA.verify(instance: inst, publicInputs: [frFromInt(999)], proof: pf)
+            fputs("  Wrong rejected: \(!bad ? "PASS" : "FAIL")\n", stderr)
+            fputs("  Transparent: YES (Pedersen commitment, no SRS)\n", stderr)
+        } catch {
+            fputs("  IPA Error: \(error)\n", stderr)
+        }
+
+        // ---- Spartan-KZG (via Zeromorph, requires SRS) ----
+        fputs("\n--- Spartan-KZG (Zeromorph, with SRS) ---\n", stderr)
+        do {
+            let (inst, gen) = SpartanR1CSBuilder.exampleQuadratic()
+            let paddedN = inst.paddedN
+
+            let gx = fpFromInt(1)
+            let gy = fpFromInt(2)
+            let generator = PointAffine(x: gx, y: gy)
+            let secret: [UInt32] = [42, 0, 0, 0, 0, 0, 0, 0]
+            let srs = KZGEngine.generateTestSRS(secret: secret, size: paddedN, generator: generator)
+            let kzg = try KZGEngine(srs: srs)
+            let secretFr = frFromLimbs(secret)
+            let adapter = KZGPCSAdapter(kzg: kzg, srsSecret: secretFr)
+            let spartanKZG = SpartanKZGEngine(pcs: adapter)
+
+            let xv = frFromInt(3)
+            let (pub, wit) = gen(xv)
+
+            let t0 = CFAbsoluteTimeGetCurrent()
+            let pf = try spartanKZG.prove(instance: inst, publicInputs: pub, witness: wit)
+            let proveMs = (CFAbsoluteTimeGetCurrent() - t0) * 1000
+
+            let t1 = CFAbsoluteTimeGetCurrent()
+            let ok = spartanKZG.verify(instance: inst, publicInputs: pub, proof: pf)
+            let verifyMs = (CFAbsoluteTimeGetCurrent() - t1) * 1000
+            fputs("  Prove: \(String(format: "%.1f", proveMs))ms\n", stderr)
+            fputs("  Verify: \(String(format: "%.1f", verifyMs))ms \(ok ? "PASS" : "FAIL")\n", stderr)
+
+            let bad = spartanKZG.verify(instance: inst, publicInputs: [frFromInt(999)], proof: pf)
+            fputs("  Wrong rejected: \(!bad ? "PASS" : "FAIL")\n", stderr)
+            fputs("  Transparent: NO (requires trusted SRS)\n", stderr)
+        } catch {
+            fputs("  KZG Error: \(error)\n", stderr)
+        }
+
     } catch {
         fputs("Error: \(error)\n", stderr)
     }
