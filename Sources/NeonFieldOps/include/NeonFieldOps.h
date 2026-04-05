@@ -828,6 +828,22 @@ void bls12_381_g2_point_add_mixed(const uint64_t p[36], const uint64_t q_aff[24]
 void bls12_381_g2_scalar_mul(const uint64_t p[36], const uint64_t scalar[4], uint64_t r[36]);
 
 // ============================================================
+// BLS12-381 Fp2 inverse + higher tower + pairing
+// ============================================================
+
+void bls12_381_fp2_inv(const uint64_t a[12], uint64_t r[12]);
+void bls12_381_fp6_mul(const uint64_t a[36], const uint64_t b[36], uint64_t r[36]);
+void bls12_381_fp6_sqr(const uint64_t a[36], uint64_t r[36]);
+void bls12_381_fp12_mul(const uint64_t a[72], const uint64_t b[72], uint64_t r[72]);
+void bls12_381_fp12_sqr(const uint64_t a[72], uint64_t r[72]);
+void bls12_381_fp12_inv(const uint64_t a[72], uint64_t r[72]);
+void bls12_381_fp12_conj(const uint64_t a[72], uint64_t r[72]);
+void bls12_381_miller_loop(const uint64_t p_aff[12], const uint64_t q_aff[24], uint64_t result[72]);
+void bls12_381_final_exp(const uint64_t f[72], uint64_t result[72]);
+void bls12_381_pairing(const uint64_t p_aff[12], const uint64_t q_aff[24], uint64_t result[72]);
+int bls12_381_pairing_check(const uint64_t *pairs, int n);
+
+// ============================================================
 // Jubjub twisted Edwards curve (over BLS12-381 Fr)
 // ============================================================
 
