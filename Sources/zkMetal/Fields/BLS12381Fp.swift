@@ -3,6 +3,7 @@
 // 381-bit prime, field elements as 12x32-bit limbs in Montgomery form (little-endian).
 
 import Foundation
+import NeonFieldOps
 
 public struct Fp381 {
     public var v: (UInt32, UInt32, UInt32, UInt32, UInt32, UInt32,
@@ -81,60 +82,34 @@ public struct Fp381 {
 
 // MARK: - Field Operations
 
-// Montgomery multiplication: (a * b * R^-1) mod p
+// Montgomery multiplication: (a * b * R^-1) mod p — C CIOS accelerated
 public func fp381Mul(_ a: Fp381, _ b: Fp381) -> Fp381 {
-    let al = a.to64(), bl = b.to64()
-    var t = [UInt64](repeating: 0, count: 7)
-
-    for i in 0..<6 {
-        var carry: UInt64 = 0
-        for j in 0..<6 {
-            let (hi, lo) = al[i].multipliedFullWidth(by: bl[j])
-            let (s1, c1) = t[j].addingReportingOverflow(lo)
-            let (s2, c2) = s1.addingReportingOverflow(carry)
-            t[j] = s2
-            carry = hi + (c1 ? 1 : 0) + (c2 ? 1 : 0)
-        }
-        t[6] = t[6] &+ carry
-
-        let m = t[0] &* Fp381.INV
-        carry = 0
-        for j in 0..<6 {
-            let (hi, lo) = m.multipliedFullWidth(by: Fp381.P[j])
-            let (s1, c1) = t[j].addingReportingOverflow(lo)
-            let (s2, c2) = s1.addingReportingOverflow(carry)
-            t[j] = s2
-            carry = hi + (c1 ? 1 : 0) + (c2 ? 1 : 0)
-        }
-        t[6] = t[6] &+ carry
-
-        t[0] = t[1]; t[1] = t[2]; t[2] = t[3]; t[3] = t[4]; t[4] = t[5]; t[5] = t[6]; t[6] = 0
-    }
-
-    var r = Array(t[0..<6])
-    if gte384(r, Fp381.P) {
-        (r, _) = sub384(r, Fp381.P)
-    }
+    var al = a.to64(), bl = b.to64()
+    var r = [UInt64](repeating: 0, count: 6)
+    bls12_381_fp_mul(&al, &bl, &r)
     return Fp381.from64(r)
 }
 
 public func fp381Add(_ a: Fp381, _ b: Fp381) -> Fp381 {
-    var (r, carry) = add384(a.to64(), b.to64())
-    if carry != 0 || gte384(r, Fp381.P) {
-        (r, _) = sub384(r, Fp381.P)
-    }
+    var al = a.to64(), bl = b.to64()
+    var r = [UInt64](repeating: 0, count: 6)
+    bls12_381_fp_add(&al, &bl, &r)
     return Fp381.from64(r)
 }
 
 public func fp381Sub(_ a: Fp381, _ b: Fp381) -> Fp381 {
-    var (r, borrow) = sub384(a.to64(), b.to64())
-    if borrow {
-        (r, _) = add384(r, Fp381.P)
-    }
+    var al = a.to64(), bl = b.to64()
+    var r = [UInt64](repeating: 0, count: 6)
+    bls12_381_fp_sub(&al, &bl, &r)
     return Fp381.from64(r)
 }
 
-public func fp381Sqr(_ a: Fp381) -> Fp381 { fp381Mul(a, a) }
+public func fp381Sqr(_ a: Fp381) -> Fp381 {
+    var al = a.to64()
+    var r = [UInt64](repeating: 0, count: 6)
+    bls12_381_fp_sqr(&al, &r)
+    return Fp381.from64(r)
+}
 public func fp381Double(_ a: Fp381) -> Fp381 { fp381Add(a, a) }
 
 // Convert integer to Montgomery form
@@ -150,10 +125,11 @@ public func fp381ToInt(_ a: Fp381) -> [UInt64] {
     return fp381Mul(a, Fp381.from64(one)).to64()
 }
 
-// Field negation
+// Field negation — C accelerated
 public func fp381Neg(_ a: Fp381) -> Fp381 {
-    if a.isZero { return a }
-    let (r, _) = sub384(Fp381.P, a.to64())
+    var al = a.to64()
+    var r = [UInt64](repeating: 0, count: 6)
+    bls12_381_fp_neg(&al, &r)
     return Fp381.from64(r)
 }
 

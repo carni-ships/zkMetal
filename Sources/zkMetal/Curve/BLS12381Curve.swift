@@ -4,6 +4,7 @@
 // Jacobian projective coordinates: (X, Y, Z) represents affine (X/Z^2, Y/Z^3)
 
 import Foundation
+import NeonFieldOps
 
 // MARK: - G1 Point Types
 
@@ -41,79 +42,52 @@ public func g1_381FromAffine(_ a: G1Affine381) -> G1Projective381 {
     G1Projective381(x: a.x, y: a.y, z: .one)
 }
 
-// Point doubling for y^2 = x^3 + b (a=0)
+// Point doubling for y^2 = x^3 + b (a=0) — C accelerated
 public func g1_381Double(_ p: G1Projective381) -> G1Projective381 {
-    if g1_381IsIdentity(p) { return p }
-
-    let a = fp381Sqr(p.x)
-    let b = fp381Sqr(p.y)
-    let c = fp381Sqr(b)
-
-    let d = fp381Double(fp381Sub(fp381Sqr(fp381Add(p.x, b)), fp381Add(a, c)))
-    let e = fp381Add(fp381Double(a), a) // 3*x^2 (since a_coeff = 0)
-    let f = fp381Sqr(e)
-
-    let x3 = fp381Sub(f, fp381Double(d))
-    let y3 = fp381Sub(fp381Mul(e, fp381Sub(d, x3)), fp381Double(fp381Double(fp381Double(c))))
-    let z3 = fp381Sub(fp381Sqr(fp381Add(p.y, p.z)), fp381Add(b, fp381Sqr(p.z)))
-    return G1Projective381(x: x3, y: y3, z: z3)
+    var result = G1Projective381(x: .one, y: .one, z: .zero)
+    withUnsafeBytes(of: p) { pBuf in
+        withUnsafeMutableBytes(of: &result) { rBuf in
+            bls12_381_g1_point_double(
+                pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+            )
+        }
+    }
+    return result
 }
 
-// Full addition: projective + projective
+// Full addition: projective + projective — C accelerated
 public func g1_381Add(_ p: G1Projective381, _ q: G1Projective381) -> G1Projective381 {
-    if g1_381IsIdentity(p) { return q }
-    if g1_381IsIdentity(q) { return p }
-
-    let z1z1 = fp381Sqr(p.z)
-    let z2z2 = fp381Sqr(q.z)
-    let u1 = fp381Mul(p.x, z2z2)
-    let u2 = fp381Mul(q.x, z1z1)
-    let s1 = fp381Mul(p.y, fp381Mul(q.z, z2z2))
-    let s2 = fp381Mul(q.y, fp381Mul(p.z, z1z1))
-
-    let h = fp381Sub(u2, u1)
-    let r = fp381Double(fp381Sub(s2, s1))
-
-    if h.isZero {
-        if r.isZero { return g1_381Double(p) }
-        return g1_381Identity()
+    var result = G1Projective381(x: .one, y: .one, z: .zero)
+    withUnsafeBytes(of: p) { pBuf in
+        withUnsafeBytes(of: q) { qBuf in
+            withUnsafeMutableBytes(of: &result) { rBuf in
+                bls12_381_g1_point_add(
+                    pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    qBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                )
+            }
+        }
     }
-
-    let i = fp381Sqr(fp381Double(h))
-    let j = fp381Mul(h, i)
-    let vv = fp381Mul(u1, i)
-
-    let x3 = fp381Sub(fp381Sub(fp381Sqr(r), j), fp381Double(vv))
-    let y3 = fp381Sub(fp381Mul(r, fp381Sub(vv, x3)), fp381Double(fp381Mul(s1, j)))
-    let z3 = fp381Mul(fp381Sub(fp381Sqr(fp381Add(p.z, q.z)), fp381Add(z1z1, z2z2)), h)
-    return G1Projective381(x: x3, y: y3, z: z3)
+    return result
 }
 
-// Mixed addition: projective + affine (Z=1 optimization)
+// Mixed addition: projective + affine (Z=1 optimization) — C accelerated
 public func g1_381AddMixed(_ p: G1Projective381, _ q: G1Affine381) -> G1Projective381 {
-    if g1_381IsIdentity(p) { return g1_381FromAffine(q) }
-
-    let z1z1 = fp381Sqr(p.z)
-    let u2 = fp381Mul(q.x, z1z1)
-    let s2 = fp381Mul(q.y, fp381Mul(p.z, z1z1))
-
-    let h = fp381Sub(u2, p.x)
-    let r = fp381Double(fp381Sub(s2, p.y))
-
-    if h.isZero {
-        if r.isZero { return g1_381Double(p) }
-        return g1_381Identity()
+    var result = G1Projective381(x: .one, y: .one, z: .zero)
+    withUnsafeBytes(of: p) { pBuf in
+        withUnsafeBytes(of: q) { qBuf in
+            withUnsafeMutableBytes(of: &result) { rBuf in
+                bls12_381_g1_point_add_mixed(
+                    pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    qBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                )
+            }
+        }
     }
-
-    let hh = fp381Sqr(h)
-    let i = fp381Double(fp381Double(hh))
-    let j = fp381Mul(h, i)
-    let vv = fp381Mul(p.x, i)
-
-    let x3 = fp381Sub(fp381Sub(fp381Sqr(r), j), fp381Double(vv))
-    let y3 = fp381Sub(fp381Mul(r, fp381Sub(vv, x3)), fp381Double(fp381Mul(p.y, j)))
-    let z3 = fp381Sub(fp381Sqr(fp381Add(p.z, h)), fp381Add(fp381Sqr(p.z), hh))
-    return G1Projective381(x: x3, y: y3, z: z3)
+    return result
 }
 
 // Convert to affine
@@ -134,18 +108,18 @@ public func g1_381Negate(_ p: G1Projective381) -> G1Projective381 {
     G1Projective381(x: p.x, y: fp381Neg(p.y), z: p.z)
 }
 
-// Scalar multiplication using double-and-add
+// Scalar multiplication — C accelerated windowed (w=4)
 public func g1_381ScalarMul(_ p: G1Projective381, _ scalar: [UInt64]) -> G1Projective381 {
-    var result = g1_381Identity()
-    var base = p
-    for i in 0..<scalar.count {
-        var word = scalar[i]
-        for _ in 0..<64 {
-            if word & 1 == 1 {
-                result = g1_381Add(result, base)
+    var result = G1Projective381(x: .one, y: .one, z: .zero)
+    withUnsafeBytes(of: p) { pBuf in
+        scalar.withUnsafeBufferPointer { scBuf in
+            withUnsafeMutableBytes(of: &result) { rBuf in
+                bls12_381_g1_scalar_mul(
+                    pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    scBuf.baseAddress!,
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                )
             }
-            base = g1_381Double(base)
-            word >>= 1
         }
     }
     return result

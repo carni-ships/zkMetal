@@ -4,6 +4,7 @@
 // Used for NTT, scalar operations, and pairing arithmetic.
 
 import Foundation
+import NeonFieldOps
 
 public struct Fr381 {
     public var v: (UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32)
@@ -82,63 +83,38 @@ public struct Fr381 {
 // MARK: - Fr381 Field Operations
 
 public func fr381Mul(_ a: Fr381, _ b: Fr381) -> Fr381 {
-    let al = a.to64(), bl = b.to64()
-    var t = [UInt64](repeating: 0, count: 5)
-
-    for i in 0..<4 {
-        var carry: UInt64 = 0
-        for j in 0..<4 {
-            let (hi, lo) = al[i].multipliedFullWidth(by: bl[j])
-            let (s1, c1) = t[j].addingReportingOverflow(lo)
-            let (s2, c2) = s1.addingReportingOverflow(carry)
-            t[j] = s2
-            carry = hi + (c1 ? 1 : 0) + (c2 ? 1 : 0)
-        }
-        t[4] = t[4] &+ carry
-
-        let m = t[0] &* Fr381.INV
-        carry = 0
-        for j in 0..<4 {
-            let (hi, lo) = m.multipliedFullWidth(by: Fr381.P[j])
-            let (s1, c1) = t[j].addingReportingOverflow(lo)
-            let (s2, c2) = s1.addingReportingOverflow(carry)
-            t[j] = s2
-            carry = hi + (c1 ? 1 : 0) + (c2 ? 1 : 0)
-        }
-        t[4] = t[4] &+ carry
-
-        t[0] = t[1]; t[1] = t[2]; t[2] = t[3]; t[3] = t[4]; t[4] = 0
-    }
-
-    var r = Array(t[0..<4])
-    if gte256(r, Fr381.P) {
-        (r, _) = sub256(r, Fr381.P)
-    }
+    var al = a.to64(), bl = b.to64()
+    var r = [UInt64](repeating: 0, count: 4)
+    bls12_381_fr_mul(&al, &bl, &r)
     return Fr381.from64(r)
 }
 
 public func fr381Add(_ a: Fr381, _ b: Fr381) -> Fr381 {
-    var (r, carry) = add256(a.to64(), b.to64())
-    if carry != 0 || gte256(r, Fr381.P) {
-        (r, _) = sub256(r, Fr381.P)
-    }
+    var al = a.to64(), bl = b.to64()
+    var r = [UInt64](repeating: 0, count: 4)
+    bls12_381_fr_add(&al, &bl, &r)
     return Fr381.from64(r)
 }
 
 public func fr381Sub(_ a: Fr381, _ b: Fr381) -> Fr381 {
-    var (r, borrow) = sub256(a.to64(), b.to64())
-    if borrow {
-        (r, _) = add256(r, Fr381.P)
-    }
+    var al = a.to64(), bl = b.to64()
+    var r = [UInt64](repeating: 0, count: 4)
+    bls12_381_fr_sub(&al, &bl, &r)
     return Fr381.from64(r)
 }
 
-public func fr381Sqr(_ a: Fr381) -> Fr381 { fr381Mul(a, a) }
+public func fr381Sqr(_ a: Fr381) -> Fr381 {
+    var al = a.to64()
+    var r = [UInt64](repeating: 0, count: 4)
+    bls12_381_fr_sqr(&al, &r)
+    return Fr381.from64(r)
+}
 public func fr381Double(_ a: Fr381) -> Fr381 { fr381Add(a, a) }
 
 public func fr381Neg(_ a: Fr381) -> Fr381 {
-    if a.isZero { return a }
-    let (r, _) = sub256(Fr381.P, a.to64())
+    var al = a.to64()
+    var r = [UInt64](repeating: 0, count: 4)
+    bls12_381_fr_neg(&al, &r)
     return Fr381.from64(r)
 }
 

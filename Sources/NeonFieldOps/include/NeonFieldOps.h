@@ -747,6 +747,35 @@ void vesta_point_add_mixed(const uint64_t p[12], const uint64_t q_aff[8], uint64
 void vesta_scalar_mul(const uint64_t p[12], const uint64_t scalar[4], uint64_t r[12]);
 
 // ============================================================
+// BLS12-381 Fr (scalar field, 4-limb)
+// ============================================================
+
+void bls12_381_fr_mul(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]);
+void bls12_381_fr_sqr(const uint64_t a[4], uint64_t r[4]);
+void bls12_381_fr_add(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]);
+void bls12_381_fr_sub(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]);
+void bls12_381_fr_neg(const uint64_t a[4], uint64_t r[4]);
+
+// ============================================================
+// BLS12-381 Fp (base field, 6-limb)
+// ============================================================
+
+void bls12_381_fp_mul(const uint64_t a[6], const uint64_t b[6], uint64_t r[6]);
+void bls12_381_fp_sqr(const uint64_t a[6], uint64_t r[6]);
+void bls12_381_fp_add(const uint64_t a[6], const uint64_t b[6], uint64_t r[6]);
+void bls12_381_fp_sub(const uint64_t a[6], const uint64_t b[6], uint64_t r[6]);
+void bls12_381_fp_neg(const uint64_t a[6], uint64_t r[6]);
+
+// ============================================================
+// BLS12-381 G1 curve ops (Jacobian projective, 6-limb coords)
+// ============================================================
+
+void bls12_381_g1_point_add(const uint64_t p[18], const uint64_t q[18], uint64_t r[18]);
+void bls12_381_g1_point_double(const uint64_t p[18], uint64_t r[18]);
+void bls12_381_g1_point_add_mixed(const uint64_t p[18], const uint64_t q_aff[12], uint64_t r[18]);
+void bls12_381_g1_scalar_mul(const uint64_t p[18], const uint64_t scalar[4], uint64_t r[18]);
+
+// ============================================================
 // Stark252 field (p = 2^251 + 17*2^192 + 1)
 // ============================================================
 
