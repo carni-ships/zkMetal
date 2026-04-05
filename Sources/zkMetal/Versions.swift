@@ -70,8 +70,8 @@ public enum Versions {
     // --- Commitment Schemes ---
     public static let kzg            = PrimitiveVersion(version: "1.1.0", updated: "2026-04-03")
     public static let ipa            = PrimitiveVersion(version: "1.1.0", updated: "2026-04-03")
-    public static let pedersenCommit = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let zeromorph      = PrimitiveVersion(version: "2.0.0", updated: "2026-04-05")
+    public static let pedersenCommit = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
 
     // --- GKR ---
     public static let gkr            = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
@@ -108,6 +108,8 @@ public enum Versions {
     public static let marlin         = PrimitiveVersion(version: "2.0.0", updated: "2026-04-04")
     public static let varuna         = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let spartan           = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
+    public static let multilinearPoly   = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let hyraxPCS          = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let tensorCompressor  = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let joltVM            = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let groth16Batch      = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
