@@ -34,11 +34,11 @@ GPU-accelerated zero-knowledge cryptography library for Apple Silicon, written i
 | **Circle FRI** | GPU | FRI adapted for circle domain over M31 |
 | **Sumcheck** | GPU | Interactive sumcheck (fused round+reduce, sparse O(nnz), univariate) |
 | **KZG** | GPU | Polynomial commitment (commit + open + batch) |
-| **IPA** | GPU/CPU | Inner product argument (Bulletproofs-style, GPU batch fold) |
+| **IPA** | GPU/CPU | Inner product argument (Bulletproofs-style, GPU batch fold, BGMW precomputed tables) |
 | **Verkle Trees** | CPU | Width-N tree with Pedersen commitments + IPA opening proofs |
 | **LogUp / Lasso / cq** | GPU | Lookup arguments (logarithmic derivatives, tensor decomposition, cached quotients) |
 | **Range Proofs** | GPU | [0, R) via LogUp with limb decomposition |
-| **ECDSA** | CPU | secp256k1 batch verification (probabilistic + individual) |
+| **ECDSA** | CPU | secp256k1 batch verification (Shamir's trick, probabilistic + individual) |
 | **Circle STARK** | GPU | Full STARK prover/verifier over M31 circle domain |
 | **Plonk** | GPU | Preprocessed polynomial IOP with KZG commitments |
 | **Groth16** | GPU | zk-SNARK with BN254 pairings (R1CS, trusted setup, prove, verify) |
@@ -66,8 +66,8 @@ GPU-accelerated zero-knowledge cryptography library for Apple Silicon, written i
 | **Spartan** | GPU | Transparent SNARK (no trusted setup) via multilinear extensions + sumcheck |
 | **Jolt** | GPU | zkVM via Lasso structured lookups (10 RISC-like opcodes) |
 | **SHA-256** | GPU | SHA-256 hash (batch + fused Merkle subtree) |
-| **Ed25519** | GPU/CPU | Curve25519 field, twisted Edwards curve, EdDSA, GPU MSM |
-| **BabyJubjub** | GPU/CPU | Twisted Edwards over BN254 Fr, Pedersen hash, EdDSA |
+| **Ed25519** | GPU/CPU | Curve25519 field (Solinas reduction), twisted Edwards curve, EdDSA, GPU MSM |
+| **BabyJubjub** | GPU/CPU | Twisted Edwards over BN254 Fr, C windowed scalar mul, Pedersen hash, EdDSA |
 | **Grumpkin** | GPU | BN254 inner curve (y²=x³-17), GPU MSM with signed-digit |
 | **Stark252** | GPU/CPU | StarkNet/Cairo native field (p=2^251+17·2^192+1), TWO_ADICITY=192, NTT |
 | **Schnorr** | CPU | BIP 340 Bitcoin Taproot signatures (x-only pubkeys, tagged hashing) |
