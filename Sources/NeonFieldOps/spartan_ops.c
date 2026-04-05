@@ -5,7 +5,7 @@
 #include "NeonFieldOps.h"
 #include <string.h>
 #include <stdlib.h>
-#include <pthread.h>
+#include <dispatch/dispatch.h>
 
 typedef unsigned __int128 uint128_t;
 
@@ -297,58 +297,46 @@ void spartan_mle_eval(const uint64_t *evals, int numVars,
 // Tensor Proof Compression: C-accelerated operations
 // ============================================================
 
-// Thread argument for parallel mat-vec
-typedef struct {
-    const uint64_t *M;
-    const uint64_t *vec;
-    int cols;
-    int rowStart;
-    int rowEnd;
-    uint64_t *result;
-} TensorMVArg;
-
-static void *tensor_mv_worker(void *arg) {
-    TensorMVArg *a = (TensorMVArg *)arg;
-    for (int i = a->rowStart; i < a->rowEnd; i++) {
-        uint64_t acc[4] = {0,0,0,0};
-        const uint64_t *row = a->M + (size_t)i * a->cols * 4;
-        for (int j = 0; j < a->cols; j++) {
-            uint64_t prod[4];
-            sp_fr_mul(row + j * 4, a->vec + j * 4, prod);
-            sp_fr_add(acc, prod, acc);
-        }
-        memcpy(a->result + i * 4, acc, 32);
-    }
-    return NULL;
-}
-
 // Matrix-vector multiply: result[i] = sum_j M[i*cols+j] * vec[j].
-// Multi-threaded for large matrices.
+// Multi-threaded for large matrices via GCD dispatch_apply.
 void tensor_mat_vec_mul(const uint64_t *M, const uint64_t *vec,
                         int rows, int cols, uint64_t *result) {
     int totalOps = rows * cols;
     if (totalOps < 4096) {
         // Single-threaded for small sizes
-        TensorMVArg arg = {M, vec, cols, 0, rows, result};
-        tensor_mv_worker(&arg);
+        for (int i = 0; i < rows; i++) {
+            uint64_t acc[4] = {0,0,0,0};
+            const uint64_t *row = M + (size_t)i * cols * 4;
+            for (int j = 0; j < cols; j++) {
+                uint64_t prod[4];
+                sp_fr_mul(row + j * 4, vec + j * 4, prod);
+                sp_fr_add(acc, prod, acc);
+            }
+            memcpy(result + i * 4, acc, 32);
+        }
         return;
     }
-    int nT = 8;
-    if (rows < nT) nT = rows;
-    int perT = (rows + nT - 1) / nT;
-    pthread_t threads[8];
-    TensorMVArg args[8];
-    for (int t = 0; t < nT; t++) {
-        args[t].M = M;
-        args[t].vec = vec;
-        args[t].cols = cols;
-        args[t].rowStart = t * perT;
-        args[t].rowEnd = (t + 1) * perT;
-        if (args[t].rowEnd > rows) args[t].rowEnd = rows;
-        args[t].result = result;
-        pthread_create(&threads[t], NULL, tensor_mv_worker, &args[t]);
-    }
-    for (int t = 0; t < nT; t++) pthread_join(threads[t], NULL);
+    int nChunks = 8;
+    if (rows < nChunks) nChunks = rows;
+    int perChunk = (rows + nChunks - 1) / nChunks;
+    int totalRows = rows;
+
+    dispatch_apply(nChunks, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+        ^(size_t idx) {
+            int rowStart = (int)idx * perChunk;
+            int rowEnd = rowStart + perChunk;
+            if (rowEnd > totalRows) rowEnd = totalRows;
+            for (int i = rowStart; i < rowEnd; i++) {
+                uint64_t acc[4] = {0,0,0,0};
+                const uint64_t *row = M + (size_t)i * cols * 4;
+                for (int j = 0; j < cols; j++) {
+                    uint64_t prod[4];
+                    sp_fr_mul(row + j * 4, vec + j * 4, prod);
+                    sp_fr_add(acc, prod, acc);
+                }
+                memcpy(result + i * 4, acc, 32);
+            }
+        });
 }
 
 // Full inner-product sumcheck: prove sum_i a[i]*b[i] = claimed.
@@ -426,35 +414,8 @@ void tensor_inner_product_sumcheck(
     free(bufB);
 }
 
-// Thread argument for parallel eq-weighted-row
-typedef struct {
-    const uint64_t *M;
-    const uint64_t *eq;
-    int cols;
-    int rowStart;
-    int rowEnd;
-    uint64_t *partialResult; // per-thread private buffer (cols Fr elements)
-} TensorEWRArg;
-
-static void *tensor_ewr_worker(void *arg) {
-    TensorEWRArg *a = (TensorEWRArg *)arg;
-    memset(a->partialResult, 0, (size_t)a->cols * 32);
-    for (int i = a->rowStart; i < a->rowEnd; i++) {
-        const uint64_t *weight = a->eq + i * 4;
-        if (weight[0] == 0 && weight[1] == 0 && weight[2] == 0 && weight[3] == 0)
-            continue;
-        const uint64_t *row = a->M + (size_t)i * a->cols * 4;
-        for (int j = 0; j < a->cols; j++) {
-            uint64_t prod[4];
-            sp_fr_mul(weight, row + j * 4, prod);
-            sp_fr_add(a->partialResult + j * 4, prod, a->partialResult + j * 4);
-        }
-    }
-    return NULL;
-}
-
 // Fused eq polynomial + weighted matrix row evaluation.
-// Multi-threaded for large matrices.
+// Multi-threaded for large matrices via GCD dispatch_apply.
 void tensor_eq_weighted_row(const uint64_t *M, const uint64_t *rowPoint,
                             int rows, int cols, uint64_t *result) {
     uint64_t *eq = (uint64_t *)malloc((size_t)rows * 32);
@@ -481,28 +442,35 @@ void tensor_eq_weighted_row(const uint64_t *M, const uint64_t *rowPoint,
         return;
     }
 
-    int nT = 8;
-    if (rows < nT) nT = rows;
-    int perT = (rows + nT - 1) / nT;
-    pthread_t threads[8];
-    TensorEWRArg args[8];
-    uint64_t *partials = (uint64_t *)malloc((size_t)nT * cols * 32);
+    int nChunks = 8;
+    if (rows < nChunks) nChunks = rows;
+    int perChunk = (rows + nChunks - 1) / nChunks;
+    uint64_t *partials = (uint64_t *)malloc((size_t)nChunks * cols * 32);
+    int totalRows = rows;
 
-    for (int t = 0; t < nT; t++) {
-        args[t].M = M;
-        args[t].eq = eq;
-        args[t].cols = cols;
-        args[t].rowStart = t * perT;
-        args[t].rowEnd = (t + 1) * perT;
-        if (args[t].rowEnd > rows) args[t].rowEnd = rows;
-        args[t].partialResult = partials + (size_t)t * cols * 4;
-        pthread_create(&threads[t], NULL, tensor_ewr_worker, &args[t]);
-    }
-    for (int t = 0; t < nT; t++) pthread_join(threads[t], NULL);
+    dispatch_apply(nChunks, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+        ^(size_t idx) {
+            int rowStart = (int)idx * perChunk;
+            int rowEnd = rowStart + perChunk;
+            if (rowEnd > totalRows) rowEnd = totalRows;
+            uint64_t *partial = partials + (size_t)idx * cols * 4;
+            memset(partial, 0, (size_t)cols * 32);
+            for (int i = rowStart; i < rowEnd; i++) {
+                const uint64_t *weight = eq + i * 4;
+                if (weight[0] == 0 && weight[1] == 0 && weight[2] == 0 && weight[3] == 0)
+                    continue;
+                const uint64_t *row = M + (size_t)i * cols * 4;
+                for (int j = 0; j < cols; j++) {
+                    uint64_t prod[4];
+                    sp_fr_mul(weight, row + j * 4, prod);
+                    sp_fr_add(partial + j * 4, prod, partial + j * 4);
+                }
+            }
+        });
 
     // Reduce partial results
     memcpy(result, partials, (size_t)cols * 32);
-    for (int t = 1; t < nT; t++) {
+    for (int t = 1; t < nChunks; t++) {
         const uint64_t *pr = partials + (size_t)t * cols * 4;
         for (int j = 0; j < cols; j++) {
             sp_fr_add(result + j * 4, pr + j * 4, result + j * 4);

@@ -10,7 +10,7 @@
 #include "NeonFieldOps.h"
 #include <stdlib.h>
 #include <string.h>
-#include <pthread.h>
+#include <dispatch/dispatch.h>
 
 typedef unsigned __int128 uint128_t;
 
@@ -296,46 +296,6 @@ void bn254_fr_batch_mul_scalar_neon(uint64_t *result, const uint64_t *a,
 #define BATCH_THREAD_THRESHOLD 4096
 #define MAX_THREADS 8
 
-typedef struct {
-    uint64_t *result;
-    const uint64_t *a;
-    const uint64_t *b;
-    const uint64_t *scalar;
-    int start, end;
-    int op; // 0=add, 1=sub, 2=neg, 3=mul_scalar
-} BatchThreadArg;
-
-static void *batch_thread_func(void *arg) {
-    BatchThreadArg *t = (BatchThreadArg *)arg;
-    int n = t->end - t->start;
-    uint64_t *res = t->result + t->start * 4;
-    const uint64_t *ap = t->a + t->start * 4;
-
-    switch (t->op) {
-    case 0: {
-        const uint64_t *bp = t->b + t->start * 4;
-        for (int i = 0; i < n; i++)
-            fr_add_branchless(&ap[i * 4], &bp[i * 4], &res[i * 4]);
-        break;
-    }
-    case 1: {
-        const uint64_t *bp = t->b + t->start * 4;
-        for (int i = 0; i < n; i++)
-            fr_sub_branchless(&ap[i * 4], &bp[i * 4], &res[i * 4]);
-        break;
-    }
-    case 2:
-        for (int i = 0; i < n; i++)
-            fr_neg_branchless(&ap[i * 4], &res[i * 4]);
-        break;
-    case 3:
-        for (int i = 0; i < n; i++)
-            fr_mont_mul(&ap[i * 4], t->scalar, &res[i * 4]);
-        break;
-    }
-    return NULL;
-}
-
 static void batch_parallel(uint64_t *result, const uint64_t *a,
                             const uint64_t *b, const uint64_t *scalar,
                             int n, int op)
@@ -351,25 +311,41 @@ static void batch_parallel(uint64_t *result, const uint64_t *a,
         return;
     }
 
-    int nThreads = MAX_THREADS;
-    if (n < nThreads * 1024) nThreads = 4;
-    int chunkSize = n / nThreads;
+    int nChunks = MAX_THREADS;
+    if (n < nChunks * 1024) nChunks = 4;
+    int chunkSize = n / nChunks;
+    int total = n;
 
-    pthread_t threads[MAX_THREADS];
-    BatchThreadArg args[MAX_THREADS];
-
-    for (int t = 0; t < nThreads; t++) {
-        args[t].result = result;
-        args[t].a = a;
-        args[t].b = b;
-        args[t].scalar = scalar;
-        args[t].start = t * chunkSize;
-        args[t].end = (t == nThreads - 1) ? n : (t + 1) * chunkSize;
-        args[t].op = op;
-        pthread_create(&threads[t], NULL, batch_thread_func, &args[t]);
-    }
-    for (int t = 0; t < nThreads; t++)
-        pthread_join(threads[t], NULL);
+    dispatch_apply(nChunks, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+        ^(size_t idx) {
+            int start = (int)idx * chunkSize;
+            int end = ((int)idx == nChunks - 1) ? total : start + chunkSize;
+            int count = end - start;
+            uint64_t *res = result + start * 4;
+            const uint64_t *ap = a + start * 4;
+            switch (op) {
+            case 0: {
+                const uint64_t *bp = b + start * 4;
+                for (int i = 0; i < count; i++)
+                    fr_add_branchless(&ap[i * 4], &bp[i * 4], &res[i * 4]);
+                break;
+            }
+            case 1: {
+                const uint64_t *bp = b + start * 4;
+                for (int i = 0; i < count; i++)
+                    fr_sub_branchless(&ap[i * 4], &bp[i * 4], &res[i * 4]);
+                break;
+            }
+            case 2:
+                for (int i = 0; i < count; i++)
+                    fr_neg_branchless(&ap[i * 4], &res[i * 4]);
+                break;
+            case 3:
+                for (int i = 0; i < count; i++)
+                    fr_mont_mul(&ap[i * 4], scalar, &res[i * 4]);
+                break;
+            }
+        });
 }
 
 // Parallel wrappers
@@ -513,37 +489,6 @@ static inline uint64_t fr_to_uint64(const uint64_t a[4])
     return t0;
 }
 
-typedef struct {
-    const uint64_t *lookups;
-    int m;
-    int numChunks;
-    int bitsPerChunk;
-    uint64_t chunkMask;
-    int *indices;
-    int start;
-    int end;
-} DecomposeChunk;
-
-static void *decompose_worker(void *arg) {
-    DecomposeChunk *c = (DecomposeChunk *)arg;
-    const uint64_t *lookups = c->lookups;
-    int m = c->m;
-    int numChunks = c->numChunks;
-    int bitsPerChunk = c->bitsPerChunk;
-    uint64_t chunkMask = c->chunkMask;
-    int *indices = c->indices;
-    for (int i = c->start; i < c->end; i++) {
-        if (i + 4 < c->end) {
-            __builtin_prefetch(&lookups[(i + 4) * 4], 0, 1);
-        }
-        uint64_t v = fr_to_uint64(&lookups[i * 4]);
-        for (int k = 0; k < numChunks; k++) {
-            indices[k * m + i] = (int)((v >> (k * bitsPerChunk)) & chunkMask);
-        }
-    }
-    return NULL;
-}
-
 void bn254_fr_batch_decompose(const uint64_t *lookups, int m,
                                int numChunks, int bitsPerChunk,
                                int *indices)
@@ -562,27 +507,27 @@ void bn254_fr_batch_decompose(const uint64_t *lookups, int m,
         }
         return;
     }
-    int nThreads = 8;
-    if (nThreads > m / 1024) nThreads = m / 1024;
-    if (nThreads < 1) nThreads = 1;
-    int perThread = (m + nThreads - 1) / nThreads;
+    int nChunks = 8;
+    if (nChunks > m / 1024) nChunks = m / 1024;
+    if (nChunks < 1) nChunks = 1;
+    int perChunk = (m + nChunks - 1) / nChunks;
+    int total = m;
 
-    pthread_t threads[8];
-    DecomposeChunk chunks[8];
-    for (int t = 0; t < nThreads; t++) {
-        chunks[t].lookups = lookups;
-        chunks[t].m = m;
-        chunks[t].numChunks = numChunks;
-        chunks[t].bitsPerChunk = bitsPerChunk;
-        chunks[t].chunkMask = chunkMask;
-        chunks[t].indices = indices;
-        chunks[t].start = t * perThread;
-        chunks[t].end = (t + 1) * perThread;
-        if (chunks[t].end > m) chunks[t].end = m;
-        pthread_create(&threads[t], NULL, decompose_worker, &chunks[t]);
-    }
-    for (int t = 0; t < nThreads; t++)
-        pthread_join(threads[t], NULL);
+    dispatch_apply(nChunks, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+        ^(size_t idx) {
+            int start = (int)idx * perChunk;
+            int end = start + perChunk;
+            if (end > total) end = total;
+            for (int i = start; i < end; i++) {
+                if (i + 4 < end) {
+                    __builtin_prefetch(&lookups[(i + 4) * 4], 0, 1);
+                }
+                uint64_t v = fr_to_uint64(&lookups[i * 4]);
+                for (int k = 0; k < numChunks; k++) {
+                    indices[k * total + i] = (int)((v >> (k * bitsPerChunk)) & chunkMask);
+                }
+            }
+        });
 }
 
 // ============================================================
@@ -601,20 +546,6 @@ static void fr_pointwise_mul_sub_range(
     }
 }
 
-typedef struct {
-    uint64_t *result;
-    const uint64_t *a;
-    const uint64_t *b;
-    const uint64_t *c;
-    int start, end;
-} PointwiseMulSubArg;
-
-static void *pointwise_mul_sub_worker(void *arg) {
-    PointwiseMulSubArg *t = (PointwiseMulSubArg *)arg;
-    fr_pointwise_mul_sub_range(t->result, t->a, t->b, t->c, t->start, t->end);
-    return NULL;
-}
-
 void bn254_fr_pointwise_mul_sub(const uint64_t *a, const uint64_t *b,
                                  const uint64_t *c, uint64_t *result, int n)
 {
@@ -623,24 +554,17 @@ void bn254_fr_pointwise_mul_sub(const uint64_t *a, const uint64_t *b,
         return;
     }
 
-    int nThreads = MAX_THREADS;
-    if (n < nThreads * 1024) nThreads = 4;
-    int chunkSize = n / nThreads;
+    int nChunks = MAX_THREADS;
+    if (n < nChunks * 1024) nChunks = 4;
+    int chunkSize = n / nChunks;
+    int total = n;
 
-    pthread_t threads[MAX_THREADS];
-    PointwiseMulSubArg args[MAX_THREADS];
-
-    for (int t = 0; t < nThreads; t++) {
-        args[t].result = result;
-        args[t].a = a;
-        args[t].b = b;
-        args[t].c = c;
-        args[t].start = t * chunkSize;
-        args[t].end = (t == nThreads - 1) ? n : (t + 1) * chunkSize;
-        pthread_create(&threads[t], NULL, pointwise_mul_sub_worker, &args[t]);
-    }
-    for (int t = 0; t < nThreads; t++)
-        pthread_join(threads[t], NULL);
+    dispatch_apply(nChunks, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+        ^(size_t idx) {
+            int start = (int)idx * chunkSize;
+            int end = ((int)idx == nChunks - 1) ? total : start + chunkSize;
+            fr_pointwise_mul_sub_range(result, a, b, c, start, end);
+        });
 }
 
 // ============================================================
@@ -677,25 +601,6 @@ void bn254_fr_coeff_div_vanishing(const uint64_t *pCoeffs, int domainN,
 // Linear combine: result[i] = running[i] + rho * new_vals[i]
 // Used by HyperNova witness folding.
 
-typedef struct {
-    const uint64_t *running;
-    const uint64_t *new_vals;
-    const uint64_t *rho;
-    uint64_t *result;
-    int start;
-    int end;
-} lc_args_t;
-
-static void *lc_worker(void *arg) {
-    lc_args_t *a = (lc_args_t *)arg;
-    uint64_t tmp[4];
-    for (int i = a->start; i < a->end; i++) {
-        fr_mont_mul(a->rho, &a->new_vals[i * 4], tmp);
-        fr_add_branchless(&a->running[i * 4], tmp, &a->result[i * 4]);
-    }
-    return NULL;
-}
-
 void bn254_fr_linear_combine(const uint64_t *running, const uint64_t *new_vals,
                               const uint64_t rho[4], uint64_t *result, int count) {
     if (count < 4096) {
@@ -706,15 +611,20 @@ void bn254_fr_linear_combine(const uint64_t *running, const uint64_t *new_vals,
         }
         return;
     }
-    int nthreads = 8;
-    if (count < nthreads * 512) nthreads = (count + 511) / 512;
-    pthread_t threads[8];
-    lc_args_t args[8];
-    int chunk = (count + nthreads - 1) / nthreads;
-    for (int t = 0; t < nthreads; t++) {
-        args[t] = (lc_args_t){running, new_vals, rho, result,
-                               t * chunk, (t + 1) * chunk < count ? (t + 1) * chunk : count};
-        pthread_create(&threads[t], NULL, lc_worker, &args[t]);
-    }
-    for (int t = 0; t < nthreads; t++) pthread_join(threads[t], NULL);
+    int nChunks = 8;
+    if (count < nChunks * 512) nChunks = (count + 511) / 512;
+    int chunk = (count + nChunks - 1) / nChunks;
+    int total = count;
+
+    dispatch_apply(nChunks, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+        ^(size_t idx) {
+            int start = (int)idx * chunk;
+            int end = start + chunk;
+            if (end > total) end = total;
+            uint64_t tmp[4];
+            for (int i = start; i < end; i++) {
+                fr_mont_mul(rho, &new_vals[i * 4], tmp);
+                fr_add_branchless(&running[i * 4], tmp, &result[i * 4]);
+            }
+        });
 }

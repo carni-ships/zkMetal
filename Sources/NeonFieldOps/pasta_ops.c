@@ -8,7 +8,7 @@
 #include "NeonFieldOps.h"
 #include <string.h>
 #include <stdlib.h>
-#include <pthread.h>
+#include <dispatch/dispatch.h>
 
 typedef unsigned __int128 uint128_t;
 
@@ -851,8 +851,6 @@ void FUNC_NAME( \
     int num_buckets = (1 << wb) - 1; \
     PREFIX##_WindowTask *tasks = (PREFIX##_WindowTask *)malloc( \
         (size_t)num_windows * sizeof(PREFIX##_WindowTask)); \
-    pthread_t *threads = (pthread_t *)malloc( \
-        (size_t)num_windows * sizeof(pthread_t)); \
     for (int w = 0; w < num_windows; w++) { \
         tasks[w].points = points; \
         tasks[w].scalars = scalars; \
@@ -861,10 +859,10 @@ void FUNC_NAME( \
         tasks[w].window_idx = w; \
         tasks[w].num_buckets = num_buckets; \
     } \
-    for (int w = 0; w < num_windows; w++) \
-        pthread_create(&threads[w], NULL, PREFIX##_window_worker, &tasks[w]); \
-    for (int w = 0; w < num_windows; w++) \
-        pthread_join(threads[w], NULL); \
+    dispatch_apply(num_windows, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), \
+        ^(size_t w) { \
+            PREFIX##_window_worker(&tasks[w]); \
+        }); \
     memcpy(result, tasks[num_windows - 1].result, 96); \
     for (int w = num_windows - 2; w >= 0; w--) { \
         uint64_t tmp[12]; \
@@ -875,7 +873,6 @@ void FUNC_NAME( \
         memcpy(result, tmp, 96); \
     } \
     free(tasks); \
-    free(threads); \
 }
 
 PASTA_PIPPENGER(pallas_pippenger_msm, pa, pa_pt_set_id, pa_pt_dbl, pa_pt_add)

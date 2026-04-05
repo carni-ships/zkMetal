@@ -12,7 +12,7 @@
 #include "NeonFieldOps.h"
 #include <string.h>
 #include <stdlib.h>
-#include <pthread.h>
+#include <dispatch/dispatch.h>
 
 typedef unsigned __int128 uint128_t;
 
@@ -895,16 +895,15 @@ void bls12_381_g1_pippenger_msm(const uint64_t *points, const uint32_t *scalars,
     int num_windows = (256 + wb - 1) / wb;
     int num_buckets = (1 << wb) - 1;
     G1WindowTask *tasks = (G1WindowTask *)malloc((size_t)num_windows * sizeof(G1WindowTask));
-    pthread_t *threads = (pthread_t *)malloc((size_t)num_windows * sizeof(pthread_t));
     for (int w = 0; w < num_windows; w++) {
         tasks[w].points = points; tasks[w].scalars = scalars;
         tasks[w].n = n; tasks[w].window_bits = wb;
         tasks[w].window_idx = w; tasks[w].num_buckets = num_buckets;
     }
-    for (int w = 0; w < num_windows; w++)
-        pthread_create(&threads[w], NULL, g1_window_worker, &tasks[w]);
-    for (int w = 0; w < num_windows; w++)
-        pthread_join(threads[w], NULL);
+    dispatch_apply(num_windows, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+        ^(size_t w) {
+            g1_window_worker(&tasks[w]);
+        });
     memcpy(result, tasks[num_windows - 1].result, 144);
     for (int w = num_windows - 2; w >= 0; w--) {
         uint64_t tmp[18];
@@ -912,7 +911,7 @@ void bls12_381_g1_pippenger_msm(const uint64_t *points, const uint32_t *scalars,
         g1_add(result, tasks[w].result, tmp);
         memcpy(result, tmp, 144);
     }
-    free(tasks); free(threads);
+    free(tasks);
 }
 
 // ============================================================

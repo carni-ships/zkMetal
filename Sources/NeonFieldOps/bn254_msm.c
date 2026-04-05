@@ -3,7 +3,7 @@
 //   1. CIOS Montgomery field ops (4×64-bit limbs, __uint128_t)
 //   2. Mixed affine addition (projective + affine, saves 4 muls/add)
 //   3. Batch-to-affine via Montgomery's trick (1 inversion per window)
-//   4. Multi-threaded windows (pthreads)
+//   4. Multi-threaded windows (GCD dispatch_apply)
 //   5. Adaptive window sizing
 //
 // Interop: Swift PointAffine = (Fp x, Fp y) where Fp = 8×UInt32
@@ -13,7 +13,7 @@
 #include "NeonFieldOps.h"
 #include <stdlib.h>
 #include <string.h>
-#include <pthread.h>
+#include <dispatch/dispatch.h>
 
 typedef unsigned __int128 uint128_t;
 
@@ -962,7 +962,7 @@ static void pt_scalar_mul(const uint64_t p[12], const uint32_t scalar[8], uint64
 // Batch fold generators: result[i] = scalar_mul(GL[i], xInv) + scalar_mul(GR[i], x)
 // GL, GR: projective points (12 uint64 each)
 // x, xInv: 8 × uint32_t scalars (non-Montgomery, integer form)
-// Uses pthreads for parallelism.
+// Uses GCD dispatch_apply for parallelism.
 typedef struct {
     const uint64_t *GL;
     const uint64_t *GR;
@@ -1042,18 +1042,6 @@ static void pt_double_scalar_mul(
     memcpy(r, result, 96);
 }
 
-static void *fold_worker(void *arg) {
-    FoldChunk *c = (FoldChunk *)arg;
-    for (int i = c->start; i < c->end; i++) {
-        // Straus trick: compute xInv*GL[i] + x*GR[i] with shared doublings
-        pt_double_scalar_mul(
-            c->GL + i * 12, c->xInv,
-            c->GR + i * 12, c->x,
-            c->result + i * 12);
-    }
-    return NULL;
-}
-
 void bn254_fold_generators(
     const uint64_t *GL,         // halfLen projective points (12 uint64 each)
     const uint64_t *GR,         // halfLen projective points (12 uint64 each)
@@ -1064,26 +1052,23 @@ void bn254_fold_generators(
 {
     if (halfLen <= 0) return;
 
-    int nThreads = 8;  // cap threads
-    if (halfLen < nThreads) nThreads = halfLen;
+    int nChunks = 8;
+    if (halfLen < nChunks) nChunks = halfLen;
+    int chunkSize = (halfLen + nChunks - 1) / nChunks;
+    int total = halfLen;
 
-    pthread_t threads[8];
-    FoldChunk chunks[8];
-    int chunkSize = (halfLen + nThreads - 1) / nThreads;
-
-    for (int t = 0; t < nThreads; t++) {
-        chunks[t].GL = GL;
-        chunks[t].GR = GR;
-        chunks[t].x = x;
-        chunks[t].xInv = xInv;
-        chunks[t].result = result;
-        chunks[t].start = t * chunkSize;
-        chunks[t].end = (t + 1) * chunkSize;
-        if (chunks[t].end > halfLen) chunks[t].end = halfLen;
-        pthread_create(&threads[t], NULL, fold_worker, &chunks[t]);
-    }
-    for (int t = 0; t < nThreads; t++)
-        pthread_join(threads[t], NULL);
+    dispatch_apply(nChunks, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+        ^(size_t idx) {
+            int start = (int)idx * chunkSize;
+            int end = start + chunkSize;
+            if (end > total) end = total;
+            for (int i = start; i < end; i++) {
+                pt_double_scalar_mul(
+                    GL + i * 12, xInv,
+                    GR + i * 12, x,
+                    result + i * 12);
+            }
+        });
 }
 
 // ============================================================
@@ -1102,9 +1087,8 @@ void bn254_pippenger_msm(
     int num_windows = (256 + wb - 1) / wb;
     int num_buckets = (1 << wb) - 1;
 
-    // Allocate tasks and threads
+    // Allocate tasks
     WindowTask *tasks = (WindowTask *)malloc((size_t)num_windows * sizeof(WindowTask));
-    pthread_t *threads = (pthread_t *)malloc((size_t)num_windows * sizeof(pthread_t));
 
     for (int w = 0; w < num_windows; w++) {
         tasks[w].points = points;
@@ -1115,12 +1099,10 @@ void bn254_pippenger_msm(
         tasks[w].num_buckets = num_buckets;
     }
 
-    // Launch threads (one per window)
-    for (int w = 0; w < num_windows; w++)
-        pthread_create(&threads[w], NULL, window_worker, &tasks[w]);
-
-    for (int w = 0; w < num_windows; w++)
-        pthread_join(threads[w], NULL);
+    dispatch_apply(num_windows, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+        ^(size_t w) {
+            window_worker(&tasks[w]);
+        });
 
     // Horner combination: result = Σ windowResults[w] × 2^(w × wb)
     memcpy(result, tasks[num_windows - 1].result, 96);
@@ -1135,7 +1117,6 @@ void bn254_pippenger_msm(
     }
 
     free(tasks);
-    free(threads);
 }
 
 // ============================================================
@@ -1146,22 +1127,10 @@ void bn254_pippenger_msm(
 typedef struct {
     const uint64_t *points;
     const uint32_t *scalars;
-    uint64_t partial[12];  // thread-local partial sum
+    uint64_t partial[12];  // block-local partial sum
     int start;
     int end;
 } MSMProjChunk;
-
-static void *msm_proj_worker(void *arg) {
-    MSMProjChunk *c = (MSMProjChunk *)arg;
-    pt_set_id(c->partial);
-    for (int i = c->start; i < c->end; i++) {
-        uint64_t term[12], tmp[12];
-        pt_scalar_mul(c->points + i * 12, c->scalars + i * 8, term);
-        pt_add(c->partial, term, tmp);
-        memcpy(c->partial, tmp, 96);
-    }
-    return NULL;
-}
 
 void bn254_msm_projective(
     const uint64_t *points,    // n projective points (12 uint64_t each)
@@ -1184,31 +1153,40 @@ void bn254_msm_projective(
     }
 
     // Multi-threaded for larger n
-    int nThreads = 8;
-    if (n < nThreads) nThreads = n;
+    int nChunks = 8;
+    if (n < nChunks) nChunks = n;
 
-    pthread_t threads[8];
-    MSMProjChunk chunks[8];
-    int chunkSize = (n + nThreads - 1) / nThreads;
+    MSMProjChunk *chunks = (MSMProjChunk *)malloc(nChunks * sizeof(MSMProjChunk));
+    int chunkSize = (n + nChunks - 1) / nChunks;
 
-    for (int t = 0; t < nThreads; t++) {
+    for (int t = 0; t < nChunks; t++) {
         chunks[t].points = points;
         chunks[t].scalars = scalars;
         chunks[t].start = t * chunkSize;
         chunks[t].end = (t + 1) * chunkSize;
         if (chunks[t].end > n) chunks[t].end = n;
-        pthread_create(&threads[t], NULL, msm_proj_worker, &chunks[t]);
     }
-    for (int t = 0; t < nThreads; t++)
-        pthread_join(threads[t], NULL);
+
+    dispatch_apply(nChunks, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+        ^(size_t idx) {
+            MSMProjChunk *c = &chunks[idx];
+            pt_set_id(c->partial);
+            for (int i = c->start; i < c->end; i++) {
+                uint64_t term[12], tmp[12];
+                pt_scalar_mul(c->points + i * 12, c->scalars + i * 8, term);
+                pt_add(c->partial, term, tmp);
+                memcpy(c->partial, tmp, 96);
+            }
+        });
 
     // Combine partial sums
     memcpy(result, chunks[0].partial, 96);
-    for (int t = 1; t < nThreads; t++) {
+    for (int t = 1; t < nChunks; t++) {
         uint64_t tmp[12];
         pt_add(result, chunks[t].partial, tmp);
         memcpy(result, tmp, 96);
     }
+    free(chunks);
 }
 
 // ============================================================
@@ -1222,18 +1200,6 @@ typedef struct {
     uint64_t partial[12];
     int start, end;
 } DualMSMChunk;
-
-static void *dual_msm_worker(void *arg) {
-    DualMSMChunk *c = (DualMSMChunk *)arg;
-    pt_set_id(c->partial);
-    for (int i = c->start; i < c->end; i++) {
-        uint64_t term[12], tmp[12];
-        pt_scalar_mul(c->points + i * 12, c->scalars + i * 8, term);
-        pt_add(c->partial, term, tmp);
-        memcpy(c->partial, tmp, 96);
-    }
-    return NULL;
-}
 
 void bn254_dual_msm_projective(
     const uint64_t *points1, const uint32_t *scalars1, int n1,
@@ -1250,8 +1216,8 @@ void bn254_dual_msm_projective(
     if (t1 < 1) t1 = 1; if (t1 > 7) t1 = 7;
     int t2 = 8 - t1;
     if (n1 < t1) t1 = n1; if (n2 < t2) t2 = n2;
-    int nThreads = t1 + t2;
-    pthread_t threads[16]; DualMSMChunk chunks[16];
+    int nBlocks = t1 + t2;
+    DualMSMChunk *chunks = (DualMSMChunk *)malloc(16 * sizeof(DualMSMChunk));
 
     int cs1 = (n1 + t1 - 1) / t1;
     for (int t = 0; t < t1; t++) {
@@ -1265,10 +1231,18 @@ void bn254_dual_msm_projective(
         chunks[t1+t].start = t * cs2;
         chunks[t1+t].end = (t+1)*cs2 > n2 ? n2 : (t+1)*cs2;
     }
-    for (int t = 0; t < nThreads; t++)
-        pthread_create(&threads[t], NULL, dual_msm_worker, &chunks[t]);
-    for (int t = 0; t < nThreads; t++)
-        pthread_join(threads[t], NULL);
+
+    dispatch_apply(nBlocks, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+        ^(size_t idx) {
+            DualMSMChunk *c = &chunks[idx];
+            pt_set_id(c->partial);
+            for (int i = c->start; i < c->end; i++) {
+                uint64_t term[12], tmp[12];
+                pt_scalar_mul(c->points + i * 12, c->scalars + i * 8, term);
+                pt_add(c->partial, term, tmp);
+                memcpy(c->partial, tmp, 96);
+            }
+        });
 
     pt_set_id(result1);
     for (int t = 0; t < t1; t++) {
@@ -1282,6 +1256,7 @@ void bn254_dual_msm_projective(
         pt_add(result2, chunks[t1+t].partial, tmp);
         memcpy(result2, tmp, 96);
     }
+    free(chunks);
 }
 
 // ============================================================
@@ -1647,17 +1622,18 @@ void bn254_fr_full_sumcheck(const uint64_t *evals, int numVars,
             if (halfN / 1024 < nT) nT = halfN / 1024;
             if (nT < 1) nT = 1;
             int perT = (halfN + nT - 1) / nT;
-            pthread_t threads[8];
-            SumcheckRoundChunk chunks[8];
+            SumcheckRoundChunk *chunks = (SumcheckRoundChunk *)malloc(nT * sizeof(SumcheckRoundChunk));
             for (int t = 0; t < nT; t++) {
                 chunks[t].evals = buf;
                 chunks[t].halfN = halfN;
                 chunks[t].start = t * perT;
                 chunks[t].end = (t + 1) * perT;
                 if (chunks[t].end > halfN) chunks[t].end = halfN;
-                pthread_create(&threads[t], NULL, sumcheck_round_worker, &chunks[t]);
             }
-            for (int t = 0; t < nT; t++) pthread_join(threads[t], NULL);
+            dispatch_apply(nT, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+                ^(size_t idx) {
+                    sumcheck_round_worker(&chunks[idx]);
+                });
             // Reduce partial sums
             memcpy(rout, chunks[0].s0, 32);
             memcpy(rout + 4, chunks[0].s1, 32);
@@ -1668,6 +1644,7 @@ void bn254_fr_full_sumcheck(const uint64_t *evals, int numVars,
                 fr_add(rout + 4, chunks[t].s1, tmp); memcpy(rout + 4, tmp, 32);
                 fr_add(rout + 8, chunks[t].s2, tmp); memcpy(rout + 8, tmp, 32);
             }
+            free(chunks);
         } else {
             // Single-threaded round
             uint64_t s0[4] = {0,0,0,0};
@@ -1819,12 +1796,6 @@ typedef struct {
     int chunk;
 } BatchInvChunk;
 
-static void *batch_inv_worker(void *arg) {
-    BatchInvChunk *c = (BatchInvChunk *)arg;
-    batch_inverse_chunk(c->out, c->base, c->chunk);
-    return NULL;
-}
-
 void bn254_fr_inverse_evals_indexed(const uint64_t beta[4], const uint64_t *subtable,
                                      const int *indices, int n, uint64_t *out) {
     if (n == 0) return;
@@ -1837,24 +1808,19 @@ void bn254_fr_inverse_evals_indexed(const uint64_t beta[4], const uint64_t *subt
         return;
     }
     // Phase 2: parallel chunked batch inverse
-    int nThreads = 10;
-    if (n < nThreads * 1024) nThreads = (n + 1023) / 1024;
-    if (nThreads < 1) nThreads = 1;
-    int perThread = (n + nThreads - 1) / nThreads;
+    int nChunks = 10;
+    if (n < nChunks * 1024) nChunks = (n + 1023) / 1024;
+    if (nChunks < 1) nChunks = 1;
+    int perChunk = (n + nChunks - 1) / nChunks;
+    int total = n;
 
-    pthread_t threads[10];
-    BatchInvChunk chunks[10];
-    for (int t = 0; t < nThreads; t++) {
-        int base = t * perThread;
-        int end = base + perThread;
-        if (end > n) end = n;
-        chunks[t].out = out;
-        chunks[t].base = base;
-        chunks[t].chunk = end - base;
-        pthread_create(&threads[t], NULL, batch_inv_worker, &chunks[t]);
-    }
-    for (int t = 0; t < nThreads; t++)
-        pthread_join(threads[t], NULL);
+    dispatch_apply(nChunks, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+        ^(size_t idx) {
+            int base = (int)idx * perChunk;
+            int end = base + perChunk;
+            if (end > total) end = total;
+            batch_inverse_chunk(out, base, end - base);
+        });
 }
 
 // Compute beta+values and then batch inverse: out[i] = 1/(beta + values[i])
@@ -1869,24 +1835,19 @@ void bn254_fr_inverse_evals(const uint64_t beta[4], const uint64_t *values,
         return;
     }
     // Parallel chunked batch inverse for large n
-    int nThreads = 10;
-    if (n < nThreads * 1024) nThreads = (n + 1023) / 1024;
-    if (nThreads < 1) nThreads = 1;
-    int perThread = (n + nThreads - 1) / nThreads;
+    int nChunks = 10;
+    if (n < nChunks * 1024) nChunks = (n + 1023) / 1024;
+    if (nChunks < 1) nChunks = 1;
+    int perChunk = (n + nChunks - 1) / nChunks;
+    int total = n;
 
-    pthread_t threads[10];
-    BatchInvChunk chunks[10];
-    for (int t = 0; t < nThreads; t++) {
-        int base = t * perThread;
-        int end = base + perThread;
-        if (end > n) end = n;
-        chunks[t].out = out;
-        chunks[t].base = base;
-        chunks[t].chunk = end - base;
-        pthread_create(&threads[t], NULL, batch_inv_worker, &chunks[t]);
-    }
-    for (int t = 0; t < nThreads; t++)
-        pthread_join(threads[t], NULL);
+    dispatch_apply(nChunks, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+        ^(size_t idx) {
+            int base = (int)idx * perChunk;
+            int end = base + perChunk;
+            if (end > total) end = total;
+            batch_inverse_chunk(out, base, end - base);
+        });
 }
 
 // Compute weighted inverse evals: out[j] = weights[j] / (beta + values[j])
@@ -2145,12 +2106,11 @@ void bgmw_precompute(const uint64_t *generators_affine, int n,
     uint64_t *proj = (uint64_t *)malloc((size_t)total * 96);
     if (!proj) return;
 
-    int num_threads = n < 8 ? n : 8;
-    int chunk = (n + num_threads - 1) / num_threads;
-    pthread_t threads[8];
-    bgmw_pre_args_t args[8];
+    int num_blocks = n < 8 ? n : 8;
+    int chunk = (n + num_blocks - 1) / num_blocks;
+    bgmw_pre_args_t *args = (bgmw_pre_args_t *)malloc(num_blocks * sizeof(bgmw_pre_args_t));
 
-    for (int t = 0; t < num_threads; t++) {
+    for (int t = 0; t < num_blocks; t++) {
         args[t].gens = generators_affine;
         args[t].proj = proj;
         args[t].start = t * chunk;
@@ -2159,11 +2119,12 @@ void bgmw_precompute(const uint64_t *generators_affine, int n,
         args[t].num_windows = num_windows;
         args[t].table_size = table_size;
         args[t].entries_per_gen = entries_per_gen;
-        pthread_create(&threads[t], NULL, bgmw_pre_worker, &args[t]);
     }
-    for (int t = 0; t < num_threads; t++) {
-        pthread_join(threads[t], NULL);
-    }
+    dispatch_apply(num_blocks, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+        ^(size_t idx) {
+            bgmw_pre_worker(&args[idx]);
+        });
+    free(args);
 
     batch_to_affine(proj, table_out, total);
     free(proj);
@@ -2225,12 +2186,11 @@ void bgmw_msm(const uint64_t *table, int n, int window_bits,
     const int entries_per_gen = num_windows * table_size;
     const uint32_t mask = (uint32_t)((1 << window_bits) - 1);
 
-    int num_threads = n < 8 ? n : 8;
-    int chunk = (n + num_threads - 1) / num_threads;
-    pthread_t threads[8];
-    bgmw_msm_args_t args[8];
+    int num_blocks = n < 8 ? n : 8;
+    int chunk = (n + num_blocks - 1) / num_blocks;
+    bgmw_msm_args_t *args = (bgmw_msm_args_t *)malloc(num_blocks * sizeof(bgmw_msm_args_t));
 
-    for (int t = 0; t < num_threads; t++) {
+    for (int t = 0; t < num_blocks; t++) {
         args[t].table = table;
         args[t].scalars = scalars;
         args[t].start = t * chunk;
@@ -2241,20 +2201,21 @@ void bgmw_msm(const uint64_t *table, int n, int window_bits,
         args[t].entries_per_gen = entries_per_gen;
         args[t].mask = mask;
         pt_set_id(args[t].partial);
-        pthread_create(&threads[t], NULL, bgmw_msm_worker, &args[t]);
     }
-    for (int t = 0; t < num_threads; t++) {
-        pthread_join(threads[t], NULL);
-    }
+    dispatch_apply(num_blocks, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+        ^(size_t idx) {
+            bgmw_msm_worker(&args[idx]);
+        });
 
     memcpy(result, args[0].partial, 96);
-    for (int t = 1; t < num_threads; t++) {
+    for (int t = 1; t < num_blocks; t++) {
         if (!pt_is_id(args[t].partial)) {
             uint64_t tmp[12];
             pt_add(result, args[t].partial, tmp);
             memcpy(result, tmp, 96);
         }
     }
+    free(args);
 }
 
 // ============================================================

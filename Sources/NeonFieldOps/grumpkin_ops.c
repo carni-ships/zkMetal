@@ -6,7 +6,7 @@
 #include "NeonFieldOps.h"
 #include <string.h>
 #include <stdlib.h>
-#include <pthread.h>
+#include <dispatch/dispatch.h>
 
 typedef unsigned __int128 uint128_t;
 
@@ -538,7 +538,6 @@ void grumpkin_pippenger_msm(
     int num_buckets = (1 << wb) - 1;
 
     GkWindowTask *tasks = (GkWindowTask *)malloc((size_t)num_windows * sizeof(GkWindowTask));
-    pthread_t *threads = (pthread_t *)malloc((size_t)num_windows * sizeof(pthread_t));
 
     for (int w = 0; w < num_windows; w++) {
         tasks[w].points = points;
@@ -549,11 +548,10 @@ void grumpkin_pippenger_msm(
         tasks[w].num_buckets = num_buckets;
     }
 
-    for (int w = 0; w < num_windows; w++)
-        pthread_create(&threads[w], NULL, gk_window_worker, &tasks[w]);
-
-    for (int w = 0; w < num_windows; w++)
-        pthread_join(threads[w], NULL);
+    dispatch_apply(num_windows, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+        ^(size_t w) {
+            gk_window_worker(&tasks[w]);
+        });
 
     // Horner combination: result = sum windowResults[w] * 2^(w * wb)
     memcpy(result, tasks[num_windows - 1].result, 96);
@@ -568,5 +566,4 @@ void grumpkin_pippenger_msm(
     }
 
     free(tasks);
-    free(threads);
 }

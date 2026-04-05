@@ -6,7 +6,7 @@
 
 #include "NeonFieldOps.h"
 #include <string.h>
-#include <pthread.h>
+#include <dispatch/dispatch.h>
 
 typedef unsigned __int128 uint128_t;
 
@@ -150,32 +150,6 @@ static void whir_fold_generic_range(
 }
 
 // ============================================================
-// Thread pool for parallel fold
-// ============================================================
-
-typedef struct {
-    const uint64_t *evals;
-    const uint64_t *beta;
-    int reductionFactor;
-    int start;
-    int end;
-    uint64_t *result;
-} whir_fold_task_t;
-
-static void *whir_fold_thread_r4(void *arg) {
-    whir_fold_task_t *t = (whir_fold_task_t *)arg;
-    whir_fold_r4_range(t->evals, t->beta, t->start, t->end, t->result);
-    return NULL;
-}
-
-static void *whir_fold_thread_generic(void *arg) {
-    whir_fold_task_t *t = (whir_fold_task_t *)arg;
-    whir_fold_generic_range(t->evals, t->beta, t->reductionFactor,
-                            t->start, t->end, t->result);
-    return NULL;
-}
-
-// ============================================================
 // Public API
 // ============================================================
 
@@ -188,14 +162,14 @@ void bn254_fr_whir_fold(const uint64_t *evals, int n,
     if (newN <= 0) return;
 
     // For small sizes, single-threaded
-    int numThreads = 1;
+    int nChunks = 1;
     if (newN >= 2048) {
-        numThreads = 4;
+        nChunks = 4;
     } else if (newN >= 512) {
-        numThreads = 2;
+        nChunks = 2;
     }
 
-    if (numThreads == 1) {
+    if (nChunks == 1) {
         if (reductionFactor == 4) {
             whir_fold_r4_range(evals, beta, 0, newN, result);
         } else {
@@ -204,26 +178,18 @@ void bn254_fr_whir_fold(const uint64_t *evals, int n,
         return;
     }
 
-    // Multi-threaded
-    pthread_t threads[8];
-    whir_fold_task_t tasks[8];
-    int chunk = newN / numThreads;
+    int chunk = newN / nChunks;
+    int total = newN;
+    int rf = reductionFactor;
 
-    for (int i = 0; i < numThreads; i++) {
-        tasks[i].evals = evals;
-        tasks[i].beta = beta;
-        tasks[i].reductionFactor = reductionFactor;
-        tasks[i].start = i * chunk;
-        tasks[i].end = (i == numThreads - 1) ? newN : (i + 1) * chunk;
-        tasks[i].result = result;
-
-        if (reductionFactor == 4) {
-            pthread_create(&threads[i], NULL, whir_fold_thread_r4, &tasks[i]);
-        } else {
-            pthread_create(&threads[i], NULL, whir_fold_thread_generic, &tasks[i]);
-        }
-    }
-    for (int i = 0; i < numThreads; i++) {
-        pthread_join(threads[i], NULL);
-    }
+    dispatch_apply(nChunks, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+        ^(size_t idx) {
+            int start = (int)idx * chunk;
+            int end = ((int)idx == nChunks - 1) ? total : start + chunk;
+            if (rf == 4) {
+                whir_fold_r4_range(evals, beta, start, end, result);
+            } else {
+                whir_fold_generic_range(evals, beta, rf, start, end, result);
+            }
+        });
 }

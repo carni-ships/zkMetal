@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
+#include <dispatch/dispatch.h>
 
 typedef unsigned __int128 uint128_t;
 
@@ -1484,7 +1485,6 @@ void bls12_377_g1_pippenger_msm(
 
     // Allocate tasks and threads
     G1WindowTask *tasks = (G1WindowTask *)malloc((size_t)num_windows * sizeof(G1WindowTask));
-    pthread_t *threads = (pthread_t *)malloc((size_t)num_windows * sizeof(pthread_t));
 
     for (int w = 0; w < num_windows; w++) {
         tasks[w].points = points;
@@ -1495,12 +1495,10 @@ void bls12_377_g1_pippenger_msm(
         tasks[w].num_buckets = num_buckets;
     }
 
-    // Launch threads (one per window)
-    for (int w = 0; w < num_windows; w++)
-        pthread_create(&threads[w], NULL, g1_window_worker, &tasks[w]);
-
-    for (int w = 0; w < num_windows; w++)
-        pthread_join(threads[w], NULL);
+    dispatch_apply(num_windows, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+        ^(size_t w) {
+            g1_window_worker(&tasks[w]);
+        });
 
     // Horner combination: result = sum windowResults[w] * 2^(w * wb)
     memcpy(result, tasks[num_windows - 1].result, 144);
@@ -1515,5 +1513,4 @@ void bls12_377_g1_pippenger_msm(
     }
 
     free(tasks);
-    free(threads);
 }

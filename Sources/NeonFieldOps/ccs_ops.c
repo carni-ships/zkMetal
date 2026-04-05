@@ -5,7 +5,7 @@
 #include "NeonFieldOps.h"
 #include <string.h>
 #include <stdlib.h>
-#include <pthread.h>
+#include <dispatch/dispatch.h>
 
 typedef unsigned __int128 uint128_t;
 
@@ -67,61 +67,49 @@ static inline void ccs_fr_add(const uint64_t a[4], const uint64_t b[4], uint64_t
 // CSR Sparse Matrix-Vector Multiply (multi-threaded)
 // ============================================================
 
-typedef struct {
-    uint64_t *result;
-    const int *rowPtr;
-    const int *colIdx;
-    const uint64_t *values;
-    const uint64_t *z;
-    int rowStart;
-    int rowEnd;
-} CCSMatvecArg;
-
-static void *ccs_matvec_worker(void *arg) {
-    CCSMatvecArg *a = (CCSMatvecArg *)arg;
-    for (int i = a->rowStart; i < a->rowEnd; i++) {
-        uint64_t acc[4] = {0,0,0,0};
-        int start = a->rowPtr[i];
-        int end = a->rowPtr[i + 1];
-        for (int k = start; k < end; k++) {
-            int col = a->colIdx[k];
-            uint64_t prod[4];
-            ccs_fr_mul(a->values + k * 4, a->z + col * 4, prod);
-            ccs_fr_add(acc, prod, acc);
-        }
-        memcpy(a->result + i * 4, acc, 32);
-    }
-    return NULL;
-}
-
 void ccs_sparse_matvec(uint64_t *result,
                        const int *rowPtr, const int *colIdx,
                        const uint64_t *values, const uint64_t *z,
                        int nRows) {
     memset(result, 0, (size_t)nRows * 32);
     if (nRows < 256) {
-        // Single-threaded for small matrices
-        CCSMatvecArg arg = {result, rowPtr, colIdx, values, z, 0, nRows};
-        ccs_matvec_worker(&arg);
+        for (int i = 0; i < nRows; i++) {
+            uint64_t acc[4] = {0,0,0,0};
+            int start = rowPtr[i];
+            int end = rowPtr[i + 1];
+            for (int k = start; k < end; k++) {
+                int col = colIdx[k];
+                uint64_t prod[4];
+                ccs_fr_mul(values + k * 4, z + col * 4, prod);
+                ccs_fr_add(acc, prod, acc);
+            }
+            memcpy(result + i * 4, acc, 32);
+        }
         return;
     }
-    int nT = 8;
-    if (nRows < nT) nT = nRows;
-    int perT = (nRows + nT - 1) / nT;
-    pthread_t threads[8];
-    CCSMatvecArg args[8];
-    for (int t = 0; t < nT; t++) {
-        args[t].result = result;
-        args[t].rowPtr = rowPtr;
-        args[t].colIdx = colIdx;
-        args[t].values = values;
-        args[t].z = z;
-        args[t].rowStart = t * perT;
-        args[t].rowEnd = (t + 1) * perT;
-        if (args[t].rowEnd > nRows) args[t].rowEnd = nRows;
-        pthread_create(&threads[t], NULL, ccs_matvec_worker, &args[t]);
-    }
-    for (int t = 0; t < nT; t++) pthread_join(threads[t], NULL);
+    int nChunks = 8;
+    if (nRows < nChunks) nChunks = nRows;
+    int perChunk = (nRows + nChunks - 1) / nChunks;
+    int totalRows = nRows;
+
+    dispatch_apply(nChunks, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+        ^(size_t idx) {
+            int rowStart = (int)idx * perChunk;
+            int rowEnd = rowStart + perChunk;
+            if (rowEnd > totalRows) rowEnd = totalRows;
+            for (int i = rowStart; i < rowEnd; i++) {
+                uint64_t acc[4] = {0,0,0,0};
+                int start = rowPtr[i];
+                int end = rowPtr[i + 1];
+                for (int k = start; k < end; k++) {
+                    int col = colIdx[k];
+                    uint64_t prod[4];
+                    ccs_fr_mul(values + k * 4, z + col * 4, prod);
+                    ccs_fr_add(acc, prod, acc);
+                }
+                memcpy(result + i * 4, acc, 32);
+            }
+        });
 }
 
 // ============================================================
@@ -136,43 +124,6 @@ void ccs_sparse_matvec(uint64_t *result,
 // matResultPtrs[j * maxDegree + k] points to m Fr elements.
 // nMatricesPerTerm[j] = number of matrices in multiset j.
 
-typedef struct {
-    uint64_t *acc;
-    const uint64_t * const *matResultPtrs;
-    const int *nMatricesPerTerm;
-    const uint64_t *coefficients;
-    int nTerms;
-    int maxDegree;
-    int rowStart;
-    int rowEnd;
-} CCSHadamardArg;
-
-static void *ccs_hadamard_worker(void *arg) {
-    CCSHadamardArg *a = (CCSHadamardArg *)arg;
-    for (int i = a->rowStart; i < a->rowEnd; i++) {
-        uint64_t rowAcc[4] = {0,0,0,0};
-        for (int j = 0; j < a->nTerms; j++) {
-            int d = a->nMatricesPerTerm[j];
-            const uint64_t *coeff = a->coefficients + j * 4;
-            uint64_t h[4];
-            memcpy(h, CCS_FR_ONE, 32);
-            for (int k = 0; k < d; k++) {
-                const uint64_t *mv = a->matResultPtrs[j * a->maxDegree + k];
-                uint64_t tmp[4];
-                ccs_fr_mul(h, mv + i * 4, tmp);
-                memcpy(h, tmp, 32);
-            }
-            uint64_t scaled[4];
-            ccs_fr_mul(coeff, h, scaled);
-            uint64_t sum[4];
-            ccs_fr_add(rowAcc, scaled, sum);
-            memcpy(rowAcc, sum, 32);
-        }
-        memcpy(a->acc + i * 4, rowAcc, 32);
-    }
-    return NULL;
-}
-
 void ccs_hadamard_accumulate(uint64_t *acc,
                              const uint64_t * const *matResultPtrs,
                              const int *nMatricesPerTerm,
@@ -181,59 +132,66 @@ void ccs_hadamard_accumulate(uint64_t *acc,
     if (m < 256) {
         // Single-threaded for small sizes
         memset(acc, 0, (size_t)m * 32);
-        CCSHadamardArg arg = {acc, matResultPtrs, nMatricesPerTerm,
-                              coefficients, nTerms, maxDegree, 0, m};
-        ccs_hadamard_worker(&arg);
+        for (int i = 0; i < m; i++) {
+            uint64_t rowAcc[4] = {0,0,0,0};
+            for (int j = 0; j < nTerms; j++) {
+                int d = nMatricesPerTerm[j];
+                const uint64_t *coeff = coefficients + j * 4;
+                uint64_t h[4];
+                memcpy(h, CCS_FR_ONE, 32);
+                for (int k = 0; k < d; k++) {
+                    const uint64_t *mv = matResultPtrs[j * maxDegree + k];
+                    uint64_t tmp[4];
+                    ccs_fr_mul(h, mv + i * 4, tmp);
+                    memcpy(h, tmp, 32);
+                }
+                uint64_t scaled[4];
+                ccs_fr_mul(coeff, h, scaled);
+                uint64_t sum[4];
+                ccs_fr_add(rowAcc, scaled, sum);
+                memcpy(rowAcc, sum, 32);
+            }
+            memcpy(acc + i * 4, rowAcc, 32);
+        }
         return;
     }
-    int nT = 8;
-    if (m < nT) nT = m;
-    int perT = (m + nT - 1) / nT;
-    pthread_t threads[8];
-    CCSHadamardArg args[8];
-    // No memset needed — each thread writes its own rows directly
-    for (int t = 0; t < nT; t++) {
-        args[t].acc = acc;
-        args[t].matResultPtrs = matResultPtrs;
-        args[t].nMatricesPerTerm = nMatricesPerTerm;
-        args[t].coefficients = coefficients;
-        args[t].nTerms = nTerms;
-        args[t].maxDegree = maxDegree;
-        args[t].rowStart = t * perT;
-        args[t].rowEnd = (t + 1) * perT;
-        if (args[t].rowEnd > m) args[t].rowEnd = m;
-        pthread_create(&threads[t], NULL, ccs_hadamard_worker, &args[t]);
-    }
-    for (int t = 0; t < nT; t++) pthread_join(threads[t], NULL);
+    int nChunks = 8;
+    if (m < nChunks) nChunks = m;
+    int perChunk = (m + nChunks - 1) / nChunks;
+    int total = m;
+
+    dispatch_apply(nChunks, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+        ^(size_t idx) {
+            int rowStart = (int)idx * perChunk;
+            int rowEnd = rowStart + perChunk;
+            if (rowEnd > total) rowEnd = total;
+            for (int i = rowStart; i < rowEnd; i++) {
+                uint64_t rowAcc[4] = {0,0,0,0};
+                for (int j = 0; j < nTerms; j++) {
+                    int d = nMatricesPerTerm[j];
+                    const uint64_t *coeff = coefficients + j * 4;
+                    uint64_t h[4];
+                    memcpy(h, CCS_FR_ONE, 32);
+                    for (int k = 0; k < d; k++) {
+                        const uint64_t *mv = matResultPtrs[j * maxDegree + k];
+                        uint64_t tmp[4];
+                        ccs_fr_mul(h, mv + i * 4, tmp);
+                        memcpy(h, tmp, 32);
+                    }
+                    uint64_t scaled[4];
+                    ccs_fr_mul(coeff, h, scaled);
+                    uint64_t sum[4];
+                    ccs_fr_add(rowAcc, scaled, sum);
+                    memcpy(rowAcc, sum, 32);
+                }
+                memcpy(acc + i * 4, rowAcc, 32);
+            }
+        });
 }
 
 // ============================================================
 // Compute single CCS term: c_j * hadamard(M_{S_j} * z)
 // ============================================================
-
-typedef struct {
-    uint64_t *result;
-    const uint64_t * const *matVecResults;
-    int nMatrices;
-    const uint64_t *coeff;
-    int rowStart;
-    int rowEnd;
-} CCSTermArg;
-
-static void *ccs_term_worker(void *arg) {
-    CCSTermArg *a = (CCSTermArg *)arg;
-    for (int i = a->rowStart; i < a->rowEnd; i++) {
-        uint64_t h[4];
-        memcpy(h, CCS_FR_ONE, 32);
-        for (int k = 0; k < a->nMatrices; k++) {
-            uint64_t tmp[4];
-            ccs_fr_mul(h, a->matVecResults[k] + i * 4, tmp);
-            memcpy(h, tmp, 32);
-        }
-        ccs_fr_mul(a->coeff, h, a->result + i * 4);
-    }
-    return NULL;
-}
 
 void ccs_compute_term(uint64_t *result,
                       const uint64_t * const *matVecResults,
@@ -241,24 +199,37 @@ void ccs_compute_term(uint64_t *result,
                       const uint64_t coeff[4],
                       int m) {
     if (m < 256) {
-        CCSTermArg arg = {result, matVecResults, nMatrices, coeff, 0, m};
-        ccs_term_worker(&arg);
+        for (int i = 0; i < m; i++) {
+            uint64_t h[4];
+            memcpy(h, CCS_FR_ONE, 32);
+            for (int k = 0; k < nMatrices; k++) {
+                uint64_t tmp[4];
+                ccs_fr_mul(h, matVecResults[k] + i * 4, tmp);
+                memcpy(h, tmp, 32);
+            }
+            ccs_fr_mul(coeff, h, result + i * 4);
+        }
         return;
     }
-    int nT = 8;
-    if (m < nT) nT = m;
-    int perT = (m + nT - 1) / nT;
-    pthread_t threads[8];
-    CCSTermArg args[8];
-    for (int t = 0; t < nT; t++) {
-        args[t].result = result;
-        args[t].matVecResults = matVecResults;
-        args[t].nMatrices = nMatrices;
-        args[t].coeff = coeff;
-        args[t].rowStart = t * perT;
-        args[t].rowEnd = (t + 1) * perT;
-        if (args[t].rowEnd > m) args[t].rowEnd = m;
-        pthread_create(&threads[t], NULL, ccs_term_worker, &args[t]);
-    }
-    for (int t = 0; t < nT; t++) pthread_join(threads[t], NULL);
+    int nChunks = 8;
+    if (m < nChunks) nChunks = m;
+    int perChunk = (m + nChunks - 1) / nChunks;
+    int total = m;
+
+    dispatch_apply(nChunks, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+        ^(size_t idx) {
+            int rowStart = (int)idx * perChunk;
+            int rowEnd = rowStart + perChunk;
+            if (rowEnd > total) rowEnd = total;
+            for (int i = rowStart; i < rowEnd; i++) {
+                uint64_t h[4];
+                memcpy(h, CCS_FR_ONE, 32);
+                for (int k = 0; k < nMatrices; k++) {
+                    uint64_t tmp[4];
+                    ccs_fr_mul(h, matVecResults[k] + i * 4, tmp);
+                    memcpy(h, tmp, 32);
+                }
+                ccs_fr_mul(coeff, h, result + i * 4);
+            }
+        });
 }

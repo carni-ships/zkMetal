@@ -16,7 +16,7 @@
 #include "NeonFieldOps.h"
 #include <string.h>
 #include <stdlib.h>
-#include <pthread.h>
+#include <dispatch/dispatch.h>
 
 typedef unsigned __int128 uint128_t;
 
@@ -941,11 +941,9 @@ void ed25519_pippenger_msm(
         }
     }
 
-    // Launch one thread per window
+    // Launch one block per window via GCD
     EdSignedWindowTask *tasks = (EdSignedWindowTask *)malloc(
         (size_t)num_windows * sizeof(EdSignedWindowTask));
-    pthread_t *threads = (pthread_t *)malloc(
-        (size_t)num_windows * sizeof(pthread_t));
 
     for (int w = 0; w < num_windows; w++) {
         tasks[w].points = points;
@@ -955,11 +953,10 @@ void ed25519_pippenger_msm(
         tasks[w].num_buckets = half_buckets;
     }
 
-    for (int w = 0; w < num_windows; w++)
-        pthread_create(&threads[w], NULL, ed_signed_window_worker, &tasks[w]);
-
-    for (int w = 0; w < num_windows; w++)
-        pthread_join(threads[w], NULL);
+    dispatch_apply(num_windows, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+        ^(size_t w) {
+            ed_signed_window_worker(&tasks[w]);
+        });
 
     // Horner combination: result = Sum windowResults[w] * 2^(w * wb)
     memcpy(result, tasks[num_windows - 1].result, 128);
@@ -975,7 +972,6 @@ void ed25519_pippenger_msm(
 
     free(all_digits);
     free(tasks);
-    free(threads);
 }
 
 // ============================================================

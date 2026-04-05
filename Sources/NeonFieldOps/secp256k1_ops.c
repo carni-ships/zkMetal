@@ -12,7 +12,7 @@
 #include "NeonFieldOps.h"
 #include <stdlib.h>
 #include <string.h>
-#include <pthread.h>
+#include <dispatch/dispatch.h>
 
 typedef unsigned __int128 uint128_t;
 
@@ -688,9 +688,8 @@ void secp256k1_pippenger_msm(const uint64_t *points, const uint32_t *scalars,
     int nw = (256 + wb - 1) / wb;
     int nb = (1 << wb) - 1;
 
-    // Launch window workers in parallel
+    // Launch window workers in parallel via GCD
     SecpWindowTask *tasks = (SecpWindowTask *)malloc((size_t)nw * sizeof(SecpWindowTask));
-    pthread_t *threads = (pthread_t *)malloc((size_t)nw * sizeof(pthread_t));
 
     for (int w = 0; w < nw; w++) {
         tasks[w].points = points;
@@ -701,24 +700,10 @@ void secp256k1_pippenger_msm(const uint64_t *points, const uint32_t *scalars,
         tasks[w].num_buckets = nb;
     }
 
-    // Limit threads to avoid oversubscription
-    int max_threads = 8;
-    if (nw <= max_threads) {
-        for (int w = 0; w < nw; w++)
-            pthread_create(&threads[w], NULL, secp_window_worker, &tasks[w]);
-        for (int w = 0; w < nw; w++)
-            pthread_join(threads[w], NULL);
-    } else {
-        // Run in batches
-        for (int batch_start = 0; batch_start < nw; batch_start += max_threads) {
-            int batch_end = batch_start + max_threads;
-            if (batch_end > nw) batch_end = nw;
-            for (int w = batch_start; w < batch_end; w++)
-                pthread_create(&threads[w], NULL, secp_window_worker, &tasks[w]);
-            for (int w = batch_start; w < batch_end; w++)
-                pthread_join(threads[w], NULL);
-        }
-    }
+    dispatch_apply(nw, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+        ^(size_t w) {
+            secp_window_worker(&tasks[w]);
+        });
 
     // Combine windows using Horner's method
     memcpy(result, tasks[nw - 1].result, 96);
@@ -734,7 +719,6 @@ void secp256k1_pippenger_msm(const uint64_t *points, const uint32_t *scalars,
     }
 
     free(tasks);
-    free(threads);
 }
 
 // ============================================================
