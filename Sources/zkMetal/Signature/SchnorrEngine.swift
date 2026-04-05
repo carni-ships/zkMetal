@@ -212,19 +212,23 @@ public class SchnorrEngine {
         reduceMod(&eLimbs, SecpFr.N)
 
         // Verify: s*G == R + e*P
-        // Equivalently: R = s*G - e*P
-        // Compute s*G
+        // Equivalently: R = s*G - e*P = s*G + (-e)*P
+        // Use Shamir's trick for ~25% faster verification (single double-and-add scan)
         let gen = secp256k1Generator()
         let gProj = secpPointFromAffine(gen)
-        let sG = secpPointMulScalar(gProj, sLimbs)
-
-        // Compute e*P
         let pProj = secpPointFromAffine(pAff)
-        let eP = secpPointMulScalar(pProj, eLimbs)
 
-        // R' = s*G - e*P = s*G + (-e*P)
-        let negEP = SecpPointProjective(x: eP.x, y: secpNeg(eP.y), z: eP.z)
-        let rPrime = secpPointAdd(sG, negEP)
+        // Negate e mod n: -e = n - e
+        let negE: [UInt64]
+        if isZero256(eLimbs) {
+            negE = eLimbs
+        } else {
+            let (neg, _) = sub256(SecpFr.N, eLimbs)
+            negE = neg
+        }
+
+        // R' = s*G + (-e)*P via Shamir's trick
+        let rPrime = secpShamirDoubleMul(gProj, sLimbs, pProj, negE)
 
         // R' must not be the point at infinity
         if secpPointIsIdentity(rPrime) { return false }
