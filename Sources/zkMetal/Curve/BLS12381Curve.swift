@@ -183,6 +183,57 @@ public func bls12381G1Generator() -> G1Affine381 {
     return G1Affine381(x: gx, y: gy)
 }
 
+// MARK: - G1 Pippenger MSM (C accelerated)
+
+/// Multi-scalar multiplication using C Pippenger with pthreads.
+/// Points: affine G1 points. Scalars: 8 x UInt32 per scalar (little-endian integer form).
+public func g1_381PippengerMSM(points: [G1Affine381], scalars: [[UInt32]]) -> G1Projective381 {
+    let n = points.count
+    precondition(scalars.count == n)
+    if n == 0 { return g1_381Identity() }
+
+    // Flatten scalars to contiguous buffer
+    var flatScalars = [UInt32]()
+    flatScalars.reserveCapacity(n * 8)
+    for s in scalars {
+        precondition(s.count == 8)
+        flatScalars.append(contentsOf: s)
+    }
+
+    var result = G1Projective381(x: .one, y: .one, z: .zero)
+
+    points.withUnsafeBytes { ptsBuf in
+        flatScalars.withUnsafeBufferPointer { scBuf in
+            withUnsafeMutableBytes(of: &result) { resBuf in
+                let ptsPtr = ptsBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                let resPtr = resBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                bls12_381_g1_pippenger_msm(ptsPtr, scBuf.baseAddress!, Int32(n), resPtr)
+            }
+        }
+    }
+    return result
+}
+
+/// Pippenger MSM with pre-flattened scalars (avoids [[UInt32]] allocation).
+public func g1_381PippengerMSMFlat(points: [G1Affine381], flatScalars: [UInt32]) -> G1Projective381 {
+    let n = points.count
+    precondition(flatScalars.count == n * 8)
+    if n == 0 { return g1_381Identity() }
+
+    var result = G1Projective381(x: .one, y: .one, z: .zero)
+
+    points.withUnsafeBytes { ptsBuf in
+        flatScalars.withUnsafeBufferPointer { scBuf in
+            withUnsafeMutableBytes(of: &result) { resBuf in
+                let ptsPtr = ptsBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                let resPtr = resBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                bls12_381_g1_pippenger_msm(ptsPtr, scBuf.baseAddress!, Int32(n), resPtr)
+            }
+        }
+    }
+    return result
+}
+
 // MARK: - G2 Point Types
 
 public struct G2Affine381 {

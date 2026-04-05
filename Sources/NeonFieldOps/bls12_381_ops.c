@@ -11,6 +11,8 @@
 
 #include "NeonFieldOps.h"
 #include <string.h>
+#include <stdlib.h>
+#include <pthread.h>
 
 typedef unsigned __int128 uint128_t;
 
@@ -484,4 +486,245 @@ void bls12_381_g1_point_double(const uint64_t p[18], uint64_t r[18]) {
 
 void bls12_381_g1_point_add_mixed(const uint64_t p[18], const uint64_t q_aff[12], uint64_t r[18]) {
     g1_add_mixed(p, q_aff, r);
+}
+
+// ============================================================
+// Fp inversion via Fermat: a^(p-2) mod p
+// ============================================================
+
+static void fp_inv(const uint64_t a[6], uint64_t result[6]) {
+    uint64_t pm2[6];
+    pm2[0] = FP381_P[0] - 2;
+    pm2[1] = FP381_P[1];
+    pm2[2] = FP381_P[2];
+    pm2[3] = FP381_P[3];
+    pm2[4] = FP381_P[4];
+    pm2[5] = FP381_P[5];
+
+    memcpy(result, FP381_ONE, 48);
+    uint64_t b[6];
+    memcpy(b, a, 48);
+    for (int i = 0; i < 6; i++) {
+        for (int bit = 0; bit < 64; bit++) {
+            if ((pm2[i] >> bit) & 1)
+                fp_mul(result, b, result);
+            fp_sqr(b, b);
+        }
+    }
+}
+
+// ============================================================
+// Batch projective-to-affine (Montgomery's trick)
+// Single inversion for all non-identity points
+// ============================================================
+
+static inline int g1_aff_is_id(const uint64_t q[12]) {
+    return (q[0] | q[1] | q[2] | q[3] | q[4] | q[5] |
+            q[6] | q[7] | q[8] | q[9] | q[10] | q[11]) == 0;
+}
+
+static void g1_batch_to_affine(const uint64_t *proj, uint64_t *aff, int n) {
+    if (n == 0) return;
+
+    // Compute cumulative products of Z values
+    uint64_t *prods = (uint64_t *)malloc((size_t)n * 48);
+    int first_valid = -1;
+
+    for (int i = 0; i < n; i++) {
+        if (g1_is_id(proj + i * 18)) {
+            if (i == 0) memcpy(prods, FP381_ONE, 48);
+            else memcpy(prods + i * 6, prods + (i-1) * 6, 48);
+        } else {
+            if (first_valid < 0) {
+                first_valid = i;
+                memcpy(prods + i * 6, proj + i * 18 + 12, 48);  // Z_i
+            } else {
+                fp_mul(prods + (i-1) * 6, proj + i * 18 + 12, prods + i * 6);
+            }
+        }
+    }
+
+    if (first_valid < 0) {
+        // All identity
+        memset(aff, 0, (size_t)n * 96);
+        free(prods);
+        return;
+    }
+
+    // Invert the product
+    uint64_t inv[6];
+    fp_inv(prods + (n-1) * 6, inv);
+
+    // Back-propagate
+    for (int i = n - 1; i >= 0; i--) {
+        if (g1_is_id(proj + i * 18)) {
+            memset(aff + i * 12, 0, 96);
+            continue;
+        }
+
+        uint64_t zinv[6];
+        if (i > first_valid) {
+            fp_mul(inv, prods + (i-1) * 6, zinv);
+            fp_mul(inv, proj + i * 18 + 12, inv);  // inv *= z_i
+        } else {
+            memcpy(zinv, inv, 48);
+        }
+
+        uint64_t zinv2[6], zinv3[6];
+        fp_sqr(zinv, zinv2);
+        fp_mul(zinv2, zinv, zinv3);
+        fp_mul(proj + i * 18, zinv2, aff + i * 12);           // x_aff = X * Z^{-2}
+        fp_mul(proj + i * 18 + 6, zinv3, aff + i * 12 + 6);   // y_aff = Y * Z^{-3}
+    }
+
+    free(prods);
+}
+
+// ============================================================
+// Scalar window extraction
+// ============================================================
+
+static inline uint32_t g1_extract_window(const uint32_t *scalar, int window_idx, int window_bits) {
+    int bit_offset = window_idx * window_bits;
+    int word_idx = bit_offset / 32;
+    int bit_in_word = bit_offset % 32;
+
+    uint64_t word = scalar[word_idx];
+    if (word_idx + 1 < 8)
+        word |= ((uint64_t)scalar[word_idx + 1]) << 32;
+
+    return (uint32_t)((word >> bit_in_word) & ((1u << window_bits) - 1));
+}
+
+// ============================================================
+// Adaptive window sizing
+// ============================================================
+
+static int g1_optimal_window_bits(int n) {
+    if (n <= 4)     return 3;
+    if (n <= 32)    return 5;
+    if (n <= 256)   return 8;
+    if (n <= 2048)  return 10;
+    if (n <= 8192)  return 11;
+    if (n <= 32768) return 13;
+    if (n <= 131072) return 14;
+    if (n <= 524288) return 15;
+    return 16;
+}
+
+// ============================================================
+// Per-window worker
+// ============================================================
+
+typedef struct {
+    const uint64_t *points;     // n affine points (12 limbs each)
+    const uint32_t *scalars;    // n scalars (8 uint32 each)
+    int n;
+    int window_bits;
+    int window_idx;
+    int num_buckets;
+    uint64_t result[18];        // output projective point
+} G1WindowTask;
+
+static void *g1_window_worker(void *arg) {
+    G1WindowTask *task = (G1WindowTask *)arg;
+    int wb = task->window_bits;
+    int w = task->window_idx;
+    int nb = task->num_buckets;
+    int nn = task->n;
+
+    // Allocate projective buckets (identity-initialized)
+    uint64_t *buckets = (uint64_t *)malloc((size_t)(nb + 1) * 144);
+    for (int b = 0; b <= nb; b++)
+        g1_set_id(buckets + b * 18);
+
+    // Phase 1: Bucket accumulation (mixed affine addition)
+    for (int i = 0; i < nn; i++) {
+        uint32_t digit = g1_extract_window(task->scalars + i * 8, w, wb);
+        if (digit != 0) {
+            uint64_t tmp[18];
+            g1_add_mixed(buckets + digit * 18, task->points + i * 12, tmp);
+            memcpy(buckets + digit * 18, tmp, 144);
+        }
+    }
+
+    // Phase 2: Batch convert buckets to affine (Montgomery's trick)
+    // Only convert buckets 1..nb (skip bucket 0)
+    uint64_t *bucket_aff = (uint64_t *)malloc((size_t)nb * 96);
+    g1_batch_to_affine(buckets + 18, bucket_aff, nb);
+
+    // Phase 3: Running-sum reduction using mixed addition
+    uint64_t running[18], window_sum[18];
+    g1_set_id(running);
+    g1_set_id(window_sum);
+
+    for (int j = nb - 1; j >= 0; j--) {
+        // bucket_aff[j] corresponds to original bucket j+1
+        if (!g1_aff_is_id(bucket_aff + j * 12)) {
+            uint64_t tmp[18];
+            g1_add_mixed(running, bucket_aff + j * 12, tmp);
+            memcpy(running, tmp, 144);
+        }
+        uint64_t tmp[18];
+        g1_add(window_sum, running, tmp);
+        memcpy(window_sum, tmp, 144);
+    }
+
+    memcpy(task->result, window_sum, 144);
+    free(buckets);
+    free(bucket_aff);
+    return NULL;
+}
+
+// ============================================================
+// BLS12-381 G1 Pippenger MSM
+// Multi-threaded windows, mixed affine addition, batch-to-affine
+// ============================================================
+
+void bls12_381_g1_pippenger_msm(
+    const uint64_t *points,    // n affine points: n × 12 uint64_t
+    const uint32_t *scalars,   // n scalars: n × 8 uint32_t
+    int n,
+    uint64_t *result)          // output: 18 uint64_t (projective)
+{
+    if (n == 0) { g1_set_id(result); return; }
+
+    int wb = g1_optimal_window_bits(n);
+    int num_windows = (256 + wb - 1) / wb;
+    int num_buckets = (1 << wb) - 1;
+
+    // Allocate tasks and threads
+    G1WindowTask *tasks = (G1WindowTask *)malloc((size_t)num_windows * sizeof(G1WindowTask));
+    pthread_t *threads = (pthread_t *)malloc((size_t)num_windows * sizeof(pthread_t));
+
+    for (int w = 0; w < num_windows; w++) {
+        tasks[w].points = points;
+        tasks[w].scalars = scalars;
+        tasks[w].n = n;
+        tasks[w].window_bits = wb;
+        tasks[w].window_idx = w;
+        tasks[w].num_buckets = num_buckets;
+    }
+
+    // Launch threads (one per window)
+    for (int w = 0; w < num_windows; w++)
+        pthread_create(&threads[w], NULL, g1_window_worker, &tasks[w]);
+
+    for (int w = 0; w < num_windows; w++)
+        pthread_join(threads[w], NULL);
+
+    // Horner combination: result = sum windowResults[w] * 2^(w * wb)
+    memcpy(result, tasks[num_windows - 1].result, 144);
+    for (int w = num_windows - 2; w >= 0; w--) {
+        uint64_t tmp[18];
+        for (int s = 0; s < wb; s++) {
+            g1_dbl(result, tmp);
+            memcpy(result, tmp, 144);
+        }
+        g1_add(result, tasks[w].result, tmp);
+        memcpy(result, tmp, 144);
+    }
+
+    free(tasks);
+    free(threads);
 }

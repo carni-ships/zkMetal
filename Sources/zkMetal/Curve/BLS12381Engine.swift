@@ -32,6 +32,16 @@ public class BLS12381Engine {
         g1_381Negate(p)
     }
 
+    /// Multi-scalar multiplication on G1 using Pippenger (C accelerated, multi-threaded)
+    public func g1MSM(points: [G1Affine381], scalars: [[UInt32]]) -> G1Projective381 {
+        g1_381PippengerMSM(points: points, scalars: scalars)
+    }
+
+    /// MSM with pre-flattened scalars
+    public func g1MSMFlat(points: [G1Affine381], flatScalars: [UInt32]) -> G1Projective381 {
+        g1_381PippengerMSMFlat(points: points, flatScalars: flatScalars)
+    }
+
     /// Convert G1 projective to affine
     public func g1ToAffine(_ p: G1Projective381) -> G1Affine381? {
         g1_381ToAffine(p)
