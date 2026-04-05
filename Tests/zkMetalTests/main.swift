@@ -21,6 +21,7 @@ runUnifiedLookupTests()
 runMultiMSMTests()
 runWitnessGenTests()
 runProtogalaxyTests()
+runIVCTests()
 
 let elapsed = CFAbsoluteTimeGetCurrent() - t0
 print(String(format: "\nCompleted in %.1fs", elapsed))
