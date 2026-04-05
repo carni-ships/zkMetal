@@ -147,3 +147,207 @@ func unpackBabyBearToBytes(_ elements: [Bb]) -> [UInt8] {
     }
     return result
 }
+
+// MARK: - Danksharding-style DA Sampler (BN254)
+
+/// Data availability sampler using BN254 Fr RS encoding with KZG proofs.
+/// Demonstrates the Ethereum Danksharding DA sampling pattern:
+/// 1. Encode blob with RS redundancy via GPU NTT
+/// 2. Commit to polynomial via KZG
+/// 3. Generate per-position opening proofs
+/// 4. Verify individual proofs without seeing the full data
+public class DankshardingSamplerBN254 {
+    public let rsEngine: ReedSolomonBN254Engine
+    public let redundancyFactor: Int
+
+    public init(kzgEngine: KZGEngine? = nil, redundancyFactor: Int = 2) throws {
+        self.rsEngine = try ReedSolomonBN254Engine(kzgEngine: kzgEngine)
+        self.redundancyFactor = redundancyFactor
+    }
+
+    /// Encode a blob (raw bytes) into RS codeword over BN254 Fr.
+    /// Packs 31 bytes per field element (BN254 Fr is ~254 bits).
+    public func encodeBlob(data: [UInt8]) throws -> (codeword: [Fr], originalK: Int, totalN: Int) {
+        let elements = packBytesToBN254Fr(data)
+        let k = elements.count
+        let codeword = try rsEngine.encode(data: elements, redundancyFactor: redundancyFactor)
+        return (codeword: codeword, originalK: k, totalN: codeword.count)
+    }
+
+    /// Generate KZG commitment and per-position proofs for sampled indices.
+    public func generateProofs(data: [Fr], indices: [Int]) throws -> (commitment: PointProjective, proofs: [DAKZGProof]) {
+        let commitment = try rsEngine.commit(data: data)
+        var proofs = [DAKZGProof]()
+        proofs.reserveCapacity(indices.count)
+        for idx in indices {
+            let proof = try rsEngine.generateProof(data: data, index: idx)
+            proofs.append(proof)
+        }
+        return (commitment: commitment, proofs: proofs)
+    }
+
+    /// Reconstruct original data from sampled positions.
+    public func reconstruct(samples: [(index: Int, value: Fr)], originalK: Int) throws -> [UInt8] {
+        let coeffs = try rsEngine.decode(received: samples, originalSize: originalK)
+        return unpackBN254FrToBytes(coeffs)
+    }
+}
+
+// MARK: - Danksharding-style DA Sampler (BLS12-381, Ethereum-native)
+
+/// Data availability sampler using BLS12-381 Fr, matching Ethereum Danksharding spec.
+/// BLS12-381 is the native curve for Ethereum consensus layer.
+/// Supports 4096-slot blobs (logN=12) as specified in EIP-4844 / Danksharding.
+public class DankshardingSampler381 {
+    public let rsEngine: ReedSolomon381Engine
+    public let redundancyFactor: Int
+
+    /// Initialize with optional SRS for KZG proofs.
+    /// slotCount: number of blob slots (default 4096 for Danksharding).
+    public init(srs: [G1Affine381] = [], redundancyFactor: Int = 2) {
+        self.rsEngine = ReedSolomon381Engine(srs: srs)
+        self.redundancyFactor = redundancyFactor
+    }
+
+    /// Encode a blob into RS codeword over BLS12-381 Fr.
+    /// Packs 31 bytes per field element (BLS12-381 Fr is ~255 bits).
+    public func encodeBlob(data: [UInt8]) -> (codeword: [Fr381], originalK: Int, totalN: Int) {
+        let elements = packBytesToBLS381Fr(data)
+        let k = elements.count
+        let codeword = rsEngine.encode(data: elements, redundancyFactor: redundancyFactor)
+        return (codeword: codeword, originalK: k, totalN: codeword.count)
+    }
+
+    /// Generate KZG commitment and proofs on BLS12-381.
+    public func generateProofs(data: [Fr381], indices: [Int]) throws -> (commitment: G1Projective381, proofs: [DAKZG381Proof]) {
+        let commitment = try rsEngine.commit(data: data)
+        var proofs = [DAKZG381Proof]()
+        proofs.reserveCapacity(indices.count)
+        for idx in indices {
+            let proof = try rsEngine.generateProof(data: data, index: idx)
+            proofs.append(proof)
+        }
+        return (commitment: commitment, proofs: proofs)
+    }
+
+    /// Reconstruct original data from sampled positions.
+    public func reconstruct(samples: [(index: Int, value: Fr381)], originalK: Int) throws -> [UInt8] {
+        let coeffs = try rsEngine.decode(received: samples, originalSize: originalK)
+        return unpackBLS381FrToBytes(coeffs)
+    }
+
+    /// Sample random codeword indices.
+    public func randomIndices(codewordSize: Int, numSamples: Int) -> [Int] {
+        var indices = [Int]()
+        var used = Set<Int>()
+        var rng: UInt64 = UInt64(CFAbsoluteTimeGetCurrent().bitPattern)
+        while indices.count < min(numSamples, codewordSize) {
+            rng = rng &* 6364136223846793005 &+ 1442695040888963407
+            let idx = Int(rng >> 33) % codewordSize
+            if !used.contains(idx) {
+                used.insert(idx)
+                indices.append(idx)
+            }
+        }
+        return indices
+    }
+}
+
+// MARK: - BN254 Fr Byte Packing
+
+/// Pack raw bytes into BN254 Fr elements (31 bytes per element).
+/// BN254 Fr is ~254 bits, so 31 bytes (248 bits) fit safely.
+func packBytesToBN254Fr(_ data: [UInt8]) -> [Fr] {
+    let bytesPerElement = 31
+    let numElements = (data.count + bytesPerElement - 1) / bytesPerElement
+    var result = [Fr](repeating: .zero, count: numElements + 1)
+
+    // First element stores the original byte count
+    result[0] = frFromInt(UInt64(data.count))
+
+    for i in 0..<numElements {
+        var limbs: [UInt64] = [0, 0, 0, 0]
+        for j in 0..<bytesPerElement {
+            let byteIdx = i * bytesPerElement + j
+            if byteIdx < data.count {
+                let limbIdx = j / 8
+                let bitPos = (j % 8) * 8
+                limbs[limbIdx] |= UInt64(data[byteIdx]) << bitPos
+            }
+        }
+        let raw = Fr.from64(limbs)
+        result[i + 1] = frMul(raw, Fr.from64(Fr.R2_MOD_R)) // to Montgomery
+    }
+    return result
+}
+
+/// Unpack BN254 Fr elements back to raw bytes.
+func unpackBN254FrToBytes(_ elements: [Fr]) -> [UInt8] {
+    guard elements.count >= 2 else { return [] }
+    let originalLen = Int(frToUInt64(elements[0]))
+    let bytesPerElement = 31
+    var result = [UInt8]()
+    result.reserveCapacity(originalLen)
+
+    for i in 1..<elements.count {
+        let limbs = frToInt(elements[i])
+        for j in 0..<bytesPerElement {
+            if result.count < originalLen {
+                let limbIdx = j / 8
+                let bitPos = (j % 8) * 8
+                result.append(UInt8((limbs[limbIdx] >> bitPos) & 0xFF))
+            }
+        }
+    }
+    return result
+}
+
+// MARK: - BLS12-381 Fr Byte Packing
+
+/// Pack raw bytes into BLS12-381 Fr elements (31 bytes per element).
+/// BLS12-381 Fr is ~255 bits, so 31 bytes (248 bits) fit safely.
+func packBytesToBLS381Fr(_ data: [UInt8]) -> [Fr381] {
+    let bytesPerElement = 31
+    let numElements = (data.count + bytesPerElement - 1) / bytesPerElement
+    var result = [Fr381](repeating: .zero, count: numElements + 1)
+
+    // First element stores the original byte count
+    result[0] = fr381FromInt(UInt64(data.count))
+
+    for i in 0..<numElements {
+        var limbs: [UInt64] = [0, 0, 0, 0]
+        for j in 0..<bytesPerElement {
+            let byteIdx = i * bytesPerElement + j
+            if byteIdx < data.count {
+                let limbIdx = j / 8
+                let bitPos = (j % 8) * 8
+                limbs[limbIdx] |= UInt64(data[byteIdx]) << bitPos
+            }
+        }
+        let raw = Fr381.from64(limbs)
+        result[i + 1] = fr381Mul(raw, Fr381.from64(Fr381.R2_MOD_R)) // to Montgomery
+    }
+    return result
+}
+
+/// Unpack BLS12-381 Fr elements back to raw bytes.
+func unpackBLS381FrToBytes(_ elements: [Fr381]) -> [UInt8] {
+    guard elements.count >= 2 else { return [] }
+    let limbs0 = fr381ToInt(elements[0])
+    let originalLen = Int(limbs0[0])
+    let bytesPerElement = 31
+    var result = [UInt8]()
+    result.reserveCapacity(originalLen)
+
+    for i in 1..<elements.count {
+        let limbs = fr381ToInt(elements[i])
+        for j in 0..<bytesPerElement {
+            if result.count < originalLen {
+                let limbIdx = j / 8
+                let bitPos = (j % 8) * 8
+                result.append(UInt8((limbs[limbIdx] >> bitPos) & 0xFF))
+            }
+        }
+    }
+    return result
+}
