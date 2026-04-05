@@ -66,14 +66,13 @@ public func runCQLookupBench() {
 
         // Test 6: Wrong multiplicity count should fail verification
         let wrongProof = CQProof(
-            hCommitment: proof1.hCommitment,
+            phiCommitment: proof1.phiCommitment,
+            quotientCommitment: proof1.quotientCommitment,
             multiplicities: proof1.multiplicities,
             multiplicitySum: frAdd(proof1.multiplicitySum, Fr.one),
             challengeZ: proof1.challengeZ,
-            hOpening: proof1.hOpening,
-            tOpening: proof1.tOpening,
-            hEvalAtZ: proof1.hEvalAtZ,
-            tEvalAtZ: proof1.tEvalAtZ
+            phiOpening: proof1.phiOpening,
+            tOpening: proof1.tOpening
         )
         let rejected = !engine.verify(proof: wrongProof, table: tc1, numLookups: 4, srsSecret: srsSecret)
         fputs("  Reject tampered sum: \(rejected ? "PASS" : "FAIL")\n", stderr)

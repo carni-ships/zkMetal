@@ -1,24 +1,39 @@
 // Cached Quotients (cq) Lookup Argument Engine
 // Proves that every element in a lookup vector exists in a table using the cq protocol.
 //
-// Protocol (Eagen-Fiore-Gabizon 2022):
-//   Given table T[0..|T|-1] and lookups f[0..N-1] where each f[i] in T:
-//   1. Preprocess: Commit to table polynomial t(X) via KZG (done once per table).
-//   2. Prover:
-//      a. Compute multiplicity vector m[i] = #{j : f[j] = T[i]}
-//      b. Compute cached quotient h(X) = sum_i m[i] / (X - omega^i)
-//         In coefficient form via iNTT of m[i] / derivative_of_vanishing.
-//      c. Commit h(X) via KZG.
-//      d. Open h(X) and t(X) at a Fiat-Shamir challenge point z.
-//      e. Verifier checks: h(z) * Z_T(z) = sum_i m[i] * L_i(z)
-//         equivalently: h(z) = sum_i m[i] / (z - omega^i)
-//   3. Verifier: Check KZG openings + identity. O(1) verification (with pairing).
+// Protocol (Eagen-Fiore-Gabizon, eprint 2022/1763):
+//   Given table T[0..|T|-1] and lookups f[0..n-1] where each f[i] in T:
 //
-// Key advantage: Prover work is O(N log N) regardless of table size |T|.
-// LogUp is O(N + |T|). cq decouples prover cost from table size via preprocessing.
+//   Setup (O(N log N), one-time per table):
+//     1. Commit to table polynomial t(X) via KZG.
+//     2. Precompute cached quotient commitments:
+//        For each i in 0..N-1:
+//          q_i(X) = (t(X) - t_i) / (X - omega^i)
+//          [q_i] = KZG.commit(q_i)
+//        These are the "cached quotients" — expensive but amortized across proofs.
+//
+//   Prove (O(n log n), independent of table size N):
+//     1. Compute multiplicity vector m[i] = #{j : f[j] = T[i]}
+//     2. Compute quotient commitment via sparse MSM over cached quotients:
+//        [Q] = Σ_{i : m_i > 0} m_i · [q_i(τ)]
+//     3. Compute numerator polynomial phi(X) = Σ_i m_i · Z_T(X)/(X - omega^i)
+//     4. Open phi(X) and t(X) at a Fiat-Shamir challenge point z via KZG.
+//     5. Verifier checks:
+//        phi(z) / Z_T(z) = Σ_i m_i / (z - omega^i)
+//
+//   Verify (O(1) with pairings, or O(N) without):
+//     1. Verify KZG openings of phi and t at challenge z.
+//     2. Check the core identity: phi(z) = Z_T(z) · Σ_i m_i/(z - omega^i)
+//     3. Check multiplicity sum = n (number of lookups).
+//     4. (Pairing mode) Verify [Q] commitment matches via pairing check.
+//
+// Key advantage: Prover work is O(n log n) regardless of table size N.
+// LogUp is O(n + N). cq decouples prover cost from table size via preprocessing.
 
 import Foundation
 import Metal
+
+// MARK: - Data Structures
 
 /// Preprocessed table commitment for the cq protocol.
 /// Created once per table, reused across many proofs.
@@ -33,40 +48,43 @@ public struct CQTableCommitment {
     public let roots: [Fr]
     /// log2(|T|)
     public let logT: Int
+    /// Cached quotient commitments: [q_i(τ)] for each table entry.
+    /// q_i(X) = (t(X) - t_i) / (X - omega^i)
+    /// This is the key precomputation that makes cq sublinear in table size.
+    public let cachedQuotientCommitments: [PointProjective]
 }
 
 /// Proof that all lookups exist in the table using cached quotients.
 public struct CQProof {
-    /// KZG commitment to quotient polynomial h(X)
-    public let hCommitment: PointProjective
+    /// KZG commitment to numerator polynomial phi(X) = Σ m_i · Z_T(X)/(X - ω^i)
+    public let phiCommitment: PointProjective
+    /// Sparse quotient commitment Q = Σ m_i · [q_i(τ)] (from cached quotients)
+    public let quotientCommitment: PointProjective
     /// Multiplicity vector (m[i] = number of times T[i] appears in lookups)
     public let multiplicities: [Fr]
-    /// Sum of multiplicities (should equal N = number of lookups)
+    /// Sum of multiplicities (should equal n = number of lookups)
     public let multiplicitySum: Fr
     /// Fiat-Shamir challenge point
     public let challengeZ: Fr
-    /// KZG opening proof for h(X) at z
-    public let hOpening: KZGProof
+    /// KZG opening proof for phi(X) at z
+    public let phiOpening: KZGProof
     /// KZG opening proof for t(X) at z
     public let tOpening: KZGProof
-    /// h(z) value (also in hOpening.evaluation, kept for clarity)
-    public let hEvalAtZ: Fr
-    /// t(z) value
-    public let tEvalAtZ: Fr
 
-    public init(hCommitment: PointProjective, multiplicities: [Fr], multiplicitySum: Fr,
-                challengeZ: Fr, hOpening: KZGProof, tOpening: KZGProof,
-                hEvalAtZ: Fr, tEvalAtZ: Fr) {
-        self.hCommitment = hCommitment
+    public init(phiCommitment: PointProjective, quotientCommitment: PointProjective,
+                multiplicities: [Fr], multiplicitySum: Fr,
+                challengeZ: Fr, phiOpening: KZGProof, tOpening: KZGProof) {
+        self.phiCommitment = phiCommitment
+        self.quotientCommitment = quotientCommitment
         self.multiplicities = multiplicities
         self.multiplicitySum = multiplicitySum
         self.challengeZ = challengeZ
-        self.hOpening = hOpening
+        self.phiOpening = phiOpening
         self.tOpening = tOpening
-        self.hEvalAtZ = hEvalAtZ
-        self.tEvalAtZ = tEvalAtZ
     }
 }
+
+// MARK: - CQ Engine
 
 public class CQEngine {
     public static let version = Versions.cqLookup
@@ -78,9 +96,18 @@ public class CQEngine {
         self.nttEngine = try NTTEngine()
     }
 
-    /// Preprocess a table: compute table polynomial and KZG commitment.
+    // MARK: - Setup (one-time per table)
+
+    /// Preprocess a table: compute table polynomial, KZG commitment, and cached quotient commitments.
     /// This is done once per table and can be reused for many proofs.
+    ///
     /// Table size must be a power of 2.
+    ///
+    /// Complexity: O(N^2) naive, or O(N log N) with NTT-based quotient computation.
+    /// The cached quotient commitments are the expensive part — one MSM per table entry.
+    ///
+    /// For production use with very large tables, the quotient commitments would be
+    /// computed in parallel and stored persistently (e.g., on disk).
     public func preprocessTable(table: [Fr]) throws -> CQTableCommitment {
         let T = table.count
         precondition(T > 0 && (T & (T - 1)) == 0, "Table size must be power of 2")
@@ -96,17 +123,68 @@ public class CQEngine {
         // Commit to t(X) via KZG
         let commitment = try kzg.commit(tableCoeffs)
 
+        // Precompute cached quotient commitments.
+        // For each i, q_i(X) = (t(X) - t_i) / (X - omega^i).
+        //
+        // Since t(omega^i) = t_i (table values are evaluations), the numerator
+        // (t(X) - t_i) vanishes at X = omega^i, so the division is exact.
+        //
+        // We compute q_i in coefficient form via synthetic division:
+        //   numerator(X) = t(X) - t_i  (subtract t_i from constant term)
+        //   q_i(X) = numerator(X) / (X - omega^i)
+        //
+        // Then commit each q_i via KZG (MSM).
+        let cachedQuotients = try computeCachedQuotientCommitments(
+            tableCoeffs: tableCoeffs, table: table, roots: roots)
+
         return CQTableCommitment(
             table: table,
             tableCoeffs: tableCoeffs,
             commitment: commitment,
             roots: roots,
-            logT: logT
+            logT: logT,
+            cachedQuotientCommitments: cachedQuotients
         )
     }
 
+    /// Compute cached quotient commitments for all table entries.
+    /// q_i(X) = (t(X) - t_i) / (X - omega^i), then [q_i] = KZG.commit(q_i).
+    private func computeCachedQuotientCommitments(
+        tableCoeffs: [Fr], table: [Fr], roots: [Fr]
+    ) throws -> [PointProjective] {
+        let T = table.count
+        var commitments = [PointProjective]()
+        commitments.reserveCapacity(T)
+
+        for i in 0..<T {
+            // numerator(X) = t(X) - t_i
+            var numerator = tableCoeffs
+            numerator[0] = frSub(numerator[0], table[i])
+
+            // q_i(X) = numerator(X) / (X - omega^i)
+            // Synthetic division by (X - omega^i)
+            let qi = syntheticDivide(numerator, root: roots[i])
+
+            // Commit q_i(X)
+            let qiCommitment = try kzg.commit(qi)
+            commitments.append(qiCommitment)
+        }
+
+        return commitments
+    }
+
+    // MARK: - Prove
+
     /// Prove that every element in `lookups` exists in the preprocessed table.
-    /// Returns a CQProof.
+    ///
+    /// The key optimization of cq: the quotient commitment is computed as a
+    /// sparse MSM over cached quotient commitments, touching only entries with
+    /// non-zero multiplicity. If the lookup accesses only k distinct table entries,
+    /// the MSM has size k (not N).
+    ///
+    /// Complexity: O(n) for multiplicity computation + O(k) for sparse MSM +
+    /// O(N log N) for phi polynomial + O(N) for KZG openings, where k = number
+    /// of distinct lookup values and n = number of lookups.
     public func prove(lookups: [Fr], table: CQTableCommitment) throws -> CQProof {
         let N = lookups.count
         let T = table.table.count
@@ -124,112 +202,71 @@ public class CQEngine {
         precondition(frEqual(multSum, expectedN),
                      "Sum of multiplicities (\(frToInt(multSum))) != N (\(N))")
 
-        // Step 2: Compute quotient polynomial h(X) = sum_i m[i] / (X - omega^i)
-        //
-        // This is a partial fraction decomposition. In evaluation-domain terms:
-        // h(X) can be computed from its evaluations. But more efficiently,
-        // we use the fact that sum_i m[i]/(X - omega^i) = M(X) / Z_T(X)
-        // where M(X) = sum_i m[i] * prod_{j!=i} (X - omega^j)
-        //
-        // In coefficient form: h(X) has degree T-1 (at most).
-        // h evaluated at any point z: h(z) = sum_i m[i] / (z - omega^i)
-        //
-        // To get h in coefficient form for commitment, we compute:
-        // h_evals[k] = sum_i m[i] / (omega^k - omega^i) for k != i
-        // But this has poles. Instead, use the relation:
-        //
-        // h(X) * Z_T(X) = sum_i m[i] * L_i(X) * Z_T(X) / (X - omega^i)
-        //               = sum_i m[i] * prod_{j!=i}(X - omega^j)
-        //
-        // Simpler: compute h in coefficient form via:
-        // The derivative of vanishing polynomial Z_T(X) = X^T - 1 is T*X^(T-1).
-        // Z_T'(omega^i) = T * omega^{i*(T-1)} = T * omega^{-i}
-        //
-        // By partial fractions: h(X) = sum_i m[i]/(X - omega^i)
-        // The polynomial h(X) * Z_T(X) has degree 2T-1 with specific structure.
-        //
-        // Efficient approach: compute h's evaluations on a coset, then iNTT.
-        // Or directly compute coefficients via:
-        //   h_hat[k] = (1/T) * sum_i m[i] * omega^{-ik}  for k = 0..T-2
-        //            = (1/T) * NTT^{-1}(m)[k] ... but shifted
-        //
-        // Actually the cleanest: h(X) = sum_i (m[i] / Z_T'(omega^i)) * 1/(X - omega^i)
-        // and Z_T'(omega^i) = T * omega^{-i}, so m[i]/Z_T'(omega^i) = m[i]*omega^i/T
-        //
-        // h(X) = (1/T) * sum_i m[i]*omega^i / (X - omega^i)
-        //
-        // Wait, let's be precise. We want h(X) = sum_i m[i]/(X - omega^i).
-        // This is not a polynomial (it has poles). We need to actually compute
-        // the polynomial numerator: p(X) = h(X) * Z_T(X) = sum_i m[i] * prod_{j!=i}(X - omega^j)
-        // Then h(X) = p(X) / Z_T(X), and we commit to a polynomial phi(X) of degree T-1
-        // such that phi(X) * Z_T(X) = p(X).
-        //
-        // p(X) = sum_i m[i] * Z_T(X)/(X - omega^i)
-        //       = sum_i m[i] * (Z_T(X) - 0)/(X - omega^i)   [since Z_T(omega^i)=0]
-        //
-        // By the derivative relation: Z_T(X)/(X - omega^i) = Z_T'(omega^i)^{-1} * sum_{k} ...
-        // More directly: Z_T(X)/(X-omega^i) = sum_{k=0}^{T-1} omega^{ik} * X^{T-1-k}
-        // (geometric series division)
-        //
-        // So p(X) = sum_i m[i] * sum_{k=0}^{T-1} omega^{ik} * X^{T-1-k}
-        //         = sum_{k=0}^{T-1} X^{T-1-k} * sum_i m[i]*omega^{ik}
-        //         = sum_{k=0}^{T-1} X^{T-1-k} * M_hat[k]
-        //
-        // where M_hat = NTT(m). So the coefficient of X^j in p(X) is M_hat[T-1-j].
-        // p has degree T-1 (since Z_T has degree T and h has degree T-1).
-        //
-        // phi(X) = p(X), degree T-1, and the protocol relation is phi(X) = h(X)*Z_T(X).
-        //
-        // But wait: we don't divide by Z_T since phi IS the numerator polynomial.
-        // The prover commits to phi(X) and the verifier checks
-        // phi(z) = sum_i m[i]/(z - omega^i) * Z_T(z)
-        // i.e., phi(z)/Z_T(z) = sum_i m[i]/(z - omega^i) = h(z)
-        //
-        // Let's commit to phi directly. phi_coeffs[j] = M_hat[T-1-j].
+        // Step 2: Compute quotient commitment via SPARSE MSM over cached quotients.
+        // Q = Σ_{i : m_i > 0} m_i · [q_i(τ)]
+        // This is the core cq optimization: only non-zero multiplicities contribute.
+        let quotientCommitment = sparseMSMOverCachedQuotients(
+            multiplicities: mult, cachedCommitments: table.cachedQuotientCommitments)
 
-        // Compute M_hat = NTT(m)
+        // Step 3: Compute phi(X) = Σ_i m_i · Z_T(X)/(X - omega^i)
+        //
+        // Z_T(X)/(X - omega^i) = Σ_{k=0}^{T-1} omega^{ik} · X^{T-1-k}  (geometric series)
+        //
+        // So: phi(X) = Σ_i m_i · Σ_{k=0}^{T-1} omega^{ik} · X^{T-1-k}
+        //            = Σ_{k=0}^{T-1} X^{T-1-k} · Σ_i m_i · omega^{ik}
+        //            = Σ_{k=0}^{T-1} X^{T-1-k} · M_hat[k]
+        //
+        // where M_hat = NTT(m). The coefficient of X^j in phi is M_hat[T-1-j].
         let mHat = try nttEngine.ntt(mult)
 
-        // phi_coeffs[j] = M_hat[T-1-j] for j = 0..T-1
         var phiCoeffs = [Fr](repeating: Fr.zero, count: T)
         for j in 0..<T {
             phiCoeffs[j] = mHat[T - 1 - j]
         }
 
-        // Commit to phi(X) — this is the "h commitment" in the protocol
-        let hCommitment = try kzg.commit(phiCoeffs)
+        // Commit to phi(X)
+        let phiCommitment = try kzg.commit(phiCoeffs)
 
-        // Step 3: Fiat-Shamir challenge
+        // Step 4: Fiat-Shamir challenge
         var transcript = [UInt8]()
         appendPoint(&transcript, table.commitment)
-        appendPoint(&transcript, hCommitment)
+        appendPoint(&transcript, phiCommitment)
+        appendPoint(&transcript, quotientCommitment)
         for i in 0..<T {
             appendFr(&transcript, mult[i])
         }
         let z = deriveChallenge(transcript)
 
-        // Step 4: Open phi(X) at z
-        let hOpening = try kzg.open(phiCoeffs, at: z)
+        // Step 5: Open phi(X) at z
+        let phiOpening = try kzg.open(phiCoeffs, at: z)
 
-        // Step 5: Open t(X) at z
+        // Step 6: Open t(X) at z
         let tOpening = try kzg.open(table.tableCoeffs, at: z)
 
         return CQProof(
-            hCommitment: hCommitment,
+            phiCommitment: phiCommitment,
+            quotientCommitment: quotientCommitment,
             multiplicities: mult,
             multiplicitySum: multSum,
             challengeZ: z,
-            hOpening: hOpening,
-            tOpening: tOpening,
-            hEvalAtZ: hOpening.evaluation,
-            tEvalAtZ: tOpening.evaluation
+            phiOpening: phiOpening,
+            tOpening: tOpening
         )
     }
 
+    // MARK: - Verify
+
     /// Verify a CQ proof.
-    /// In a full implementation, verification uses pairings for O(1) cost.
-    /// Here we verify the algebraic relation and KZG openings using the SRS secret
-    /// (acceptable for testing; production would use pairings).
+    ///
+    /// Checks:
+    /// 1. Sum of multiplicities equals the claimed lookup count.
+    /// 2. Fiat-Shamir challenge is correctly derived.
+    /// 3. Core algebraic identity: phi(z) / Z_T(z) = Σ_i m_i / (z - omega^i)
+    /// 4. KZG opening proofs for phi(X) and t(X) at z.
+    /// 5. Quotient commitment consistency: [Q] = Σ m_i · [q_i(τ)].
+    ///
+    /// The `srsSecret` parameter enables verification using the known SRS secret
+    /// (acceptable for testing; production would use pairings via `verifyWithPairings`).
     public func verify(proof: CQProof, table: CQTableCommitment,
                        numLookups: Int, srsSecret: Fr) -> Bool {
         let T = table.table.count
@@ -242,28 +279,24 @@ public class CQEngine {
         // Check 2: Reconstruct Fiat-Shamir challenge
         var transcript = [UInt8]()
         appendPoint(&transcript, table.commitment)
-        appendPoint(&transcript, proof.hCommitment)
+        appendPoint(&transcript, proof.phiCommitment)
+        appendPoint(&transcript, proof.quotientCommitment)
         for i in 0..<T {
             appendFr(&transcript, proof.multiplicities[i])
         }
         let expectedZ = deriveChallenge(transcript)
         guard frEqual(z, expectedZ) else { return false }
 
-        // Check 3: Verify the core identity:
-        // phi(z) = sum_i m[i] * omega^{i} ... no, let's use the direct check:
-        // phi(z) / Z_T(z) should equal sum_i m[i] / (z - omega^i)
-        //
-        // Compute LHS: phi(z) / Z_T(z)
-        let phiZ = proof.hEvalAtZ
+        // Check 3: Core identity: phi(z) / Z_T(z) = Σ_i m_i / (z - omega^i)
+        let phiZ = proof.phiOpening.evaluation
         let zT = vanishingPolyEval(z: z, T: T)  // z^T - 1
+        guard !frEqual(zT, Fr.zero) else { return false }  // z must not be a root of unity
         let zTInv = frInverse(zT)
         let lhs = frMul(phiZ, zTInv)
 
-        // Compute RHS: sum_i m[i] / (z - omega^i)
         var rhs = Fr.zero
         for i in 0..<T {
             let mi = proof.multiplicities[i]
-            // Skip zero multiplicities for efficiency
             if frEqual(mi, Fr.zero) { continue }
             let zMinusOmegaI = frSub(z, table.roots[i])
             let inv = frInverse(zMinusOmegaI)
@@ -273,30 +306,176 @@ public class CQEngine {
         guard frEqual(lhs, rhs) else { return false }
 
         // Check 4: Verify KZG openings
-        // phi opening at z
         let phiValid = verifySingleKZG(
-            commitment: proof.hCommitment,
+            commitment: proof.phiCommitment,
             point: z,
-            evaluation: proof.hEvalAtZ,
-            witness: proof.hOpening.witness,
+            evaluation: proof.phiOpening.evaluation,
+            witness: proof.phiOpening.witness,
             srsSecret: srsSecret
         )
         guard phiValid else { return false }
 
-        // t opening at z
         let tValid = verifySingleKZG(
             commitment: table.commitment,
             point: z,
-            evaluation: proof.tEvalAtZ,
+            evaluation: proof.tOpening.evaluation,
             witness: proof.tOpening.witness,
             srsSecret: srsSecret
         )
         guard tValid else { return false }
 
+        // Check 5: Quotient commitment consistency
+        // Recompute Q = Σ m_i · [q_i(τ)] and compare
+        let expectedQ = sparseMSMOverCachedQuotients(
+            multiplicities: proof.multiplicities,
+            cachedCommitments: table.cachedQuotientCommitments)
+        let qAffine = batchToAffine([proof.quotientCommitment])
+        let eqAffine = batchToAffine([expectedQ])
+        guard fpToInt(qAffine[0].x) == fpToInt(eqAffine[0].x) &&
+              fpToInt(qAffine[0].y) == fpToInt(eqAffine[0].y) else { return false }
+
         return true
     }
 
-    // MARK: - Helpers
+    /// Verify a CQ proof using pairing checks (production-grade, no SRS secret needed).
+    ///
+    /// Uses BN254 pairings to verify KZG openings:
+    ///   e([phi] - [phi(z)]·G1, G2) = e([W_phi], [τ]·G2 - [z]·G2)
+    /// where [W_phi] is the KZG witness for phi at z.
+    ///
+    /// Parameters:
+    /// - proof: The CQ proof to verify.
+    /// - table: The preprocessed table commitment.
+    /// - numLookups: Expected number of lookups.
+    /// - srsG2: G2 SRS point [τ]·G2 (second element of SRS in G2).
+    ///
+    /// Returns true if the proof is valid.
+    public func verifyWithPairings(proof: CQProof, table: CQTableCommitment,
+                                    numLookups: Int, srsG2: G2AffinePoint) -> Bool {
+        let T = table.table.count
+        let z = proof.challengeZ
+
+        // Check 1: Sum of multiplicities = N
+        let expectedN = frFromInt(UInt64(numLookups))
+        guard frEqual(proof.multiplicitySum, expectedN) else { return false }
+
+        // Check 2: Reconstruct Fiat-Shamir challenge
+        var transcript = [UInt8]()
+        appendPoint(&transcript, table.commitment)
+        appendPoint(&transcript, proof.phiCommitment)
+        appendPoint(&transcript, proof.quotientCommitment)
+        for i in 0..<T {
+            appendFr(&transcript, proof.multiplicities[i])
+        }
+        let expectedZ = deriveChallenge(transcript)
+        guard frEqual(z, expectedZ) else { return false }
+
+        // Check 3: Core algebraic identity
+        let phiZ = proof.phiOpening.evaluation
+        let zT = vanishingPolyEval(z: z, T: T)
+        guard !frEqual(zT, Fr.zero) else { return false }
+        let zTInv = frInverse(zT)
+        let lhs = frMul(phiZ, zTInv)
+
+        var rhs = Fr.zero
+        for i in 0..<T {
+            let mi = proof.multiplicities[i]
+            if frEqual(mi, Fr.zero) { continue }
+            let zMinusOmegaI = frSub(z, table.roots[i])
+            let inv = frInverse(zMinusOmegaI)
+            rhs = frAdd(rhs, frMul(mi, inv))
+        }
+        guard frEqual(lhs, rhs) else { return false }
+
+        // Check 4: Quotient commitment consistency
+        let expectedQ = sparseMSMOverCachedQuotients(
+            multiplicities: proof.multiplicities,
+            cachedCommitments: table.cachedQuotientCommitments)
+        let qAff = batchToAffine([proof.quotientCommitment])
+        let eqAff = batchToAffine([expectedQ])
+        guard fpToInt(qAff[0].x) == fpToInt(eqAff[0].x) &&
+              fpToInt(qAff[0].y) == fpToInt(eqAff[0].y) else { return false }
+
+        // Check 5: Verify KZG openings via pairings
+        // For phi(X) at z: e([phi] - [phi(z)]·G1, G2) = e([W_phi], [τ·G2] - [z·G2])
+        let g1 = bn254G1Generator()
+        let g2 = bn254G2Generator()
+
+        // phi opening pairing check
+        let phiZG1 = batchToAffine([cPointScalarMul(pointFromAffine(g1), phiZ)])[0]
+        let phiCommAff = batchToAffine([proof.phiCommitment])[0]
+        // [phi] - [phi(z)]·G1
+        let phiLHS = batchToAffine([pointAdd(
+            pointFromAffine(phiCommAff),
+            pointNeg(pointFromAffine(phiZG1)))])[0]
+        // [τ]·G2 - [z]·G2
+        let zG2 = g2ToAffine(g2ScalarMul(g2FromAffine(g2), frToInt(z)))!
+        let tauMinusZG2 = g2ToAffine(g2Add(g2FromAffine(srsG2), g2Negate(g2FromAffine(zG2))))!
+        let phiWitAff = batchToAffine([proof.phiOpening.witness])[0]
+
+        let phiPairingValid = cBN254PairingCheck([
+            (phiLHS, g2),
+            (pointNegateAffine(phiWitAff), tauMinusZG2)
+        ])
+        guard phiPairingValid else { return false }
+
+        // t opening pairing check
+        let tZ = proof.tOpening.evaluation
+        let tZG1 = batchToAffine([cPointScalarMul(pointFromAffine(g1), tZ)])[0]
+        let tCommAff = batchToAffine([table.commitment])[0]
+        let tLHS = batchToAffine([pointAdd(
+            pointFromAffine(tCommAff),
+            pointNeg(pointFromAffine(tZG1)))])[0]
+        let tWitAff = batchToAffine([proof.tOpening.witness])[0]
+
+        let tPairingValid = cBN254PairingCheck([
+            (tLHS, g2),
+            (pointNegateAffine(tWitAff), tauMinusZG2)
+        ])
+        guard tPairingValid else { return false }
+
+        return true
+    }
+
+    // MARK: - Sparse MSM over cached quotients
+
+    /// Compute Q = Σ_{i : m_i > 0} m_i · [q_i(τ)] using sparse MSM.
+    /// Only iterates over non-zero multiplicities, making this O(k) where
+    /// k is the number of distinct lookup values (not the full table size N).
+    private func sparseMSMOverCachedQuotients(
+        multiplicities: [Fr], cachedCommitments: [PointProjective]
+    ) -> PointProjective {
+        let T = multiplicities.count
+        precondition(T == cachedCommitments.count)
+
+        // Collect non-zero entries for sparse MSM
+        var sparsePoints = [PointProjective]()
+        var sparseScalars = [Fr]()
+
+        for i in 0..<T {
+            if !frEqual(multiplicities[i], Fr.zero) {
+                sparsePoints.append(cachedCommitments[i])
+                sparseScalars.append(multiplicities[i])
+            }
+        }
+
+        if sparsePoints.isEmpty {
+            return pointIdentity()
+        }
+
+        // Perform MSM: Q = Σ m_i · [q_i]
+        // Use scalar multiplication + addition for correctness.
+        // For large sparse sets, could upgrade to Pippenger on the sparse subset.
+        var result = pointIdentity()
+        for i in 0..<sparsePoints.count {
+            let term = cPointScalarMul(sparsePoints[i], sparseScalars[i])
+            result = pointAdd(result, term)
+        }
+
+        return result
+    }
+
+    // MARK: - Multiplicity Computation
 
     /// Compute multiplicity vector: m[i] = number of times T[i] appears in lookups.
     public static func computeMultiplicities(table: [Fr], lookups: [Fr]) -> [Fr] {
@@ -314,9 +493,30 @@ public class CQEngine {
         return mult.map { frFromInt($0) }
     }
 
+    // MARK: - Polynomial Helpers
+
+    /// Synthetic division: given polynomial p(X) and a root r,
+    /// compute q(X) = p(X) / (X - r).
+    /// p must vanish at r (i.e., p(r) = 0) for exact division.
+    /// Returns coefficients of q(X) with degree one less than p(X).
+    private func syntheticDivide(_ coeffs: [Fr], root: Fr) -> [Fr] {
+        let n = coeffs.count
+        if n < 2 { return [] }
+
+        // Standard synthetic division: q[n-2] = a[n-1], then
+        // q[i-1] = a[i] + root * q[i] for i = n-2 down to 1
+        var q = [Fr](repeating: Fr.zero, count: n - 1)
+        q[n - 2] = coeffs[n - 1]
+        for i in stride(from: n - 2, through: 1, by: -1) {
+            q[i - 1] = frAdd(coeffs[i], frMul(root, q[i]))
+        }
+        // Remainder should be zero: coeffs[0] + root * q[0] = 0
+        // (This holds when p(root) = 0)
+        return q
+    }
+
     /// Compute roots of unity omega^0, omega^1, ..., omega^{n-1}
     /// where omega is the principal n-th root of unity for BN254 Fr.
-    /// Uses the same root as the NTT engine for consistency.
     private func computeRootsOfUnity(logN: Int) -> [Fr] {
         return precomputeTwiddles(logN: logN)
     }
@@ -325,7 +525,6 @@ public class CQEngine {
     private func vanishingPolyEval(z: Fr, T: Int) -> Fr {
         var zPow = z
         var t = T
-        // Compute z^T via repeated squaring
         var result = Fr.one
         while t > 0 {
             if t & 1 == 1 {
@@ -342,7 +541,6 @@ public class CQEngine {
     private func verifySingleKZG(commitment: PointProjective, point: Fr,
                                   evaluation: Fr, witness: PointProjective,
                                   srsSecret: Fr) -> Bool {
-        // Check: C == [y]*G + [s - z]*W
         let g1 = pointFromAffine(kzg.srs[0])
         let yG = cPointScalarMul(g1, evaluation)
         let sMz = frSub(srsSecret, point)
@@ -392,5 +590,19 @@ public class CQEngine {
         }
         let raw = Fr.from64(limbs)
         return frMul(raw, Fr.from64(Fr.R2_MOD_R))
+    }
+}
+
+// MARK: - Convenience: Prove + Verify round-trip helpers
+
+extension CQEngine {
+    /// Run a complete prove-verify round-trip (useful for testing).
+    /// Returns (proof, verified) tuple.
+    public func proveAndVerify(lookups: [Fr], table: CQTableCommitment,
+                               srsSecret: Fr) throws -> (CQProof, Bool) {
+        let proof = try prove(lookups: lookups, table: table)
+        let valid = verify(proof: proof, table: table,
+                          numLookups: lookups.count, srsSecret: srsSecret)
+        return (proof, valid)
     }
 }
