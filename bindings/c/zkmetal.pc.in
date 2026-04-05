@@ -1,0 +1,10 @@
+prefix=@PREFIX@
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include/zkmetal
+
+Name: zkmetal
+Description: ARM64-optimized cryptographic primitives for zero-knowledge proofs
+Version: @VERSION@
+Libs: -L${libdir} -lzkmetal
+Cflags: -I${includedir}
