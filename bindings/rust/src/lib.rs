@@ -34,6 +34,9 @@ pub mod ntt;
 #[cfg(feature = "neon")]
 pub mod neon;
 
+#[cfg(feature = "arkworks")]
+pub mod arkworks;
+
 // Re-export commonly used items at crate root.
 pub use bn254::*;
 pub use msm::*;
