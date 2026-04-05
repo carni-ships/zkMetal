@@ -127,6 +127,11 @@ public struct BabyBearFRIRound {
     public let commitment: [Bb]
     /// Per-query: (value, sibling value, Merkle opening path)
     public let queryOpenings: [(value: Bb, siblingValue: Bb, path: [[Bb]])]
+
+    public init(commitment: [Bb], queryOpenings: [(value: Bb, siblingValue: Bb, path: [[Bb]])]) {
+        self.commitment = commitment
+        self.queryOpenings = queryOpenings
+    }
 }
 
 /// FRI proof data for BabyBear
@@ -137,6 +142,12 @@ public struct BabyBearFRIProof {
     public let finalPoly: [Bb]
     /// Query indices used
     public let queryIndices: [Int]
+
+    public init(rounds: [BabyBearFRIRound], finalPoly: [Bb], queryIndices: [Int]) {
+        self.rounds = rounds
+        self.finalPoly = finalPoly
+        self.queryIndices = queryIndices
+    }
 }
 
 /// Query response: opened trace/composition values + Merkle proofs at a query position

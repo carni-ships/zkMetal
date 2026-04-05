@@ -67,6 +67,7 @@ runPCSProtocolTests()
 runJoltDecompositionTests()
 runConstraintConverterTests()
 runGPUMultilinearTests()
+runSTARKVerifierTests()
 
 let elapsed = CFAbsoluteTimeGetCurrent() - t0
 print(String(format: "\nCompleted in %.1fs", elapsed))
