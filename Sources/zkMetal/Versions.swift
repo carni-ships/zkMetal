@@ -96,9 +96,11 @@ public enum Versions {
     public static let reedSolomon    = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let kyber          = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let dilithium      = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
-    public static let streamVerify   = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
+    public static let streamVerify   = PrimitiveVersion(version: "1.1.0", updated: "2026-04-05")
+    public static let unifiedVerify  = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let batchVerify    = PrimitiveVersion(version: "2.0.0", updated: "2026-04-04")
     public static let marlin         = PrimitiveVersion(version: "2.0.0", updated: "2026-04-04")
+    public static let varuna         = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let spartan           = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let tensorCompressor  = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let joltVM            = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
@@ -171,6 +173,9 @@ public enum Versions {
             ("Jolt VM",          joltVM),
             ("Groth16 Batch",    groth16Batch),
             ("Proof Aggregation", proofAggregation),
+            ("Marlin",           marlin),
+            ("Varuna",           varuna),
+            ("Unified Verify",   unifiedVerify),
         ]
         print("=== zkMetal Primitive Versions ===")
         for (name, v) in entries {
