@@ -77,9 +77,11 @@ public class PlonkProver {
             cCoeffs = try ntt.intt(cEvals)
         }
 
-        let aCommit = try kzg.commit(aCoeffs)
-        let bCommit = try kzg.commit(bCoeffs)
-        let cCommit = try kzg.commit(cCoeffs)
+        // Batch commit a, b, c — single multiMSM call shares SRS point upload
+        let round1Commits = try kzg.batchCommit([aCoeffs, bCoeffs, cCoeffs])
+        let aCommit = round1Commits[0]
+        let bCommit = round1Commits[1]
+        let cCommit = round1Commits[2]
 
         absorbPoint(transcript, aCommit)
         absorbPoint(transcript, bCommit)
@@ -265,10 +267,8 @@ public class PlonkProver {
         let tMidCoeffs = tChunkCoeffs[1]
         let tHiCoeffs = tChunkCoeffs[2]
 
-        var tChunkCommits = [PointProjective]()
-        for chunk in tChunkCoeffs {
-            tChunkCommits.append(try kzg.commit(chunk))
-        }
+        // Batch commit all t-chunks — single multiMSM call shares SRS point upload
+        let tChunkCommits = try kzg.batchCommit(tChunkCoeffs)
 
         let tLoCommit = tChunkCommits[0]
         let tMidCommit = tChunkCommits[1]

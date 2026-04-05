@@ -144,6 +144,40 @@ public class KZGEngine {
         return try msmEngine.msm(points: pts, scalars: scalars)
     }
 
+    /// Batch commit to multiple polynomials of the same length using multiMSM.
+    /// All polynomials must have the same degree (same SRS prefix). Points are
+    /// uploaded to the GPU once and reused across all scalar sets.
+    ///
+    /// Falls back to sequential commit() if polynomials have different lengths.
+    public func batchCommit(_ polynomials: [[Fr]]) throws -> [PointProjective] {
+        guard !polynomials.isEmpty else { return [] }
+        if polynomials.count == 1 { return [try commit(polynomials[0])] }
+
+        // Check all same length for shared-point multiMSM
+        let n = polynomials[0].count
+        let allSameLength = polynomials.allSatisfy { $0.count == n }
+
+        if !allSameLength {
+            // Different lengths: fall back to sequential commits
+            return try polynomials.map { try commit($0) }
+        }
+
+        guard n <= srs.count else { throw MSMError.invalidInput }
+        let pts = srsPrefix(n)
+
+        // For small sizes, use CPU path (flat limbs)
+        if n <= 2048 {
+            return polynomials.map { coeffs in
+                let flatLimbs = batchFrToFlatLimbs(coeffs)
+                return cPippengerMSMFlat(points: pts, flatScalars: flatLimbs)
+            }
+        }
+
+        // GPU multiMSM: shared points, multiple scalar vectors
+        let scalarSets = polynomials.map { batchFrToLimbs($0) }
+        return try multiMSM(engine: msmEngine, points: pts, scalarSets: scalarSets)
+    }
+
     /// Open a polynomial at point z: compute evaluation and witness proof.
     /// Returns (p(z), proof_point) where proof_point = MSM(SRS, quotient_coeffs)
     /// and quotient = (p(x) - p(z)) / (x - z).
@@ -218,14 +252,12 @@ public class KZGEngine {
 
         let n = polynomials.count
 
-        // 1. Compute individual commitments and evaluations
-        var commitments = [PointProjective]()
-        commitments.reserveCapacity(n)
+        // 1. Compute individual commitments (batched) and evaluations
+        let commitments = try batchCommit(polynomials)
         var evaluations = [Fr]()
         evaluations.reserveCapacity(n)
 
         for poly in polynomials {
-            commitments.append(try commit(poly))
             evaluations.append(cEvaluate(poly, at: point))
         }
 
@@ -374,14 +406,12 @@ public class KZGEngine {
 
         let n = polynomials.count
 
-        // 1. Compute individual commitments and evaluations
-        var commitments = [PointProjective]()
-        commitments.reserveCapacity(n)
+        // 1. Compute individual commitments (batched) and evaluations
+        let commitments = try batchCommit(polynomials)
         var evaluations = [Fr]()
         evaluations.reserveCapacity(n)
 
         for i in 0..<n {
-            commitments.append(try commit(polynomials[i]))
             evaluations.append(cEvaluate(polynomials[i], at: points[i]))
         }
 
@@ -449,14 +479,12 @@ public class KZGEngine {
 
         let n = polynomials.count
 
-        // 1. Compute individual commitments and evaluations
-        var commitments = [PointProjective]()
-        commitments.reserveCapacity(n)
+        // 1. Compute individual commitments (batched) and evaluations
+        let commitments = try batchCommit(polynomials)
         var evaluations = [Fr]()
         evaluations.reserveCapacity(n)
 
         for i in 0..<n {
-            commitments.append(try commit(polynomials[i]))
             evaluations.append(cEvaluate(polynomials[i], at: points[i]))
         }
 
