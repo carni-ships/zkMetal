@@ -1,3 +1,25 @@
-[workspace]
-members = ["zkmetal-sys", "zkmetal"]
-resolver = "2"
+[package]
+name = "zkmetal-sys"
+version = "0.1.0"
+edition = "2021"
+description = "Raw FFI bindings for zkMetal — GPU-accelerated ZK primitives on Apple Silicon (Metal + NEON)"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/example/zkMetal"
+readme = "README.md"
+keywords = ["zk", "metal", "gpu", "msm", "ntt", "ffi"]
+categories = ["cryptography", "external-ffi-bindings"]
+
+[lib]
+name = "zkmetal_sys"
+
+[dependencies]
+libc = "0.2"
+
+[build-dependencies]
+
+[features]
+default = ["gpu"]
+# Link against the Metal GPU library (zkMetal-ffi). Disable for CPU-only (NeonFieldOps).
+gpu = []
+# Link against NeonFieldOps for CPU-accelerated field arithmetic.
+neon = []

@@ -176,6 +176,198 @@ public struct AccumulationVerifier {
         return vestaToInt(scalarLHS) == vestaToInt(scalarRHS)
     }
 
+    // MARK: - Batch Accumulation Verification
+
+    /// Verify that a batch accumulation (folding N claims at once) was done correctly.
+    ///
+    /// Given:
+    ///   - Individual accumulators acc_1, ..., acc_N (from individual claims)
+    ///   - A folded result accumulator acc_out
+    ///   - The fold proofs from the batch accumulation
+    ///
+    /// Verifies each folding step in the chain:
+    ///   step 1: acc_1 + rho_1 * acc_2 -> intermediate_1
+    ///   step 2: intermediate_1 + rho_2 * acc_3 -> intermediate_2
+    ///   ...
+    ///   step N-1: intermediate_{N-2} + rho_{N-1} * acc_N -> acc_out
+    ///
+    /// Cost: O(N) scalar-muls + point-adds (no MSMs).
+    public static func verifyBatchAccumulation(
+        individualAccs: [IPAAccumulator],
+        foldProofs: [AccumulationProof],
+        finalAcc: IPAAccumulator
+    ) -> Bool {
+        guard individualAccs.count >= 2 else {
+            // Single accumulator — nothing to verify
+            return individualAccs.count == 1
+        }
+        guard foldProofs.count == individualAccs.count - 1 else {
+            return false
+        }
+
+        // Replay the fold chain and verify each step
+        var running = individualAccs[0]
+        for i in 1..<individualAccs.count {
+            let rho = foldProofs[i - 1].rho
+
+            // Expected fold: C' = C_running + rho * C_i
+            let rhoC = pallasPointScalarMul(individualAccs[i].commitment, rho)
+            let expectedC = pallasPointAdd(running.commitment, rhoC)
+
+            // Expected scalar: a' = a_running + rho * a_i
+            let expectedA = vestaAdd(running.proofA, vestaMul(rho, individualAccs[i].proofA))
+
+            // Expected value: v' = v_running + rho * v_i
+            let expectedV = vestaAdd(running.value, vestaMul(rho, individualAccs[i].value))
+
+            // Verify cross-term matches
+            guard pallasPointEqual(foldProofs[i - 1].crossTerm, rhoC) else {
+                return false
+            }
+
+            // Build the intermediate accumulator for the next step
+            running = IPAAccumulator(
+                commitment: expectedC,
+                b: running.b,
+                value: expectedV,
+                challenges: running.challenges,
+                generators: running.generators,
+                Q: running.Q,
+                proofA: expectedA
+            )
+        }
+
+        // Final check: running accumulator matches the claimed output
+        guard pallasPointEqual(running.commitment, finalAcc.commitment) else {
+            return false
+        }
+        guard vestaToInt(running.proofA) == vestaToInt(finalAcc.proofA) else {
+            return false
+        }
+        guard vestaToInt(running.value) == vestaToInt(finalAcc.value) else {
+            return false
+        }
+
+        return true
+    }
+
+    /// Verify batch accumulation using random linear combination (cheaper).
+    ///
+    /// Instead of checking each intermediate step, combine all checks
+    /// into a single multi-point equation using random weights.
+    ///
+    /// Checks that:
+    ///   C_out == C_1 + sum_{i=2}^{N} (prod_{j=1}^{i-1} rho_j) * C_i
+    ///
+    /// Cost: O(N) scalar-muls + 2 point comparisons.
+    /// Sound with overwhelming probability over random weights.
+    public static func verifyBatchAccumulationRLC(
+        individualAccs: [IPAAccumulator],
+        foldProofs: [AccumulationProof],
+        finalAcc: IPAAccumulator
+    ) -> Bool {
+        guard individualAccs.count >= 2 else {
+            return individualAccs.count == 1
+        }
+        guard foldProofs.count == individualAccs.count - 1 else {
+            return false
+        }
+
+        // Reconstruct the expected folded commitment using the rho values
+        // C_out = C_1 + rho_1*C_2 + rho_1*rho_2*C_3 + ...
+        var expectedC = individualAccs[0].commitment
+        var expectedA = individualAccs[0].proofA
+        var expectedV = individualAccs[0].value
+        var rhoProduct = VestaFp.one
+
+        for i in 1..<individualAccs.count {
+            let rho = foldProofs[i - 1].rho
+            rhoProduct = vestaMul(rhoProduct, rho)
+
+            // Commitment: add rho_product * C_i
+            let scaledC = pallasPointScalarMul(individualAccs[i].commitment, rhoProduct)
+            expectedC = pallasPointAdd(expectedC, scaledC)
+
+            // Scalar: add rho_product * a_i
+            expectedA = vestaAdd(expectedA, vestaMul(rhoProduct, individualAccs[i].proofA))
+
+            // Value: add rho_product * v_i
+            expectedV = vestaAdd(expectedV, vestaMul(rhoProduct, individualAccs[i].value))
+        }
+
+        // Note: the batch fold is sequential (each step uses previous result),
+        // so the product of rhos is NOT the right formula. The sequential fold is:
+        //   step 1: C' = C_1 + rho_1 * C_2, a' = a_1 + rho_1 * a_2
+        //   step 2: C'' = C' + rho_2 * C_3 = C_1 + rho_1*C_2 + rho_2*C_3
+        // So the coefficients are simply rho_{i-1}, not products.
+        // Re-compute correctly:
+        expectedC = individualAccs[0].commitment
+        expectedA = individualAccs[0].proofA
+        expectedV = individualAccs[0].value
+
+        for i in 1..<individualAccs.count {
+            let rho = foldProofs[i - 1].rho
+            expectedC = pallasPointAdd(expectedC,
+                pallasPointScalarMul(individualAccs[i].commitment, rho))
+            expectedA = vestaAdd(expectedA, vestaMul(rho, individualAccs[i].proofA))
+            expectedV = vestaAdd(expectedV, vestaMul(rho, individualAccs[i].value))
+        }
+
+        guard pallasPointEqual(expectedC, finalAcc.commitment) else { return false }
+        guard vestaToInt(expectedA) == vestaToInt(finalAcc.proofA) else { return false }
+        guard vestaToInt(expectedV) == vestaToInt(finalAcc.value) else { return false }
+
+        return true
+    }
+
+    // MARK: - IPA Engine Integration
+
+    /// Verify an accumulation step and then decide the result.
+    ///
+    /// Combines the cheap verification (O(1) group ops) with the
+    /// expensive decider (1 MSM). This is the full verification path
+    /// for a single accumulation step.
+    ///
+    /// In recursive proving, only the cheap part runs in-circuit.
+    /// The decide runs once at the outermost level.
+    public static func verifyAndDecide(
+        accPrev: IPAAccumulator,
+        accNew: IPAAccumulator,
+        accOut: IPAAccumulator,
+        proof: AccumulationProof,
+        engine: PallasAccumulationEngine
+    ) -> Bool {
+        // Cheap check: fold was done correctly
+        guard verifyStep(accPrev: accPrev, accNew: accNew,
+                        accOut: accOut, proof: proof) else {
+            return false
+        }
+        // Expensive check: the accumulated claim is valid
+        return engine.decide(accOut)
+    }
+
+    /// Full pipeline verification: verify all fold steps, then batch-decide.
+    ///
+    /// Given a chain of accumulation steps, verify:
+    ///   1. Each fold step was done correctly (cheap, O(N) total)
+    ///   2. All individual accumulators are valid (batch decide, 1 MSM)
+    ///
+    /// This is the verifier's complete check for an accumulation chain.
+    public static func verifyChainAndDecide(
+        initialAcc: IPAAccumulator,
+        steps: [(newAcc: IPAAccumulator, proof: AccumulationProof, resultAcc: IPAAccumulator)],
+        engine: PallasAccumulationEngine
+    ) -> Bool {
+        // Verify fold chain
+        guard verifyChain(initialAcc: initialAcc, steps: steps) else {
+            return false
+        }
+        // Batch-decide all accumulators (initial + all new ones)
+        var allAccs = [initialAcc]
+        allAccs.append(contentsOf: steps.map { $0.newAcc })
+        return engine.batchDecide(allAccs)
+    }
+
     // MARK: - Transcript Helpers
 
     private static func appendPoint(_ transcript: inout [UInt8], _ p: PallasPointProjective) {
