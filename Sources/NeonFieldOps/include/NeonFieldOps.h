@@ -966,4 +966,69 @@ void stark252_fp_neg(const uint64_t a[4], uint64_t r[4]);
 void stark252_ntt(uint64_t *data, int logN);
 void stark252_intt(uint64_t *data, int logN);
 
+// ============================================================
+// Binary tower field arithmetic (GF(2) towers for Binius STARKs)
+// Uses ARM64 PMULL carry-less multiply intrinsics
+// ============================================================
+
+/// Initialize GF(2^8) log/exp/inverse lookup tables. Call once before using bt_gf8_*.
+void bt_gf8_init(void);
+
+/// GF(2^8) multiply via log/exp table (AES polynomial x^8+x^4+x^3+x+1).
+uint8_t bt_gf8_mul(uint8_t a, uint8_t b);
+/// GF(2^8) square.
+uint8_t bt_gf8_sqr(uint8_t a);
+/// GF(2^8) inverse (0 maps to 0).
+uint8_t bt_gf8_inv(uint8_t a);
+
+/// GF(2^16) multiply using PMULL (irreducible x^16+x^5+x^3+x+1).
+uint16_t bt_gf16_mul(uint16_t a, uint16_t b);
+/// GF(2^16) square.
+uint16_t bt_gf16_sqr(uint16_t a);
+
+/// GF(2^32) multiply using PMULL (irreducible x^32+x^7+x^3+x^2+1).
+uint32_t bt_gf32_mul(uint32_t a, uint32_t b);
+/// GF(2^32) square.
+uint32_t bt_gf32_sqr(uint32_t a);
+
+/// GF(2^64) multiply using PMULL (irreducible x^64+x^4+x^3+x+1).
+uint64_t bt_gf64_mul(uint64_t a, uint64_t b);
+/// GF(2^64) square.
+uint64_t bt_gf64_sqr(uint64_t a);
+/// GF(2^64) inverse via Itoh-Tsujii (0 maps to 0).
+uint64_t bt_gf64_inv(uint64_t a);
+
+/// GF(2^128) multiply (flat polynomial, AES-GCM irreducible x^128+x^7+x^2+x+1).
+/// Elements are 2 x uint64_t: [lo, hi].
+void bt_gf128_mul(const uint64_t a[2], const uint64_t b[2], uint64_t r[2]);
+/// GF(2^128) square.
+void bt_gf128_sqr(const uint64_t a[2], uint64_t r[2]);
+/// GF(2^128) add (XOR).
+void bt_gf128_add(const uint64_t a[2], const uint64_t b[2], uint64_t r[2]);
+/// GF(2^128) inverse via Itoh-Tsujii.
+void bt_gf128_inv(const uint64_t a[2], uint64_t r[2]);
+
+/// Tower-form GF(2^128) = GF(2^64)[X]/(X^2+X+2): multiply.
+/// Elements are [lo, hi] representing lo + hi*X.
+void bt_tower128_mul(const uint64_t a[2], const uint64_t b[2], uint64_t r[2]);
+/// Tower-form GF(2^128) square.
+void bt_tower128_sqr(const uint64_t a[2], uint64_t r[2]);
+/// Tower-form GF(2^128) add.
+void bt_tower128_add(const uint64_t a[2], const uint64_t b[2], uint64_t r[2]);
+/// Tower-form GF(2^128) inverse.
+void bt_tower128_inv(const uint64_t a[2], uint64_t r[2]);
+
+/// Batch GF(2^64) multiply: out[i] = a[i] * b[i].
+void bt_gf64_batch_mul(const uint64_t *a, const uint64_t *b, uint64_t *out, int n);
+/// Batch GF(2^64) add (XOR): out[i] = a[i] ^ b[i], NEON-vectorized.
+void bt_gf64_batch_add(const uint64_t *a, const uint64_t *b, uint64_t *out, int n);
+/// Batch GF(2^64) square: out[i] = a[i]^2.
+void bt_gf64_batch_sqr(const uint64_t *a, uint64_t *out, int n);
+/// Batch GF(2^128) multiply: out[i] = a[i] * b[i]. Each element is 2 x uint64_t.
+void bt_gf128_batch_mul(const uint64_t *a, const uint64_t *b, uint64_t *out, int n);
+/// Batch GF(2^128) add: out[i] = a[i] ^ b[i]. Each element is 2 x uint64_t.
+void bt_gf128_batch_add(const uint64_t *a, const uint64_t *b, uint64_t *out, int n);
+/// Batch tower-form GF(2^128) multiply.
+void bt_tower128_batch_mul(const uint64_t *a, const uint64_t *b, uint64_t *out, int n);
+
 #endif // NEON_FIELD_OPS_H

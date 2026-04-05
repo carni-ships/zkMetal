@@ -494,3 +494,131 @@ public struct BinaryField128: Equatable, CustomStringConvertible {
 @inline(__always) public func bf128Sub(_ a: BinaryField128, _ b: BinaryField128) -> BinaryField128 { a - b }
 @inline(__always) public func bf128Mul(_ a: BinaryField128, _ b: BinaryField128) -> BinaryField128 { a * b }
 @inline(__always) public func bf128Inv(_ a: BinaryField128) -> BinaryField128 { a.inverse() }
+
+// MARK: - NEON/PMULL-Accelerated Binary Tower (C bridge)
+
+import NeonFieldOps
+
+/// NEON-accelerated binary tower fields using ARM64 PMULL carry-less multiply.
+/// These call through to C implementations in binary_tower.c for maximum performance.
+public enum BinaryTowerNeon {
+
+    /// Initialize GF(2^8) lookup tables. Call once at startup.
+    public static func initialize() {
+        bt_gf8_init()
+    }
+
+    // MARK: - GF(2^64) accelerated ops
+
+    /// GF(2^64) multiply using PMULL (single instruction for carry-less multiply).
+    @inline(__always)
+    public static func gf64Mul(_ a: UInt64, _ b: UInt64) -> UInt64 {
+        bt_gf64_mul(a, b)
+    }
+
+    /// GF(2^64) square.
+    @inline(__always)
+    public static func gf64Sqr(_ a: UInt64) -> UInt64 {
+        bt_gf64_sqr(a)
+    }
+
+    /// GF(2^64) inverse via Itoh-Tsujii.
+    @inline(__always)
+    public static func gf64Inv(_ a: UInt64) -> UInt64 {
+        bt_gf64_inv(a)
+    }
+
+    // MARK: - GF(2^128) flat (AES-GCM polynomial) accelerated ops
+
+    /// GF(2^128) multiply (flat representation, AES-GCM polynomial).
+    @inline(__always)
+    public static func gf128Mul(_ a: (UInt64, UInt64), _ b: (UInt64, UInt64)) -> (UInt64, UInt64) {
+        var aArr: [UInt64] = [a.0, a.1]
+        var bArr: [UInt64] = [b.0, b.1]
+        var rArr: [UInt64] = [0, 0]
+        bt_gf128_mul(&aArr, &bArr, &rArr)
+        return (rArr[0], rArr[1])
+    }
+
+    /// GF(2^128) inverse (flat representation).
+    @inline(__always)
+    public static func gf128Inv(_ a: (UInt64, UInt64)) -> (UInt64, UInt64) {
+        var aArr: [UInt64] = [a.0, a.1]
+        var rArr: [UInt64] = [0, 0]
+        bt_gf128_inv(&aArr, &rArr)
+        return (rArr[0], rArr[1])
+    }
+
+    // MARK: - GF(2^128) tower form accelerated ops
+
+    /// Tower GF(2^128) = GF(2^64)[X]/(X^2+X+2) multiply, using PMULL at the GF(2^64) level.
+    @inline(__always)
+    public static func tower128Mul(_ a: (UInt64, UInt64), _ b: (UInt64, UInt64)) -> (UInt64, UInt64) {
+        var aArr: [UInt64] = [a.0, a.1]
+        var bArr: [UInt64] = [b.0, b.1]
+        var rArr: [UInt64] = [0, 0]
+        bt_tower128_mul(&aArr, &bArr, &rArr)
+        return (rArr[0], rArr[1])
+    }
+
+    /// Tower GF(2^128) inverse.
+    @inline(__always)
+    public static func tower128Inv(_ a: (UInt64, UInt64)) -> (UInt64, UInt64) {
+        var aArr: [UInt64] = [a.0, a.1]
+        var rArr: [UInt64] = [0, 0]
+        bt_tower128_inv(&aArr, &rArr)
+        return (rArr[0], rArr[1])
+    }
+
+    // MARK: - GF(2^32) and GF(2^16) accelerated ops
+
+    /// GF(2^32) multiply using PMULL.
+    @inline(__always)
+    public static func gf32Mul(_ a: UInt32, _ b: UInt32) -> UInt32 {
+        bt_gf32_mul(a, b)
+    }
+
+    /// GF(2^16) multiply using PMULL.
+    @inline(__always)
+    public static func gf16Mul(_ a: UInt16, _ b: UInt16) -> UInt16 {
+        bt_gf16_mul(a, b)
+    }
+
+    /// GF(2^8) multiply using log/exp table.
+    @inline(__always)
+    public static func gf8Mul(_ a: UInt8, _ b: UInt8) -> UInt8 {
+        bt_gf8_mul(a, b)
+    }
+
+    // MARK: - Batch operations
+
+    /// Batch GF(2^64) multiply: out[i] = a[i] * b[i].
+    public static func gf64BatchMul(_ a: UnsafePointer<UInt64>, _ b: UnsafePointer<UInt64>,
+                                     _ out: UnsafeMutablePointer<UInt64>, count: Int) {
+        bt_gf64_batch_mul(a, b, out, Int32(count))
+    }
+
+    /// Batch GF(2^64) add (XOR), NEON-vectorized.
+    public static func gf64BatchAdd(_ a: UnsafePointer<UInt64>, _ b: UnsafePointer<UInt64>,
+                                     _ out: UnsafeMutablePointer<UInt64>, count: Int) {
+        bt_gf64_batch_add(a, b, out, Int32(count))
+    }
+
+    /// Batch GF(2^128) multiply: out[i] = a[i] * b[i]. Each element is 2 x UInt64.
+    public static func gf128BatchMul(_ a: UnsafePointer<UInt64>, _ b: UnsafePointer<UInt64>,
+                                      _ out: UnsafeMutablePointer<UInt64>, count: Int) {
+        bt_gf128_batch_mul(a, b, out, Int32(count))
+    }
+
+    /// Batch GF(2^128) add (XOR), NEON-vectorized. Each element is 2 x UInt64.
+    public static func gf128BatchAdd(_ a: UnsafePointer<UInt64>, _ b: UnsafePointer<UInt64>,
+                                      _ out: UnsafeMutablePointer<UInt64>, count: Int) {
+        bt_gf128_batch_add(a, b, out, Int32(count))
+    }
+
+    /// Batch tower GF(2^128) multiply.
+    public static func tower128BatchMul(_ a: UnsafePointer<UInt64>, _ b: UnsafePointer<UInt64>,
+                                         _ out: UnsafeMutablePointer<UInt64>, count: Int) {
+        bt_tower128_batch_mul(a, b, out, Int32(count))
+    }
+}
