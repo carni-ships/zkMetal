@@ -141,25 +141,25 @@ BabyBear at 2^24: **8.5B elements/sec** (native 32-bit arithmetic). Goldilocks: 
 
 ### Hashing
 
-| Primitive | Batch Size | Vanilla CPU | Parallel CPU (12 cores) | GPU (Metal) | GPU vs Vanilla |
-|-----------|-----------|-------------|------------------------|-------------|----------------|
-| Poseidon2 | 2^12 | 523ms | 71ms | 2.3ms | **227x** |
-| Poseidon2 | 2^14 | 2.0s | 278ms | 2.3ms | **871x** |
-| Poseidon2 | 2^16 | 8.0s | 1.1s | 8.1ms | **993x** |
-| Keccak-256 | 2^14 | 100ms | 23ms | 0.20ms | **500x** |
-| Keccak-256 | 2^16 | 387ms | 89ms | 0.45ms | **860x** |
-| Keccak-256 | 2^18 | 1.6s | 360ms | 1.4ms | **1143x** |
+| Primitive | Batch Size | Vanilla CPU | Optimized CPU | GPU (Metal) | GPU vs Opt CPU |
+|-----------|-----------|-------------|--------------|-------------|----------------|
+| Poseidon2 | 2^12 | 523ms | 19ms (C CIOS) | 2.3ms | **8x** |
+| Poseidon2 | 2^14 | 2.0s | 75ms (C CIOS) | 2.3ms | **33x** |
+| Poseidon2 | 2^16 | 8.0s | 302ms (C CIOS) | 8.5ms | **36x** |
+| Keccak-256 | 2^14 | 100ms | 23ms (parallel) | 0.20ms | **500x** |
+| Keccak-256 | 2^16 | 387ms | 89ms (parallel) | 0.45ms | **860x** |
+| Keccak-256 | 2^18 | 1.6s | 360ms (parallel) | 1.4ms | **1143x** |
 
 ### Merkle Trees
 
 | Backend | Leaves | GPU | CPU | Speedup |
 |---------|--------|-----|-----|---------|
-| Poseidon2 | 2^10 | 7.4ms | 272ms | **37x** |
-| Poseidon2 | 2^12 | 8.8ms | 2.0s | **227x** |
-| Poseidon2 | 2^14 | 10ms | 4.7s | **470x** |
-| Poseidon2 | 2^16 | 22ms | 20s | **909x** |
-| Poseidon2 | 2^18 | 46ms | 66s | **1435x** |
-| Poseidon2 | 2^20 | 130ms | -- | -- |
+| Poseidon2 | 2^10 | 7.3ms | 6ms | **1x** |
+| Poseidon2 | 2^12 | 8.7ms | 23ms | **3x** |
+| Poseidon2 | 2^14 | 10ms | 91ms | **9x** |
+| Poseidon2 | 2^16 | 21ms | 364ms | **17x** |
+| Poseidon2 | 2^18 | 45ms | 1.4s | **32x** |
+| Poseidon2 | 2^20 | 129ms | -- | -- |
 | Keccak-256 | 2^12 | 0.37ms | 44ms | **119x** |
 | Keccak-256 | 2^14 | 0.51ms | 155ms | **304x** |
 | Keccak-256 | 2^16 | 1.4ms | 783ms | **559x** |
@@ -331,7 +331,7 @@ C CIOS Montgomery acceleration: pre-computed wiring topology, cached buffers, eq
 | Primitive | Metric | Value |
 |-----------|--------|-------|
 | Transcript (Keccak) | 1K absorb+squeeze | 0.89ms (2.2M ops/s) |
-| Transcript (Poseidon2) | 1K absorb+squeeze | 176ms (11K ops/s) |
+| Transcript (Poseidon2) | 1K absorb+squeeze | 9.9ms (202K ops/s) |
 | Serialization (Base64) | 10KB x 1K encode | 3.3ms |
 | Serialization (Base64) | 10KB x 1K decode | 3.6ms |
 | KZG proof size | -- | 138 B |
