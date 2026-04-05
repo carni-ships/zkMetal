@@ -352,8 +352,9 @@ C CIOS Montgomery acceleration: pre-computed wiring topology, cached buffers, eq
 | IPA Accumulation (Pallas) | 7.3ms accumulate (n=4) | Halo-style, batch decide 2.7x |
 | Tensor compress 2^18 | 8.9ms compress, 2.1ms verify | **460.7x** compression ratio, Keccak transcript: **26x** compress, **19x** verify |
 | WHIR 2^14 | 30ms prove, 4.8ms verify | C CIOS fold + CPU P2 Merkle: prove **1.9x**, verify **3.6x** |
+| Marlin verify | 2.7ms | Batch KZG + C CIOS: **25x** faster than Groth16 verify (70ms) |
 | Spartan prove 2^14 | 121ms prove, 8ms verify | C CIOS sumcheck + sparse matvec: **8.6x** (1051→122ms) |
-| Lasso 2^18 | 56ms prove, 31ms verify | C-accelerated: prove **8.2x** (481→56ms), verify **52x** (1.6s→31ms) |
+| Lasso 2^18 | 30ms prove, 31ms verify | C-accelerated: prove **16x** (481→30ms), verify **52x** (1.6s→31ms) |
 | LogUp 2^12 | 15ms prove, 16ms verify | Optimal for small-medium tables |
 | cq | Correctness passes | Crashes at larger benchmark sizes |
 | Binius FFT 2^16 | 21ms (CPU) | Binary tower GF(2^32) GPU batch: 0.67ms mul at 2^18 |
