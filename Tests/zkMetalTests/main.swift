@@ -77,6 +77,9 @@ runSpartanPolyIOPTests()
 runGPUWitnessTests()
 runHalo2PermutationTests()
 runGPUPolyDivTests()
+runWitnessSolverTests()
+runProtogalaxyDeciderTests()
+runMarlinProverTests()
 
 let elapsed = CFAbsoluteTimeGetCurrent() - t0
 print(String(format: "\nCompleted in %.1fs", elapsed))

@@ -285,94 +285,31 @@ func runProtogalaxyTests() {
         )
 
         // Test decider config
-        let config = ProtogalaxyDeciderConfig(backend: .plonk, circuitSize: circuitSize)
-        expect(config.backend == .plonk, "Decider config uses Plonk backend")
+        let config = ProtogalaxyDeciderConfig(circuitSize: circuitSize)
         expect(config.circuitSize == circuitSize, "Decider config has correct circuit size")
         expect(config.numWitnessColumns == 3, "Decider config defaults to 3 columns")
 
-        // Test building relaxed circuit
+        // Test decider prover construction
         let deciderProver = ProtogalaxyDeciderProver(config: config)
-        let (circuit, assignment) = deciderProver.buildRelaxedPlonkCircuit(
-            instance: acc,
-            witnesses: accWit
-        )
-
-        expect(circuit.numGates > 0, "Decider circuit has gates")
-        // Circuit should be padded to power of 2
-        let numGates = circuit.numGates
-        expect(numGates > 0 && (numGates & (numGates - 1)) == 0,
-               "Decider circuit size is power of 2")
-        expect(assignment.count > 0, "Decider assignment is non-empty")
-
-        // u and e should be in the assignment
-        expect(frEq(assignment[1], acc.u), "Assignment[1] = u")
-        expect(frEq(assignment[2], acc.errorTerm), "Assignment[2] = e")
-
-        // Test building relaxed R1CS witness
-        let (publicInputs, witnessVec) = deciderProver.buildRelaxedR1CSWitness(
-            instance: acc,
-            witnesses: accWit
-        )
-        expect(publicInputs.count == 2 + acc.publicInput.count,
-               "R1CS public inputs = [u, e, pi...]")
-        expect(frEq(publicInputs[0], acc.u), "R1CS public input[0] = u")
-        expect(frEq(publicInputs[1], acc.errorTerm), "R1CS public input[1] = e")
-        expect(witnessVec.count == 3 * circuitSize, "R1CS witness = 3*n elements")
-
-        // Test static R1CS builder
-        let r1cs = ProtogalaxyDeciderProver.buildRelaxedR1CS(
-            circuitSize: circuitSize,
-            numPublicInputs: 1
-        )
-        expect(r1cs.numConstraints == circuitSize, "R1CS has circuitSize constraints")
-        expect(r1cs.numPublic == 3, "R1CS numPublic = 2 + numOriginalPI")
-
-        // Test decider proof construction (wrapping a dummy proof)
-        let dummyG1 = pointFromAffine(bn254G1Generator())
-        let dummyG2 = g2FromAffine(bn254G2Generator())
-        let dummyProof = Groth16Proof(a: dummyG1, b: dummyG2, c: dummyG1)
-        let deciderProof = ProtogalaxyDeciderProof(
-            snarkProof: .groth16(dummyProof),
-            accumulatedInstance: acc,
-            foldingProofs: [foldProof]
-        )
+        let deciderProof = deciderProver.decide(instance: acc, witnesses: accWit,
+                                                 foldingProofs: [foldProof])
 
         expect(deciderProof.foldingProofs.count == 1, "Decider proof has 1 folding proof")
-        if case .groth16 = deciderProof.snarkProof {
-            expect(true, "Decider proof wraps Groth16")
-        } else {
-            expect(false, "Expected Groth16 backend")
-        }
+        expect(deciderProof.sumcheckRounds.count > 0, "Decider proof has sumcheck rounds")
+        expect(deciderProof.witnessEvals.count == 3, "Decider proof has 3 witness evals")
+        expect(deciderProof.witnessCommitments.count == 3, "Decider proof has 3 commitments")
+
+        // Witness hash should be non-zero
+        expect(!frEq(deciderProof.witnessHash, Fr.zero), "Decider proof has non-zero witness hash")
     }
 
     // =====================================================================
-    // Test 10: Decider verifier rejects wrong backend
+    // Test 10: Decider verifier basic check
     // =====================================================================
     do {
-        let circuitSize = 4
-        let acc = makeFreshInstance(publicInput: [frFromInt(1)],
-                                     beta: frFromInt(2), gamma: frFromInt(3))
-
-        let dummyG1 = pointFromAffine(bn254G1Generator())
-        let dummyG2 = g2FromAffine(bn254G2Generator())
-        let groth16Proof = Groth16Proof(a: dummyG1, b: dummyG2, c: dummyG1)
-
-        // Wrap as Groth16 but try to verify as Plonk
-        let deciderProof = ProtogalaxyDeciderProof(
-            snarkProof: .groth16(groth16Proof),
-            accumulatedInstance: acc
-        )
-
         let deciderVerifier = ProtogalaxyDeciderVerifier()
-        // This should fail because we're trying Plonk verify on a Groth16 proof
-        // (verifyPlonk checks for .plonk case)
-        // We can't call verifyPlonk without a real PlonkSetup, but we can test
-        // the enum match guard
-        if case .plonk = deciderProof.snarkProof {
-            expect(false, "Should not match plonk")
-        } else {
-            expect(true, "Groth16 proof does not match plonk case")
-        }
+        _ = deciderVerifier  // Verify construction succeeds
+        expect(true, "DeciderVerifier constructs without error")
     }
 
     // =====================================================================
@@ -433,18 +370,17 @@ func runProtogalaxyTests() {
     }
 
     // =====================================================================
-    // Test 13: Streaming decide config and workflow
+    // Test 13: Decider config and workflow
     // =====================================================================
     do {
-        let config = ProtogalaxyDeciderConfig(backend: .groth16, circuitSize: 8,
+        let config = ProtogalaxyDeciderConfig(circuitSize: 8,
                                                numWitnessColumns: 3)
-        expect(config.backend == .groth16, "Config backend is groth16")
         expect(config.circuitSize == 8, "Config circuit size is 8")
         expect(config.numWitnessColumns == 3, "Config witness columns is 3")
 
         let deciderProver = ProtogalaxyDeciderProver(config: config)
         _ = deciderProver  // Verify it constructs without error
-        expect(true, "DeciderProver constructs with Groth16 config")
+        expect(true, "DeciderProver constructs with config")
     }
 
     // =====================================================================

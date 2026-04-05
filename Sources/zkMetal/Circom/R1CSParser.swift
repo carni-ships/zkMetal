@@ -33,6 +33,7 @@ public struct R1CSHeader {
 /// A sparse linear combination from the R1CS file: [(wireId, coefficient)].
 public struct R1CSSparseVec {
     public let terms: [(wireId: UInt32, coeff: Fr)]
+    public init(terms: [(wireId: UInt32, coeff: Fr)]) { self.terms = terms }
 }
 
 /// A single R1CS constraint: A * w . B * w = C * w.
@@ -40,6 +41,9 @@ public struct R1CSFileConstraint {
     public let a: R1CSSparseVec
     public let b: R1CSSparseVec
     public let c: R1CSSparseVec
+    public init(a: R1CSSparseVec, b: R1CSSparseVec, c: R1CSSparseVec) {
+        self.a = a; self.b = b; self.c = c
+    }
 }
 
 /// Complete parsed R1CS file.
