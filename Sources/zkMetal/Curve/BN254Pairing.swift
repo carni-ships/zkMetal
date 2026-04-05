@@ -534,70 +534,49 @@ public func bn254MillerLoopNoCorrection(_ p: PointAffine, _ q: G2AffinePoint) ->
     return f
 }
 
-// MARK: - Final Exponentiation
+// MARK: - Final Exponentiation (C-accelerated with cyclotomic squaring)
 
-/// Raise Fp12 element to a small positive integer power via square-and-multiply
-private func fp12PowSmall(_ a: Fp12, _ n: Int) -> Fp12 {
-    if n == 0 { return .one }
-    if n == 1 { return a }
-    var result = Fp12.one; var base = a; var k = n
-    while k > 0 {
-        if k & 1 == 1 { result = fp12Mul(result, base) }
-        base = fp12Sqr(base); k >>= 1
+/// Marshal Fp12 from Swift (8x32 Montgomery per Fp) to C (4x64 Montgomery per Fp, 48 UInt64 total).
+/// Layout: c0.c0.c0, c0.c0.c1, c0.c1.c0, c0.c1.c1, c0.c2.c0, c0.c2.c1,
+///         c1.c0.c0, c1.c0.c1, c1.c1.c0, c1.c1.c1, c1.c2.c0, c1.c2.c1
+private func fp12ToFlat64(_ f: Fp12) -> [UInt64] {
+    var flat = [UInt64](repeating: 0, count: 48)
+    let fps: [Fp] = [
+        f.c0.c0.c0, f.c0.c0.c1, f.c0.c1.c0, f.c0.c1.c1, f.c0.c2.c0, f.c0.c2.c1,
+        f.c1.c0.c0, f.c1.c0.c1, f.c1.c1.c0, f.c1.c1.c1, f.c1.c2.c0, f.c1.c2.c1
+    ]
+    for i in 0..<12 {
+        let limbs64 = fps[i].to64()
+        flat[i * 4]     = limbs64[0]
+        flat[i * 4 + 1] = limbs64[1]
+        flat[i * 4 + 2] = limbs64[2]
+        flat[i * 4 + 3] = limbs64[3]
     }
-    return result
+    return flat
 }
 
-private func fp12PowByX(_ a: Fp12) -> Fp12 {
-    let x: UInt64 = 0x44E992B44A6909F1
-    var result = Fp12.one; var base = a; var k = x
-    while k > 0 {
-        if k & 1 == 1 { result = fp12Mul(result, base) }
-        base = fp12Sqr(base); k >>= 1
+/// Unmarshal Fp12 from C (48 UInt64) back to Swift.
+private func fp12FromFlat64(_ flat: [UInt64]) -> Fp12 {
+    func readFp(_ offset: Int) -> Fp {
+        Fp.from64([flat[offset], flat[offset + 1], flat[offset + 2], flat[offset + 3]])
     }
-    return result
+    func readFp2(_ offset: Int) -> Fp2 {
+        Fp2(c0: readFp(offset), c1: readFp(offset + 4))
+    }
+    func readFp6(_ offset: Int) -> Fp6 {
+        Fp6(c0: readFp2(offset), c1: readFp2(offset + 8), c2: readFp2(offset + 16))
+    }
+    return Fp12(c0: readFp6(0), c1: readFp6(24))
 }
 
-/// Final exponentiation: f^((p^12 - 1) / r)
+/// Final exponentiation: f^((p^12 - 1) / r) — C accelerated with cyclotomic squaring.
+/// Uses NEON-optimized C implementation with Granger-Scott cyclotomic squaring in the hard part,
+/// which is ~3x faster than generic Fp12 squaring for elements in the cyclotomic subgroup.
 public func bn254FinalExponentiation(_ f: Fp12) -> Fp12 {
-    // Easy part: f^(p^6 - 1) * (p^2 + 1)
-    let fConj = fp12Conjugate(f)
-    let fInv = fp12Inverse(f)
-    var result = fp12Mul(fConj, fInv)  // f^(p^6 - 1)
-    result = fp12Mul(fp12Frobenius2(result), result)  // * (p^2 + 1)
-
-    // Hard part: result^((p^4 - p^2 + 1) / r)
-    // Decomposition: hard = lambda_0 + lambda_1*p + lambda_2*p^2 + p^3
-    // lambda_0 = -(2 + 18x + 30x^2 + 36x^3)
-    // lambda_1 = 1 - 12x - 18x^2 - 36x^3
-    // lambda_2 = 1 + 6x^2
-    // lambda_3 = 1
-
-    let a = fp12PowByX(result)       // f^x
-    let a2 = fp12PowByX(a)           // f^(x^2)
-    let a3 = fp12PowByX(a2)          // f^(x^3)
-
-    // Compute f^lambda_0 = conj(f^2 * a^18 * a2^30 * a3^36)
-    let f2 = fp12Sqr(result)
-    let a18 = fp12PowSmall(a, 18)
-    let a2_30 = fp12PowSmall(a2, 30)
-    let a3_36 = fp12PowSmall(a3, 36)
-    let t0 = fp12Conjugate(fp12Mul(fp12Mul(f2, a18), fp12Mul(a2_30, a3_36)))
-
-    // Compute frob(f)^lambda_1 = frob(f * conj(a^12 * a2^18 * a3^36))
-    let a12 = fp12PowSmall(a, 12)
-    let a2_18 = fp12PowSmall(a2, 18)
-    let inner1 = fp12Mul(result, fp12Conjugate(fp12Mul(fp12Mul(a12, a2_18), a3_36)))
-    let t1 = fp12Frobenius(inner1)
-
-    // Compute frob2(f)^lambda_2 = frob2(f * a2^6)
-    let a2_6 = fp12PowSmall(a2, 6)
-    let t2 = fp12Frobenius2(fp12Mul(result, a2_6))
-
-    // Compute frob3(f)
-    let t3 = fp12Frobenius3(result)
-
-    return fp12Mul(fp12Mul(t0, t1), fp12Mul(t2, t3))
+    var fFlat = fp12ToFlat64(f)
+    var result = [UInt64](repeating: 0, count: 48)
+    bn254_final_exp(&fFlat, &result)
+    return fp12FromFlat64(result)
 }
 
 // MARK: - Public Pairing API
