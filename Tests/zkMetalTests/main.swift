@@ -35,6 +35,7 @@ runPoseidon2SpongeTests()
 runGroth16SolidityTests()
 runPedersenEngineTests()
 runTraceCompressionTests()
+runDASTests()
 
 let elapsed = CFAbsoluteTimeGetCurrent() - t0
 print(String(format: "\nCompleted in %.1fs", elapsed))
