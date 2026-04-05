@@ -984,3 +984,103 @@ void bls12_381_g2_point_double(const uint64_t p[36], uint64_t r[36]) {
 void bls12_381_g2_point_add_mixed(const uint64_t p[36], const uint64_t q_aff[24], uint64_t r[36]) {
     g2_add_mixed(p, q_aff, r);
 }
+
+// ============================================================
+// Exported Fp operations: inv, sqrt
+// ============================================================
+
+void bls12_381_fp_inv_ext(const uint64_t a[6], uint64_t r[6]) {
+    fp_inv(a, r);
+}
+
+// Fp sqrt via a^((p+1)/4). Returns 1 if sqrt exists, 0 otherwise.
+int bls12_381_fp_sqrt(const uint64_t a[6], uint64_t r[6]) {
+    // Compute (p+1)/4
+    uint64_t exp[6];
+    for (int i = 0; i < 6; i++) exp[i] = FP381_P[i];
+    // p+1
+    uint64_t carry = 0;
+    for (int i = 0; i < 6; i++) {
+        uint64_t sum = exp[i] + (i == 0 ? 1 : 0) + carry;
+        carry = (sum < exp[i]) || (i == 0 && sum == 0) ? 1 : 0;
+        exp[i] = sum;
+    }
+    // >>2
+    for (int i = 0; i < 5; i++) {
+        exp[i] = (exp[i] >> 2) | (exp[i+1] << 62);
+    }
+    exp[5] >>= 2;
+
+    // Square-and-multiply
+    memcpy(r, FP381_ONE, 48);
+    uint64_t base[6];
+    memcpy(base, a, 48);
+    for (int i = 0; i < 6; i++) {
+        uint64_t word = exp[i];
+        for (int bit = 0; bit < 64; bit++) {
+            if ((word >> bit) & 1) fp_mul(r, base, r);
+            fp_sqr(base, base);
+        }
+    }
+
+    // Verify: r^2 == a?
+    uint64_t check[6];
+    fp_sqr(r, check);
+    for (int i = 0; i < 6; i++) {
+        if (check[i] != a[i]) return 0;
+    }
+    return 1;
+}
+
+// ============================================================
+// G2 wide scalar multiplication (for cofactor clearing, up to 640 bits)
+// scalar: n_limbs x uint64_t
+// ============================================================
+
+void bls12_381_g2_scalar_mul_wide(const uint64_t p[36], const uint64_t *scalar,
+                                   int n_limbs, uint64_t r[36]) {
+    uint64_t table[16 * 36];
+
+    g2_set_id(table);
+    memcpy(table + 36, p, 288);
+    for (int i = 2; i < 16; i++) {
+        g2_add(table + (i - 1) * 36, p, table + i * 36);
+    }
+
+    int total_nibbles = n_limbs * 16;
+    uint8_t *nibbles = (uint8_t *)calloc(total_nibbles, 1);
+    for (int i = 0; i < n_limbs; i++) {
+        uint64_t word = scalar[i];
+        for (int j = 0; j < 16; j++) {
+            nibbles[i * 16 + j] = (uint8_t)(word & 0xF);
+            word >>= 4;
+        }
+    }
+
+    int top = total_nibbles - 1;
+    while (top >= 0 && nibbles[top] == 0) top--;
+
+    if (top < 0) {
+        g2_set_id(r);
+        free(nibbles);
+        return;
+    }
+
+    uint64_t result[36];
+    memcpy(result, table + nibbles[top] * 36, 288);
+
+    for (int i = top - 1; i >= 0; i--) {
+        uint64_t tmp[36];
+        g2_dbl(result, tmp); memcpy(result, tmp, 288);
+        g2_dbl(result, tmp); memcpy(result, tmp, 288);
+        g2_dbl(result, tmp); memcpy(result, tmp, 288);
+        g2_dbl(result, tmp); memcpy(result, tmp, 288);
+        if (nibbles[i]) {
+            g2_add(result, table + nibbles[i] * 36, tmp);
+            memcpy(result, tmp, 288);
+        }
+    }
+
+    memcpy(r, result, 288);
+    free(nibbles);
+}

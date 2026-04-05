@@ -112,7 +112,7 @@ public class IPAEngine {
         self.bgmwTable = IPAEngine.precomputeBGMWTables(generators: generators)
     }
 
-    /// Precompute BGMW lookup tables for all generators.
+    /// Precompute BGMW lookup tables for all generators using C implementation.
     /// For generator g_i, window w, digit d (1..2^windowBits-1):
     ///   table[i][w][d-1] = d * (2^(w*windowBits)) * g_i
     /// The table is stored flat as affine points for cache efficiency.
@@ -120,82 +120,19 @@ public class IPAEngine {
         let n = generators.count
         let w = bgmwWindowBits
         let numWindows = bgmwNumWindows
-        let tableSize = bgmwTableSize  // 2^w - 1
+        let tableSize = bgmwTableSize
         let totalEntries = n * numWindows * tableSize
 
-        // Phase 1: compute all projective points in parallel
-        var projTable = [PointProjective](repeating: PointProjective(x: .one, y: .one, z: .zero),
-                                          count: totalEntries)
-
-        // For each generator, compute the table entries
-        // Parallelize over generators since each is independent
-        DispatchQueue.concurrentPerform(iterations: n) { i in
-            let gProj = pointFromAffine(generators[i])
-            let baseOffset = i * numWindows * tableSize
-
-            // For window 0: base = g_i
-            // For window w: base = 2^(w*windowBits) * g_i
-            var windowBase = gProj  // 2^(0*w) * g_i = g_i
-
-            for win in 0..<numWindows {
-                let winOffset = baseOffset + win * tableSize
-
-                // table[win][0] = 1 * windowBase = windowBase
-                projTable[winOffset] = windowBase
-
-                // table[win][d-1] = d * windowBase (for d = 2..2^w-1)
-                // Build incrementally: table[d] = table[d-1] + windowBase
-                var acc = windowBase
-                for d in 1..<tableSize {
-                    // Use C point_add for speed
-                    var result = PointProjective(x: .one, y: .one, z: .zero)
-                    withUnsafeBytes(of: acc) { pBuf in
-                        withUnsafeBytes(of: windowBase) { qBuf in
-                            withUnsafeMutableBytes(of: &result) { rBuf in
-                                bn254_point_add(
-                                    pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                                    qBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
-                            }
-                        }
-                    }
-                    acc = result
-                    projTable[winOffset + d] = acc
-                }
-
-                // Advance windowBase by 2^w doublings for the next window
-                if win < numWindows - 1 {
-                    var tmp = windowBase
-                    for _ in 0..<w {
-                        var dbl = PointProjective(x: .one, y: .one, z: .zero)
-                        withUnsafeBytes(of: tmp) { pBuf in
-                            withUnsafeMutableBytes(of: &dbl) { rBuf in
-                                // pointDouble via pt_add(p, p)
-                                bn254_point_add(
-                                    pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                                    pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
-                            }
-                        }
-                        tmp = dbl
-                    }
-                    windowBase = tmp
-                }
-            }
-        }
-
-        // Phase 2: batch convert all projective points to affine
-        // Use C batch-to-affine for efficiency (single inversion chain)
         var affineTable = [PointAffine](repeating: PointAffine(x: .one, y: .one), count: totalEntries)
-        projTable.withUnsafeBytes { projBuf in
-            affineTable.withUnsafeMutableBytes { affBuf in
-                bn254_batch_to_affine(
-                    projBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                    affBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                    Int32(totalEntries))
+        generators.withUnsafeBytes { genBuf in
+            affineTable.withUnsafeMutableBytes { tableBuf in
+                bgmw_precompute(
+                    genBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(n),
+                    Int32(w),
+                    tableBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
             }
         }
-
         return affineTable
     }
 
@@ -234,9 +171,6 @@ public class IPAEngine {
         precondition(a.count == generators.count)
         let n = a.count
         let w = IPAEngine.bgmwWindowBits
-        let numWindows = IPAEngine.bgmwNumWindows
-        let tableSize = IPAEngine.bgmwTableSize
-        let entriesPerGen = numWindows * tableSize
 
         // Convert all scalars to integer form (non-Montgomery) for digit decomposition
         var flatScalars = [UInt32](repeating: 0, count: n * 8)
@@ -250,93 +184,18 @@ public class IPAEngine {
             }
         }
 
-        // BGMW commit: for each scalar, decompose into base-2^w digits,
-        // look up precomputed table entries, and accumulate with mixed additions.
-        let mask = UInt32((1 << w) - 1)  // 0x7F for w=7
-
-        // Parallel accumulation: split generators across threads for large n
-        let numThreads = min(n, 8)
-        let chunkSize = (n + numThreads - 1) / numThreads
-        var partialResults = [PointProjective](repeating: PointProjective(x: .one, y: .one, z: .zero),
-                                               count: numThreads)
-
+        // Call C BGMW MSM: multi-threaded table lookup + mixed additions
+        var result = PointProjective(x: .one, y: .one, z: .zero)
         bgmwTable.withUnsafeBytes { tableBuf in
-            let tableBase = tableBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
-
             flatScalars.withUnsafeBufferPointer { scalarBuf in
-                DispatchQueue.concurrentPerform(iterations: numThreads) { threadIdx in
-                    let start = threadIdx * chunkSize
-                    let end = min(start + chunkSize, n)
-                    var acc = PointProjective(x: .one, y: .one, z: .zero)
-
-                    for i in start..<end {
-                        // Decompose scalar i into base-2^w digits
-                        let scalarBase = i * 8  // 8 UInt32 limbs per scalar
-
-                        // Extract digits from the scalar's 256-bit integer representation
-                        // The scalar is stored as 8 little-endian UInt32 limbs
-                        var bitOffset = 0
-                        let genTableBase = i * entriesPerGen  // offset into bgmwTable for generator i
-
-                        for win in 0..<numWindows {
-                            // Extract w bits starting at bitOffset
-                            let limbIdx = bitOffset / 32
-                            let bitIdx = bitOffset % 32
-
-                            var digit: UInt32
-                            if limbIdx < 8 {
-                                digit = scalarBuf[scalarBase + limbIdx] >> bitIdx
-                                // If bits span two limbs, include high bits from next limb
-                                if bitIdx + w > 32 && limbIdx + 1 < 8 {
-                                    digit |= scalarBuf[scalarBase + limbIdx + 1] << (32 - bitIdx)
-                                }
-                                digit &= mask
-                            } else {
-                                digit = 0
-                            }
-
-                            if digit != 0 {
-                                // Look up table entry: bgmwTable[genTableBase + win * tableSize + (digit - 1)]
-                                let entryIdx = genTableBase + win * tableSize + Int(digit - 1)
-                                // Mixed addition: acc += affine table entry
-                                // 8 uint64 per affine point (x[4], y[4])
-                                let entryPtr = tableBase + entryIdx * 8
-                                var result = PointProjective(x: .one, y: .one, z: .zero)
-                                withUnsafeBytes(of: acc) { pBuf in
-                                    withUnsafeMutableBytes(of: &result) { rBuf in
-                                        bn254_point_add_mixed(
-                                            pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                                            entryPtr,
-                                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
-                                    }
-                                }
-                                acc = result
-                            }
-
-                            bitOffset += w
-                        }
-                    }
-                    partialResults[threadIdx] = acc
+                withUnsafeMutableBytes(of: &result) { resBuf in
+                    bgmw_msm(
+                        tableBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n),
+                        Int32(w),
+                        scalarBuf.baseAddress!,
+                        resBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
                 }
-            }
-        }
-
-        // Sum partial results
-        var result = partialResults[0]
-        for t in 1..<numThreads {
-            if !pointIsIdentity(partialResults[t]) {
-                var tmp = PointProjective(x: .one, y: .one, z: .zero)
-                withUnsafeBytes(of: result) { pBuf in
-                    withUnsafeBytes(of: partialResults[t]) { qBuf in
-                        withUnsafeMutableBytes(of: &tmp) { rBuf in
-                            bn254_point_add(
-                                pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                                qBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                                rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
-                        }
-                    }
-                }
-                result = tmp
             }
         }
         return result

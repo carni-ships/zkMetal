@@ -2083,6 +2083,181 @@ void bn254_fr_basefold_fold_all(const uint64_t *evals, int numVars,
 }
 
 // ============================================================
+// BGMW fixed-base scalar multiplication
+// Precomputes tables of [0, G, 2G, ..., (2^w-1)G] for each
+// generator at each window position. Runtime: additions only.
+// ============================================================
+
+typedef struct {
+    const uint64_t *gens;
+    uint64_t *proj;
+    int start, end;
+    int window_bits, num_windows, table_size, entries_per_gen;
+} bgmw_pre_args_t;
+
+static void *bgmw_pre_worker(void *arg) {
+    bgmw_pre_args_t *a = (bgmw_pre_args_t *)arg;
+    for (int i = a->start; i < a->end; i++) {
+        const uint64_t *gaff = a->gens + i * 8;
+        int base_off = i * a->entries_per_gen;
+
+        // Convert affine generator to projective
+        uint64_t window_base[12];
+        memcpy(window_base, gaff, 64);       // x, y from affine
+        memcpy(window_base + 8, FP_ONE, 32); // z = 1
+
+        for (int win = 0; win < a->num_windows; win++) {
+            int win_off = base_off + win * a->table_size;
+
+            // table[win][0] = 1 * window_base
+            memcpy(a->proj + (size_t)win_off * 12, window_base, 96);
+
+            // table[win][d-1] = d * window_base (incremental add)
+            uint64_t acc[12];
+            memcpy(acc, window_base, 96);
+            for (int d = 1; d < a->table_size; d++) {
+                uint64_t result[12];
+                pt_add(acc, window_base, result);
+                memcpy(acc, result, 96);
+                memcpy(a->proj + (size_t)(win_off + d) * 12, acc, 96);
+            }
+
+            // Advance window_base by 2^w doublings
+            if (win < a->num_windows - 1) {
+                for (int b = 0; b < a->window_bits; b++) {
+                    uint64_t dbl[12];
+                    pt_dbl(window_base, dbl);
+                    memcpy(window_base, dbl, 96);
+                }
+            }
+        }
+    }
+    return NULL;
+}
+
+void bgmw_precompute(const uint64_t *generators_affine, int n,
+                     int window_bits, uint64_t *table_out) {
+    const int num_windows = (256 + window_bits - 1) / window_bits;
+    const int table_size = (1 << window_bits) - 1;
+    const int entries_per_gen = num_windows * table_size;
+    const int total = n * entries_per_gen;
+
+    uint64_t *proj = (uint64_t *)malloc((size_t)total * 96);
+    if (!proj) return;
+
+    int num_threads = n < 8 ? n : 8;
+    int chunk = (n + num_threads - 1) / num_threads;
+    pthread_t threads[8];
+    bgmw_pre_args_t args[8];
+
+    for (int t = 0; t < num_threads; t++) {
+        args[t].gens = generators_affine;
+        args[t].proj = proj;
+        args[t].start = t * chunk;
+        args[t].end = (t + 1) * chunk < n ? (t + 1) * chunk : n;
+        args[t].window_bits = window_bits;
+        args[t].num_windows = num_windows;
+        args[t].table_size = table_size;
+        args[t].entries_per_gen = entries_per_gen;
+        pthread_create(&threads[t], NULL, bgmw_pre_worker, &args[t]);
+    }
+    for (int t = 0; t < num_threads; t++) {
+        pthread_join(threads[t], NULL);
+    }
+
+    batch_to_affine(proj, table_out, total);
+    free(proj);
+}
+
+typedef struct {
+    const uint64_t *table;
+    const uint32_t *scalars;
+    uint64_t partial[12];
+    int start, end;
+    int window_bits, num_windows, table_size, entries_per_gen;
+    uint32_t mask;
+} bgmw_msm_args_t;
+
+static void *bgmw_msm_worker(void *arg) {
+    bgmw_msm_args_t *a = (bgmw_msm_args_t *)arg;
+    uint64_t acc[12];
+    pt_set_id(acc);
+
+    for (int i = a->start; i < a->end; i++) {
+        int scalar_base = i * 8;
+        int gen_table_base = i * a->entries_per_gen;
+        int bit_offset = 0;
+
+        for (int win = 0; win < a->num_windows; win++) {
+            int limb_idx = bit_offset / 32;
+            int bit_idx = bit_offset % 32;
+
+            uint32_t digit;
+            if (limb_idx < 8) {
+                digit = a->scalars[scalar_base + limb_idx] >> bit_idx;
+                if (bit_idx + a->window_bits > 32 && limb_idx + 1 < 8) {
+                    digit |= a->scalars[scalar_base + limb_idx + 1] << (32 - bit_idx);
+                }
+                digit &= a->mask;
+            } else {
+                digit = 0;
+            }
+
+            if (digit != 0) {
+                int entry_idx = gen_table_base + win * a->table_size + (int)(digit - 1);
+                const uint64_t *entry_ptr = a->table + (size_t)entry_idx * 8;
+                uint64_t tmp[12];
+                pt_add_mixed(acc, entry_ptr, tmp);
+                memcpy(acc, tmp, 96);
+            }
+
+            bit_offset += a->window_bits;
+        }
+    }
+    memcpy(a->partial, acc, 96);
+    return NULL;
+}
+
+void bgmw_msm(const uint64_t *table, int n, int window_bits,
+              const uint32_t *scalars, uint64_t *result) {
+    const int num_windows = (256 + window_bits - 1) / window_bits;
+    const int table_size = (1 << window_bits) - 1;
+    const int entries_per_gen = num_windows * table_size;
+    const uint32_t mask = (uint32_t)((1 << window_bits) - 1);
+
+    int num_threads = n < 8 ? n : 8;
+    int chunk = (n + num_threads - 1) / num_threads;
+    pthread_t threads[8];
+    bgmw_msm_args_t args[8];
+
+    for (int t = 0; t < num_threads; t++) {
+        args[t].table = table;
+        args[t].scalars = scalars;
+        args[t].start = t * chunk;
+        args[t].end = (t + 1) * chunk < n ? (t + 1) * chunk : n;
+        args[t].window_bits = window_bits;
+        args[t].num_windows = num_windows;
+        args[t].table_size = table_size;
+        args[t].entries_per_gen = entries_per_gen;
+        args[t].mask = mask;
+        pt_set_id(args[t].partial);
+        pthread_create(&threads[t], NULL, bgmw_msm_worker, &args[t]);
+    }
+    for (int t = 0; t < num_threads; t++) {
+        pthread_join(threads[t], NULL);
+    }
+
+    memcpy(result, args[0].partial, 96);
+    for (int t = 1; t < num_threads; t++) {
+        if (!pt_is_id(args[t].partial)) {
+            uint64_t tmp[12];
+            pt_add(result, args[t].partial, tmp);
+            memcpy(result, tmp, 96);
+        }
+    }
+}
+
+// ============================================================
 // IPA fused round: compute L, R, fold a, b, G in one C call.
 // Eliminates Swift array copies, repeated C call overhead, and
 // thread spawning per operation.

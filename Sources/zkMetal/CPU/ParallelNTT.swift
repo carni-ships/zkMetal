@@ -396,3 +396,55 @@ public func cINTT_Fr(_ input: [Fr], logN: Int) -> [Fr] {
     }
     return data
 }
+
+// MARK: - BLS12-377 Fr optimized C NTT
+
+/// Forward NTT on BLS12-377 Fr using optimized ARM64 C (unrolled 4-limb CIOS Montgomery).
+public func cNTT_Fr377(_ input: [Fr377], logN: Int) -> [Fr377] {
+    let n = input.count
+    precondition(n == 1 << logN, "Input size must be 2^logN")
+    var data = input
+    data.withUnsafeMutableBytes { buf in
+        let ptr = buf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+        bls12_377_fr_ntt(ptr, Int32(logN))
+    }
+    return data
+}
+
+/// Inverse NTT on BLS12-377 Fr using optimized ARM64 C.
+public func cINTT_Fr377(_ input: [Fr377], logN: Int) -> [Fr377] {
+    let n = input.count
+    precondition(n == 1 << logN, "Input size must be 2^logN")
+    var data = input
+    data.withUnsafeMutableBytes { buf in
+        let ptr = buf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+        bls12_377_fr_intt(ptr, Int32(logN))
+    }
+    return data
+}
+
+// MARK: - Stark252 optimized C NTT
+
+/// Forward NTT on Stark252 using optimized ARM64 C (CIOS Montgomery).
+public func cNTT_Stark252(_ input: [Stark252], logN: Int) -> [Stark252] {
+    let n = input.count
+    precondition(n == 1 << logN, "Input size must be 2^logN")
+    var data = input
+    data.withUnsafeMutableBytes { buf in
+        let ptr = buf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+        stark252_ntt(ptr, Int32(logN))
+    }
+    return data
+}
+
+/// Inverse NTT on Stark252 using optimized ARM64 C.
+public func cINTT_Stark252(_ input: [Stark252], logN: Int) -> [Stark252] {
+    let n = input.count
+    precondition(n == 1 << logN, "Input size must be 2^logN")
+    var data = input
+    data.withUnsafeMutableBytes { buf in
+        let ptr = buf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+        stark252_intt(ptr, Int32(logN))
+    }
+    return data
+}

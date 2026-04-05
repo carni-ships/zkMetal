@@ -14,6 +14,7 @@
 // Aggregation: signatures aggregate by G2 point addition.
 
 import Foundation
+import NeonFieldOps
 
 // MARK: - BLS Signature Engine
 
@@ -324,54 +325,14 @@ public class BLSSignatureEngine {
                fp381ToInt(sq.c1) == fp381ToInt(a.c1)
     }
 
-    /// Square root in Fp. p = 3 mod 4 so sqrt(a) = a^((p+1)/4).
+    /// Square root in Fp — C accelerated. p = 3 mod 4 so sqrt(a) = a^((p+1)/4).
     func fpSqrt(_ a: Fp381) -> Fp381? {
         if a.isZero { return .zero }
-
-        var exp = Fp381.P.map { $0 }
-        // p + 1
-        let (s0, c0) = exp[0].addingReportingOverflow(1)
-        exp[0] = s0
-        if c0 {
-            let (s1, c1) = exp[1].addingReportingOverflow(1)
-            exp[1] = s1
-            if c1 {
-                let (s2, c2) = exp[2].addingReportingOverflow(1)
-                exp[2] = s2
-                if c2 {
-                    let (s3, c3) = exp[3].addingReportingOverflow(1)
-                    exp[3] = s3
-                    if c3 {
-                        let (s4, c4) = exp[4].addingReportingOverflow(1)
-                        exp[4] = s4
-                        if c4 { exp[5] &+= 1 }
-                    }
-                }
-            }
-        }
-        // >> 2 to get (p+1)/4
-        for i in 0..<5 {
-            exp[i] = (exp[i] >> 2) | (exp[i + 1] << 62)
-        }
-        exp[5] >>= 2
-
-        var result = Fp381.one
-        var base = a
-        for i in 0..<6 {
-            var word = exp[i]
-            for _ in 0..<64 {
-                if word & 1 == 1 {
-                    result = fp381Mul(result, base)
-                }
-                base = fp381Sqr(base)
-                word >>= 1
-            }
-        }
-
-        // Verify
-        let check = fp381Sqr(result)
-        if fp381ToInt(check) == fp381ToInt(a) {
-            return result
+        var al = a.to64()
+        var r = [UInt64](repeating: 0, count: 6)
+        let ok = bls12_381_fp_sqrt(&al, &r)
+        if ok != 0 {
+            return Fp381.from64(r)
         }
         return nil
     }
@@ -390,7 +351,7 @@ public class BLSSignatureEngine {
             0x9986ff031508ffe1, 0x88e2a8e9145ad768,
             0x584c6a0ea91b3528, 0x0bc69f08f2ee75b3
         ]
-        return g2_381ScalarMul(p, hEff)
+        return g2_381ScalarMulWide(p, hEff)
     }
 
     // MARK: - sgn0 for Fp2 (RFC 9380)

@@ -133,25 +133,12 @@ public func fp381Neg(_ a: Fp381) -> Fp381 {
     return Fp381.from64(r)
 }
 
-// Field inverse via Fermat's little theorem: a^(p-2) mod p
+// Field inverse via Fermat's little theorem: a^(p-2) mod p — C accelerated
 public func fp381Inverse(_ a: Fp381) -> Fp381 {
-    var result = Fp381.one
-    var base = a
-    var exp = Fp381.P.map { $0 }
-    if exp[0] >= 2 { exp[0] -= 2 }
-    else { exp[0] = exp[0] &- 2; exp[1] -= 1 }
-
-    for i in 0..<6 {
-        var word = exp[i]
-        for _ in 0..<64 {
-            if word & 1 == 1 {
-                result = fp381Mul(result, base)
-            }
-            base = fp381Sqr(base)
-            word >>= 1
-        }
-    }
-    return result
+    var al = a.to64()
+    var r = [UInt64](repeating: 0, count: 6)
+    bls12_381_fp_inv_ext(&al, &r)
+    return Fp381.from64(r)
 }
 
 /// Parse a hex string into Fp381 in Montgomery form.
@@ -284,11 +271,17 @@ public func fp2_381Conjugate(_ a: Fp2_381) -> Fp2_381 {
     return result
 }
 
-/// Fp2 inverse: 1/(a0 + a1*u) = (a0 - a1*u) / (a0^2 + a1^2)
+/// Fp2 inverse — C accelerated
 public func fp2_381Inverse(_ a: Fp2_381) -> Fp2_381 {
-    let norm = fp381Add(fp381Sqr(a.c0), fp381Sqr(a.c1))
-    let normInv = fp381Inverse(norm)
-    return Fp2_381(c0: fp381Mul(a.c0, normInv), c1: fp381Neg(fp381Mul(a.c1, normInv)))
+    var result = Fp2_381.zero
+    withUnsafeBytes(of: a) { aBuf in
+        withUnsafeMutableBytes(of: &result) { rBuf in
+            bls12_381_fp2_inv(
+                aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+        }
+    }
+    return result
 }
 
 /// Multiply Fp2 element by Fp element

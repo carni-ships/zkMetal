@@ -327,6 +327,23 @@ public func g2_381ScalarMul(_ p: G2Projective381, _ scalar: [UInt64]) -> G2Proje
     return result
 }
 
+// Wide scalar multiplication for G2 — C accelerated (supports >256-bit scalars, e.g. cofactor clearing)
+public func g2_381ScalarMulWide(_ p: G2Projective381, _ scalar: [UInt64]) -> G2Projective381 {
+    var result = G2Projective381(x: .one, y: .one, z: .zero)
+    withUnsafeBytes(of: p) { pBuf in
+        scalar.withUnsafeBufferPointer { scBuf in
+            withUnsafeMutableBytes(of: &result) { rBuf in
+                bls12_381_g2_scalar_mul_wide(
+                    pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    scBuf.baseAddress!,
+                    Int32(scalar.count),
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+            }
+        }
+    }
+    return result
+}
+
 // Integer scalar mul for G2
 public func g2_381MulInt(_ p: G2Projective381, _ n: Int) -> G2Projective381 {
     if n == 0 { return g2_381Identity() }

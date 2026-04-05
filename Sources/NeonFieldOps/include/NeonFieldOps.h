@@ -794,6 +794,8 @@ void bls12_381_fp_sqr(const uint64_t a[6], uint64_t r[6]);
 void bls12_381_fp_add(const uint64_t a[6], const uint64_t b[6], uint64_t r[6]);
 void bls12_381_fp_sub(const uint64_t a[6], const uint64_t b[6], uint64_t r[6]);
 void bls12_381_fp_neg(const uint64_t a[6], uint64_t r[6]);
+void bls12_381_fp_inv_ext(const uint64_t a[6], uint64_t r[6]);
+int  bls12_381_fp_sqrt(const uint64_t a[6], uint64_t r[6]);
 
 // ============================================================
 // BLS12-381 G1 curve ops (Jacobian projective, 6-limb coords)
@@ -826,6 +828,7 @@ void bls12_381_g2_point_add(const uint64_t p[36], const uint64_t q[36], uint64_t
 void bls12_381_g2_point_double(const uint64_t p[36], uint64_t r[36]);
 void bls12_381_g2_point_add_mixed(const uint64_t p[36], const uint64_t q_aff[24], uint64_t r[36]);
 void bls12_381_g2_scalar_mul(const uint64_t p[36], const uint64_t scalar[4], uint64_t r[36]);
+void bls12_381_g2_scalar_mul_wide(const uint64_t p[36], const uint64_t *scalar, int n_limbs, uint64_t r[36]);
 
 // ============================================================
 // BLS12-381 Fp2 inverse + higher tower + pairing
@@ -842,6 +845,27 @@ void bls12_381_miller_loop(const uint64_t p_aff[12], const uint64_t q_aff[24], u
 void bls12_381_final_exp(const uint64_t f[72], uint64_t result[72]);
 void bls12_381_pairing(const uint64_t p_aff[12], const uint64_t q_aff[24], uint64_t result[72]);
 int bls12_381_pairing_check(const uint64_t *pairs, int n);
+
+// ============================================================
+// BN254 pairing (Fp2/Fp6/Fp12 tower + Miller loop + final exp)
+// Fp = 4x64-bit, Fp2 = 8x64, Fp6 = 24x64, Fp12 = 48x64
+// G1Affine = 8x64 (x[4], y[4]), G2Affine = 16x64 (x[8], y[8])
+// ============================================================
+
+void bn254_miller_loop(const uint64_t p_aff[8], const uint64_t q_aff[16], uint64_t result[48]);
+void bn254_final_exp(const uint64_t f[48], uint64_t result[48]);
+void bn254_pairing(const uint64_t p_aff[8], const uint64_t q_aff[16], uint64_t result[48]);
+int bn254_pairing_check(const uint64_t *pairs, int n);
+
+// ============================================================
+// BLS12-381 hash-to-curve G2 (RFC 9380, SSWU + 3-isogeny)
+// ============================================================
+
+void bls12_381_hash_to_g2(const uint8_t *msg, size_t msg_len,
+                           const uint8_t *dst, size_t dst_len,
+                           uint64_t result[36]);
+void bls12_381_hash_to_g2_default(const uint8_t *msg, size_t msg_len, uint64_t result[36]);
+void bls12_381_g2_clear_cofactor(const uint64_t p[36], uint64_t r[36]);
 
 // ============================================================
 // Jubjub twisted Edwards curve (over BLS12-381 Fr)
@@ -872,6 +896,14 @@ void bls12_377_fr_add(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]);
 void bls12_377_fr_sub(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]);
 void bls12_377_fr_neg(const uint64_t a[4], uint64_t r[4]);
 
+/// Forward NTT on BLS12-377 Fr field (Cooley-Tukey DIT).
+/// @param data Array of n * 4 uint64_t values (n elements, 4 limbs each, little-endian Montgomery form).
+/// @param logN Log2 of the transform size (1..47).
+void bls12_377_fr_ntt(uint64_t *data, int logN);
+
+/// Inverse NTT on BLS12-377 Fr field (Gentleman-Sande DIF + bit-reversal + 1/n scaling).
+void bls12_377_fr_intt(uint64_t *data, int logN);
+
 // ============================================================
 // BLS12-377 G1 point ops (Jacobian projective, y²=x³+1)
 // ============================================================
@@ -885,6 +917,30 @@ void bls12_377_g1_pippenger_msm(const uint64_t *points, const uint32_t *scalars,
                                  int n, uint64_t *result);
 
 // ============================================================
+// BGMW fixed-base scalar multiplication
+// ============================================================
+
+/// Precompute BGMW lookup tables for fixed-base MSM.
+/// For each generator g_i, window w, digit d (1..2^window_bits-1):
+///   table[i][w][d-1] = d * (2^(w*window_bits)) * g_i
+/// @param generators_affine  n affine points (8 uint64_t each: x[4], y[4], Montgomery form).
+/// @param n                  Number of generators.
+/// @param window_bits        Window width in bits (e.g. 7 or 8).
+/// @param table_out          Output: n * ceil(256/w) * (2^w-1) affine points (8 uint64_t each).
+void bgmw_precompute(const uint64_t *generators_affine, int n,
+                     int window_bits, uint64_t *table_out);
+
+/// BGMW fixed-base MSM using precomputed tables.
+/// Decomposes each scalar into base-2^w digits and sums table lookups (additions only).
+/// @param table       Precomputed table from bgmw_precompute.
+/// @param n           Number of scalars (must match n used in precompute).
+/// @param window_bits Window width (must match precompute).
+/// @param scalars     n scalars as n*8 uint32_t (little-endian integer limbs, NOT Montgomery).
+/// @param result      Output projective point (12 uint64_t: x[4], y[4], z[4]).
+void bgmw_msm(const uint64_t *table, int n, int window_bits,
+              const uint32_t *scalars, uint64_t *result);
+
+// ============================================================
 // Stark252 field (p = 2^251 + 17*2^192 + 1)
 // ============================================================
 
@@ -893,5 +949,10 @@ void stark252_fp_sqr(const uint64_t a[4], uint64_t r[4]);
 void stark252_fp_add(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]);
 void stark252_fp_sub(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]);
 void stark252_fp_neg(const uint64_t a[4], uint64_t r[4]);
+
+// Stark252 NTT (Cooley-Tukey DIT forward, Gentleman-Sande DIF inverse)
+// data: array of n elements (n = 2^logN), each 4×64-bit limbs in Montgomery form
+void stark252_ntt(uint64_t *data, int logN);
+void stark252_intt(uint64_t *data, int logN);
 
 #endif // NEON_FIELD_OPS_H

@@ -25,7 +25,7 @@ GPU-accelerated zero-knowledge cryptography library for Apple Silicon, written i
 | Primitive | Platform | Description |
 |-----------|----------|-------------|
 | **MSM** | GPU/CPU | Multi-scalar multiplication (Pippenger + signed-digit + GLV) -- BN254, BLS12-377, secp256k1, Pallas, Vesta, Ed25519, Grumpkin |
-| **NTT** | GPU/CPU | Number theoretic transform (four-step FFT, fused bitrev+butterfly, twiddle fusion) -- BN254, BLS12-377, Goldilocks, BabyBear |
+| **NTT** | GPU/CPU | Number theoretic transform (four-step FFT, fused bitrev+butterfly, twiddle fusion) -- BN254, BLS12-377, Goldilocks, BabyBear, Stark252 |
 | **Poseidon2** | GPU | Algebraic hash (t=3 BN254 Fr; t=16 M31) |
 | **Keccak-256** | GPU/CPU | SHA-3 hash (fused subtree Merkle) |
 | **Blake3** | GPU/CPU | BLAKE3 hash (batch + Merkle trees) |
@@ -45,7 +45,7 @@ GPU-accelerated zero-knowledge cryptography library for Apple Silicon, written i
 | **GKR** | GPU | Goldwasser-Kalai-Rothblum interactive proof for layered circuits |
 | **Basefold / Brakedown / Zeromorph** | GPU | Polynomial commitment schemes (NTT-free, expander-based, multilinear-to-univariate) |
 | **HyperNova** | GPU | CCS folding scheme for incremental verifiable computation |
-| **BLS12-381** | CPU | Full tower (Fp/Fp2/Fp6/Fp12), G1/G2, Miller loop, pairings |
+| **BLS12-381** | CPU | Full tower (Fp/Fp2/Fp6/Fp12), G1/G2, Miller loop, pairings, hash-to-curve G2 (RFC 9380) |
 | **Pasta Curves** | GPU/CPU | Pallas/Vesta cycle (recursive proof composition ready) |
 | **Binius** | GPU/CPU | Binary tower GF(2^8)->GF(2^128), additive FFT |
 | **Tensor / WHIR** | GPU | Multilinear proof compression, RS proximity testing |
@@ -347,7 +347,7 @@ C CIOS Montgomery acceleration: pre-computed wiring topology, cached buffers, eq
 | Basefold open 2^18 | 110ms | C CIOS fold + zero-copy Merkle paths: **1.3x** faster |
 | Brakedown PCS | -- | Crashes on some hardware (signal 139) |
 | Zeromorph PCS | -- | Crashes on some hardware (signal 139) |
-| IPA prove n=256 | 11.8ms | Log(n) halving rounds, C CIOS batch fold + Blake3 NEON |
+| IPA prove n=256 | 11.8ms | Log(n) halving rounds, C CIOS batch fold + Blake3 NEON + BGMW fixed-base commit |
 | Verkle Trees (CPU) | 14ms build, 5ms proof, 2.4ms verify | C CIOS Pedersen+IPA: build **24x**, proof **134x**, verify **38x** |
 | IPA Accumulation (Pallas) | 7.3ms accumulate (n=4) | Halo-style, batch decide 2.7x |
 | Tensor compress 2^18 | 8.9ms compress, 2.1ms verify | **460.7x** compression ratio, Keccak transcript: **26x** compress, **19x** verify |
@@ -360,6 +360,7 @@ C CIOS Montgomery acceleration: pre-computed wiring topology, cached buffers, eq
 | Binius FFT 2^16 | 21ms (CPU) | Binary tower GF(2^32) GPU batch: 0.67ms mul at 2^18 |
 | BLS12-381 | Sign 26ms, Verify 82ms, **Pairing 2.6ms** | C tower (Fp→Fp12) + Miller loop + final exp: **30×** (78→2.6ms) |
 | BN254 GPU Pairing (n=16) | 51ms (vs 239ms CPU = **4.7x**) | Projective Miller loop, batched final exp |
+| BN254 C Pairing | C-accelerated | CIOS Fp2/Fp6/Fp12 tower + Miller loop + final exp |
 | Schnorr BIP 340 | Sign 0.30ms, Batch verify 0.20ms/sig | x-only pubkeys, SHA-256 tagged hashing |
 | Stark252 NTT 2^20 | 238M elem/s (GPU) | StarkNet/Cairo native field |
 | Poseidon2 BabyBear (width-16) | 104M hash/s (GPU) | SP1/Plonky3 exact config |

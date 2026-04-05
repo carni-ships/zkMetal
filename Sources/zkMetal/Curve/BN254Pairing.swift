@@ -6,6 +6,7 @@
 // Optimal ate parameter: 6x+2 where x = 4965661367071055936 (0x44E992B44A6909F1)
 
 import Foundation
+import NeonFieldOps
 
 // MARK: - Fp2 = Fp[u]/(u^2+1)
 
@@ -621,4 +622,54 @@ public func fp12Equal(_ a: Fp12, _ b: Fp12) -> Bool {
            d.c1.c0.c0.isZero && d.c1.c0.c1.isZero &&
            d.c1.c1.c0.isZero && d.c1.c1.c1.isZero &&
            d.c1.c2.c0.isZero && d.c1.c2.c1.isZero
+}
+
+// MARK: - C-Accelerated BN254 Pairing
+
+/// Pack a G1 affine point (8x UInt32 limbs) into 4x UInt64 layout for C code
+private func packG1Affine(_ p: PointAffine) -> [UInt64] {
+    let xl = p.x.to64()
+    let yl = p.y.to64()
+    return xl + yl  // 8 x UInt64
+}
+
+/// Pack a G2 affine point (Fp2 coords, each 8x UInt32) into 8x UInt64 layout
+private func packG2Affine(_ q: G2AffinePoint) -> [UInt64] {
+    let xc0 = q.x.c0.to64()
+    let xc1 = q.x.c1.to64()
+    let yc0 = q.y.c0.to64()
+    let yc1 = q.y.c1.to64()
+    return xc0 + xc1 + yc0 + yc1  // 16 x UInt64
+}
+
+/// C-accelerated BN254 pairing check: verify prod_i e(P_i, Q_i) = 1
+public func cBN254PairingCheck(_ pairs: [(PointAffine, G2AffinePoint)]) -> Bool {
+    let n = pairs.count
+    if n == 0 { return true }
+
+    var buffer = [UInt64]()
+    buffer.reserveCapacity(n * 24)
+    for (p, q) in pairs {
+        buffer.append(contentsOf: packG1Affine(p))
+        buffer.append(contentsOf: packG2Affine(q))
+    }
+
+    return buffer.withUnsafeBufferPointer { ptr in
+        bn254_pairing_check(ptr.baseAddress!, Int32(n)) == 1
+    }
+}
+
+/// C-accelerated single BN254 pairing: e(P, Q)
+public func cBN254Pairing(_ p: PointAffine, _ q: G2AffinePoint) -> [UInt64] {
+    var pBuf = packG1Affine(p)
+    var qBuf = packG2Affine(q)
+    var result = [UInt64](repeating: 0, count: 48)
+    pBuf.withUnsafeBufferPointer { pp in
+        qBuf.withUnsafeBufferPointer { qp in
+            result.withUnsafeMutableBufferPointer { rp in
+                bn254_pairing(pp.baseAddress!, qp.baseAddress!, rp.baseAddress!)
+            }
+        }
+    }
+    return result
 }
