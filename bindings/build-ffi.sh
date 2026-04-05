@@ -46,6 +46,25 @@ echo "Created: $OUT_DIR/libzkmetal_ffi.a"
 cp "$ROOT_DIR/Sources/zkMetal-ffi/include/zkmetal.h" "$OUT_DIR/zkmetal.h"
 echo "Copied: $OUT_DIR/zkmetal.h"
 
+# Build precompiled Metal shader library (.metallib)
+METALLIB_DIR="$SCRIPT_DIR/metallib"
+if [ -f "$METALLIB_DIR/build_metallib.sh" ]; then
+    echo ""
+    echo "Building precompiled Metal shader library..."
+    bash "$METALLIB_DIR/build_metallib.sh" --output "$OUT_DIR/zkmetal.metallib"
+
+    # Compile the MetalLib loader as a static library
+    echo ""
+    echo "Building MetalLib loader..."
+    clang -c -O2 -fobjc-arc -framework Metal -framework Foundation \
+        -o "$OUT_DIR/MetalLibLoader.o" "$METALLIB_DIR/MetalLibLoader.m"
+    ar rcs "$OUT_DIR/libzkmetal_metallib.a" "$OUT_DIR/MetalLibLoader.o"
+    rm -f "$OUT_DIR/MetalLibLoader.o"
+    cp "$METALLIB_DIR/MetalLibLoader.h" "$OUT_DIR/MetalLibLoader.h"
+    echo "Created: $OUT_DIR/libzkmetal_metallib.a"
+    echo "Copied:  $OUT_DIR/MetalLibLoader.h"
+fi
+
 echo ""
 echo "To link from Rust, use:"
 echo "  cargo:rustc-link-search=native=$OUT_DIR"
@@ -53,5 +72,9 @@ echo "  cargo:rustc-link-lib=static=zkmetal_ffi"
 echo "  cargo:rustc-link-lib=framework=Metal"
 echo "  cargo:rustc-link-lib=framework=Foundation"
 echo "  cargo:rustc-link-lib=framework=CoreGraphics"
+echo ""
+echo "For metallib-only (no Swift runtime needed):"
+echo "  cargo:rustc-link-lib=static=zkmetal_metallib"
+echo "  Ship zkmetal.metallib alongside your binary"
 echo ""
 echo "Done!"
