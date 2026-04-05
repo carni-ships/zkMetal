@@ -170,8 +170,8 @@ public func parallelSubprotocolExample(
     // Fork for each independent sub-proof
     var allChallenges = [[Fr]]()
     for i in 0..<3 {
-        let child = t.fork(label: "sub-proof-\(i)")
-        let challenges = child.squeezeN(4)
+        var child = t.fork(label: "sub-proof-\(i)")
+        let challenges = child.squeezeChallenges(count: 4)
         allChallenges.append(challenges)
     }
 

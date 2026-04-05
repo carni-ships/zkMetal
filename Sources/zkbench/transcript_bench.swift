@@ -102,10 +102,10 @@ public func runTranscriptBench() {
 
         let parent = Transcript(label: "parent", backend: backend)
         parent.absorb(elems[0])
-        let child1 = parent.fork(label: "child-1")
-        let child2 = parent.fork(label: "child-2")
-        let c1 = child1.squeeze()
-        let c2 = child2.squeeze()
+        var child1 = parent.fork(label: "child-1")
+        var child2 = parent.fork(label: "child-2")
+        let c1 = child1.squeezeChallenge()
+        let c2 = child2.squeezeChallenge()
         let forkSep = !frEqual(c1, c2)
         fputs("    [\(forkSep ? "PASS" : "FAIL")] \(name) fork separation\n", stderr)
     }

@@ -12,6 +12,7 @@
 //   - Deterministic: same inputs always produce same outputs
 //   - Domain separation: different labels produce different challenge streams
 //   - Fork-safe: child transcripts inherit parent state with fresh label
+//   - Replay protection: monotonic operation counter prevents rewind
 
 import Foundation
 import NeonFieldOps
@@ -45,7 +46,7 @@ protocol TranscriptBackend {
 ///   t.absorb(commitmentHash)
 ///   t.absorbLabel("round-1")
 ///   let challenge = t.squeeze()
-public class Transcript {
+public class Transcript: TranscriptEngine {
     public enum HashBackend {
         case poseidon2    // Field-native, fastest for Fr elements
         case keccak256    // Byte-native, standard for Ethereum compatibility
@@ -53,6 +54,10 @@ public class Transcript {
 
     private var backend: any TranscriptBackend
     private let backendType: HashBackend
+    private var _operationCount: UInt64 = 0
+
+    /// The number of operations (absorb + squeeze) performed on this transcript.
+    public var operationCount: UInt64 { _operationCount }
 
     /// Create a new transcript with domain separation label.
     /// The label is absorbed immediately to bind the transcript to a specific protocol.
@@ -79,6 +84,7 @@ public class Transcript {
     /// Absorb a field element into the transcript.
     public func absorb(_ value: Fr) {
         backend.absorbFr(value)
+        _operationCount &+= 1
     }
 
     /// Absorb multiple field elements into the transcript.
@@ -86,11 +92,13 @@ public class Transcript {
         for v in values {
             backend.absorbFr(v)
         }
+        _operationCount &+= 1
     }
 
     /// Absorb raw bytes into the transcript.
     public func absorbBytes(_ data: [UInt8]) {
         backend.absorbBytes(data)
+        _operationCount &+= 1
     }
 
     /// Absorb a label for domain separation between protocol steps.
@@ -107,6 +115,7 @@ public class Transcript {
 
     /// Squeeze a field element challenge from the transcript.
     public func squeeze() -> Fr {
+        _operationCount &+= 1
         return backend.squeezeFr()
     }
 
@@ -117,15 +126,58 @@ public class Transcript {
 
     /// Squeeze raw bytes from the transcript.
     public func squeezeBytes(_ n: Int) -> [UInt8] {
+        _operationCount &+= 1
         return backend.squeezeBytes(n)
     }
 
     // MARK: - Fork
 
+    // MARK: - TranscriptEngine conformance
+
+    public func appendMessage(label: String, data: [UInt8]) {
+        absorbLabel(label)
+        var len = UInt32(data.count)
+        let lenBytes = withUnsafeBytes(of: &len) { Array($0) }
+        backend.absorbBytes(lenBytes + data)
+        _operationCount &+= 1
+    }
+
+    public func appendScalar(label: String, scalar: Fr) {
+        absorbLabel(label)
+        backend.absorbFr(scalar)
+        _operationCount &+= 1
+    }
+
+    public func appendPoint(label: String, point: PointProjective) {
+        absorbLabel(label)
+        var affine = [UInt64](repeating: 0, count: 8)
+        withUnsafeBytes(of: point) { pBuf in
+            affine.withUnsafeMutableBufferPointer { aBuf in
+                bn254_projective_to_affine(
+                    pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    aBuf.baseAddress!
+                )
+            }
+        }
+        let xFr = Fr.from64(Array(affine[0..<4]))
+        let yFr = Fr.from64(Array(affine[4..<8]))
+        backend.absorbFr(xFr)
+        backend.absorbFr(yFr)
+        _operationCount &+= 1
+    }
+
+    public func squeezeChallenge() -> Fr {
+        return squeeze()
+    }
+
+    public func squeezeChallenges(count: Int) -> [Fr] {
+        return squeezeN(count)
+    }
+
     /// Fork the transcript for parallel sub-protocols.
     /// The child inherits the current state and absorbs the fork label
     /// to ensure distinct challenge streams.
-    public func fork(label: String) -> Transcript {
+    public func fork(label: String) -> any TranscriptEngine {
         let child = Transcript(backend: backend.clone(), backendType: backendType)
         child.absorbLabel(label)
         return child

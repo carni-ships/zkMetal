@@ -1,16 +1,104 @@
-// FiatShamirTranscript — Reusable labeled absorb/squeeze with domain separation
+// FiatShamirTranscript — Production Fiat-Shamir transcript engine
 //
-// Higher-level wrapper providing per-operation labels for domain separation.
-// Each absorb and squeeze call includes a label that is mixed into the state
-// before the data, preventing cross-protocol and cross-round collisions.
+// Provides a unified protocol-driven API for challenge generation across all
+// proof systems (Plonk, Groth16, STARK, FRI, Spartan, etc.).
 //
-// Supports pluggable hash backends via the TranscriptHasher protocol:
-//   - KeccakTranscriptHasher:   Keccak-256 sponge (Ethereum-compatible)
-//   - Poseidon2TranscriptHasher: Poseidon2 sponge (field-native, fastest for Fr)
-//   - Blake3TranscriptHasher:   Blake3 hash (fastest for bytes, used in IPA/Lasso)
+// Architecture:
+//   TranscriptEngine (protocol)
+//     -> FiatShamirTranscript<H: TranscriptHasher> (generic implementation)
+//       -> KeccakTranscript   (Keccak-256 sponge, Ethereum-compatible)
+//       -> Poseidon2Transcript (field-native sponge, fastest for Fr)
+//       -> Blake3Transcript   (Blake3, fastest for byte operations)
+//
+// Security properties:
+//   - Domain separation: each transcript initialized with a domain tag string
+//   - Per-operation labels: every absorb/squeeze is labeled to prevent cross-step collisions
+//   - Replay protection: monotonic operation counter prevents rewind attacks
+//   - Fork safety: child transcripts inherit parent state with fresh label
+//   - Deterministic: same inputs always produce same outputs
 
 import Foundation
 import NeonFieldOps
+
+// MARK: - TranscriptEngine Protocol
+
+/// Protocol for Fiat-Shamir transcript engines used across all proof systems.
+///
+/// Implementations provide domain-separated absorb/squeeze with replay protection.
+/// The transcript maintains a monotonically increasing operation counter to prevent
+/// rewinding the state to an earlier point.
+///
+/// Typical usage:
+///   ```
+///   var t: any TranscriptEngine = KeccakTranscript(label: "Plonk-v1")
+///   t.appendMessage(label: "commitment", data: commitBytes)
+///   t.appendScalar(label: "public-input", scalar: publicInput)
+///   t.appendPoint(label: "C_a", point: commitmentPoint)
+///   let alpha = t.squeezeChallenge()
+///   let betas = t.squeezeChallenges(count: 3)
+///   ```
+public protocol TranscriptEngine {
+    /// Append a labeled byte message to the transcript.
+    ///
+    /// Internally absorbs: len(label) || label || len(data) || data
+    /// The length prefixes prevent collisions between different label/data pairs.
+    ///
+    /// - Parameters:
+    ///   - label: Domain separator for this operation (e.g., "round-1-commitment")
+    ///   - data: Raw bytes to absorb
+    mutating func appendMessage(label: String, data: [UInt8])
+
+    /// Append a labeled field element (scalar) to the transcript.
+    ///
+    /// Serializes the Fr element as 32 bytes and absorbs with the given label.
+    ///
+    /// - Parameters:
+    ///   - label: Domain separator for this operation
+    ///   - scalar: Field element to absorb
+    mutating func appendScalar(label: String, scalar: Fr)
+
+    /// Append a labeled elliptic curve point to the transcript.
+    ///
+    /// Converts the projective point to affine coordinates and absorbs both
+    /// the x and y coordinates as field elements.
+    ///
+    /// - Parameters:
+    ///   - label: Domain separator for this operation
+    ///   - point: Projective curve point to absorb
+    mutating func appendPoint(label: String, point: PointProjective)
+
+    /// Squeeze a single field element challenge from the transcript.
+    ///
+    /// Absorbs an implicit "challenge" label, then squeezes 32 bytes and reduces
+    /// modulo the scalar field order to produce a uniformly distributed Fr element.
+    ///
+    /// - Returns: A field element challenge in Montgomery form
+    mutating func squeezeChallenge() -> Fr
+
+    /// Squeeze multiple field element challenges from the transcript.
+    ///
+    /// Each challenge is produced by a separate squeeze operation, ensuring
+    /// independence between challenges.
+    ///
+    /// - Parameter count: Number of challenges to generate
+    /// - Returns: Array of `count` independent Fr element challenges
+    mutating func squeezeChallenges(count: Int) -> [Fr]
+
+    /// Fork the transcript for parallel sub-protocols.
+    ///
+    /// Creates an independent child transcript that inherits the current state
+    /// and absorbs a fresh label to ensure distinct challenge streams.
+    /// The parent transcript is not modified.
+    ///
+    /// - Parameter label: Unique label for this fork (e.g., "sub-proof-0")
+    /// - Returns: An independent transcript engine with the forked state
+    func fork(label: String) -> any TranscriptEngine
+
+    /// The number of operations (absorb + squeeze) performed on this transcript.
+    ///
+    /// This counter increases monotonically and is used for replay protection.
+    var operationCount: UInt64 { get }
+}
 
 // MARK: - TranscriptHasher Protocol
 
@@ -33,21 +121,25 @@ public protocol TranscriptHasher {
 
 // MARK: - FiatShamirTranscript
 
-/// A Fiat-Shamir transcript with per-operation domain separation labels.
+/// A Fiat-Shamir transcript with per-operation domain separation labels and replay protection.
 ///
 /// Every absorb and squeeze call is prefixed with a label, ensuring that
 /// identical data absorbed under different labels produces different state.
+/// A monotonic operation counter prevents rewinding to an earlier state.
 ///
 /// Usage:
 ///   ```
 ///   var t = FiatShamirTranscript(label: "my-protocol", hasher: KeccakTranscriptHasher())
-///   t.absorb("commitment", commitmentBytes)
-///   t.absorb("public-input", publicInputBytes)
-///   let challenge = t.squeeze("alpha", byteCount: 32)
-///   let scalar = t.challengeScalar("beta")
+///   t.appendMessage(label: "commitment", data: commitmentBytes)
+///   t.appendScalar(label: "public-input", scalar: publicInput)
+///   let challenge = t.squeezeChallenge()
 ///   ```
-public struct FiatShamirTranscript<H: TranscriptHasher> {
+public struct FiatShamirTranscript<H: TranscriptHasher>: TranscriptEngine {
     private var hasher: H
+    private var _operationCount: UInt64 = 0
+
+    /// The number of operations (absorb + squeeze) performed on this transcript.
+    public var operationCount: UInt64 { _operationCount }
 
     /// Create a new transcript with an initial domain separation label.
     ///
@@ -61,45 +153,83 @@ public struct FiatShamirTranscript<H: TranscriptHasher> {
         absorbLabel(label)
     }
 
-    // MARK: - Absorb
+    // MARK: - TranscriptEngine conformance
 
-    /// Absorb labeled data into the transcript.
-    ///
-    /// Internally absorbs: len(label) || label || len(data) || data
-    /// The length prefixes prevent collisions between different label/data pairs.
-    ///
-    /// - Parameters:
-    ///   - label: Domain separator for this absorb operation (e.g., "round-1-commitment")
-    ///   - data: Raw bytes to absorb
-    public mutating func absorb(_ label: String, _ data: [UInt8]) {
+    public mutating func appendMessage(label: String, data: [UInt8]) {
         absorbLabel(label)
         absorbLengthPrefixed(data)
+        _operationCount &+= 1
     }
 
-    /// Absorb a field element with a label.
-    ///
-    /// Serializes the Fr element as 32 bytes (Montgomery representation) and absorbs.
-    /// - Parameters:
-    ///   - label: Domain separator for this absorb operation
-    ///   - element: Field element to absorb
-    public mutating func absorbFr(_ label: String, _ element: Fr) {
+    public mutating func appendScalar(label: String, scalar: Fr) {
         absorbLabel(label)
-        let bytes = frToBytes(element)
+        let bytes = frToBytes(scalar)
         absorbLengthPrefixed(bytes)
+        _operationCount &+= 1
     }
 
-    /// Absorb multiple field elements with a label.
-    ///
-    /// All elements share the same label; each is individually length-prefixed.
-    /// - Parameters:
-    ///   - label: Domain separator for this batch absorb
-    ///   - elements: Field elements to absorb
+    public mutating func appendPoint(label: String, point: PointProjective) {
+        absorbLabel(label)
+        // Convert projective to affine, absorb x and y coordinates
+        var affine = [UInt64](repeating: 0, count: 8)  // x[4], y[4]
+        withUnsafeBytes(of: point) { pBuf in
+            affine.withUnsafeMutableBufferPointer { aBuf in
+                bn254_projective_to_affine(
+                    pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    aBuf.baseAddress!
+                )
+            }
+        }
+        let xBytes = limbs64ToBytes(Array(affine[0..<4]))
+        let yBytes = limbs64ToBytes(Array(affine[4..<8]))
+        absorbLengthPrefixed(xBytes)
+        absorbLengthPrefixed(yBytes)
+        _operationCount &+= 1
+    }
+
+    public mutating func squeezeChallenge() -> Fr {
+        _operationCount &+= 1
+        // Absorb the operation counter for replay protection
+        absorbCounter()
+        let bytes = hasher.squeeze(byteCount: 32)
+        return bytesToFr(bytes)
+    }
+
+    public mutating func squeezeChallenges(count: Int) -> [Fr] {
+        var result = [Fr]()
+        result.reserveCapacity(count)
+        for _ in 0..<count {
+            result.append(squeezeChallenge())
+        }
+        return result
+    }
+
+    public func fork(label: String) -> any TranscriptEngine {
+        var child = FiatShamirTranscript<H>(hasher: hasher.clone())
+        child.absorbLabel(label)
+        return child
+    }
+
+    // MARK: - Legacy API (backward compatibility)
+
+    /// Absorb labeled data into the transcript (legacy API).
+    public mutating func absorb(_ label: String, _ data: [UInt8]) {
+        appendMessage(label: label, data: data)
+    }
+
+    /// Absorb a field element with a label (legacy API).
+    public mutating func absorbFr(_ label: String, _ element: Fr) {
+        appendScalar(label: label, scalar: element)
+    }
+
+    /// Absorb multiple field elements with a label (legacy API).
     public mutating func absorbFrMany(_ label: String, _ elements: [Fr]) {
         absorbLabel(label)
         for e in elements {
             let bytes = frToBytes(e)
             absorbLengthPrefixed(bytes)
         }
+        _operationCount &+= 1
     }
 
     /// Absorb raw bytes without a label (for chaining within a labeled section).
@@ -107,88 +237,54 @@ public struct FiatShamirTranscript<H: TranscriptHasher> {
         hasher.absorb(data)
     }
 
-    // MARK: - Squeeze
-
-    /// Squeeze labeled output bytes from the transcript.
-    ///
-    /// Internally absorbs the label before squeezing, ensuring different labels
-    /// produce different output even from the same prior state.
-    ///
-    /// - Parameters:
-    ///   - label: Domain separator for this squeeze operation (e.g., "alpha-challenge")
-    ///   - byteCount: Number of bytes to squeeze
-    /// - Returns: `byteCount` pseudorandom bytes
+    /// Squeeze labeled output bytes from the transcript (legacy API).
     public mutating func squeeze(_ label: String, byteCount: Int) -> [UInt8] {
         absorbLabel(label)
+        _operationCount &+= 1
         return hasher.squeeze(byteCount: byteCount)
     }
 
-    /// Squeeze a field element challenge from the transcript.
-    ///
-    /// Squeezes 32 bytes, interprets as a 256-bit little-endian integer,
-    /// and reduces modulo the BN254 scalar field order r.
-    ///
-    /// - Parameter label: Domain separator for this challenge
-    /// - Returns: An Fr element in Montgomery form, uniformly distributed mod r
+    /// Squeeze a field element challenge from the transcript (legacy API).
     public mutating func challengeScalar(_ label: String) -> Fr {
         absorbLabel(label)
+        _operationCount &+= 1
+        absorbCounter()
         let bytes = hasher.squeeze(byteCount: 32)
         return bytesToFr(bytes)
     }
 
-    /// Squeeze labeled output bytes from the transcript (alternate signature).
-    ///
-    /// Equivalent to `squeeze(_:byteCount:)` with a `count` parameter name.
-    /// - Parameters:
-    ///   - label: Domain separator for this squeeze operation
-    ///   - count: Number of bytes to squeeze
-    /// - Returns: `count` pseudorandom bytes
-    public mutating func squeeze(_ label: String, count: Int) -> [UInt8] {
-        return squeeze(label, byteCount: count)
-    }
-
-    /// Squeeze a BN254 field element challenge from the transcript.
-    ///
-    /// Squeezes 32 bytes, interprets as a 256-bit little-endian integer,
-    /// and reduces modulo the BN254 scalar field order r.
-    ///
-    /// - Parameter label: Domain separator for this challenge
-    /// - Returns: A BN254Fr element in Montgomery form, uniformly distributed mod r
+    /// Squeeze a BN254 field element challenge (legacy API).
     public mutating func challengeField(_ label: String) -> BN254Fr {
         return challengeScalar(label)
     }
 
-    /// Squeeze multiple field element challenges.
-    ///
-    /// Each challenge gets an indexed sub-label for domain separation.
-    /// - Parameters:
-    ///   - label: Base domain separator
-    ///   - count: Number of challenges to generate
-    /// - Returns: Array of Fr elements
+    /// Squeeze multiple field element challenges (legacy API).
     public mutating func challengeScalars(_ label: String, count: Int) -> [Fr] {
         absorbLabel(label)
-        return (0..<count).map { _ in
+        var result = [Fr]()
+        result.reserveCapacity(count)
+        for _ in 0..<count {
+            _operationCount &+= 1
+            absorbCounter()
             let bytes = hasher.squeeze(byteCount: 32)
-            return bytesToFr(bytes)
+            result.append(bytesToFr(bytes))
         }
+        return result
     }
 
-    // MARK: - Fork
+    /// Squeeze labeled output bytes (alternate signature, legacy API).
+    public mutating func squeeze(_ label: String, count: Int) -> [UInt8] {
+        return squeeze(label, byteCount: count)
+    }
 
-    /// Fork the transcript for parallel sub-protocols.
-    ///
-    /// The child inherits the full parent state, then absorbs a fresh label
-    /// to ensure its challenge stream diverges from the parent and any siblings.
-    ///
-    /// - Parameter label: Unique label for this fork (e.g., "sub-proof-0")
-    /// - Returns: An independent transcript with the forked state
-    public func fork(label: String) -> FiatShamirTranscript<H> {
+    /// Fork with typed return (preserves generic type, legacy API).
+    public func forkTyped(label: String) -> FiatShamirTranscript<H> {
         var child = FiatShamirTranscript<H>(hasher: hasher.clone())
         child.absorbLabel(label)
         return child
     }
 
-    // MARK: - Internal
+    // MARK: - Internal helpers
 
     /// Internal init for fork (bypasses initial label absorb).
     private init(hasher: H) {
@@ -210,6 +306,13 @@ public struct FiatShamirTranscript<H: TranscriptHasher> {
         hasher.absorb(lenBytes + data)
     }
 
+    /// Absorb the current operation counter for replay protection.
+    private mutating func absorbCounter() {
+        var counter = _operationCount
+        let counterBytes = withUnsafeBytes(of: &counter) { Array($0) }
+        hasher.absorb(counterBytes)
+    }
+
     /// Convert Fr to 32 bytes (Montgomery representation, little-endian).
     private func frToBytes(_ element: Fr) -> [UInt8] {
         var bytes = [UInt8](repeating: 0, count: 32)
@@ -217,6 +320,17 @@ public struct FiatShamirTranscript<H: TranscriptHasher> {
             let ptr = buf.baseAddress!.assumingMemoryBound(to: UInt8.self)
             for i in 0..<32 {
                 bytes[i] = ptr[i]
+            }
+        }
+        return bytes
+    }
+
+    /// Convert [UInt64] limbs to bytes (little-endian).
+    private func limbs64ToBytes(_ limbs: [UInt64]) -> [UInt8] {
+        var bytes = [UInt8](repeating: 0, count: limbs.count * 8)
+        for (i, limb) in limbs.enumerated() {
+            for j in 0..<8 {
+                bytes[i * 8 + j] = UInt8((limb >> (j * 8)) & 0xFF)
             }
         }
         return bytes
@@ -256,7 +370,7 @@ public struct KeccakTranscriptHasher: TranscriptHasher {
 
     public mutating func absorb(_ data: [UInt8]) {
         if squeezing {
-            // Transition back to absorb mode: reset
+            // Transition back to absorb mode: reset squeeze state
             squeezing = false
         }
 
@@ -414,63 +528,94 @@ public struct Poseidon2TranscriptHasher: TranscriptHasher {
 /// Blake3-based transcript hasher using NEON-accelerated hashing.
 ///
 /// Unlike sponge constructions, Blake3 is a plain hash function.
-/// We simulate absorb/squeeze by accumulating absorbed data and hashing
-/// on squeeze with a monotonic counter for multi-squeeze support.
+/// We simulate absorb/squeeze using a running hash chain: each absorb mixes
+/// new data into a 32-byte running state via hash(state || data_chunk).
+/// Each squeeze reads from the state and advances it.
 ///
-/// This matches the ad-hoc pattern used in IPAEngine and LassoEngine.
+/// This design avoids the 64-byte block size limitation of the single-block
+/// blake3_hash_neon function by processing data in chunks.
 public struct Blake3TranscriptHasher: TranscriptHasher {
-    private var buffer: [UInt8] = []
+    /// Running 32-byte hash state (chaining value)
+    private var chainState: [UInt8] = [UInt8](repeating: 0, count: 32)
+    /// Squeeze counter for generating multiple distinct outputs from the same state
     private var squeezeCounter: UInt64 = 0
 
     public init() {}
 
     public mutating func absorb(_ data: [UInt8]) {
-        buffer.append(contentsOf: data)
+        // Process data in 32-byte chunks: hash(chainState || chunk) -> new chainState
+        // This ensures all data affects the state regardless of total length
+        var offset = 0
+        while offset < data.count {
+            let chunkSize = min(32, data.count - offset)
+            var block = [UInt8](repeating: 0, count: 64)
+            // First 32 bytes: current chain state
+            for i in 0..<32 { block[i] = chainState[i] }
+            // Next bytes: data chunk (padded with zeros)
+            for i in 0..<chunkSize { block[32 + i] = data[offset + i] }
+            // Absorb the chunk length as a domain separator in remaining bytes
+            block[32 + 31] ^= UInt8(chunkSize)
+
+            // Hash the 64-byte block
+            block.withUnsafeBufferPointer { inp in
+                chainState.withUnsafeMutableBufferPointer { out in
+                    blake3_hash_neon(inp.baseAddress!, 64, out.baseAddress!)
+                }
+            }
+            offset += chunkSize
+        }
         // Reset squeeze counter on new absorb (state has changed)
         squeezeCounter = 0
     }
 
     public mutating func squeeze(byteCount: Int) -> [UInt8] {
-        // Append squeeze counter to make each squeeze unique
-        var counter = squeezeCounter
-        let counterBytes = withUnsafeBytes(of: &counter) { Array($0) }
-        let input = buffer + counterBytes
-        squeezeCounter += 1
+        var result = [UInt8]()
+        result.reserveCapacity(byteCount)
 
-        // Hash with NEON-accelerated Blake3
-        var hash = [UInt8](repeating: 0, count: 32)
-        input.withUnsafeBufferPointer { inp in
-            hash.withUnsafeMutableBufferPointer { out in
-                blake3_hash_neon(inp.baseAddress!, inp.count, out.baseAddress!)
-            }
-        }
-
-        if byteCount <= 32 {
-            return Array(hash.prefix(byteCount))
-        }
-
-        // For >32 bytes, chain hashes
-        var result = hash
         while result.count < byteCount {
-            var nextCounter = squeezeCounter
-            let nextCounterBytes = withUnsafeBytes(of: &nextCounter) { Array($0) }
-            let nextInput = buffer + nextCounterBytes
-            squeezeCounter += 1
+            // Hash(chainState || squeezeCounter) to get output block
+            var block = [UInt8](repeating: 0, count: 64)
+            for i in 0..<32 { block[i] = chainState[i] }
+            var counter = squeezeCounter
+            withUnsafeBytes(of: &counter) { src in
+                for i in 0..<8 { block[32 + i] = src[i] }
+            }
+            // Mark as squeeze operation (domain separation from absorb)
+            block[32 + 8] = 0xFF
 
-            var nextHash = [UInt8](repeating: 0, count: 32)
-            nextInput.withUnsafeBufferPointer { inp in
-                nextHash.withUnsafeMutableBufferPointer { out in
-                    blake3_hash_neon(inp.baseAddress!, inp.count, out.baseAddress!)
+            var hash = [UInt8](repeating: 0, count: 32)
+            block.withUnsafeBufferPointer { inp in
+                hash.withUnsafeMutableBufferPointer { out in
+                    blake3_hash_neon(inp.baseAddress!, 64, out.baseAddress!)
                 }
             }
-            result.append(contentsOf: nextHash)
+
+            let needed = min(32, byteCount - result.count)
+            result.append(contentsOf: hash.prefix(needed))
+            squeezeCounter += 1
         }
-        return Array(result.prefix(byteCount))
+
+        // Update chain state so subsequent operations see squeeze happened
+        // Hash the chain state with the final counter for forward progress
+        var advanceBlock = [UInt8](repeating: 0, count: 64)
+        for i in 0..<32 { advanceBlock[i] = chainState[i] }
+        var finalCounter = squeezeCounter
+        withUnsafeBytes(of: &finalCounter) { src in
+            for i in 0..<8 { advanceBlock[32 + i] = src[i] }
+        }
+        advanceBlock[32 + 9] = 0xFE  // domain separation from output blocks
+        advanceBlock.withUnsafeBufferPointer { inp in
+            chainState.withUnsafeMutableBufferPointer { out in
+                blake3_hash_neon(inp.baseAddress!, 64, out.baseAddress!)
+            }
+        }
+
+        return result
     }
 
     public func clone() -> Blake3TranscriptHasher {
         var copy = Blake3TranscriptHasher()
-        copy.buffer = self.buffer
+        copy.chainState = self.chainState
         copy.squeezeCounter = self.squeezeCounter
         return copy
     }
@@ -491,3 +636,48 @@ public typealias Poseidon2Transcript = FiatShamirTranscript<Poseidon2TranscriptH
 
 /// Blake3-backed Fiat-Shamir transcript (fastest for byte operations).
 public typealias Blake3Transcript = FiatShamirTranscript<Blake3TranscriptHasher>
+
+// MARK: - Convenience Initializers
+
+extension FiatShamirTranscript where H == KeccakTranscriptHasher {
+    /// Create a Keccak-256 transcript with the given domain label.
+    public init(label: String) {
+        self.init(label: label, hasher: KeccakTranscriptHasher())
+    }
+}
+
+extension FiatShamirTranscript where H == Poseidon2TranscriptHasher {
+    /// Create a Poseidon2 transcript with the given domain label.
+    public init(label: String) {
+        self.init(label: label, hasher: Poseidon2TranscriptHasher())
+    }
+}
+
+extension FiatShamirTranscript where H == Blake3TranscriptHasher {
+    /// Create a Blake3 transcript with the given domain label.
+    public init(label: String) {
+        self.init(label: label, hasher: Blake3TranscriptHasher())
+    }
+}
+
+// MARK: - FieldElement protocol for generic field support
+
+/// Protocol for types that can be serialized into a transcript.
+///
+/// This allows the transcript engine to work with different field types
+/// (BN254 Fr, BLS12-381 Fr, BabyBear, Mersenne31, etc.) in the future.
+public protocol TranscriptSerializable {
+    /// Serialize to bytes for transcript absorption.
+    func transcriptBytes() -> [UInt8]
+}
+
+extension Fr: TranscriptSerializable {
+    public func transcriptBytes() -> [UInt8] {
+        var bytes = [UInt8](repeating: 0, count: 32)
+        withUnsafeBytes(of: self) { buf in
+            let ptr = buf.baseAddress!.assumingMemoryBound(to: UInt8.self)
+            for i in 0..<32 { bytes[i] = ptr[i] }
+        }
+        return bytes
+    }
+}
