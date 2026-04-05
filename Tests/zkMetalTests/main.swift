@@ -46,6 +46,8 @@ runPrefixScanTests()
 runMemoryCheckingTests()
 runRISCVExecutorTests()
 runBinaryTowerTests()
+runGPUSumcheckTests()
+runPlonkEndToEndTests()
 
 let elapsed = CFAbsoluteTimeGetCurrent() - t0
 print(String(format: "\nCompleted in %.1fs", elapsed))
