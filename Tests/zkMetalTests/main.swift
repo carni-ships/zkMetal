@@ -28,6 +28,7 @@ runSpartanTests()
 runConstraintOptimizerTests()
 runCosetLDETests()
 runAIRDSLTests()
+runPlonkGateTests()
 
 let elapsed = CFAbsoluteTimeGetCurrent() - t0
 print(String(format: "\nCompleted in %.1fs", elapsed))
