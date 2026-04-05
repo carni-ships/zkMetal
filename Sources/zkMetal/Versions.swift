@@ -70,6 +70,7 @@ public enum Versions {
     // --- Commitment Schemes ---
     public static let kzg            = PrimitiveVersion(version: "1.1.0", updated: "2026-04-03")
     public static let ipa            = PrimitiveVersion(version: "1.1.0", updated: "2026-04-03")
+    public static let pedersenCommit = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let zeromorph      = PrimitiveVersion(version: "2.0.0", updated: "2026-04-05")
 
     // --- GKR ---
