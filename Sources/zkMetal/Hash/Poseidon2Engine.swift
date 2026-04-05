@@ -261,4 +261,48 @@ public class Poseidon2Engine {
 
     /// Subtree size for fused Merkle kernel
     public static let merkleSubtreeSize = 1024
+
+    /// Batch permute: apply Poseidon2 permutation to N independent states on GPU.
+    /// Input: array of N*3 Fr elements (N states of 3 elements each).
+    /// Output: array of N*3 Fr elements (permuted states).
+    public func batchPermute(_ states: [Fr]) throws -> [Fr] {
+        precondition(states.count % 3 == 0, "States must have a multiple of 3 elements")
+        let n = states.count / 3
+        let stride = MemoryLayout<Fr>.stride
+        let bytes = states.count * stride
+
+        guard let inBuf = device.makeBuffer(length: bytes, options: .storageModeShared),
+              let outBuf = device.makeBuffer(length: bytes, options: .storageModeShared) else {
+            throw MSMError.gpuError("Failed to allocate batch permute buffers")
+        }
+
+        states.withUnsafeBytes { src in
+            memcpy(inBuf.contents(), src.baseAddress!, bytes)
+        }
+
+        guard let cmdBuf = commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
+        }
+
+        let enc = cmdBuf.makeComputeCommandEncoder()!
+        enc.setComputePipelineState(permuteFunction)
+        enc.setBuffer(inBuf, offset: 0, index: 0)
+        enc.setBuffer(outBuf, offset: 0, index: 1)
+        enc.setBuffer(rcBuffer, offset: 0, index: 2)
+        var count = UInt32(n)
+        enc.setBytes(&count, length: 4, index: 3)
+        let tg = min(tuning.hashThreadgroupSize, Int(permuteFunction.maxTotalThreadsPerThreadgroup))
+        enc.dispatchThreads(MTLSize(width: n, height: 1, depth: 1),
+                           threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+        enc.endEncoding()
+
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+        if let error = cmdBuf.error {
+            throw MSMError.gpuError(error.localizedDescription)
+        }
+
+        let ptr = outBuf.contents().bindMemory(to: Fr.self, capacity: states.count)
+        return Array(UnsafeBufferPointer(start: ptr, count: states.count))
+    }
 }
