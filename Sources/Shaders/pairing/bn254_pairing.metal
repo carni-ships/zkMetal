@@ -423,11 +423,11 @@ Fp12 fp12_mul_by_034_034(Fp12 f,
     // (f0+f1)*(pc0+pc1)
     Fp6 f_sum = fp6_add(f.c0, f.c1);
     Fp6 p_sum = fp6_add(pc0, pc1);  // p_sum.c2 = pc0.c2 + 0 = pc0.c2
-    Fp6 cross = fp6_mul(f_sum, p_sum);
+    Fp6 fp12_cross = fp6_mul(f_sum, p_sum);
 
     Fp12 r;
     r.c0 = fp6_add(f0pc0, fp6_mul_by_v(f1pc1));
-    r.c1 = fp6_sub(fp6_sub(cross, f0pc0), f1pc1);
+    r.c1 = fp6_sub(fp6_sub(fp12_cross, f0pc0), f1pc1);
     return r;
 }
 
