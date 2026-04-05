@@ -58,6 +58,7 @@ runReedSolomonEngineTests()
 runGPUBatchInverseTests()
 runTrustedSetupTests()
 runGPUFRITests()
+runGroth16RecursiveTests()
 
 let elapsed = CFAbsoluteTimeGetCurrent() - t0
 print(String(format: "\nCompleted in %.1fs", elapsed))
