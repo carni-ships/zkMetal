@@ -17,6 +17,7 @@ runSerializationTests()
 runPlonkTests()
 runCircleSTARKTests()
 runGroth16ProverTests()
+runUnifiedLookupTests()
 
 let elapsed = CFAbsoluteTimeGetCurrent() - t0
 print(String(format: "\nCompleted in %.1fs", elapsed))

@@ -86,6 +86,7 @@ public enum Versions {
     public static let lookup         = PrimitiveVersion(version: "1.0.0", updated: "2026-04-01")
     public static let lasso          = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let cqLookup       = PrimitiveVersion(version: "2.0.0", updated: "2026-04-05")
+    public static let unifiedLookup  = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let constraint     = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let fusedNTTConstraint = PrimitiveVersion(version: "2.0.0", updated: "2026-04-05")
     public static let witness        = PrimitiveVersion(version: "2.0.0", updated: "2026-04-04")
@@ -159,6 +160,7 @@ public enum Versions {
             ("Lookup (LogUp)",    lookup),
             ("Lasso Lookup",      lasso),
             ("cq Lookup",         cqLookup),
+            ("Unified Lookup",    unifiedLookup),
             ("Constraint IR",    constraint),
             ("Fused NTT+Constr", fusedNTTConstraint),
             ("Witness Trace",    witness),
@@ -182,7 +184,6 @@ public enum Versions {
             ("Marlin",           marlin),
             ("Varuna",           varuna),
             ("Unified Verify",   unifiedVerify),
-            ("Parallel Reduce",  parallelReduce),
         ]
         print("=== zkMetal Primitive Versions ===")
         for (name, v) in entries {
