@@ -67,6 +67,93 @@ func runProofSystemTests() {
         expect(try !engine.verify(proof: tampered, table: table, lookups: lookups), "Reject tampered")
     } catch { expect(false, "LogUp error: \(error)") }
 
+    suite("cq Cached Quotients Lookup")
+    do {
+        // Generate test SRS
+        let cqGen = PointAffine(x: fpFromInt(1), y: fpFromInt(2))
+        let cqSecret: [UInt32] = [0x1234, 0x5678, 0x9ABC, 0xDEF0, 0x1111, 0x2222, 0x3333, 0x0001]
+        let cqSrsSecret = frFromLimbs(cqSecret)
+        let cqSrs = KZGEngine.generateTestSRS(secret: cqSecret, size: 256, generator: cqGen)
+        let cqEngine = try CQEngine(srs: cqSrs)
+
+        // Test 1: Simple lookup (N=4, |T|=4)
+        let cqTable1: [Fr] = [frFromInt(10), frFromInt(20), frFromInt(30), frFromInt(40)]
+        let cqTc1 = try cqEngine.preprocessTable(table: cqTable1)
+        let cqLookups1: [Fr] = [frFromInt(20), frFromInt(10), frFromInt(40), frFromInt(30)]
+        let cqProof1 = try cqEngine.prove(lookups: cqLookups1, table: cqTc1)
+        let cqValid1 = cqEngine.verify(proof: cqProof1, table: cqTc1, numLookups: 4, srsSecret: cqSrsSecret)
+        expect(cqValid1, "cq simple lookup")
+
+        // Test 2: Repeated lookups (N=8, |T|=8)
+        let cqTable2: [Fr] = (0..<8).map { frFromInt(UInt64($0 + 1)) }
+        let cqTc2 = try cqEngine.preprocessTable(table: cqTable2)
+        let cqLookups2: [Fr] = [1, 1, 3, 3, 5, 5, 7, 7].map { frFromInt($0) }
+        let cqProof2 = try cqEngine.prove(lookups: cqLookups2, table: cqTc2)
+        let cqValid2 = cqEngine.verify(proof: cqProof2, table: cqTc2, numLookups: 8, srsSecret: cqSrsSecret)
+        expect(cqValid2, "cq repeated lookups")
+
+        // Test 3: Cached quotients exist and have correct count
+        expect(cqTc1.cachedQuotientCommitments.count == 4, "cq cached quotients count")
+        expect(cqTc2.cachedQuotientCommitments.count == 8, "cq cached quotients count 8")
+
+        // Test 4: Multiplicities correct
+        let cqMult = CQEngine.computeMultiplicities(table: cqTable2, lookups: cqLookups2)
+        let cqExpMult: [UInt64] = [2, 0, 2, 0, 2, 0, 2, 0]
+        var cqMultOk = true
+        for i in 0..<8 {
+            if !frEqual(cqMult[i], frFromInt(cqExpMult[i])) { cqMultOk = false; break }
+        }
+        expect(cqMultOk, "cq multiplicities correct")
+
+        // Test 5: Asymmetric (N < |T|) -- lookups are a small subset of table
+        let cqTable3: [Fr] = (0..<16).map { frFromInt(UInt64($0 * 7 + 3)) }
+        let cqTc3 = try cqEngine.preprocessTable(table: cqTable3)
+        let cqLookups3: [Fr] = (0..<4).map { cqTable3[$0] }
+        let cqProof3 = try cqEngine.prove(lookups: cqLookups3, table: cqTc3)
+        let cqValid3 = cqEngine.verify(proof: cqProof3, table: cqTc3, numLookups: 4, srsSecret: cqSrsSecret)
+        expect(cqValid3, "cq asymmetric N=4 T=16")
+
+        // Test 6: N > |T| (many lookups into small table)
+        let cqTable4: [Fr] = [frFromInt(100), frFromInt(200), frFromInt(300), frFromInt(400)]
+        let cqTc4 = try cqEngine.preprocessTable(table: cqTable4)
+        var cqLookups4 = [Fr]()
+        for i in 0..<16 { cqLookups4.append(cqTable4[i % 4]) }
+        let cqProof4 = try cqEngine.prove(lookups: cqLookups4, table: cqTc4)
+        let cqValid4 = cqEngine.verify(proof: cqProof4, table: cqTc4, numLookups: 16, srsSecret: cqSrsSecret)
+        expect(cqValid4, "cq N>T (N=16 T=4)")
+
+        // Test 7: Reject tampered multiplicity sum
+        let cqTampered = CQProof(
+            phiCommitment: cqProof1.phiCommitment,
+            quotientCommitment: cqProof1.quotientCommitment,
+            multiplicities: cqProof1.multiplicities,
+            multiplicitySum: frAdd(cqProof1.multiplicitySum, Fr.one),
+            challengeZ: cqProof1.challengeZ,
+            phiOpening: cqProof1.phiOpening,
+            tOpening: cqProof1.tOpening
+        )
+        let cqRejected = !cqEngine.verify(proof: cqTampered, table: cqTc1, numLookups: 4, srsSecret: cqSrsSecret)
+        expect(cqRejected, "cq reject tampered sum")
+
+        // Test 8: proveAndVerify convenience
+        let (_, cqRtValid) = try cqEngine.proveAndVerify(lookups: cqLookups1, table: cqTc1, srsSecret: cqSrsSecret)
+        expect(cqRtValid, "cq proveAndVerify round-trip")
+
+        // Test 9: Larger table (|T|=64, N=32)
+        let cqTable5: [Fr] = (0..<64).map { frFromInt(UInt64($0 * 11 + 5)) }
+        let cqTc5 = try cqEngine.preprocessTable(table: cqTable5)
+        var cqRng: UInt64 = 0xCAFE_BABE
+        var cqLookups5 = [Fr]()
+        for _ in 0..<32 {
+            cqRng = cqRng &* 6364136223846793005 &+ 1442695040888963407
+            let idx = Int(cqRng >> 32) % 64
+            cqLookups5.append(cqTable5[idx])
+        }
+        let (_, cqValid5) = try cqEngine.proveAndVerify(lookups: cqLookups5, table: cqTc5, srsSecret: cqSrsSecret)
+        expect(cqValid5, "cq larger (N=32 T=64)")
+
+    } catch { print("  cq error: \(error)"); expect(false, "cq Lookup error: \(error)") }
+
     suite("ECDSA")
     do {
         let engine = try ECDSAEngine()
