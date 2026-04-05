@@ -731,6 +731,8 @@ void pallas_point_add(const uint64_t p[12], const uint64_t q[12], uint64_t r[12]
 void pallas_point_double(const uint64_t p[12], uint64_t r[12]);
 void pallas_point_add_mixed(const uint64_t p[12], const uint64_t q_aff[8], uint64_t r[12]);
 void pallas_scalar_mul(const uint64_t p[12], const uint64_t scalar[4], uint64_t r[12]);
+void pallas_pippenger_msm(const uint64_t *points, const uint32_t *scalars,
+                           int n, uint64_t *result);
 
 // ============================================================
 // Vesta curve (y^2 = x^3 + 5 over Fp)
@@ -745,6 +747,8 @@ void vesta_point_add(const uint64_t p[12], const uint64_t q[12], uint64_t r[12])
 void vesta_point_double(const uint64_t p[12], uint64_t r[12]);
 void vesta_point_add_mixed(const uint64_t p[12], const uint64_t q_aff[8], uint64_t r[12]);
 void vesta_scalar_mul(const uint64_t p[12], const uint64_t scalar[4], uint64_t r[12]);
+void vesta_pippenger_msm(const uint64_t *points, const uint32_t *scalars,
+                          int n, uint64_t *result);
 
 // ============================================================
 // BLS12-381 Fr (scalar field, 4-limb)

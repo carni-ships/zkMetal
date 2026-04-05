@@ -7,6 +7,8 @@
 
 #include "NeonFieldOps.h"
 #include <string.h>
+#include <stdlib.h>
+#include <pthread.h>
 
 typedef unsigned __int128 uint128_t;
 
@@ -668,3 +670,213 @@ void vesta_point_double(const uint64_t p[12], uint64_t r[12]) {
 void vesta_point_add_mixed(const uint64_t p[12], const uint64_t q_aff[8], uint64_t r[12]) {
     ve_pt_add_mixed(p, q_aff, r);
 }
+
+// ============================================================
+// Field inversion via Fermat: a^(p-2) mod p
+// ============================================================
+
+static void pa_inv(const uint64_t a[4], uint64_t result[4]) {
+    uint64_t pm2[4];
+    pm2[0] = PA_P[0] - 2; pm2[1] = PA_P[1]; pm2[2] = PA_P[2]; pm2[3] = PA_P[3];
+    memcpy(result, PA_ONE, 32);
+    uint64_t b[4]; memcpy(b, a, 32);
+    for (int i = 0; i < 4; i++) {
+        for (int bit = 0; bit < 64; bit++) {
+            if ((pm2[i] >> bit) & 1) pa_mul(result, b, result);
+            pa_sqr(b, b);
+        }
+    }
+}
+
+static void ve_inv(const uint64_t a[4], uint64_t result[4]) {
+    uint64_t pm2[4];
+    pm2[0] = VE_P[0] - 2; pm2[1] = VE_P[1]; pm2[2] = VE_P[2]; pm2[3] = VE_P[3];
+    memcpy(result, VE_ONE, 32);
+    uint64_t b[4]; memcpy(b, a, 32);
+    for (int i = 0; i < 4; i++) {
+        for (int bit = 0; bit < 64; bit++) {
+            if ((pm2[i] >> bit) & 1) ve_mul(result, b, result);
+            ve_sqr(b, b);
+        }
+    }
+}
+
+// ============================================================
+// Pasta Pippenger MSM — macro-generated for both Pallas and Vesta
+// Follows the exact pattern of bn254_pippenger_msm in bn254_msm.c:
+//   1. Adaptive window sizing
+//   2. Bucket accumulation with mixed affine addition
+//   3. Batch-to-affine via Montgomery's trick (single field inversion per window)
+//   4. Running-sum reduction with mixed affine addition
+//   5. Multi-threaded windows via pthreads
+//   6. Horner combination
+// ============================================================
+
+#define PASTA_MSM_IMPL(PREFIX, FP_MUL, FP_SQR, FP_ADD, FP_SUB, FP_INV_FN, \
+                       FP_IS_ZERO, FP_ONE_CONST, \
+                       PT_SET_ID, PT_IS_ID, PT_DBL, PT_ADD, PT_ADD_MIXED) \
+\
+static void PREFIX##_batch_to_affine(const uint64_t *proj, uint64_t *aff, int n) { \
+    if (n == 0) return; \
+    uint64_t *prods = (uint64_t *)malloc((size_t)n * 32); \
+    int first_valid = -1; \
+    for (int i = 0; i < n; i++) { \
+        if (PT_IS_ID(proj + i * 12)) { \
+            if (i == 0) memcpy(prods, FP_ONE_CONST, 32); \
+            else memcpy(prods + i * 4, prods + (i-1) * 4, 32); \
+        } else { \
+            if (first_valid < 0) { \
+                first_valid = i; \
+                memcpy(prods + i * 4, proj + i * 12 + 8, 32); \
+            } else { \
+                FP_MUL(prods + (i-1) * 4, proj + i * 12 + 8, prods + i * 4); \
+            } \
+        } \
+    } \
+    if (first_valid < 0) { \
+        memset(aff, 0, (size_t)n * 64); \
+        free(prods); return; \
+    } \
+    uint64_t inv[4]; \
+    FP_INV_FN(prods + (n-1) * 4, inv); \
+    for (int i = n - 1; i >= 0; i--) { \
+        if (PT_IS_ID(proj + i * 12)) { \
+            memset(aff + i * 8, 0, 64); continue; \
+        } \
+        uint64_t zinv[4]; \
+        if (i > first_valid) { \
+            FP_MUL(inv, prods + (i-1) * 4, zinv); \
+            FP_MUL(inv, proj + i * 12 + 8, inv); \
+        } else { \
+            memcpy(zinv, inv, 32); \
+        } \
+        uint64_t zinv2[4], zinv3[4]; \
+        FP_SQR(zinv, zinv2); \
+        FP_MUL(zinv2, zinv, zinv3); \
+        FP_MUL(proj + i * 12, zinv2, aff + i * 8); \
+        FP_MUL(proj + i * 12 + 4, zinv3, aff + i * 8 + 4); \
+    } \
+    free(prods); \
+} \
+\
+static inline uint32_t PREFIX##_extract_window(const uint32_t *scalar, int window_idx, int window_bits) { \
+    int bit_offset = window_idx * window_bits; \
+    int word_idx = bit_offset / 32; \
+    int bit_in_word = bit_offset % 32; \
+    uint64_t word = scalar[word_idx]; \
+    if (word_idx + 1 < 8) word |= ((uint64_t)scalar[word_idx + 1]) << 32; \
+    return (uint32_t)((word >> bit_in_word) & ((1u << window_bits) - 1)); \
+} \
+\
+typedef struct { \
+    const uint64_t *points; \
+    const uint32_t *scalars; \
+    int n; \
+    int window_bits; \
+    int window_idx; \
+    int num_buckets; \
+    uint64_t result[12]; \
+} PREFIX##_WindowTask; \
+\
+static void *PREFIX##_window_worker(void *arg) { \
+    PREFIX##_WindowTask *task = (PREFIX##_WindowTask *)arg; \
+    int wb = task->window_bits; \
+    int w = task->window_idx; \
+    int nb = task->num_buckets; \
+    int nn = task->n; \
+    uint64_t *buckets = (uint64_t *)malloc((size_t)(nb + 1) * 96); \
+    for (int b = 0; b <= nb; b++) PT_SET_ID(buckets + b * 12); \
+    for (int i = 0; i < nn; i++) { \
+        uint32_t digit = PREFIX##_extract_window(task->scalars + i * 8, w, wb); \
+        if (digit != 0) { \
+            uint64_t tmp[12]; \
+            PT_ADD_MIXED(buckets + digit * 12, task->points + i * 8, tmp); \
+            memcpy(buckets + digit * 12, tmp, 96); \
+        } \
+    } \
+    uint64_t *bucket_aff = (uint64_t *)malloc((size_t)nb * 64); \
+    PREFIX##_batch_to_affine(buckets + 12, bucket_aff, nb); \
+    uint64_t running[12], window_sum[12]; \
+    PT_SET_ID(running); \
+    PT_SET_ID(window_sum); \
+    for (int j = nb - 1; j >= 0; j--) { \
+        if (!(bucket_aff[j*8]==0 && bucket_aff[j*8+1]==0 && \
+              bucket_aff[j*8+2]==0 && bucket_aff[j*8+3]==0 && \
+              bucket_aff[j*8+4]==0 && bucket_aff[j*8+5]==0 && \
+              bucket_aff[j*8+6]==0 && bucket_aff[j*8+7]==0)) { \
+            uint64_t tmp[12]; \
+            PT_ADD_MIXED(running, bucket_aff + j * 8, tmp); \
+            memcpy(running, tmp, 96); \
+        } \
+        uint64_t tmp[12]; \
+        PT_ADD(window_sum, running, tmp); \
+        memcpy(window_sum, tmp, 96); \
+    } \
+    memcpy(task->result, window_sum, 96); \
+    free(buckets); \
+    free(bucket_aff); \
+    return NULL; \
+}
+
+static int pasta_optimal_window_bits(int n) {
+    if (n <= 4)     return 3;
+    if (n <= 32)    return 5;
+    if (n <= 256)   return 8;
+    if (n <= 2048)  return 10;
+    if (n <= 8192)  return 11;
+    if (n <= 32768) return 13;
+    if (n <= 131072) return 14;
+    if (n <= 524288) return 15;
+    return 16;
+}
+
+// Instantiate Pallas MSM helpers
+PASTA_MSM_IMPL(pa, pa_mul, pa_sqr, pa_add, pa_sub, pa_inv,
+               pa_is_zero, PA_ONE,
+               pa_pt_set_id, pa_pt_is_id, pa_pt_dbl, pa_pt_add, pa_pt_add_mixed)
+
+// Instantiate Vesta MSM helpers
+PASTA_MSM_IMPL(ve, ve_mul, ve_sqr, ve_add, ve_sub, ve_inv,
+               ve_is_zero, VE_ONE,
+               ve_pt_set_id, ve_pt_is_id, ve_pt_dbl, ve_pt_add, ve_pt_add_mixed)
+
+#define PASTA_PIPPENGER(FUNC_NAME, PREFIX, PT_SET_ID, PT_DBL, PT_ADD) \
+void FUNC_NAME( \
+    const uint64_t *points, const uint32_t *scalars, \
+    int n, uint64_t *result) \
+{ \
+    if (n == 0) { PT_SET_ID(result); return; } \
+    int wb = pasta_optimal_window_bits(n); \
+    int num_windows = (256 + wb - 1) / wb; \
+    int num_buckets = (1 << wb) - 1; \
+    PREFIX##_WindowTask *tasks = (PREFIX##_WindowTask *)malloc( \
+        (size_t)num_windows * sizeof(PREFIX##_WindowTask)); \
+    pthread_t *threads = (pthread_t *)malloc( \
+        (size_t)num_windows * sizeof(pthread_t)); \
+    for (int w = 0; w < num_windows; w++) { \
+        tasks[w].points = points; \
+        tasks[w].scalars = scalars; \
+        tasks[w].n = n; \
+        tasks[w].window_bits = wb; \
+        tasks[w].window_idx = w; \
+        tasks[w].num_buckets = num_buckets; \
+    } \
+    for (int w = 0; w < num_windows; w++) \
+        pthread_create(&threads[w], NULL, PREFIX##_window_worker, &tasks[w]); \
+    for (int w = 0; w < num_windows; w++) \
+        pthread_join(threads[w], NULL); \
+    memcpy(result, tasks[num_windows - 1].result, 96); \
+    for (int w = num_windows - 2; w >= 0; w--) { \
+        uint64_t tmp[12]; \
+        for (int s = 0; s < wb; s++) { \
+            PT_DBL(result, tmp); memcpy(result, tmp, 96); \
+        } \
+        PT_ADD(result, tasks[w].result, tmp); \
+        memcpy(result, tmp, 96); \
+    } \
+    free(tasks); \
+    free(threads); \
+}
+
+PASTA_PIPPENGER(pallas_pippenger_msm, pa, pa_pt_set_id, pa_pt_dbl, pa_pt_add)
+PASTA_PIPPENGER(vesta_pippenger_msm, ve, ve_pt_set_id, ve_pt_dbl, ve_pt_add)
