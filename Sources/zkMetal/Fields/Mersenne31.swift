@@ -137,6 +137,82 @@ public func cm31ScalarMul(_ c: CM31, _ s: M31) -> CM31 {
     CM31(a: m31Mul(c.a, s), b: m31Mul(c.b, s))
 }
 
+// MARK: - QM31: Degree-4 extension M31 (CM31[u] / (u^2 - 2 - i))
+// QM31 = {a + b*u : a, b in CM31} where u^2 = 2 + i
+// This gives 128-bit security for Circle STARK challenges.
+
+public struct QM31: Equatable {
+    public var a: CM31  // "real" part
+    public var b: CM31  // "u" part
+
+    public static var zero: QM31 { QM31(a: CM31.zero, b: CM31.zero) }
+    public static var one: QM31 { QM31(a: CM31.one, b: CM31.zero) }
+
+    public init(a: CM31, b: CM31) {
+        self.a = a
+        self.b = b
+    }
+
+    /// Construct from four M31 components: a.a + a.b*i + b.a*u + b.b*i*u
+    public init(_ c0: M31, _ c1: M31, _ c2: M31, _ c3: M31) {
+        self.a = CM31(a: c0, b: c1)
+        self.b = CM31(a: c2, b: c3)
+    }
+
+    public var isZero: Bool { a.isZero && b.isZero }
+
+    /// Embed an M31 value into QM31
+    public static func from(_ v: M31) -> QM31 {
+        QM31(a: CM31(a: v, b: M31.zero), b: CM31.zero)
+    }
+}
+
+@inline(__always)
+public func qm31Add(_ a: QM31, _ b: QM31) -> QM31 {
+    QM31(a: cm31Add(a.a, b.a), b: cm31Add(a.b, b.b))
+}
+
+@inline(__always)
+public func qm31Sub(_ a: QM31, _ b: QM31) -> QM31 {
+    QM31(a: cm31Sub(a.a, b.a), b: cm31Sub(a.b, b.b))
+}
+
+@inline(__always)
+public func qm31Neg(_ a: QM31) -> QM31 {
+    QM31(a: cm31Neg(a.a), b: cm31Neg(a.b))
+}
+
+/// QM31 multiplication: (a0 + a1*u)(b0 + b1*u) = (a0*b0 + a1*b1*(2+i)) + (a0*b1 + a1*b0)*u
+@inline(__always)
+public func qm31Mul(_ a: QM31, _ b: QM31) -> QM31 {
+    let a0b0 = cm31Mul(a.a, b.a)
+    let a1b1 = cm31Mul(a.b, b.b)
+    // u^2 = 2 + i, so a1*b1*u^2 = a1*b1*(2+i)
+    let twoPlusi = CM31(a: M31(v: 2), b: M31.one)
+    let cross = cm31Mul(a1b1, twoPlusi)
+    let real = cm31Add(a0b0, cross)
+    let imag = cm31Add(cm31Mul(a.a, b.b), cm31Mul(a.b, b.a))
+    return QM31(a: real, b: imag)
+}
+
+/// Multiply QM31 by an M31 scalar
+@inline(__always)
+public func qm31ScalarMul(_ q: QM31, _ s: M31) -> QM31 {
+    QM31(a: cm31ScalarMul(q.a, s), b: cm31ScalarMul(q.b, s))
+}
+
+/// QM31 inverse via norm-based algorithm
+public func qm31Inverse(_ a: QM31) -> QM31 {
+    // norm = a.a^2 - a.b^2 * (2+i) in CM31
+    let a0sq = cm31Mul(a.a, a.a)
+    let a1sq = cm31Mul(a.b, a.b)
+    let twoPlusi = CM31(a: M31(v: 2), b: M31.one)
+    let norm = cm31Sub(a0sq, cm31Mul(a1sq, twoPlusi))
+    let invNorm = cm31Inverse(norm)
+    // a^-1 = (a.a - a.b*u) / norm = (a.a * invNorm, -a.b * invNorm)
+    return QM31(a: cm31Mul(a.a, invNorm), b: cm31Neg(cm31Mul(a.b, invNorm)))
+}
+
 // MARK: - Circle Group
 
 /// A point on the circle x^2 + y^2 = 1 over M31

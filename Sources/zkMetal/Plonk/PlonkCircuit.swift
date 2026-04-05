@@ -64,21 +64,24 @@ public struct PlonkCircuit {
     public let wireAssignments: [[Int]]
     /// Lookup tables used by lookup gates
     public let lookupTables: [PlonkLookupTable]
+    /// Indices of variables that are public inputs
+    public let publicInputIndices: [Int]
 
     public var numGates: Int { gates.count }
 
     public init(gates: [PlonkGate], copyConstraints: [(Int, Int)], wireAssignments: [[Int]],
-                lookupTables: [PlonkLookupTable] = []) {
+                lookupTables: [PlonkLookupTable] = [], publicInputIndices: [Int] = []) {
         self.gates = gates
         self.copyConstraints = copyConstraints
         self.wireAssignments = wireAssignments
         self.lookupTables = lookupTables
+        self.publicInputIndices = publicInputIndices
     }
 
-    /// Pad circuit to next power of 2 (required for NTT-based polynomial ops)
+    /// Pad circuit to next power of 2 with minimum size 4 (required for NTT-based polynomial ops)
     public func padded() -> PlonkCircuit {
         let n = gates.count
-        var logN = 0
+        var logN = 2  // minimum logN=2 => paddedN=4 for NTT compatibility
         while (1 << logN) < n { logN += 1 }
         let paddedN = 1 << logN
         if paddedN == n { return self }
@@ -95,7 +98,8 @@ public struct PlonkCircuit {
         }
 
         return PlonkCircuit(gates: paddedGates, copyConstraints: copyConstraints,
-                            wireAssignments: paddedWires, lookupTables: lookupTables)
+                            wireAssignments: paddedWires, lookupTables: lookupTables,
+                            publicInputIndices: publicInputIndices)
     }
 }
 
@@ -107,8 +111,25 @@ public class PlonkCircuitBuilder {
     public var wireAssignments: [[Int]] = []  // [gateIdx] -> [aVar, bVar, cVar]
     public var nextVariable: Int = 0
     public var lookupTables: [PlonkLookupTable] = []
+    public var publicInputIndices: [Int] = []  // wire indices that are public inputs
 
     public init() {}
+
+    /// Mark a wire variable as a public input.
+    /// Public inputs are constrained via the PI polynomial in the Plonk protocol.
+    public func addPublicInput(wireIndex: Int) {
+        publicInputIndices.append(wireIndex)
+    }
+
+    /// Generic gate builder: qL*a + qR*b + qO*c + qM*a*b + qC = 0
+    /// Parameters a, b, c are variable indices for the three wires.
+    @discardableResult
+    public func addGate(qL: Fr, qR: Fr, qO: Fr, qM: Fr, qC: Fr, a: Int, b: Int, c: Int) -> Int {
+        let gate = PlonkGate(qL: qL, qR: qR, qO: qO, qM: qM, qC: qC)
+        wireAssignments.append([a, b, c])
+        gates.append(gate)
+        return gates.count - 1
+    }
 
     /// Allocate a new input variable
     public func addInput() -> Int {
@@ -378,7 +399,8 @@ public class PlonkCircuitBuilder {
             gates: gates,
             copyConstraints: copyConstraints,
             wireAssignments: wireAssignments,
-            lookupTables: lookupTables
+            lookupTables: lookupTables,
+            publicInputIndices: publicInputIndices
         )
     }
 }

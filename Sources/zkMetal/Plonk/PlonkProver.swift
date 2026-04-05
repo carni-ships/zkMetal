@@ -18,27 +18,6 @@ import NeonFieldOps
 /// Below this size, use CPU C NTT instead of GPU dispatch (avoids Metal overhead).
 private let kCPU_NTT_THRESHOLD = 8192
 
-// MARK: - Proof
-
-public struct PlonkProof {
-    public let aCommit: PointProjective
-    public let bCommit: PointProjective
-    public let cCommit: PointProjective
-    public let zCommit: PointProjective          // permutation accumulator
-    public let tLoCommit: PointProjective        // quotient poly, low degree chunk
-    public let tMidCommit: PointProjective       // quotient poly, mid degree chunk
-    public let tHiCommit: PointProjective        // quotient poly, high degree chunk
-    public let tExtraCommits: [PointProjective]  // additional quotient chunks (for high-degree custom gates)
-    public let aEval: Fr                         // a(zeta)
-    public let bEval: Fr                         // b(zeta)
-    public let cEval: Fr                         // c(zeta)
-    public let sigma1Eval: Fr                    // sigma1(zeta)
-    public let sigma2Eval: Fr                    // sigma2(zeta)
-    public let zOmegaEval: Fr                    // z(zeta * omega)
-    public let openingProof: PointProjective     // W_zeta
-    public let shiftedOpeningProof: PointProjective  // W_{zeta*omega}
-}
-
 // MARK: - Prover
 
 public class PlonkProver {
@@ -453,6 +432,12 @@ public class PlonkProver {
 
         let tExtraCommits = numChunks > 3 ? Array(tChunkCommits.dropFirst(3)) : []
 
+        // Collect public input values from witness
+        var pubInputs = [Fr]()
+        for idx in circuit.publicInputIndices {
+            pubInputs.append(witness[idx])
+        }
+
         return PlonkProof(
             aCommit: aCommit, bCommit: bCommit, cCommit: cCommit,
             zCommit: zCommit,
@@ -462,7 +447,8 @@ public class PlonkProver {
             sigma1Eval: sigma1Zeta, sigma2Eval: sigma2Zeta,
             zOmegaEval: zOmegaZeta,
             openingProof: openingProof,
-            shiftedOpeningProof: shiftedOpeningProof
+            shiftedOpeningProof: shiftedOpeningProof,
+            publicInputs: pubInputs
         )
     }
 }

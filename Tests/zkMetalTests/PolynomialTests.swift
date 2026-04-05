@@ -179,4 +179,139 @@ func runPolynomialTests() {
                "fused proof point matches non-fused")
 
     } catch { expect(false, "KZG batch multi-point error: \(error)") }
+
+    suite("SubproductTree Multi-Point Evaluation")
+    do {
+        let engine = try PolyEngine()
+
+        // Test 1: Small known polynomial p(x) = 1 + 2x + 3x^2 at specific points
+        let p: [Fr] = [frFromInt(1), frFromInt(2), frFromInt(3)]
+        let pts: [Fr] = [frFromInt(0), frFromInt(1), frFromInt(2), frFromInt(5)]
+        let horner = try engine.evaluate(p, at: pts)
+        // p(0)=1, p(1)=6, p(2)=17, p(5)=86
+        expect(frToInt(horner[0])[0] == 1, "Horner p(0)=1")
+        expect(frToInt(horner[1])[0] == 6, "Horner p(1)=6")
+        expect(frToInt(horner[2])[0] == 17, "Horner p(2)=17")
+        expect(frToInt(horner[3])[0] == 86, "Horner p(5)=86")
+
+        // Test 2: Tree eval matches Horner for deg 2^10 (512 random points)
+        let tN = 512
+        var rng: UInt64 = 0xCAFE_BABE
+        var tCoeffs = [Fr](repeating: Fr.zero, count: tN)
+        var tPts = [Fr](repeating: Fr.zero, count: tN)
+        for i in 0..<tN {
+            rng = rng &* 6364136223846793005 &+ 1442695040888963407
+            tCoeffs[i] = frFromInt(rng >> 32)
+            rng = rng &* 6364136223846793005 &+ 1442695040888963407
+            tPts[i] = frFromInt(rng >> 32)
+        }
+        let tHorner = try engine.evaluate(tCoeffs, at: tPts)
+        let tTree = try engine.evaluateTree(tCoeffs, at: tPts)
+        var match = true
+        for i in 0..<tN {
+            if frToInt(tHorner[i]) != frToInt(tTree[i]) { match = false; break }
+        }
+        expect(match, "Tree eval matches Horner (deg 2^9, 512 pts)")
+
+        // Test 3: Larger test — deg 2^12
+        let bigN = 1 << 12
+        var bigCoeffs = [Fr](repeating: Fr.zero, count: bigN)
+        var bigPts = [Fr](repeating: Fr.zero, count: bigN)
+        for i in 0..<bigN {
+            rng = rng &* 6364136223846793005 &+ 1442695040888963407
+            bigCoeffs[i] = frFromInt(rng >> 32)
+            rng = rng &* 6364136223846793005 &+ 1442695040888963407
+            bigPts[i] = frFromInt(rng >> 32)
+        }
+        let bigHorner = try engine.evaluate(bigCoeffs, at: bigPts)
+        let bigTree = try engine.evaluateTree(bigCoeffs, at: bigPts)
+        var bigMatch = true
+        for i in 0..<bigN {
+            if frToInt(bigHorner[i]) != frToInt(bigTree[i]) { bigMatch = false; break }
+        }
+        expect(bigMatch, "Tree eval matches Horner (deg 2^12)")
+    } catch { expect(false, "SubproductTree eval error: \(error)") }
+
+    suite("SubproductTree Batch Interpolation")
+    do {
+        let engine = try PolyEngine()
+
+        // Test 1: Interpolate through known points
+        // p(x) = 1 + 2x + 3x^2 → p(0)=1, p(1)=6, p(2)=17
+        let pts3: [Fr] = [frFromInt(0), frFromInt(1), frFromInt(2)]
+        let vals3: [Fr] = [frFromInt(1), frFromInt(6), frFromInt(17)]
+        let interp3 = try engine.interpolateTree(points: pts3, values: vals3)
+        expect(interp3.count == 3, "Interp3 has 3 coefficients")
+        expect(frToInt(interp3[0])[0] == 1, "Interp3 c0=1")
+        expect(frToInt(interp3[1])[0] == 2, "Interp3 c1=2")
+        expect(frToInt(interp3[2])[0] == 3, "Interp3 c2=3")
+
+        // Test 2: Interpolate random polynomial, check round-trip
+        // Generate random poly of degree n-1, evaluate at n points, interpolate back
+        let n = 64
+        var rng: UInt64 = 0xBEEF_CAFE
+        var origCoeffs = [Fr](repeating: Fr.zero, count: n)
+        var interpPts = [Fr](repeating: Fr.zero, count: n)
+        for i in 0..<n {
+            rng = rng &* 6364136223846793005 &+ 1442695040888963407
+            origCoeffs[i] = frFromInt(rng >> 32)
+            interpPts[i] = frFromInt(UInt64(i + 1))  // Use 1, 2, ..., n as points
+        }
+        let interpVals = try engine.evaluate(origCoeffs, at: interpPts)
+        let recovered = try engine.interpolateTree(points: interpPts, values: interpVals)
+        var roundTrip = true
+        for i in 0..<n {
+            if frToInt(recovered[i]) != frToInt(origCoeffs[i]) { roundTrip = false; break }
+        }
+        expect(roundTrip, "Interpolate round-trip (n=64)")
+
+        // Test 3: Larger round-trip with random points (not just consecutive)
+        let n2 = 128
+        var coeffs2 = [Fr](repeating: Fr.zero, count: n2)
+        var pts2 = [Fr](repeating: Fr.zero, count: n2)
+        for i in 0..<n2 {
+            rng = rng &* 6364136223846793005 &+ 1442695040888963407
+            coeffs2[i] = frFromInt(rng >> 32)
+            rng = rng &* 6364136223846793005 &+ 1442695040888963407
+            pts2[i] = frFromInt(rng >> 32)
+        }
+        let vals2 = try engine.evaluate(coeffs2, at: pts2)
+        let recovered2 = try engine.interpolateTree(points: pts2, values: vals2)
+        var roundTrip2 = true
+        for i in 0..<n2 {
+            if frToInt(recovered2[i]) != frToInt(coeffs2[i]) { roundTrip2 = false; break }
+        }
+        expect(roundTrip2, "Interpolate round-trip (n=128, random pts)")
+
+        // Test 4: Larger test that exercises GPU path (n > 256)
+        let n3 = 512
+        var coeffs3 = [Fr](repeating: Fr.zero, count: n3)
+        var pts3b = [Fr](repeating: Fr.zero, count: n3)
+        for i in 0..<n3 {
+            rng = rng &* 6364136223846793005 &+ 1442695040888963407
+            coeffs3[i] = frFromInt(rng >> 32)
+            rng = rng &* 6364136223846793005 &+ 1442695040888963407
+            pts3b[i] = frFromInt(rng >> 32)
+        }
+        let vals3b = try engine.evaluate(coeffs3, at: pts3b)
+        let recovered3 = try engine.interpolateTree(points: pts3b, values: vals3b)
+        var roundTrip3 = true
+        for i in 0..<n3 {
+            if frToInt(recovered3[i]) != frToInt(coeffs3[i]) { roundTrip3 = false; break }
+        }
+        expect(roundTrip3, "Interpolate round-trip (n=512, GPU path)")
+
+        // Test 5: Single point interpolation (edge case)
+        let p1 = try engine.interpolateTree(points: [frFromInt(7)], values: [frFromInt(42)])
+        expect(p1.count == 1 && frToInt(p1[0])[0] == 42, "Single point interp")
+
+        // Test 6: Two point interpolation
+        // Line through (1, 3) and (2, 5) → p(x) = 1 + 2x
+        let p2 = try engine.interpolateTree(points: [frFromInt(1), frFromInt(2)],
+                                              values: [frFromInt(3), frFromInt(5)])
+        expect(p2.count == 2, "Two point interp has 2 coeffs")
+        expect(frToInt(p2[0])[0] == 1, "Two point c0=1")
+        expect(frToInt(p2[1])[0] == 2, "Two point c1=2")
+
+    } catch { expect(false, "SubproductTree interpolation error: \(error)") }
 }

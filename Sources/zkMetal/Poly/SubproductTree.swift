@@ -1,5 +1,5 @@
-// Subproduct Tree for Fast Multi-Point Polynomial Evaluation
-// Algorithm: O(n log²n) instead of O(n²) Horner
+// Subproduct Tree for Fast Multi-Point Polynomial Evaluation & Interpolation
+// Algorithm: O(n log²n) instead of O(n²) Horner / Lagrange
 // Reference: von zur Gathen & Gerhard, "Modern Computer Algebra"
 import Foundation
 import Metal
@@ -26,6 +26,250 @@ extension PolyEngine {
         let tree = try buildSubproductTree(pts, logN: logN)
         let results = try remainderTreeDescent(poly: c, tree: tree, logN: logN)
         return Array(results.prefix(n))
+    }
+
+    // MARK: - Subproduct Tree Batch Interpolation
+
+    /// Interpolate: given N (point, value) pairs, find polynomial p of degree < N
+    /// such that p(points[i]) = values[i] for all i.
+    /// Uses O(n log²n) algorithm via subproduct tree (dual of multi-point evaluation).
+    /// Reference: Algorithm 10.11, von zur Gathen & Gerhard.
+    public func interpolateTree(points: [Fr], values: [Fr]) throws -> [Fr] {
+        precondition(points.count == values.count, "points and values must have same length")
+        let n = points.count
+
+        // Fallback to Lagrange for small inputs
+        if n <= 256 {
+            return lagrangeInterpolate(points: points, values: values)
+        }
+
+        let logN = ceilLog2(n)
+        let N = 1 << logN
+
+        // Pad points/values to power-of-two
+        var pts = points
+        while pts.count < N { pts.append(frFromInt(UInt64(pts.count + 1000000))) } // distinct padding points
+        var vals = values
+        while vals.count < N { vals.append(Fr.zero) }
+
+        // Step 1: Build subproduct tree from points
+        let tree = try buildSubproductTree(pts, logN: logN)
+
+        // Step 2: Compute M(x) = product of all (x - z_i), then M'(x) (formal derivative)
+        let rootLevel = logN
+        let rootSize = N + 1 // degree N polynomial has N+1 coefficients
+        let rootPtr = tree[rootLevel].contents().bindMemory(to: Fr.self, capacity: rootSize)
+        var rootPoly = [Fr](repeating: Fr.zero, count: rootSize)
+        for i in 0..<rootSize { rootPoly[i] = rootPtr[i] }
+
+        let mPrime = polyDerivative(rootPoly)
+
+        // Step 3: Multi-point evaluate M'(x) at all points → weights w_i = M'(z_i)
+        var mPrimePadded = mPrime
+        while mPrimePadded.count < N { mPrimePadded.append(Fr.zero) }
+        let weights = try remainderTreeDescent(poly: mPrimePadded, tree: tree, logN: logN)
+
+        // Step 4: Compute scaled values s_i = y_i / w_i
+        var scaledValues = [Fr](repeating: Fr.zero, count: N)
+        for i in 0..<N {
+            if i < n {
+                scaledValues[i] = frMul(vals[i], frInverse(weights[i]))
+            } else {
+                // Padding points: value=0 so s_i=0 regardless
+                scaledValues[i] = Fr.zero
+            }
+        }
+
+        // Step 5: Linear combination ascent — build result polynomial bottom-up
+        let result = try linearCombinationAscent(scaledValues: scaledValues, tree: tree, logN: logN)
+
+        // Return only the first n coefficients (degree < n)
+        return Array(result.prefix(n))
+    }
+
+    /// Formal derivative of a polynomial: p'(x) = sum_{i=1}^{deg} i * p[i] * x^{i-1}
+    private func polyDerivative(_ p: [Fr]) -> [Fr] {
+        if p.count <= 1 { return [Fr.zero] }
+        var result = [Fr](repeating: Fr.zero, count: p.count - 1)
+        for i in 1..<p.count {
+            // Multiply coefficient by index i
+            result[i - 1] = frMul(p[i], frFromInt(UInt64(i)))
+        }
+        return result
+    }
+
+    /// CPU Lagrange interpolation for small inputs (O(n²) but fast for n <= 256).
+    private func lagrangeInterpolate(points: [Fr], values: [Fr]) -> [Fr] {
+        let n = points.count
+        if n == 0 { return [] }
+        if n == 1 { return [values[0]] }
+
+        var result = [Fr](repeating: Fr.zero, count: n)
+
+        for i in 0..<n {
+            // Compute Lagrange basis polynomial L_i evaluated coefficient-wise
+            // L_i(x) = product_{j!=i} (x - z_j) / (z_i - z_j)
+            var denom = Fr.one
+            for j in 0..<n where j != i {
+                denom = frMul(denom, frSub(points[i], points[j]))
+            }
+            let weight = frMul(values[i], frInverse(denom))
+
+            // Build numerator polynomial: product_{j!=i} (x - z_j)
+            // Start with [1] and multiply by (x - z_j) = [-z_j, 1] iteratively
+            var basis = [Fr](repeating: Fr.zero, count: n)
+            basis[0] = Fr.one
+            var basisLen = 1
+            for j in 0..<n where j != i {
+                let negZj = frSub(Fr.zero, points[j])
+                // Multiply basis by (x - z_j): new[k] = basis[k-1] + negZj * basis[k]
+                var newBasis = [Fr](repeating: Fr.zero, count: basisLen + 1)
+                for k in 0...basisLen {
+                    var val = Fr.zero
+                    if k > 0 { val = frAdd(val, basis[k - 1]) }
+                    if k < basisLen { val = frAdd(val, frMul(negZj, basis[k])) }
+                    newBasis[k] = val
+                }
+                for k in 0..<newBasis.count { basis[k] = newBasis[k] }
+                basisLen += 1
+            }
+
+            // Add weight * basis to result
+            for k in 0..<n {
+                result[k] = frAdd(result[k], frMul(weight, basis[k]))
+            }
+        }
+
+        return result
+    }
+
+    /// Linear combination ascent: given scaled values s_i and the subproduct tree,
+    /// compute the interpolation polynomial bottom-up.
+    /// At each level, combine left and right subtree results:
+    ///   result[parent] = left_result * right_subproduct + right_result * left_subproduct
+    private func linearCombinationAscent(scaledValues: [Fr], tree: [MTLBuffer], logN: Int) throws -> [Fr] {
+        let N = 1 << logN
+        let stride = MemoryLayout<Fr>.stride
+
+        // Level 0 (leaves): each polynomial is just the scalar s_i (degree 0)
+        // Stored as N polynomials of 1 coefficient each.
+        var currentLevel = [Fr](repeating: Fr.zero, count: N)
+        for i in 0..<N { currentLevel[i] = scaledValues[i] }
+
+        // Ascend: at level k, we have N/(2^k) polynomials of degree < 2^k
+        for k in 0..<logN {
+            let numPolys = N >> (k + 1)  // number of parent nodes
+            let childDeg = 1 << k        // max degree of child results
+            let childSize = childDeg      // coefficients per child result (degree < childDeg means childDeg coeffs)
+            let parentDeg = 1 << (k + 1) // max degree of parent result
+            let parentSize = parentDeg    // coefficients per parent result
+
+            // Read subproduct tree nodes for this level
+            let treeLevel = k  // tree[k] has the subproduct polys at level k
+            let treeNodes = tree[treeLevel]
+
+            // Size of each subproduct poly at this level
+            let subprodSize: Int
+            if k == 0 {
+                subprodSize = 2  // linear: [-z_i, 1]
+            } else {
+                subprodSize = (1 << k) + 1  // degree 2^k → 2^k + 1 coeffs
+            }
+
+            let treePtr = treeNodes.contents().bindMemory(to: Fr.self, capacity: (N >> k) * subprodSize)
+
+            if parentDeg <= 64 {
+                // CPU schoolbook for small polynomials
+                var nextLevel = [Fr](repeating: Fr.zero, count: numPolys * parentSize)
+                for p in 0..<numPolys {
+                    let leftIdx = 2 * p
+                    let rightIdx = 2 * p + 1
+
+                    // left_result = currentLevel[leftIdx * childSize ..< (leftIdx+1) * childSize]
+                    // right_result = currentLevel[rightIdx * childSize ..< (rightIdx+1) * childSize]
+                    // left_subprod = treePtr[leftIdx * subprodSize ..< (leftIdx+1) * subprodSize]
+                    // right_subprod = treePtr[rightIdx * subprodSize ..< (rightIdx+1) * subprodSize]
+
+                    // parent = left_result * right_subprod + right_result * left_subprod
+                    for i in 0..<childSize {
+                        let lCoeff = currentLevel[leftIdx * childSize + i]
+                        let rCoeff = currentLevel[rightIdx * childSize + i]
+                        // left_result[i] * right_subprod[j]
+                        for j in 0..<subprodSize {
+                            let rSub = treePtr[rightIdx * subprodSize + j]
+                            let prod = frMul(lCoeff, rSub)
+                            let outIdx = p * parentSize + i + j
+                            if outIdx < (p + 1) * parentSize {
+                                nextLevel[outIdx] = frAdd(nextLevel[outIdx], prod)
+                            }
+                        }
+                        // right_result[i] * left_subprod[j]
+                        for j in 0..<subprodSize {
+                            let lSub = treePtr[leftIdx * subprodSize + j]
+                            let prod = frMul(rCoeff, lSub)
+                            let outIdx = p * parentSize + i + j
+                            if outIdx < (p + 1) * parentSize {
+                                nextLevel[outIdx] = frAdd(nextLevel[outIdx], prod)
+                            }
+                        }
+                    }
+                }
+                currentLevel = nextLevel
+            } else {
+                // GPU NTT-based multiplication for larger polynomials
+                // For each parent: result = left_result * right_subprod + right_result * left_subprod
+                // We batch all left*rightSub and right*leftSub multiplies separately, then add.
+
+                let mulResultSize = childSize + subprodSize - 1
+                let nttLogN = ceilLog2(mulResultSize)
+                let nttN = 1 << nttLogN
+
+                // Prepare batch arrays: 2*numPolys multiplications total
+                let batchCount = numPolys * 2
+                var aArray = [Fr](repeating: Fr.zero, count: batchCount * nttN)
+                var bArray = [Fr](repeating: Fr.zero, count: batchCount * nttN)
+
+                for p in 0..<numPolys {
+                    let leftIdx = 2 * p
+                    let rightIdx = 2 * p + 1
+
+                    // Multiply 0: left_result * right_subprod
+                    let m0 = p * 2
+                    for i in 0..<childSize {
+                        aArray[m0 * nttN + i] = currentLevel[leftIdx * childSize + i]
+                    }
+                    for j in 0..<subprodSize {
+                        bArray[m0 * nttN + j] = treePtr[rightIdx * subprodSize + j]
+                    }
+
+                    // Multiply 1: right_result * left_subprod
+                    let m1 = p * 2 + 1
+                    for i in 0..<childSize {
+                        aArray[m1 * nttN + i] = currentLevel[rightIdx * childSize + i]
+                    }
+                    for j in 0..<subprodSize {
+                        bArray[m1 * nttN + j] = treePtr[leftIdx * subprodSize + j]
+                    }
+                }
+
+                let products = try batchMultiplyGPU(a: aArray, b: bArray, count: batchCount,
+                                                     polyStride: nttN, nttLogN: nttLogN)
+
+                // Combine: parent[p] = products[2*p] + products[2*p+1]
+                var nextLevel = [Fr](repeating: Fr.zero, count: numPolys * parentSize)
+                for p in 0..<numPolys {
+                    for i in 0..<parentSize {
+                        let v0 = (i < nttN) ? products[(p * 2) * nttN + i] : Fr.zero
+                        let v1 = (i < nttN) ? products[(p * 2 + 1) * nttN + i] : Fr.zero
+                        nextLevel[p * parentSize + i] = frAdd(v0, v1)
+                    }
+                }
+                currentLevel = nextLevel
+            }
+        }
+
+        // currentLevel now has 1 polynomial of degree < N
+        return currentLevel
     }
 
     // MARK: - GPU-Resident Polynomial Multiply

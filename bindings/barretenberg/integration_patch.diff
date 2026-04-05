@@ -1,0 +1,132 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -0,0 +1,15 @@
++# -- zkMetal GPU acceleration (Apple Silicon only) --
++# Searches for libzkmetal.a; if found, defines HAS_ZKMETAL=1 and links
++# Metal.framework + Foundation.framework. Completely optional.
++if(APPLE)
++    list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
++    find_package(ZkMetal QUIET)
++    if(ZkMetal_FOUND)
++        message(STATUS "zkMetal GPU acceleration enabled (${ZkMetal_VERSION})")
++    endif()
++endif()
++
+ # After barretenberg target is created, conditionally link:
++if(ZkMetal_FOUND)
++    target_link_libraries(barretenberg_objects PUBLIC ZkMetal::ZkMetal)
++endif()
+
+diff --git a/cpp/src/barretenberg/ecc/scalar_multiplication/scalar_multiplication.cpp b/cpp/src/barretenberg/ecc/scalar_multiplication/scalar_multiplication.cpp
+--- a/cpp/src/barretenberg/ecc/scalar_multiplication/scalar_multiplication.cpp
++++ b/cpp/src/barretenberg/ecc/scalar_multiplication/scalar_multiplication.cpp
+@@ -1,5 +1,10 @@
+ #include "scalar_multiplication.hpp"
+
++#ifdef HAS_ZKMETAL
++#include "zkmetal_bb_msm.hpp"
++// Copy zkmetal_bb_msm.hpp and zkmetal_bb_bridge.h to this directory,
++// or add the zkMetal bindings/barretenberg path to your include dirs.
++#endif
++
+ // ... existing includes ...
+
+ namespace bb::scalar_multiplication {
+@@ -100,6 +105,24 @@
+ template <typename Curve>
+ typename Curve::Element pippenger(const typename Curve::AffineElement* points,
+                                   const typename Curve::ScalarField* scalars,
+                                   size_t num_points,
+                                   PippengerRuntimeState<Curve>& state)
+ {
++#ifdef HAS_ZKMETAL
++    // Route large MSMs to zkMetal GPU acceleration.
++    // Points are affine (x,y) with 4 uint64_t each coordinate = 8 uint64_t per point.
++    // Scalars are Fr (4 uint64_t) in Montgomery form -- same as zkMetal.
++    // Result is Jacobian (X,Y,Z) = 12 uint64_t.
++    if (num_points >= zkmetal::MSM_GPU_THRESHOLD && zkmetal::is_gpu_available()) {
++        typename Curve::Element result;
++        // reinterpret_cast is safe: identical memory layout on LE ARM64
++        const auto* pts = reinterpret_cast<const uint64_t*>(points);
++        const auto* scs = reinterpret_cast<const uint64_t*>(scalars);
++        auto* res = reinterpret_cast<uint64_t*>(&result);
++
++        zkmetal::msm::try_gpu_msm_raw(
++            /* curve_id= */ std::is_same_v<Curve, curve::Grumpkin> ? 1 : 0,
++            pts, scs, num_points, res);
++        return result;
++    }
++#endif
+     // ... existing Pippenger implementation ...
+
+diff --git a/cpp/src/barretenberg/polynomials/polynomial_arithmetic.cpp b/cpp/src/barretenberg/polynomials/polynomial_arithmetic.cpp
+--- a/cpp/src/barretenberg/polynomials/polynomial_arithmetic.cpp
++++ b/cpp/src/barretenberg/polynomials/polynomial_arithmetic.cpp
+@@ -1,5 +1,9 @@
+ #include "polynomial_arithmetic.hpp"
+
++#ifdef HAS_ZKMETAL
++#include "zkmetal_bb_ntt.hpp"
++#endif
++
+ namespace bb::polynomial_arithmetic {
+
+ // ... existing code ...
+@@ -50,6 +54,13 @@
+ template <typename Fr>
+ void fft_inner(Fr* coeffs, const size_t domain_size, const std::vector<Fr*>& root_table)
+ {
++#ifdef HAS_ZKMETAL
++    if constexpr (std::is_same_v<Fr, bb::fr>) {
++        auto* data = reinterpret_cast<uint64_t*>(coeffs);
++        if (zkmetal::ntt::try_fft(data, domain_size))
++            return;
++    }
++#endif
+     // ... existing radix-4 FFT ...
+ }
+
+@@ -60,6 +71,13 @@
+ template <typename Fr>
+ void ifft_inner(Fr* coeffs, const size_t domain_size, const std::vector<Fr*>& root_table)
+ {
++#ifdef HAS_ZKMETAL
++    if constexpr (std::is_same_v<Fr, bb::fr>) {
++        auto* data = reinterpret_cast<uint64_t*>(coeffs);
++        if (zkmetal::ntt::try_ifft(data, domain_size))
++            return;
++    }
++#endif
+     // ... existing inverse FFT ...
+ }
+
+diff --git a/cpp/src/barretenberg/crypto/poseidon2/poseidon2.cpp b/cpp/src/barretenberg/crypto/poseidon2/poseidon2.cpp
+--- a/cpp/src/barretenberg/crypto/poseidon2/poseidon2.cpp
++++ b/cpp/src/barretenberg/crypto/poseidon2/poseidon2.cpp
+@@ -1,5 +1,9 @@
+ #include "poseidon2.hpp"
+
++#ifdef HAS_ZKMETAL
++#include "zkmetal_bb_bridge.h"
++#endif
++
+ namespace bb::crypto {
+
+ // ... existing code ...
+@@ -20,6 +24,16 @@
+ template <typename FF>
+ typename Poseidon2<FF>::FF Poseidon2<FF>::hash(const FF& left, const FF& right)
+ {
++#ifdef HAS_ZKMETAL
++    if constexpr (std::is_same_v<FF, bb::fr>) {
++        FF result;
++        zkmetal::poseidon2_hash(
++            reinterpret_cast<const uint64_t*>(&left),
++            reinterpret_cast<const uint64_t*>(&right),
++            reinterpret_cast<uint64_t*>(&result));
++        return result;
++    }
++#endif
+     // ... existing Poseidon2 hash ...
+ }

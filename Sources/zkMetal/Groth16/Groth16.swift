@@ -66,6 +66,20 @@ public struct Groth16ProvingKey {
     public let b_g1_query_affine: [PointAffine]
     public let h_query_affine: [PointAffine]
     public let l_query_affine: [PointAffine]
+
+    public init(alpha_g1: PointProjective, beta_g1: PointProjective, beta_g2: G2ProjectivePoint,
+                delta_g1: PointProjective, delta_g2: G2ProjectivePoint,
+                ic: [PointProjective], a_query: [PointProjective], b_g1_query: [PointProjective],
+                b_g2_query: [G2ProjectivePoint], h_query: [PointProjective], l_query: [PointProjective],
+                a_query_affine: [PointAffine], b_g1_query_affine: [PointAffine],
+                h_query_affine: [PointAffine], l_query_affine: [PointAffine]) {
+        self.alpha_g1 = alpha_g1; self.beta_g1 = beta_g1; self.beta_g2 = beta_g2
+        self.delta_g1 = delta_g1; self.delta_g2 = delta_g2
+        self.ic = ic; self.a_query = a_query; self.b_g1_query = b_g1_query
+        self.b_g2_query = b_g2_query; self.h_query = h_query; self.l_query = l_query
+        self.a_query_affine = a_query_affine; self.b_g1_query_affine = b_g1_query_affine
+        self.h_query_affine = h_query_affine; self.l_query_affine = l_query_affine
+    }
 }
 
 public struct Groth16VerificationKey {
@@ -74,10 +88,21 @@ public struct Groth16VerificationKey {
     public let gamma_g2: G2ProjectivePoint
     public let delta_g2: G2ProjectivePoint
     public let ic: [PointProjective]
+
+    public init(alpha_g1: PointProjective, beta_g2: G2ProjectivePoint,
+                gamma_g2: G2ProjectivePoint, delta_g2: G2ProjectivePoint,
+                ic: [PointProjective]) {
+        self.alpha_g1 = alpha_g1; self.beta_g2 = beta_g2
+        self.gamma_g2 = gamma_g2; self.delta_g2 = delta_g2; self.ic = ic
+    }
 }
 
 public struct Groth16Proof {
     public let a: PointProjective   // G1
     public let b: G2ProjectivePoint // G2
     public let c: PointProjective   // G1
+
+    public init(a: PointProjective, b: G2ProjectivePoint, c: PointProjective) {
+        self.a = a; self.b = b; self.c = c
+    }
 }

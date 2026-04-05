@@ -422,6 +422,149 @@ public class CircleSTARKProver {
         return path
     }
 
+    // MARK: - Generic CPU Prove (any CircleAIR, not just Fibonacci)
+
+    /// Prove any CircleAIR using CPU constraint evaluation.
+    /// Works for arbitrary column counts and constraint structures.
+    /// GPU path (`prove`/`proveFused`) is faster but only supports FibonacciAIR.
+    public func proveCPU<A: CircleAIR>(air: A) throws -> CircleSTARKProof {
+        let traceLen = air.traceLength
+        let logTrace = air.logTraceLength
+        let logEval = logTrace + logBlowup
+        let evalLen = 1 << logEval
+
+        // Step 1: Generate trace
+        let trace = air.generateTrace()
+        precondition(trace.count == air.numColumns)
+        for col in trace { precondition(col.count == traceLen) }
+
+        // Step 2: LDE each column via circle NTT (INTT -> zero-pad -> NTT)
+        let ntt = try ensureNTT()
+        let dev = ntt.device
+        let queue = ntt.commandQueue
+        let sz = MemoryLayout<UInt32>.stride
+
+        var traceLDEs = [[M31]]()
+        for colIdx in 0..<air.numColumns {
+            guard let buf = dev.makeBuffer(length: evalLen * sz, options: .storageModeShared) else {
+                throw MSMError.gpuError("Failed to allocate LDE buffer for column \(colIdx)")
+            }
+            let ptr = buf.contents().bindMemory(to: UInt32.self, capacity: evalLen)
+            for i in 0..<traceLen { ptr[i] = trace[colIdx][i].v }
+
+            // INTT: trace -> coefficients
+            guard let cb1 = queue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
+            ntt.encodeINTT(data: buf, logN: logTrace, cmdBuf: cb1)
+            cb1.commit(); cb1.waitUntilCompleted()
+            if let err = cb1.error { throw MSMError.gpuError("INTT error col \(colIdx): \(err)") }
+
+            // Zero-pad
+            for i in traceLen..<evalLen { ptr[i] = 0 }
+
+            // NTT: coefficients -> LDE evaluations
+            guard let cb2 = queue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
+            ntt.encodeNTT(data: buf, logN: logEval, cmdBuf: cb2)
+            cb2.commit(); cb2.waitUntilCompleted()
+            if let err = cb2.error { throw MSMError.gpuError("NTT error col \(colIdx): \(err)") }
+
+            var lde = [M31](repeating: M31.zero, count: evalLen)
+            for i in 0..<evalLen { lde[i] = M31(v: ptr[i]) }
+            traceLDEs.append(lde)
+        }
+
+        // Step 3: Commit trace columns via Merkle
+        let merkle = try ensureMerkle()
+        var traceFlatTrees = [[UInt8]]()
+        var traceCommitments = [[UInt8]]()
+        for col in traceLDEs {
+            let vals = col.map { $0.v }
+            let flatTree = try merkle.buildTreeFromM31(vals, count: evalLen)
+            traceCommitments.append(KeccakMerkleEngine.rootFromFlat(flatTree, n: evalLen))
+            traceFlatTrees.append(flatTree)
+        }
+
+        // Step 4: Fiat-Shamir challenge
+        var transcript = CircleSTARKTranscript()
+        transcript.absorbLabel("circle-stark-v1")
+        for root in traceCommitments { transcript.absorbBytes(root) }
+        let alpha = transcript.squeezeM31()
+
+        // Step 5: CPU constraint evaluation on LDE domain
+        let evalDomain = circleCosetDomain(logN: logEval)
+        let step = evalLen / traceLen
+        var compositionEvals = [M31](repeating: M31.zero, count: evalLen)
+
+        for i in 0..<evalLen {
+            let nextI = (i + step) % evalLen
+            let current = (0..<air.numColumns).map { traceLDEs[$0][i] }
+            let next = (0..<air.numColumns).map { traceLDEs[$0][nextI] }
+
+            // Evaluate transition constraints
+            let cVals = air.evaluateConstraints(current: current, next: next)
+
+            // Random linear combination with alpha
+            var combined = M31.zero
+            var alphaPow = M31.one
+            for cv in cVals {
+                combined = m31Add(combined, m31Mul(alphaPow, cv))
+                alphaPow = m31Mul(alphaPow, alpha)
+            }
+
+            // Evaluate boundary constraints as quotients
+            for bc in air.boundaryConstraints {
+                let colVal = traceLDEs[bc.column][i]
+                let diff = m31Sub(colVal, bc.value)
+                // Vanishing polynomial for single point: (y - y_bc) where y_bc = domain[bc.row * step].y
+                let vz = circleVanishing(point: evalDomain[i], logDomainSize: logTrace)
+                if vz.v != 0 {
+                    let quotient = m31Mul(diff, m31Inverse(vz))
+                    combined = m31Add(combined, m31Mul(alphaPow, quotient))
+                }
+                alphaPow = m31Mul(alphaPow, alpha)
+            }
+
+            compositionEvals[i] = combined
+        }
+
+        // Step 6: Commit composition polynomial
+        let compVals = compositionEvals.map { $0.v }
+        let compFlatTree = try merkle.buildTreeFromM31(compVals, count: evalLen)
+        let compositionCommitment = KeccakMerkleEngine.rootFromFlat(compFlatTree, n: evalLen)
+
+        // Step 7: FRI
+        transcript.absorbBytes(compositionCommitment)
+        let friProof = try cpuFRI(
+            evals: compositionEvals, logN: logEval,
+            numQueries: numQueries, transcript: &transcript
+        )
+
+        // Step 8: Query phase
+        var queryResponses = [CircleSTARKQueryResponse]()
+        for qi in friProof.queryIndices {
+            guard qi < evalLen else { continue }
+            var traceVals = [M31]()
+            var tracePaths = [[[UInt8]]]()
+            for colIdx in 0..<air.numColumns {
+                traceVals.append(traceLDEs[colIdx][qi])
+                tracePaths.append(KeccakMerkleEngine.merkleProofFlat(traceFlatTrees[colIdx], n: evalLen, index: qi))
+            }
+            queryResponses.append(CircleSTARKQueryResponse(
+                traceValues: traceVals, tracePaths: tracePaths,
+                compositionValue: compositionEvals[qi],
+                compositionPath: KeccakMerkleEngine.merkleProofFlat(compFlatTree, n: evalLen, index: qi),
+                queryIndex: qi
+            ))
+        }
+
+        return CircleSTARKProof(
+            traceCommitments: traceCommitments,
+            compositionCommitment: compositionCommitment,
+            friProof: friProof, queryResponses: queryResponses,
+            alpha: alpha, traceLength: traceLen,
+            numColumns: air.numColumns, logBlowup: logBlowup
+        )
+    }
+
     // MARK: - GPU Constraint Evaluation
 
     private func gpuConstraintEval<A: CircleAIR>(
