@@ -93,6 +93,8 @@ runGPUFFTTests()
 runSparsePolyCommitTests()
 runGPUMultiPointEvalTests()
 runStark252STARKTests()
+runVerkleProofEngineTests()
+runPlonkishArithTests()
 
 let elapsed = CFAbsoluteTimeGetCurrent() - t0
 print(String(format: "\nCompleted in %.1fs", elapsed))

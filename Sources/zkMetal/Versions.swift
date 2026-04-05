@@ -137,6 +137,8 @@ public enum Versions {
     public static let sparsePolyCommit  = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let gpuMultiPointEval = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let stark252STARK     = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let verkleProofEngine = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let plonkishArith     = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
 
     /// Print all primitive versions
     public static func printAll() {
