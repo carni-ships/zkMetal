@@ -85,9 +85,15 @@ public struct MarlinProof {
     // Evaluations at query points
     public let evaluations: MarlinEvaluations
 
-    // KZG opening proofs
+    // KZG opening proofs — legacy individual proofs (nil when using batch)
     public let openingProofs: [PointProjective]
 
+    // Batch KZG opening proofs: one proof per evaluation point (beta, gamma)
+    public let betaBatchProof: PointProjective?
+    public let gammaBatchProof: PointProjective?
+    public let batchChallenge: Fr?
+
+    /// Legacy init with individual opening proofs
     public init(wCommit: PointProjective, zACommit: PointProjective, zBCommit: PointProjective,
                 zCCommit: PointProjective,
                 tCommit: PointProjective, sumcheckPolyCoeffs: [[Fr]],
@@ -103,6 +109,32 @@ public struct MarlinProof {
         self.hCommit = hCommit
         self.evaluations = evaluations
         self.openingProofs = openingProofs
+        self.betaBatchProof = nil
+        self.gammaBatchProof = nil
+        self.batchChallenge = nil
+    }
+
+    /// Batch init with two batch KZG proofs (one per evaluation point)
+    public init(wCommit: PointProjective, zACommit: PointProjective, zBCommit: PointProjective,
+                zCCommit: PointProjective,
+                tCommit: PointProjective, sumcheckPolyCoeffs: [[Fr]],
+                gCommit: PointProjective, hCommit: PointProjective,
+                evaluations: MarlinEvaluations,
+                betaBatchProof: PointProjective, gammaBatchProof: PointProjective,
+                batchChallenge: Fr) {
+        self.wCommit = wCommit
+        self.zACommit = zACommit
+        self.zBCommit = zBCommit
+        self.zCCommit = zCCommit
+        self.tCommit = tCommit
+        self.sumcheckPolyCoeffs = sumcheckPolyCoeffs
+        self.gCommit = gCommit
+        self.hCommit = hCommit
+        self.evaluations = evaluations
+        self.openingProofs = []
+        self.betaBatchProof = betaBatchProof
+        self.gammaBatchProof = gammaBatchProof
+        self.batchChallenge = batchChallenge
     }
 }
 
@@ -472,7 +504,44 @@ public class MarlinVerifier {
         let s = vk.srsSecret
         let g1 = pointFromAffine(vk.srs[0])
 
-        // Collect all (commitment, evaluation, witness, isBeta) tuples
+        // --- Batch KZG path: proof contains 2 batch proofs (beta, gamma) ---
+        if let betaProof = proof.betaBatchProof,
+           let gammaProof = proof.gammaBatchProof,
+           let batchGamma = proof.batchChallenge {
+
+            // Beta group: w, zA, zB, zC, t
+            let betaCommitments = [proof.wCommit, proof.zACommit, proof.zBCommit,
+                                   proof.zCCommit, proof.tCommit]
+            let betaEvals = [evals.wBeta, evals.zABeta, evals.zBBeta,
+                             evals.zCBeta, evals.tBeta]
+
+            let betaOk = kzg.batchVerify(
+                commitments: betaCommitments, point: beta,
+                evaluations: betaEvals, proof: betaProof,
+                gamma: batchGamma, srsSecret: s)
+
+            if !betaOk { return false }
+
+            // Gamma group: g, h, 12 index polys
+            var gammaCommitments = [proof.gCommit, proof.hCommit]
+            gammaCommitments.append(contentsOf: vk.indexCommitments)
+            var gammaEvals: [Fr] = [evals.gGamma, evals.hGamma]
+            for m in 0..<3 {
+                gammaEvals.append(evals.rowGamma[m])
+                gammaEvals.append(evals.colGamma[m])
+                gammaEvals.append(evals.valGamma[m])
+                gammaEvals.append(evals.rowColGamma[m])
+            }
+
+            let gammaOk = kzg.batchVerify(
+                commitments: gammaCommitments, point: gamma,
+                evaluations: gammaEvals, proof: gammaProof,
+                gamma: batchGamma, srsSecret: s)
+
+            return gammaOk
+        }
+
+        // --- Legacy individual proofs path ---
         struct KZGTuple {
             let commitment: PointProjective
             let evaluation: Fr
@@ -638,7 +707,18 @@ public class MarlinVerifier {
 
             // Inner lincheck verified via KZG opening proofs
 
-            // Collect KZG tuples
+            // For batch proofs, use single-proof verify path (already handles batch format)
+            if proof.betaBatchProof != nil {
+                // Batch proof: delegate to single-proof verify which handles batch KZG
+                let batchChal = transcript.squeeze()
+                if !verifyOpenings(vk: vk, proof: proof, beta: beta, gamma: gamma,
+                                   batchChallenge: batchChal) {
+                    return false
+                }
+                continue
+            }
+
+            // Legacy: Collect individual KZG tuples
             let betaOpenings: [(PointProjective, Fr)] = [
                 (proof.wCommit, evals.wBeta),
                 (proof.zACommit, evals.zABeta),

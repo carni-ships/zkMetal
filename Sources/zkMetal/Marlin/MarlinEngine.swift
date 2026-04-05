@@ -317,18 +317,16 @@ public class MarlinEngine {
             rcG.append(evalPoly(pk.indexPolynomials[mi * 4 + 3], at: gammaF))
         }
 
-        // Build KZG opening proofs
-        // Order: w, zA, zB, zC, t (at beta), g, h (at gamma), 12 index polys (at gamma)
-        let allPolys: [[Fr]] = [wCoeffs, zACoeffs, zBCoeffs, zCCoeffs, tCoeffs,
-                                gCoeffs, hCoeffs] + pk.indexPolynomials
-        let allPoints: [Fr] = [betaF, betaF, betaF, betaF, betaF,
-                               gammaF, gammaF] + [Fr](repeating: gammaF, count: 12)
+        // Build KZG opening proofs using batch openings (2 MSMs instead of 19)
+        // Group by evaluation point: beta group (5 polys) and gamma group (14 polys)
+        let betaPolys: [[Fr]] = [wCoeffs, zACoeffs, zBCoeffs, zCCoeffs, tCoeffs]
+        let gammaPolys: [[Fr]] = [gCoeffs, hCoeffs] + pk.indexPolynomials
 
-        var openingProofs = [PointProjective]()
-        for (poly, pt) in zip(allPolys, allPoints) {
-            let kzgProof = try kzg.open(poly, at: pt)
-            openingProofs.append(kzgProof.witness)
-        }
+        // Derive batch challenge from transcript (deterministic via Fiat-Shamir)
+        let batchChal = tsF.squeeze()
+
+        let betaBatch = try kzg.batchOpen(polynomials: betaPolys, point: betaF, gamma: batchChal)
+        let gammaBatch = try kzg.batchOpen(polynomials: gammaPolys, point: gammaF, gamma: batchChal)
 
         let evaluations = MarlinEvaluations(
             zABeta: zABetaF, zBBeta: zBBetaF, zCBeta: zCBetaF,
@@ -342,7 +340,10 @@ public class MarlinEngine {
             zCCommit: zCCommit,
             tCommit: tCommit, sumcheckPolyCoeffs: finalSumcheckPolys,
             gCommit: gCommit, hCommit: hCommitVal,
-            evaluations: evaluations, openingProofs: openingProofs
+            evaluations: evaluations,
+            betaBatchProof: betaBatch.proof,
+            gammaBatchProof: gammaBatch.proof,
+            batchChallenge: batchChal
         )
     }
 

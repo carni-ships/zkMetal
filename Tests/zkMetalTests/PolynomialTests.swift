@@ -88,4 +88,95 @@ func runPolynomialTests() {
         let a1 = batchToAffine([cS])[0]; let a2 = batchToAffine([cM])[0]
         expect(fpToInt(a1.x) == fpToInt(a2.x) && fpToInt(a1.y) == fpToInt(a2.y), "Commit linearity")
     } catch { expect(false, "KZG error: \(error)") }
+
+    suite("KZG Batch Open (same point)")
+    do {
+        let g = PointAffine(x: fpFromInt(1), y: fpFromInt(2))
+        let secret: [UInt32] = [42, 0, 0, 0, 0, 0, 0, 0]
+        let srs = KZGEngine.generateTestSRS(secret: secret, size: 256, generator: g)
+        let engine = try KZGEngine(srs: srs)
+        let sFr = frFromLimbs(secret)
+
+        // Test 1: batch open 3 polynomials at the same point
+        let p0: [Fr] = [frFromInt(1), frFromInt(2), frFromInt(3)]       // 1 + 2x + 3x^2
+        let p1: [Fr] = [frFromInt(4), frFromInt(5)]                     // 4 + 5x
+        let p2: [Fr] = [frFromInt(7), frFromInt(0), frFromInt(1)]       // 7 + x^2
+        let point = frFromInt(5)
+        let gamma = frFromInt(13)
+
+        let batchProof = try engine.batchOpen(polynomials: [p0, p1, p2], point: point, gamma: gamma)
+
+        // Verify evaluations match individual evaluations
+        expect(frToInt(batchProof.evaluations[0])[0] == 86, "batch p0(5)=86")   // 1+10+75
+        expect(frToInt(batchProof.evaluations[1])[0] == 29, "batch p1(5)=29")   // 4+25
+        expect(frToInt(batchProof.evaluations[2])[0] == 32, "batch p2(5)=32")   // 7+25
+
+        // Verify using srsSecret
+        let bv = engine.batchVerify(
+            commitments: batchProof.commitments, point: point,
+            evaluations: batchProof.evaluations, proof: batchProof.proof,
+            gamma: gamma, srsSecret: sFr)
+        expect(bv, "batch verify same-point")
+
+        // Verify by re-opening
+        let rv = try engine.verifyBatchByReopen(
+            polynomials: [p0, p1, p2], point: point,
+            evaluations: batchProof.evaluations, proof: batchProof.proof, gamma: gamma)
+        expect(rv, "batch verify-by-reopen same-point")
+
+        // Test 2: single polynomial batch = same as non-batch
+        let single = try engine.batchOpen(polynomials: [p0], point: point, gamma: gamma)
+        let singleDirect = try engine.open(p0, at: point)
+        expect(frToInt(single.evaluations[0]) == frToInt(singleDirect.evaluation), "single batch eval matches open")
+
+        // Test 3: wrong gamma should fail verification (different proof)
+        let wrongGamma = frFromInt(99)
+        let wrongVerify = engine.batchVerify(
+            commitments: batchProof.commitments, point: point,
+            evaluations: batchProof.evaluations, proof: batchProof.proof,
+            gamma: wrongGamma, srsSecret: sFr)
+        expect(!wrongVerify, "wrong gamma fails verify")
+
+    } catch { expect(false, "KZG batch same-point error: \(error)") }
+
+    suite("KZG Batch Open (multi-point)")
+    do {
+        let g = PointAffine(x: fpFromInt(1), y: fpFromInt(2))
+        let secret: [UInt32] = [42, 0, 0, 0, 0, 0, 0, 0]
+        let srs = KZGEngine.generateTestSRS(secret: secret, size: 256, generator: g)
+        let engine = try KZGEngine(srs: srs)
+
+        // Open 3 polynomials at different points
+        let p0: [Fr] = [frFromInt(1), frFromInt(2), frFromInt(3)]
+        let p1: [Fr] = [frFromInt(4), frFromInt(5)]
+        let p2: [Fr] = [frFromInt(7), frFromInt(0), frFromInt(1)]
+        let points: [Fr] = [frFromInt(5), frFromInt(3), frFromInt(2)]
+        let gamma = frFromInt(17)
+
+        let mpProof = try engine.batchOpenMultiPoint(polynomials: [p0, p1, p2], points: points, gamma: gamma)
+
+        // Verify evaluations: p0(5)=86, p1(3)=19, p2(2)=11
+        expect(frToInt(mpProof.evaluations[0])[0] == 86, "multi-pt p0(5)=86")
+        expect(frToInt(mpProof.evaluations[1])[0] == 19, "multi-pt p1(3)=19")
+        expect(frToInt(mpProof.evaluations[2])[0] == 11, "multi-pt p2(2)=11")
+
+        // Verify by re-opening
+        let rv = try engine.verifyMultiPointByReopen(
+            polynomials: [p0, p1, p2], points: points,
+            evaluations: mpProof.evaluations, proof: mpProof.proof, gamma: gamma)
+        expect(rv, "multi-point verify-by-reopen")
+
+        // Test fused path matches non-fused
+        let fusedProof = try engine.batchOpenMultiPointFused(polynomials: [p0, p1, p2], points: points, gamma: gamma)
+        for i in 0..<3 {
+            expect(frToInt(fusedProof.evaluations[i]) == frToInt(mpProof.evaluations[i]),
+                   "fused eval[\(i)] matches")
+        }
+        let fusedAff = batchToAffine([fusedProof.proof])
+        let mpAff = batchToAffine([mpProof.proof])
+        expect(fpToInt(fusedAff[0].x) == fpToInt(mpAff[0].x) &&
+               fpToInt(fusedAff[0].y) == fpToInt(mpAff[0].y),
+               "fused proof point matches non-fused")
+
+    } catch { expect(false, "KZG batch multi-point error: \(error)") }
 }
