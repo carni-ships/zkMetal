@@ -45,12 +45,6 @@ public func runWHIRBench() {
                 let (qLabel, q, r) = cfg
                 let whirEng = try WHIREngine(numQueries: q, reductionFactor: r)
                 let _ = try whirEng.prove(evaluations: benchEvals)  // warmup
-                // Profile one run at 2^14
-                if logN == 14 && q == 4 {
-                    whirEng.profileProve = true
-                    let _ = try whirEng.prove(evaluations: benchEvals)
-                    whirEng.profileProve = false
-                }
 
                 var wt = [Double](); var wps = 0; var wnr = 0
                 for _ in 0..<5 {

@@ -181,19 +181,21 @@ public class BasefoldEngine {
             }
         }
 
-        // Phase 2: Extract layers and build Merkle trees.
-        // Use a single unified GPU buffer for all trees (reduces allocation + buffer binding overhead).
-        // Total tree nodes across all layers = sum(2*layerN - 1) for layerN > 1.
+        // Phase 2: Extract layers and build Merkle trees (separate buffers per tree).
         var layers: [[Fr]] = []
         layers.reserveCapacity(numVars)
         var roots: [Fr] = []
         roots.reserveCapacity(numVars)
 
-        // Compute tree layout in unified buffer
-        var treeOffsets: [Int] = []  // byte offset of each tree in unified buffer
-        var treeSizesArr: [Int] = []  // leaf count per tree
+        if n != cachedTreeBufsN {
+            cachedTreeBufsArr.removeAll()
+            cachedTreeBufsN = n
+        }
+
+        var treeBufPtrs: [MTLBuffer?] = []
+        var treeSizesArr: [Int] = []
         var treeNodeCounts: [Int] = []
-        var unifiedSize = 0
+        var tbIdx = 0
 
         var flatOffset = 0
         for round in 0..<numVars {
@@ -203,57 +205,45 @@ public class BasefoldEngine {
 
             if layerN <= 1 {
                 roots.append(layerN == 1 ? layers.last![0] : Fr.zero)
-                treeOffsets.append(-1)
+                treeBufPtrs.append(nil)
                 treeSizesArr.append(0)
                 treeNodeCounts.append(0)
             } else {
                 let treeSize = 2 * layerN - 1
-                treeOffsets.append(unifiedSize)
+                let tb: MTLBuffer
+                if tbIdx < cachedTreeBufsArr.count && cachedTreeBufsArr[tbIdx].length >= treeSize * stride {
+                    tb = cachedTreeBufsArr[tbIdx]
+                } else {
+                    guard let buf = device.makeBuffer(length: treeSize * stride, options: .storageModeShared) else {
+                        throw MSMError.gpuError("Failed to create tree buffer")
+                    }
+                    if tbIdx < cachedTreeBufsArr.count { cachedTreeBufsArr[tbIdx] = buf }
+                    else { cachedTreeBufsArr.append(buf) }
+                    tb = buf
+                }
+                tbIdx += 1
+                memcpy(tb.contents(), flatBuf + flatOffset * 4, layerN * stride)
+                treeBufPtrs.append(tb)
                 treeSizesArr.append(layerN)
                 treeNodeCounts.append(treeSize)
-                unifiedSize += treeSize
                 roots.append(Fr.zero)
             }
             flatOffset += layerN
         }
 
-        // Allocate or reuse unified buffer
-        if cachedTreeBufsArr.isEmpty || cachedTreeBufsArr[0].length < unifiedSize * stride {
-            guard let buf = device.makeBuffer(length: unifiedSize * stride, options: .storageModeShared) else {
-                throw MSMError.gpuError("Failed to create unified tree buffer")
-            }
-            cachedTreeBufsArr = [buf]
-        }
-        let unifiedBuf = cachedTreeBufsArr[0]
-
-        // Copy all leaves into the unified buffer
-        flatOffset = 0
-        for round in 0..<numVars {
-            let layerN = n >> (round + 1)
-            if treeOffsets[round] >= 0 {
-                let dstOffset = treeOffsets[round] * stride
-                memcpy(unifiedBuf.contents() + dstOffset, flatBuf + flatOffset * 4, layerN * stride)
-            }
-            flatOffset += layerN
-        }
-
         // Build Merkle trees with overlapped GPU command buffers.
-        // Individual CBs for large trees enable GPU pipelining.
-        // Small trees batched into one CB.
         var smallIdxs: [Int] = []
         var largeIdxs: [Int] = []
-        for round in 0..<numVars {
-            guard treeSizesArr[round] > 0 else { continue }
-            if treeSizesArr[round] >= 8192 { largeIdxs.append(round) } else { smallIdxs.append(round) }
+        for (idx, sz) in treeSizesArr.enumerated() {
+            guard sz > 0 else { continue }
+            if sz >= 8192 { largeIdxs.append(idx) } else { smallIdxs.append(idx) }
         }
 
         var allCBs: [(Int, MTLCommandBuffer)] = []
         for idx in largeIdxs {
             guard let cb = commandQueue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
             let e = cb.makeComputeCommandEncoder()!
-            merkleEngine.encodeMerkleRoot(encoder: e, treeBuf: unifiedBuf,
-                                          treeOffset: treeOffsets[idx] * stride,
-                                          n: treeSizesArr[idx])
+            merkleEngine.encodeMerkleRoot(encoder: e, treeBuf: treeBufPtrs[idx]!, treeOffset: 0, n: treeSizesArr[idx])
             e.endEncoding()
             cb.commit()
             allCBs.append((idx, cb))
@@ -263,9 +253,7 @@ public class BasefoldEngine {
             let e = cb.makeComputeCommandEncoder()!
             for (j, idx) in smallIdxs.enumerated() {
                 if j > 0 { e.memoryBarrier(scope: .buffers) }
-                merkleEngine.encodeMerkleRoot(encoder: e, treeBuf: unifiedBuf,
-                                              treeOffset: treeOffsets[idx] * stride,
-                                              n: treeSizesArr[idx])
+                merkleEngine.encodeMerkleRoot(encoder: e, treeBuf: treeBufPtrs[idx]!, treeOffset: 0, n: treeSizesArr[idx])
             }
             e.endEncoding()
             cb.commit()
@@ -278,8 +266,7 @@ public class BasefoldEngine {
             let readIdxs = idx == -1 ? smallIdxs : [idx]
             for ri in readIdxs {
                 let tsz = treeNodeCounts[ri]
-                let off = treeOffsets[ri]
-                let ptr = (unifiedBuf.contents() + off * stride).bindMemory(to: Fr.self, capacity: tsz)
+                let ptr = treeBufPtrs[ri]!.contents().bindMemory(to: Fr.self, capacity: tsz)
                 roots[ri] = ptr[tsz - 1]
             }
         }
@@ -299,13 +286,12 @@ public class BasefoldEngine {
         for _ in 0..<numQueries {
             rng = rng &* 6364136223846793005 &+ 1442695040888963407
             let queryIdx = Int(rng >> 32) % (n / 2)
-            let proof = generateQueryProofUnified(
+            let proof = generateQueryProofZeroCopy(
                 index: queryIdx,
                 originalTree: commitment.tree,
                 originalEvals: evals,
                 layers: layers,
-                unifiedBuf: unifiedBuf,
-                treeOffsets: treeOffsets,
+                treeBufPtrs: treeBufPtrs,
                 treeNodeCounts: treeNodeCounts,
                 treeSizes: treeSizesArr,
                 numVars: numVars,

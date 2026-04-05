@@ -139,8 +139,6 @@ public class WHIREngine {
 
     // MARK: - Prove
 
-    public var profileProve = false
-
     public func prove(evaluations: [Fr], transcript: Transcript? = nil) throws -> WHIRProof {
         let n = evaluations.count
         precondition(n > 0 && (n & (n - 1)) == 0)
@@ -151,8 +149,6 @@ public class WHIREngine {
 
         let ts = transcript ?? Transcript(label: "whir-v2")
 
-        var _commitTime = 0.0, _foldTime = 0.0, _transcriptTime = 0.0, _queryTime = 0.0
-
         // Phase 1: Build all layers (commit, derive beta, fold)
         var layers: [WHIRCommitment] = []
         var betas: [Fr] = []
@@ -162,25 +158,16 @@ public class WHIREngine {
             let currentN = currentEvals.count
             if currentN <= reductionFactor { break }
 
-            var _t0 = profileProve ? CFAbsoluteTimeGetCurrent() : 0
             let commitment = try commit(evaluations: currentEvals)
             layers.append(commitment)
-            if profileProve {
-                let dt = (CFAbsoluteTimeGetCurrent() - _t0) * 1000
-                fputs(String(format: "    round %d commit(%d): %.2fms\n", round, currentN, dt), stderr)
-                _commitTime += dt / 1000
-            }
 
             // Transcript: absorb root, label, squeeze beta
-            _t0 = profileProve ? CFAbsoluteTimeGetCurrent() : 0
             ts.absorb(commitment.root)
             ts.absorbLabel("whir-r\(round)")
             let beta = ts.squeeze()
             betas.append(beta)
-            if profileProve { _transcriptTime += CFAbsoluteTimeGetCurrent() - _t0 }
 
             // Fold polynomial using C CIOS arithmetic (Horner's method)
-            _t0 = profileProve ? CFAbsoluteTimeGetCurrent() : 0
             let newN = currentN / reductionFactor
             var folded = [Fr](repeating: Fr.zero, count: newN)
             currentEvals.withUnsafeBytes { evalsPtr in
@@ -197,7 +184,6 @@ public class WHIREngine {
                     }
                 }
             }
-            if profileProve { _foldTime += CFAbsoluteTimeGetCurrent() - _t0 }
             currentEvals = folded
         }
 
@@ -209,7 +195,6 @@ public class WHIREngine {
         for v in finalPoly { ts.absorb(v) }
 
         // Phase 2: Query phase
-        let _qt0 = profileProve ? CFAbsoluteTimeGetCurrent() : 0
         var layerOpenings: [[(index: UInt32, values: [Fr], merklePaths: [[Fr]])]] = []
 
         for round in 0..<actualRounds {
@@ -252,12 +237,6 @@ public class WHIREngine {
                 roundOpenings.append((index: queryIndices[qi], values: values, merklePaths: paths))
             }
             layerOpenings.append(roundOpenings)
-        }
-
-        if profileProve {
-            _queryTime = CFAbsoluteTimeGetCurrent() - _qt0
-            fputs(String(format: "  [whir] commit=%.2fms fold=%.2fms transcript=%.2fms query=%.2fms\n",
-                         _commitTime * 1000, _foldTime * 1000, _transcriptTime * 1000, _queryTime * 1000), stderr)
         }
 
         return WHIRProof(
