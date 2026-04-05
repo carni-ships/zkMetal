@@ -2,6 +2,7 @@
 // y^2 = x^3 + 1, Jacobian projective coordinates
 
 import Foundation
+import NeonFieldOps
 
 public struct Point377Affine {
     public var x: Fq377
@@ -156,4 +157,33 @@ public func bls12377Generator() -> Point377Affine {
         0x1f674f5d30afeec4, 0x01914a69c5102eff
     ]), Fq377.from64(Fq377.R2_MOD_Q))
     return Point377Affine(x: gx, y: gy)
+}
+
+// CPU Pippenger MSM for BLS12-377 G1 (small n fallback)
+public func bls12377CpuMSM(points: [Point377Affine], scalars: [[UInt32]]) -> Point377Projective {
+    let n = points.count
+    guard n > 0, n == scalars.count else { return point377Identity() }
+
+    var result = point377Identity()
+    points.withUnsafeBufferPointer { ptsBuf in
+        let ptsPtr = UnsafeRawPointer(ptsBuf.baseAddress!).assumingMemoryBound(to: UInt64.self)
+        var flatScalars = [UInt32](repeating: 0, count: n * 8)
+        for i in 0..<n {
+            let s = scalars[i]
+            for j in 0..<min(s.count, 8) {
+                flatScalars[i * 8 + j] = s[j]
+            }
+        }
+        flatScalars.withUnsafeBufferPointer { scBuf in
+            withUnsafeMutableBytes(of: &result) { resBuf in
+                bls12_377_g1_pippenger_msm(
+                    ptsPtr,
+                    scBuf.baseAddress!,
+                    Int32(n),
+                    resBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                )
+            }
+        }
+    }
+    return result
 }

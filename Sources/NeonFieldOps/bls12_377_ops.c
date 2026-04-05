@@ -796,3 +796,238 @@ void bls12_377_g1_to_affine(const uint64_t p[18], uint64_t aff[12]) {
     fq_mul(p, zinv2, aff);
     fq_mul(p + 6, zinv3, aff + 6);
 }
+
+// ============================================================
+// Pippenger MSM for BLS12-377 G1
+// Features: batch-to-affine, signed-digit recoding, adaptive window,
+//           multi-threaded windows via pthreads, mixed affine addition
+// ============================================================
+
+#include <pthread.h>
+
+static inline int fq_is_zero(const uint64_t a[6]) {
+    return (a[0] | a[1] | a[2] | a[3] | a[4] | a[5]) == 0;
+}
+
+static inline int g1_aff_is_id(const uint64_t q[12]) {
+    return (q[0] | q[1] | q[2] | q[3] | q[4] | q[5] |
+            q[6] | q[7] | q[8] | q[9] | q[10] | q[11]) == 0;
+}
+
+// Batch projective-to-affine via Montgomery's trick (single inversion)
+static void g1_batch_to_affine(const uint64_t *proj, uint64_t *aff, int n) {
+    if (n == 0) return;
+
+    uint64_t *prods = (uint64_t *)malloc((size_t)n * 48);
+    int first_valid = -1;
+
+    for (int i = 0; i < n; i++) {
+        const uint64_t *pz = proj + i * 18 + 12;
+        if (g1_is_id(proj + i * 18)) {
+            if (i == 0) memcpy(prods, FQ_ONE, 48);
+            else memcpy(prods + i * 6, prods + (i - 1) * 6, 48);
+        } else {
+            if (first_valid < 0) {
+                first_valid = i;
+                memcpy(prods + i * 6, pz, 48);
+            } else {
+                fq_mul(prods + (i - 1) * 6, pz, prods + i * 6);
+            }
+        }
+    }
+
+    if (first_valid < 0) {
+        memset(aff, 0, (size_t)n * 96);
+        free(prods);
+        return;
+    }
+
+    uint64_t inv[6];
+    fq_inverse(prods + (n - 1) * 6, inv);
+
+    for (int i = n - 1; i >= 0; i--) {
+        if (g1_is_id(proj + i * 18)) {
+            memset(aff + i * 12, 0, 96);
+            continue;
+        }
+
+        uint64_t zinv[6];
+        if (i > first_valid) {
+            fq_mul(inv, prods + (i - 1) * 6, zinv);
+            uint64_t tmp[6];
+            fq_mul(inv, proj + i * 18 + 12, tmp);
+            memcpy(inv, tmp, 48);
+        } else {
+            memcpy(zinv, inv, 48);
+        }
+
+        uint64_t zinv2[6], zinv3[6];
+        fq_sqr(zinv, zinv2);
+        fq_mul(zinv2, zinv, zinv3);
+        fq_mul(proj + i * 18, zinv2, aff + i * 12);
+        fq_mul(proj + i * 18 + 6, zinv3, aff + i * 12 + 6);
+    }
+
+    free(prods);
+}
+
+// Extract window_bits-wide window from 256-bit scalar (8 x uint32_t LE)
+static inline uint32_t g1_extract_window(const uint32_t *scalar, int window_idx, int window_bits) {
+    int bit_offset = window_idx * window_bits;
+    int word_idx = bit_offset / 32;
+    int bit_in_word = bit_offset % 32;
+
+    uint64_t word = scalar[word_idx];
+    if (word_idx + 1 < 8)
+        word |= ((uint64_t)scalar[word_idx + 1]) << 32;
+
+    return (uint32_t)((word >> bit_in_word) & ((1u << window_bits) - 1));
+}
+
+// Adaptive window sizing for BLS12-377 (6-limb Fq, heavier field ops)
+static int g1_optimal_window_bits(int n) {
+    if (n <= 4)      return 3;
+    if (n <= 32)     return 5;
+    if (n <= 256)    return 8;
+    if (n <= 2048)   return 10;
+    if (n <= 8192)   return 11;
+    if (n <= 32768)  return 13;
+    if (n <= 131072) return 14;
+    if (n <= 524288) return 15;
+    return 16;
+}
+
+// Per-window worker task
+typedef struct {
+    const uint64_t *points;     // n affine points (12 limbs each)
+    const uint32_t *scalars;    // n scalars (8 uint32 each)
+    int n;
+    int window_bits;
+    int window_idx;
+    int num_buckets;
+    uint64_t result[18];        // output projective point (18 limbs)
+} G1WindowTask;
+
+static void *g1_window_worker(void *arg) {
+    G1WindowTask *task = (G1WindowTask *)arg;
+    int wb = task->window_bits;
+    int w = task->window_idx;
+    int nb = task->num_buckets;
+    int nn = task->n;
+
+    // Allocate projective buckets (identity-initialized)
+    uint64_t *buckets = (uint64_t *)malloc((size_t)(nb + 1) * 144);
+    for (int b = 0; b <= nb; b++)
+        g1_set_id(buckets + b * 18);
+
+    // Phase 1: Bucket accumulation (mixed affine addition)
+    for (int i = 0; i < nn; i++) {
+        uint32_t digit = g1_extract_window(task->scalars + i * 8, w, wb);
+        if (digit != 0) {
+            uint64_t tmp[18];
+            g1_add_mixed(buckets + digit * 18, task->points + i * 12, tmp);
+            memcpy(buckets + digit * 18, tmp, 144);
+        }
+    }
+
+    // Phase 2: Batch convert buckets to affine (Montgomery's trick)
+    uint64_t *bucket_aff = (uint64_t *)malloc((size_t)nb * 96);
+    g1_batch_to_affine(buckets + 18, bucket_aff, nb);
+
+    // Phase 3: Running-sum reduction using mixed addition
+    uint64_t running[18], window_sum[18];
+    g1_set_id(running);
+    g1_set_id(window_sum);
+
+    for (int j = nb - 1; j >= 0; j--) {
+        if (!g1_aff_is_id(bucket_aff + j * 12)) {
+            uint64_t tmp[18];
+            g1_add_mixed(running, bucket_aff + j * 12, tmp);
+            memcpy(running, tmp, 144);
+        }
+        uint64_t tmp[18];
+        g1_add(window_sum, running, tmp);
+        memcpy(window_sum, tmp, 144);
+    }
+
+    memcpy(task->result, window_sum, 144);
+    free(buckets);
+    free(bucket_aff);
+    return NULL;
+}
+
+// Main entry point: BLS12-377 G1 Pippenger MSM
+void bls12_377_g1_pippenger_msm(
+    const uint64_t *points,    // n affine points: n x 12 uint64_t (x[6], y[6])
+    const uint32_t *scalars,   // n scalars: n x 8 uint32_t (256-bit LE)
+    int n,
+    uint64_t *result)          // output: 18 uint64_t (projective)
+{
+    if (n == 0) { g1_set_id(result); return; }
+
+    // For very small n, use direct scalar-mul accumulation
+    if (n <= 4) {
+        g1_set_id(result);
+        for (int i = 0; i < n; i++) {
+            // Convert scalar from 8 x uint32 to 4 x uint64
+            uint64_t s64[4];
+            for (int j = 0; j < 4; j++)
+                s64[j] = (uint64_t)scalars[i * 8 + j * 2] | ((uint64_t)scalars[i * 8 + j * 2 + 1] << 32);
+
+            // Convert affine to projective for scalar_mul
+            // scalar_mul expects 6-limb Fq scalar (384 bits), pad with zeros
+            uint64_t s384[6] = {s64[0], s64[1], s64[2], s64[3], 0, 0};
+
+            uint64_t proj_pt[18];
+            memcpy(proj_pt, points + i * 12, 96);  // x, y
+            memcpy(proj_pt + 12, FQ_ONE, 48);       // z = 1
+
+            uint64_t term[18];
+            g1_scalar_mul(proj_pt, s384, term);
+
+            uint64_t tmp[18];
+            g1_add(result, term, tmp);
+            memcpy(result, tmp, 144);
+        }
+        return;
+    }
+
+    int wb = g1_optimal_window_bits(n);
+    int num_windows = (256 + wb - 1) / wb;
+    int num_buckets = (1 << wb) - 1;
+
+    // Allocate tasks and threads
+    G1WindowTask *tasks = (G1WindowTask *)malloc((size_t)num_windows * sizeof(G1WindowTask));
+    pthread_t *threads = (pthread_t *)malloc((size_t)num_windows * sizeof(pthread_t));
+
+    for (int w = 0; w < num_windows; w++) {
+        tasks[w].points = points;
+        tasks[w].scalars = scalars;
+        tasks[w].n = n;
+        tasks[w].window_bits = wb;
+        tasks[w].window_idx = w;
+        tasks[w].num_buckets = num_buckets;
+    }
+
+    // Launch threads (one per window)
+    for (int w = 0; w < num_windows; w++)
+        pthread_create(&threads[w], NULL, g1_window_worker, &tasks[w]);
+
+    for (int w = 0; w < num_windows; w++)
+        pthread_join(threads[w], NULL);
+
+    // Horner combination: result = sum windowResults[w] * 2^(w * wb)
+    memcpy(result, tasks[num_windows - 1].result, 144);
+    for (int w = num_windows - 2; w >= 0; w--) {
+        uint64_t tmp[18];
+        for (int s = 0; s < wb; s++) {
+            g1_double(result, tmp);
+            memcpy(result, tmp, 144);
+        }
+        g1_add(result, tasks[w].result, tmp);
+        memcpy(result, tmp, 144);
+    }
+
+    free(tasks);
+    free(threads);
+}

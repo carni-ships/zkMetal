@@ -266,6 +266,12 @@ public class BLS12377MSM {
             throw MSMError.invalidInput
         }
 
+        // For small n, CPU Pippenger is faster than GPU (avoids command buffer overhead)
+        if n <= 2048 {
+            let msmScalars = scalars.map { Self.reduceModR($0) }
+            return bls12377CpuMSM(points: points, scalars: msmScalars)
+        }
+
         let msmScalars = scalars.map { Self.reduceModR($0) }
         var scalarBits = 253
         var glvN = 0

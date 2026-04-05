@@ -821,6 +821,8 @@ void bls12_377_g1_point_double(const uint64_t p[18], uint64_t r[18]);
 void bls12_377_g1_point_add_mixed(const uint64_t p[18], const uint64_t q_aff[12], uint64_t r[18]);
 void bls12_377_g1_scalar_mul(const uint64_t p[18], const uint64_t scalar[6], uint64_t r[18]);
 void bls12_377_g1_to_affine(const uint64_t p[18], uint64_t aff[12]);
+void bls12_377_g1_pippenger_msm(const uint64_t *points, const uint32_t *scalars,
+                                 int n, uint64_t *result);
 
 // ============================================================
 // Stark252 field (p = 2^251 + 17*2^192 + 1)
