@@ -2258,6 +2258,54 @@ void bgmw_msm(const uint64_t *table, int n, int window_bits,
 }
 
 // ============================================================
+// Exported Fp operations: inv, sqrt
+// ============================================================
+
+void bn254_fp_inv(const uint64_t a[4], uint64_t r[4]) {
+    fp_inv(a, r);
+}
+
+// Fp sqrt via a^((p+1)/4). Returns 1 if sqrt exists, 0 otherwise.
+// BN254 Fp has p ≡ 3 mod 4.
+int bn254_fp_sqrt(const uint64_t a[4], uint64_t r[4]) {
+    // Compute (p+1)/4
+    uint64_t exp[4];
+    for (int i = 0; i < 4; i++) exp[i] = FP_P[i];
+    // p+1
+    uint64_t carry = 0;
+    for (int i = 0; i < 4; i++) {
+        uint64_t sum = exp[i] + (i == 0 ? 1 : 0) + carry;
+        carry = (sum < exp[i]) || (i == 0 && sum == 0) ? 1 : 0;
+        exp[i] = sum;
+    }
+    // >>2  (divide by 4)
+    for (int i = 0; i < 3; i++) {
+        exp[i] = (exp[i] >> 2) | (exp[i+1] << 62);
+    }
+    exp[3] >>= 2;
+
+    // Square-and-multiply
+    memcpy(r, FP_ONE, 32);
+    uint64_t base[4];
+    memcpy(base, a, 32);
+    for (int i = 0; i < 4; i++) {
+        uint64_t word = exp[i];
+        for (int bit = 0; bit < 64; bit++) {
+            if ((word >> bit) & 1) fp_mul(r, base, r);
+            fp_sqr(base, base);
+        }
+    }
+
+    // Verify: r^2 == a?
+    uint64_t check[4];
+    fp_sqr(r, check);
+    for (int i = 0; i < 4; i++) {
+        if (check[i] != a[i]) return 0;
+    }
+    return 1;
+}
+
+// ============================================================
 // IPA fused round: compute L, R, fold a, b, G in one C call.
 // Eliminates Swift array copies, repeated C call overhead, and
 // thread spawning per operation.

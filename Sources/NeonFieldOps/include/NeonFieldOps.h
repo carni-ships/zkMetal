@@ -651,6 +651,17 @@ void bn254_fr_sqr(const uint64_t a[4], uint64_t r[4]);
 void bn254_fp_sqr(const uint64_t a[4], uint64_t r[4]);
 
 // ============================================================
+// BN254 Fp inverse and square root
+// ============================================================
+
+/// Fp inverse via Fermat: a^(p-2) mod p. CIOS Montgomery.
+void bn254_fp_inv(const uint64_t a[4], uint64_t r[4]);
+
+/// Fp sqrt via a^((p+1)/4). Returns 1 if sqrt exists, 0 otherwise.
+/// BN254 Fp has p ≡ 3 mod 4.
+int  bn254_fp_sqrt(const uint64_t a[4], uint64_t r[4]);
+
+// ============================================================
 // BN254 Fr fused pointwise ops (Groth16 computeH)
 // ============================================================
 

@@ -476,16 +476,25 @@ static int frob_coeffs_initialized = 0;
 static uint64_t FROB_FP6_C1_1[12];  // gamma_{1,1} = (1+u)^((p-1)/3)
 static uint64_t FROB_FP6_C2_1[12];  // gamma_{2,1} = gamma_{1,1}^2
 static uint64_t FROB_FP12_C1_1[12]; // (1+u)^((p-1)/6)
+// Precomputed combined: gamma6 * gamma12 for c1 part of frobenius^1
+static uint64_t FROB1_C1_C1[12];    // FROB_FP6_C1_1 * FROB_FP12_C1_1
+static uint64_t FROB1_C2_C1[12];    // FROB_FP6_C2_1 * FROB_FP12_C1_1
 
 // Frobenius^2 coefficients (in Fp, stored as Fp2 with c1=0)
 static uint64_t FROB_FP6_C1_2[12];
 static uint64_t FROB_FP6_C2_2[12];
 static uint64_t FROB_FP12_C1_2[12];
+// Precomputed combined for frobenius^2 (in Fp)
+static uint64_t FROB2_C1_C1[6];     // FROB_FP6_C1_2[Fp] * FROB_FP12_C1_2[Fp]
+static uint64_t FROB2_C2_C1[6];     // FROB_FP6_C2_2[Fp] * FROB_FP12_C1_2[Fp]
 
 // Frobenius^3 coefficients (in Fp2)
 static uint64_t FROB_FP6_C1_3[12];
 static uint64_t FROB_FP6_C2_3[12];
 static uint64_t FROB_FP12_C1_3[12];
+// Precomputed combined for frobenius^3
+static uint64_t FROB3_C1_C1[12];    // FROB_FP6_C1_3 * FROB_FP12_C1_3
+static uint64_t FROB3_C2_C1[12];    // FROB_FP6_C2_3 * FROB_FP12_C1_3
 
 // Helper: fp2_pow for bootstrapping Frobenius constants
 static void fp2_pow(const uint64_t base[FP2], const uint64_t exp[6], uint64_t result[FP2]) {
@@ -572,6 +581,18 @@ static void init_frobenius_coeffs(void) {
     fp2_mul(FROB_FP12_C1_1, hp, t);
     fp2_mul(t, FROB_FP12_C1_1, FROB_FP12_C1_3);
 
+    // Precompute combined coefficients for frobenius^1
+    fp2_mul(FROB_FP6_C1_1, FROB_FP12_C1_1, FROB1_C1_C1);
+    fp2_mul(FROB_FP6_C2_1, FROB_FP12_C1_1, FROB1_C2_C1);
+
+    // Precompute combined coefficients for frobenius^2 (all in Fp)
+    fp_mul(FROB_FP6_C1_2, FROB_FP12_C1_2, FROB2_C1_C1);
+    fp_mul(FROB_FP6_C2_2, FROB_FP12_C1_2, FROB2_C2_C1);
+
+    // Precompute combined coefficients for frobenius^3
+    fp2_mul(FROB_FP6_C1_3, FROB_FP12_C1_3, FROB3_C1_C1);
+    fp2_mul(FROB_FP6_C2_3, FROB_FP12_C1_3, FROB3_C2_C1);
+
     frob_coeffs_initialized = 1;
 }
 
@@ -580,6 +601,7 @@ static void init_frobenius_coeffs(void) {
 // ============================================================
 
 // Frobenius^1 on Fp12
+// Uses precomputed combined coefficients to avoid chained fp2_mul in c1 part
 static void fp12_frobenius(const uint64_t a[FP12], uint64_t r[FP12]) {
     init_frobenius_coeffs();
     // c0 part: frob(c0 + c1*v + c2*v^2) = conj(c0) + conj(c1)*gamma_{1,1}*v + conj(c2)*gamma_{2,1}*v^2
@@ -590,19 +612,17 @@ static void fp12_frobenius(const uint64_t a[FP12], uint64_t r[FP12]) {
     fp2_conj(a+24, t);
     fp2_mul(t, FROB_FP6_C2_1, r+24);       // r.c0.c2 = conj(a.c0.c2) * gamma_{2,1}
 
-    // c1 part: frob(c1_fp6) * gamma_w
-    uint64_t fc[12];
-    fp2_conj(a+36, fc);
-    fp2_mul(fc, FROB_FP12_C1_1, r+36);     // r.c1.c0
-    fp2_conj(a+48, fc);
-    fp2_mul(fc, FROB_FP6_C1_1, t);
-    fp2_mul(t, FROB_FP12_C1_1, r+48);      // r.c1.c1
-    fp2_conj(a+60, fc);
-    fp2_mul(fc, FROB_FP6_C2_1, t);
-    fp2_mul(t, FROB_FP12_C1_1, r+60);      // r.c1.c2
+    // c1 part: frob(c1_fp6) * gamma_w, using precomputed combined coefficients
+    fp2_conj(a+36, t);
+    fp2_mul(t, FROB_FP12_C1_1, r+36);      // r.c1.c0 = conj(a.c1.c0) * gamma12_1
+    fp2_conj(a+48, t);
+    fp2_mul(t, FROB1_C1_C1, r+48);         // r.c1.c1 = conj(a.c1.c1) * (gamma6_c1 * gamma12_1)
+    fp2_conj(a+60, t);
+    fp2_mul(t, FROB1_C2_C1, r+60);         // r.c1.c2 = conj(a.c1.c2) * (gamma6_c2 * gamma12_1)
 }
 
 // Frobenius^2 on Fp12 (coefficients are in Fp)
+// Uses precomputed combined coefficients to avoid runtime fp_mul
 static void fp12_frobenius2(const uint64_t a[FP12], uint64_t r[FP12]) {
     init_frobenius_coeffs();
     // Frobenius^2 on Fp2 = identity, so no conjugation needed
@@ -610,33 +630,30 @@ static void fp12_frobenius2(const uint64_t a[FP12], uint64_t r[FP12]) {
     fp2_mul_fp(a+12, FROB_FP6_C1_2, r+12); // c0.c1 * gamma6_c1
     fp2_mul_fp(a+24, FROB_FP6_C2_2, r+24); // c0.c2 * gamma6_c2
 
-    // c1: each component scaled by gamma12 (and respective gamma6)
+    // c1: each component scaled by precomputed combined coefficients
     fp2_mul_fp(a+36, FROB_FP12_C1_2, r+36);
-    uint64_t combined[6];
-    fp_mul(FROB_FP6_C1_2, FROB_FP12_C1_2, combined);
-    fp2_mul_fp(a+48, combined, r+48);
-    fp_mul(FROB_FP6_C2_2, FROB_FP12_C1_2, combined);
-    fp2_mul_fp(a+60, combined, r+60);
+    fp2_mul_fp(a+48, FROB2_C1_C1, r+48);
+    fp2_mul_fp(a+60, FROB2_C2_C1, r+60);
 }
 
 // Frobenius^3 on Fp12
+// Uses precomputed combined coefficients to avoid chained fp2_mul in c1 part
 static void fp12_frobenius3(const uint64_t a[FP12], uint64_t r[FP12]) {
     init_frobenius_coeffs();
-    uint64_t t[12], fc[12];
+    uint64_t t[12];
     fp2_conj(a, r);
     fp2_conj(a+12, t);
     fp2_mul(t, FROB_FP6_C1_3, r+12);
     fp2_conj(a+24, t);
     fp2_mul(t, FROB_FP6_C2_3, r+24);
 
-    fp2_conj(a+36, fc);
-    fp2_mul(fc, FROB_FP12_C1_3, r+36);
-    fp2_conj(a+48, fc);
-    fp2_mul(fc, FROB_FP6_C1_3, t);
-    fp2_mul(t, FROB_FP12_C1_3, r+48);
-    fp2_conj(a+60, fc);
-    fp2_mul(fc, FROB_FP6_C2_3, t);
-    fp2_mul(t, FROB_FP12_C1_3, r+60);
+    // c1 part: using precomputed combined coefficients
+    fp2_conj(a+36, t);
+    fp2_mul(t, FROB_FP12_C1_3, r+36);
+    fp2_conj(a+48, t);
+    fp2_mul(t, FROB3_C1_C1, r+48);         // precomputed gamma6_c1_3 * gamma12_3
+    fp2_conj(a+60, t);
+    fp2_mul(t, FROB3_C2_C1, r+60);         // precomputed gamma6_c2_3 * gamma12_3
 }
 
 // ============================================================
@@ -881,65 +898,60 @@ static void miller_loop(const uint64_t p_aff[12], const uint64_t q_aff[24], uint
 
 // ============================================================
 // Hard part of final exponentiation
-// Hayashida-Hayasaka-Teruya (eprint 2020/875)
+// Efficient 3-exp-by-x algorithm (Bowe, adapted from eprint 2020/875)
+// Uses only 3 fp12_pow_by_x instead of 4 + 1 fp12_pow_by_x_half
 // ============================================================
 
 static void hard_part_exp(const uint64_t f[FP12], uint64_t r[FP12]) {
-    uint64_t t0[72], t1[72], t2[72], tmp[72];
+    uint64_t y0[72], y1[72], y2[72], y3[72], y4[72], y5[72], y6[72], tmp[72];
 
-    // t0 = f^2 (cyclotomic squaring)
-    fp12_cyc_sqr(f, t0);
+    // y0 = f^x
+    fp12_pow_by_x(f, y0);
 
-    // t1 = t0^(x/2) = (f^2)^(|x|/2) then conjugate
-    fp12_pow_by_x_half(t0, t1);
+    // y1 = y0^x = f^(x^2)
+    fp12_pow_by_x(y0, y1);
 
-    // t2 = f^(-1) = conjugate(f) [cyclotomic subgroup]
-    fp12_conj(f, t2);
+    // y2 = y1^x = f^(x^3)
+    fp12_pow_by_x(y1, y2);
 
-    // t1 = t1 * t2 = f^(x-1)
-    fp12_mul(t1, t2, tmp); fp12_copy(t1, tmp);
+    // y3 = conj(f) = f^(-1) in cyclotomic subgroup
+    fp12_conj(f, y3);
 
-    // t2 = t1^x = f^(x(x-1))
-    fp12_pow_by_x(t1, t2);
+    // y1 = y1 * y3 = f^(x^2 - 1)
+    fp12_mul(y1, y3, tmp); fp12_copy(y1, tmp);
 
-    // t1 = t1^(-1) = f^(1-x)
-    fp12_conj(t1, tmp); fp12_copy(t1, tmp);
+    // y1 = frob(y1) = f^((x^2-1)*p)
+    fp12_frobenius(y1, tmp); fp12_copy(y1, tmp);
 
-    // t1 = t1 * t2 = f^(x^2-2x+1)
-    fp12_mul(t1, t2, tmp); fp12_copy(t1, tmp);
+    // y4 = y0 * y3 = f^(x - 1)
+    fp12_mul(y0, y3, y4);
 
-    // t2 = t1^x = f^(x^3-2x^2+x)
-    fp12_pow_by_x(t1, t2);
+    // y4 = frob2(y4) = f^((x-1)*p^2)
+    fp12_frobenius2(y4, tmp); fp12_copy(y4, tmp);
 
-    // t1 = frob(t1) = f^((x-1)^2 * p)
-    fp12_frobenius(t1, tmp); fp12_copy(t1, tmp);
+    // y5 = conj(y0) = f^(-x)
+    fp12_conj(y0, y5);
 
-    // t1 = t1 * t2
-    fp12_mul(t1, t2, tmp); fp12_copy(t1, tmp);
+    // y6 = y2 * y5 = f^(x^3 - x)
+    fp12_mul(y2, y5, y6);
 
-    // result = f * t0 = f * f^2 = f^3
-    fp12_mul(f, t0, r);
+    // y6 = frob3(y6) = f^((x^3-x)*p^3)
+    fp12_frobenius3(y6, tmp); fp12_copy(y6, tmp);
 
-    // t0 = t1^x
-    fp12_pow_by_x(t1, t0);
+    // y3 = cyc_sqr(f) = f^2
+    fp12_cyc_sqr(f, y3);
 
-    // t2 = t0^x
-    fp12_pow_by_x(t0, t2);
+    // y3 = y3 * f = f^3
+    fp12_mul(y3, f, tmp); fp12_copy(y3, tmp);
 
-    // t0 = frob2(t1)
-    fp12_frobenius2(t1, t0);
+    // y3 = y3 * y2 = f^(3 + x^3)
+    fp12_mul(y3, y2, tmp); fp12_copy(y3, tmp);
 
-    // t1 = t1^(-1)
-    fp12_conj(t1, tmp); fp12_copy(t1, tmp);
-
-    // t1 = t1 * t2
-    fp12_mul(t1, t2, tmp); fp12_copy(t1, tmp);
-
-    // t1 = t1 * t0
-    fp12_mul(t1, t0, tmp); fp12_copy(t1, tmp);
-
-    // result = result * t1
-    fp12_mul(r, t1, tmp); fp12_copy(r, tmp);
+    // Combine all Frobenius terms
+    // result = y1 * y4 * y6 * y3
+    fp12_mul(y1, y4, tmp); fp12_copy(y1, tmp);
+    fp12_mul(y1, y6, tmp); fp12_copy(y1, tmp);
+    fp12_mul(y1, y3, r);
 }
 
 // ============================================================

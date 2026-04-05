@@ -260,25 +260,29 @@ public func fpNeg(_ a: Fp) -> Fp {
     return Fp.from64(r)
 }
 
-// Field inverse via Fermat's little theorem: a^(p-2) mod p
+// Field inverse via Fermat's little theorem: a^(p-2) mod p — C accelerated
 public func fpInverse(_ a: Fp) -> Fp {
-    var result = Fp.one
-    var base = a
-    var exp = Fp.P.map { $0 }
-    if exp[0] >= 2 { exp[0] -= 2 }
-    else { exp[0] = exp[0] &- 2; exp[1] -= 1 }
-
-    for i in 0..<4 {
-        var word = exp[i]
-        for _ in 0..<64 {
-            if word & 1 == 1 {
-                result = fpMul(result, base)
-            }
-            base = fpSqr(base)
-            word >>= 1
+    let al = a.to64()
+    var r = [UInt64](repeating: 0, count: 4)
+    al.withUnsafeBufferPointer { aPtr in
+        r.withUnsafeMutableBufferPointer { rPtr in
+            bn254_fp_inv(aPtr.baseAddress!, rPtr.baseAddress!)
         }
     }
-    return result
+    return Fp.from64(r)
+}
+
+/// Fp square root via a^((p+1)/4) — C accelerated.
+/// BN254 Fp has p ≡ 3 mod 4. Returns nil if a is not a quadratic residue.
+public func fpSqrt(_ a: Fp) -> Fp? {
+    let al = a.to64()
+    var r = [UInt64](repeating: 0, count: 4)
+    let ok = al.withUnsafeBufferPointer { aPtr -> Int32 in
+        r.withUnsafeMutableBufferPointer { rPtr in
+            bn254_fp_sqrt(aPtr.baseAddress!, rPtr.baseAddress!)
+        }
+    }
+    return ok != 0 ? Fp.from64(r) : nil
 }
 
 /// Parse a hex string (with or without "0x" prefix) into an Fp in Montgomery form.

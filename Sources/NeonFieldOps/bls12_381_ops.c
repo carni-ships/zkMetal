@@ -63,7 +63,96 @@ static inline void fr_mul(const uint64_t a[4], const uint64_t b[4], uint64_t r[4
 }
 
 static inline void fr_sqr(const uint64_t a[4], uint64_t r[4]) {
-    fr_mul(a, a, r);
+    // Optimized squaring: upper-triangle doubled + diagonal (10 muls vs 16)
+    uint128_t w;
+    uint64_t c;
+    uint64_t s0, s1, s2, s3, s4, s5, s6, s7;
+
+    // Upper triangle: a[i]*a[j] for j>i (6 muls)
+    w = (uint128_t)a[0] * a[1];
+    s1 = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)a[0] * a[2] + c;
+    s2 = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)a[0] * a[3] + c;
+    s3 = (uint64_t)w; s4 = (uint64_t)(w >> 64);
+    w = (uint128_t)a[1] * a[2] + s3;
+    s3 = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)a[1] * a[3] + s4 + c;
+    s4 = (uint64_t)w; s5 = (uint64_t)(w >> 64);
+    w = (uint128_t)a[2] * a[3] + s5;
+    s5 = (uint64_t)w; s6 = (uint64_t)(w >> 64);
+
+    // Double the cross terms
+    s7 = s6 >> 63;
+    s6 = (s6 << 1) | (s5 >> 63);
+    s5 = (s5 << 1) | (s4 >> 63);
+    s4 = (s4 << 1) | (s3 >> 63);
+    s3 = (s3 << 1) | (s2 >> 63);
+    s2 = (s2 << 1) | (s1 >> 63);
+    s1 = s1 << 1;
+
+    // Add diagonal terms (4 muls)
+    w = (uint128_t)a[0] * a[0];
+    s0 = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)s1 + c;
+    s1 = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)a[1] * a[1] + s2 + c;
+    s2 = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)s3 + c;
+    s3 = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)a[2] * a[2] + s4 + c;
+    s4 = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)s5 + c;
+    s5 = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)a[3] * a[3] + s6 + c;
+    s6 = (uint64_t)w; c = (uint64_t)(w >> 64);
+    s7 += c;
+
+    // Montgomery reduction (4 iterations)
+    {
+        uint64_t m = s0 * FR_INV;
+        w = (uint128_t)m * FR_P[0] + s0; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FR_P[1] + s1 + c; s0 = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FR_P[2] + s2 + c; s1 = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FR_P[3] + s3 + c; s2 = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)s4 + c; s3 = (uint64_t)w; c = (uint64_t)(w >> 64);
+        s4 = s5 + c; s5 = s6; s6 = s7; s7 = 0;
+    }
+    {
+        uint64_t m = s0 * FR_INV;
+        w = (uint128_t)m * FR_P[0] + s0; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FR_P[1] + s1 + c; s0 = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FR_P[2] + s2 + c; s1 = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FR_P[3] + s3 + c; s2 = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)s4 + c; s3 = (uint64_t)w; c = (uint64_t)(w >> 64);
+        s4 = s5 + c; s5 = s6; s6 = 0;
+    }
+    {
+        uint64_t m = s0 * FR_INV;
+        w = (uint128_t)m * FR_P[0] + s0; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FR_P[1] + s1 + c; s0 = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FR_P[2] + s2 + c; s1 = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FR_P[3] + s3 + c; s2 = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)s4 + c; s3 = (uint64_t)w; c = (uint64_t)(w >> 64);
+        s4 = s5 + c; s5 = 0;
+    }
+    {
+        uint64_t m = s0 * FR_INV;
+        w = (uint128_t)m * FR_P[0] + s0; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FR_P[1] + s1 + c; s0 = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FR_P[2] + s2 + c; s1 = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FR_P[3] + s3 + c; s2 = (uint64_t)w; c = (uint64_t)(w >> 64);
+        s3 = s4 + c;
+    }
+
+    // Final conditional subtraction
+    uint64_t borrow=0; uint64_t r0,r1,r2,r3; uint128_t d;
+    d=(uint128_t)s0-FR_P[0]-borrow; r0=(uint64_t)d; borrow=(d>>127)&1;
+    d=(uint128_t)s1-FR_P[1]-borrow; r1=(uint64_t)d; borrow=(d>>127)&1;
+    d=(uint128_t)s2-FR_P[2]-borrow; r2=(uint64_t)d; borrow=(d>>127)&1;
+    d=(uint128_t)s3-FR_P[3]-borrow; r3=(uint64_t)d; borrow=(d>>127)&1;
+    if(!borrow){r[0]=r0;r[1]=r1;r[2]=r2;r[3]=r3;}
+    else{r[0]=s0;r[1]=s1;r[2]=s2;r[3]=s3;}
 }
 
 static inline void fr_add(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]) {
@@ -184,7 +273,123 @@ static inline void fp_mul(const uint64_t a[6], const uint64_t b[6], uint64_t r[6
 }
 
 static inline void fp_sqr(const uint64_t a[6], uint64_t r[6]) {
-    fp_mul(a, a, r);
+    // Optimized squaring: upper-triangle doubled + diagonal (21 muls vs 36)
+    uint128_t w;
+    uint64_t c;
+    uint64_t s[12];
+
+    // Upper triangle: a[i]*a[j] for j>i (15 cross products)
+    // Row 0: a[0]*a[1..5]
+    w = (uint128_t)a[0] * a[1];
+    s[1] = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)a[0] * a[2] + c;
+    s[2] = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)a[0] * a[3] + c;
+    s[3] = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)a[0] * a[4] + c;
+    s[4] = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)a[0] * a[5] + c;
+    s[5] = (uint64_t)w; s[6] = (uint64_t)(w >> 64);
+
+    // Row 1: a[1]*a[2..5]
+    w = (uint128_t)a[1] * a[2] + s[3];
+    s[3] = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)a[1] * a[3] + s[4] + c;
+    s[4] = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)a[1] * a[4] + s[5] + c;
+    s[5] = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)a[1] * a[5] + s[6] + c;
+    s[6] = (uint64_t)w; s[7] = (uint64_t)(w >> 64);
+
+    // Row 2: a[2]*a[3..5]
+    w = (uint128_t)a[2] * a[3] + s[5];
+    s[5] = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)a[2] * a[4] + s[6] + c;
+    s[6] = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)a[2] * a[5] + s[7] + c;
+    s[7] = (uint64_t)w; s[8] = (uint64_t)(w >> 64);
+
+    // Row 3: a[3]*a[4..5]
+    w = (uint128_t)a[3] * a[4] + s[7];
+    s[7] = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)a[3] * a[5] + s[8] + c;
+    s[8] = (uint64_t)w; s[9] = (uint64_t)(w >> 64);
+
+    // Row 4: a[4]*a[5]
+    w = (uint128_t)a[4] * a[5] + s[9];
+    s[9] = (uint64_t)w; s[10] = (uint64_t)(w >> 64);
+
+    // Double the cross terms
+    s[11] = s[10] >> 63;
+    s[10] = (s[10] << 1) | (s[9] >> 63);
+    s[9]  = (s[9]  << 1) | (s[8] >> 63);
+    s[8]  = (s[8]  << 1) | (s[7] >> 63);
+    s[7]  = (s[7]  << 1) | (s[6] >> 63);
+    s[6]  = (s[6]  << 1) | (s[5] >> 63);
+    s[5]  = (s[5]  << 1) | (s[4] >> 63);
+    s[4]  = (s[4]  << 1) | (s[3] >> 63);
+    s[3]  = (s[3]  << 1) | (s[2] >> 63);
+    s[2]  = (s[2]  << 1) | (s[1] >> 63);
+    s[1]  = s[1] << 1;
+
+    // Add diagonal terms (6 muls)
+    w = (uint128_t)a[0] * a[0];
+    s[0] = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)s[1] + c;
+    s[1] = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)a[1] * a[1] + s[2] + c;
+    s[2] = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)s[3] + c;
+    s[3] = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)a[2] * a[2] + s[4] + c;
+    s[4] = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)s[5] + c;
+    s[5] = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)a[3] * a[3] + s[6] + c;
+    s[6] = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)s[7] + c;
+    s[7] = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)a[4] * a[4] + s[8] + c;
+    s[8] = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)s[9] + c;
+    s[9] = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)a[5] * a[5] + s[10] + c;
+    s[10] = (uint64_t)w; c = (uint64_t)(w >> 64);
+    s[11] += c;
+
+    // Montgomery reduction (6 iterations)
+    for (int i = 0; i < 6; i++) {
+        uint64_t m = s[0] * FP381_INV;
+        w = (uint128_t)m * FP381_P[0] + s[0]; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FP381_P[1] + s[1] + c; s[0] = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FP381_P[2] + s[2] + c; s[1] = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FP381_P[3] + s[3] + c; s[2] = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FP381_P[4] + s[4] + c; s[3] = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FP381_P[5] + s[5] + c; s[4] = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)s[6] + c; s[5] = (uint64_t)w; c = (uint64_t)(w >> 64);
+        // Shift remaining limbs down
+        for (int j = 6; j < 11 - i; j++) {
+            w = (uint128_t)s[j+1] + c; s[j] = (uint64_t)w; c = (uint64_t)(w >> 64);
+        }
+        s[11 - i] = 0;
+    }
+
+    // Final conditional subtraction
+    uint64_t borrow = 0;
+    uint64_t tmp[6];
+    uint128_t d;
+    d = (uint128_t)s[0] - FP381_P[0]; tmp[0] = (uint64_t)d; borrow = (d >> 127) & 1;
+    d = (uint128_t)s[1] - FP381_P[1] - borrow; tmp[1] = (uint64_t)d; borrow = (d >> 127) & 1;
+    d = (uint128_t)s[2] - FP381_P[2] - borrow; tmp[2] = (uint64_t)d; borrow = (d >> 127) & 1;
+    d = (uint128_t)s[3] - FP381_P[3] - borrow; tmp[3] = (uint64_t)d; borrow = (d >> 127) & 1;
+    d = (uint128_t)s[4] - FP381_P[4] - borrow; tmp[4] = (uint64_t)d; borrow = (d >> 127) & 1;
+    d = (uint128_t)s[5] - FP381_P[5] - borrow; tmp[5] = (uint64_t)d; borrow = (d >> 127) & 1;
+
+    if (!borrow) {
+        memcpy(r, tmp, 48);
+    } else {
+        memcpy(r, s, 48);
+    }
 }
 
 static inline void fp_add(const uint64_t a[6], const uint64_t b[6], uint64_t r[6]) {
