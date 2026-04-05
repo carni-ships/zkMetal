@@ -256,6 +256,171 @@ func runPlonkTests() {
             expect(false, "Verification key error: \(error)")
         }
 
+        // ========== Test 9: Full pipeline — x^2 + x + 5 = 35, x=5 ==========
+        // Exercises: circuit construction -> constraint eval -> KZG commit -> prove -> verify
+        do {
+            let builder = PlonkCircuitBuilder()
+
+            // Allocate input variable x
+            let x = builder.addInput()         // var 0
+
+            // Gate 1: x_sq = x * x
+            let x_sq = builder.mul(x, x)       // var 1: x^2
+
+            // Gate 2: sum1 = x_sq + x
+            let sum1 = builder.add(x_sq, x)    // var 2: x^2 + x
+
+            // Gate 3: five = constant(5)
+            let five = builder.constant(frFromInt(5))  // var 3 (output), var 4 (dummy)
+
+            // Gate 4: result = sum1 + five  =>  x^2 + x + 5
+            let result = builder.add(sum1, five) // var 5: x^2 + x + 5
+
+            // Gate 5: thirty_five = constant(35)
+            let thirty_five = builder.constant(frFromInt(35)) // var 6 (output), var 7 (dummy)
+
+            // Copy constraint: result == thirty_five
+            builder.assertEqual(result, thirty_five)
+
+            // Mark x as public input
+            builder.addPublicInput(wireIndex: x)
+
+            let circuit = builder.build().padded()
+
+            let setup = try preprocessor.setup(circuit: circuit, srsSecret: srsSecret)
+            let prover = PlonkProver(setup: setup, kzg: kzg, ntt: ntt)
+            let verifier = PlonkVerifier(setup: setup, kzg: kzg)
+
+            // Witness: x=5, x^2=25, x^2+x=30, 5=5, x^2+x+5=35, 35=35
+            let numVars = circuit.wireAssignments.flatMap { $0 }.max()! + 1
+            var witness = [Fr](repeating: Fr.zero, count: numVars)
+            witness[x] = frFromInt(5)
+            witness[x_sq] = frFromInt(25)
+            witness[sum1] = frFromInt(30)
+            witness[five] = frFromInt(5)
+            witness[result] = frFromInt(35)
+            witness[thirty_five] = frFromInt(35)
+
+            let proof = try prover.prove(witness: witness, circuit: circuit)
+
+            // Verify public input is x=5
+            expect(proof.publicInputs.count == 1, "Full pipeline: public input count")
+            let pubX = frToInt(proof.publicInputs[0])
+            expect(pubX[0] == 5, "Full pipeline: public input x=5")
+
+            let valid = verifier.verify(proof: proof)
+            expect(valid, "Full pipeline x^2+x+5=35: prove then verify")
+        } catch {
+            expect(false, "Full pipeline error: \(error)")
+        }
+
+        // ========== Test 10: Tampered proof rejected ==========
+        // Generate a valid proof, then tamper with a commitment to ensure rejection
+        do {
+            let builder = PlonkCircuitBuilder()
+            let a = builder.addInput()
+            let b = builder.addInput()
+            let c = builder.mul(a, b)
+
+            let circuit = builder.build().padded()
+
+            let setup = try preprocessor.setup(circuit: circuit, srsSecret: srsSecret)
+            let prover = PlonkProver(setup: setup, kzg: kzg, ntt: ntt)
+            let verifier = PlonkVerifier(setup: setup, kzg: kzg)
+
+            // Valid witness: a=4, b=9, c=36
+            let numVars = circuit.wireAssignments.flatMap { $0 }.max()! + 1
+            var witness = [Fr](repeating: Fr.zero, count: numVars)
+            witness[a] = frFromInt(4)
+            witness[b] = frFromInt(9)
+            witness[c] = frFromInt(36)
+
+            let proof = try prover.prove(witness: witness, circuit: circuit)
+
+            // Sanity: original proof verifies
+            let valid = verifier.verify(proof: proof)
+            expect(valid, "Tampered proof baseline: valid proof passes")
+
+            // Tamper: replace aCommit with a different point (scalar mul of generator)
+            let tamperedACommit = cPointScalarMul(proof.bCommit, frFromInt(42))
+            let tamperedProof = PlonkProof(
+                aCommit: tamperedACommit,
+                bCommit: proof.bCommit,
+                cCommit: proof.cCommit,
+                zCommit: proof.zCommit,
+                tLoCommit: proof.tLoCommit,
+                tMidCommit: proof.tMidCommit,
+                tHiCommit: proof.tHiCommit,
+                tExtraCommits: proof.tExtraCommits,
+                aEval: proof.aEval,
+                bEval: proof.bEval,
+                cEval: proof.cEval,
+                sigma1Eval: proof.sigma1Eval,
+                sigma2Eval: proof.sigma2Eval,
+                zOmegaEval: proof.zOmegaEval,
+                openingProof: proof.openingProof,
+                shiftedOpeningProof: proof.shiftedOpeningProof,
+                publicInputs: proof.publicInputs
+            )
+            let tamperedValid = verifier.verify(proof: tamperedProof)
+            expect(!tamperedValid, "Tampered proof (modified aCommit) rejected")
+
+            // Tamper: modify wire evaluation aEval
+            let tamperedProof2 = PlonkProof(
+                aCommit: proof.aCommit,
+                bCommit: proof.bCommit,
+                cCommit: proof.cCommit,
+                zCommit: proof.zCommit,
+                tLoCommit: proof.tLoCommit,
+                tMidCommit: proof.tMidCommit,
+                tHiCommit: proof.tHiCommit,
+                tExtraCommits: proof.tExtraCommits,
+                aEval: frAdd(proof.aEval, Fr.one),  // tamper: a(zeta) += 1
+                bEval: proof.bEval,
+                cEval: proof.cEval,
+                sigma1Eval: proof.sigma1Eval,
+                sigma2Eval: proof.sigma2Eval,
+                zOmegaEval: proof.zOmegaEval,
+                openingProof: proof.openingProof,
+                shiftedOpeningProof: proof.shiftedOpeningProof,
+                publicInputs: proof.publicInputs
+            )
+            let tamperedValid2 = verifier.verify(proof: tamperedProof2)
+            expect(!tamperedValid2, "Tampered proof (modified aEval) rejected")
+        } catch {
+            expect(false, "Tampered proof error: \(error)")
+        }
+
+        // ========== Test 11: Wrong witness — gate constraint violation ==========
+        // Mul gate a*b=c with inconsistent witness: a=4, b=9, c=99 (should be 36)
+        // This violates the gate constraint directly (not just copy constraints).
+        do {
+            let builder = PlonkCircuitBuilder()
+            let a = builder.addInput()
+            let b = builder.addInput()
+            let c = builder.mul(a, b)
+
+            let circuit = builder.build().padded()
+
+            let setup = try preprocessor.setup(circuit: circuit, srsSecret: srsSecret)
+            let prover = PlonkProver(setup: setup, kzg: kzg, ntt: ntt)
+            let verifier = PlonkVerifier(setup: setup, kzg: kzg)
+
+            // Bad witness: a=4, b=9, c=99 (should be 36)
+            let numVars = circuit.wireAssignments.flatMap { $0 }.max()! + 1
+            var witness = [Fr](repeating: Fr.zero, count: numVars)
+            witness[a] = frFromInt(4)
+            witness[b] = frFromInt(9)
+            witness[c] = frFromInt(99)
+
+            let proof = try prover.prove(witness: witness, circuit: circuit)
+            let valid = verifier.verify(proof: proof)
+            expect(!valid, "Wrong witness (gate violation a*b != c) rejected")
+        } catch {
+            // Throwing during prove with bad witness is also acceptable
+            expect(true, "Wrong witness gate violation rejected (threw)")
+        }
+
     } catch {
         expect(false, "Plonk setup failed: \(error)")
     }
