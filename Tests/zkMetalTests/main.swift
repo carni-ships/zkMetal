@@ -24,6 +24,7 @@ runProtogalaxyTests()
 runIVCTests()
 runCircomParserTests()
 runPlonky2RecursiveTests()
+runSpartanTests()
 
 let elapsed = CFAbsoluteTimeGetCurrent() - t0
 print(String(format: "\nCompleted in %.1fs", elapsed))

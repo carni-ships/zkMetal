@@ -33,6 +33,17 @@ public struct SpartanProof {
     public let sc2Rounds: [(Fr, Fr, Fr)]
     public let zEval: Fr
     public let openingProof: BasefoldProof
+
+    public init(witnessCommitment: Fr, sc1Rounds: [(Fr, Fr, Fr, Fr)],
+                azRx: Fr, bzRx: Fr, czRx: Fr,
+                sc2Rounds: [(Fr, Fr, Fr)], zEval: Fr, openingProof: BasefoldProof) {
+        self.witnessCommitment = witnessCommitment
+        self.sc1Rounds = sc1Rounds
+        self.azRx = azRx; self.bzRx = bzRx; self.czRx = czRx
+        self.sc2Rounds = sc2Rounds
+        self.zEval = zEval
+        self.openingProof = openingProof
+    }
 }
 
 // MARK: - Packed sparse entries for C interop
@@ -469,7 +480,7 @@ public class SpartanEngine {
 // MARK: - Spartan Helpers (prefixed to avoid conflicts)
 
 /// Evaluate multilinear extension at a point via successive halving.
-func spartanEvalML(evals: [Fr], pt: [Fr]) -> Fr {
+public func spartanEvalML(evals: [Fr], pt: [Fr]) -> Fr {
     var c = evals
     for a in pt {
         let h = c.count / 2
@@ -483,7 +494,7 @@ func spartanEvalML(evals: [Fr], pt: [Fr]) -> Fr {
 }
 
 /// Evaluate eq(a,b) = prod_i (a_i*b_i + (1-a_i)*(1-b_i))
-func spartanEvalEq(_ a: [Fr], _ b: [Fr]) -> Fr {
+public func spartanEvalEq(_ a: [Fr], _ b: [Fr]) -> Fr {
     precondition(a.count == b.count)
     var result = Fr.one
     for i in 0..<a.count {
@@ -495,14 +506,14 @@ func spartanEvalEq(_ a: [Fr], _ b: [Fr]) -> Fr {
 }
 
 /// Fr equality check
-func spartanFrEqual(_ a: Fr, _ b: Fr) -> Bool {
+public func spartanFrEqual(_ a: Fr, _ b: Fr) -> Bool {
     let diff = frSub(a, b)
     let limbs = frToInt(diff)
     return limbs[0] == 0 && limbs[1] == 0 && limbs[2] == 0 && limbs[3] == 0
 }
 
 /// Interpolate degree-2 polynomial through (0,s0),(1,s1),(2,s2) at t.
-func spartanInterpQuadratic(s0: Fr, s1: Fr, s2: Fr, t: Fr) -> Fr {
+public func spartanInterpQuadratic(s0: Fr, s1: Fr, s2: Fr, t: Fr) -> Fr {
     let one = Fr.one, two = frAdd(one, one), inv2 = frInverse(two)
     let tm1 = frSub(t, one), tm2 = frSub(t, two)
     let l0 = frMul(inv2, frMul(tm1, tm2))
@@ -512,7 +523,7 @@ func spartanInterpQuadratic(s0: Fr, s1: Fr, s2: Fr, t: Fr) -> Fr {
 }
 
 /// Interpolate degree-3 polynomial through (0,s0),(1,s1),(2,s2),(3,s3) at t.
-func spartanInterpCubic(s0: Fr, s1: Fr, s2: Fr, s3: Fr, t: Fr) -> Fr {
+public func spartanInterpCubic(s0: Fr, s1: Fr, s2: Fr, s3: Fr, t: Fr) -> Fr {
     let one = Fr.one, two = frAdd(one, one), three = frAdd(two, one)
     let six = frMul(two, three)
     let inv6 = frInverse(six), inv2 = frInverse(two)
