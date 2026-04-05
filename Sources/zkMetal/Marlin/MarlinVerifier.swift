@@ -472,12 +472,12 @@ public class MarlinVerifier {
         let s = vk.srsSecret
         let g1 = pointFromAffine(vk.srs[0])
 
-        // Collect all (commitment, point, evaluation, witness) tuples
+        // Collect all (commitment, evaluation, witness, isBeta) tuples
         struct KZGTuple {
             let commitment: PointProjective
-            let point: Fr
             let evaluation: Fr
             let witness: PointProjective
+            let isBeta: Bool  // true=beta, false=gamma
         }
         var tuples = [KZGTuple]()
 
@@ -491,8 +491,8 @@ public class MarlinVerifier {
         ]
         for (i, (commit, eval)) in betaOpenings.enumerated() {
             if i < proof.openingProofs.count {
-                tuples.append(KZGTuple(commitment: commit, point: beta,
-                                       evaluation: eval, witness: proof.openingProofs[i]))
+                tuples.append(KZGTuple(commitment: commit, evaluation: eval,
+                                       witness: proof.openingProofs[i], isBeta: true))
             }
         }
 
@@ -502,8 +502,8 @@ public class MarlinVerifier {
         for (i, (commit, eval)) in zip(gammaCommits, gammaEvals).enumerated() {
             let proofIdx = 5 + i
             if proofIdx < proof.openingProofs.count {
-                tuples.append(KZGTuple(commitment: commit, point: gamma,
-                                       evaluation: eval, witness: proof.openingProofs[proofIdx]))
+                tuples.append(KZGTuple(commitment: commit, evaluation: eval,
+                                       witness: proof.openingProofs[proofIdx], isBeta: false))
             }
         }
 
@@ -516,29 +516,36 @@ public class MarlinVerifier {
                 let proofIdx = 7 + m * 4 + k
                 if commitIdx < vk.indexCommitments.count && proofIdx < proof.openingProofs.count {
                     tuples.append(KZGTuple(commitment: vk.indexCommitments[commitIdx],
-                                           point: gamma, evaluation: matEvals[k],
-                                           witness: proof.openingProofs[proofIdx]))
+                                           evaluation: matEvals[k],
+                                           witness: proof.openingProofs[proofIdx], isBeta: false))
                 }
             }
         }
 
         guard !tuples.isEmpty else { return false }
 
-        // Optimized accumulation: 2 scalar muls per tuple + 1 final
-        var accumC = pointIdentity()
-        var accumW = pointIdentity()
-        var accumEval = Fr.zero
-        var rho = Fr.one
+        // Precompute s - beta and s - gamma (only 2 distinct evaluation points)
+        let sMinusBeta = frSub(s, beta)
+        let sMinusGamma = frSub(s, gamma)
 
-        for t in tuples {
+        // Optimized accumulation: 2 scalar muls per tuple + 1 final
+        // First tuple uses rho=1, saving 2 scalar muls
+        var accumC = tuples[0].commitment
+        var accumEval = tuples[0].evaluation
+        let sMinusZ0 = tuples[0].isBeta ? sMinusBeta : sMinusGamma
+        var accumW = cPointScalarMul(tuples[0].witness, sMinusZ0)
+        var rho = batchChallenge
+
+        for i in 1..<tuples.count {
+            let t = tuples[i]
             // accumC += rho * C_i
             accumC = pointAdd(accumC, cPointScalarMul(t.commitment, rho))
 
             // accumEval += rho * eval_i (Fr arithmetic, very fast)
             accumEval = frAdd(accumEval, frMul(rho, t.evaluation))
 
-            // accumW += rho*(s-z_i) * W_i
-            let sMinusZ = frSub(s, t.point)
+            // accumW += rho*(s-z_i) * W_i, using precomputed s-z values
+            let sMinusZ = t.isBeta ? sMinusBeta : sMinusGamma
             let rhoSz = frMul(rho, sMinusZ)
             accumW = pointAdd(accumW, cPointScalarMul(t.witness, rhoSz))
 
