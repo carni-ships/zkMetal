@@ -267,6 +267,8 @@ if cmd == "calibrate" {
     Versions.printAll()
 } else if cmd == "test" {
     runAllCorrectnessTests()
+} else if cmd == "field-ops" || cmd == "fieldops" || cmd == "fo" {
+    runFieldOpsBench()
 } else if cmd == "asm" || cmd == "asm-mont" {
     runAsmMontBench()
 } else if cmd == "gl-neon" {
