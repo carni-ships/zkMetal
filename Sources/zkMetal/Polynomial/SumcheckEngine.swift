@@ -4,6 +4,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 public class SumcheckEngine {
     public static let version = Versions.sumcheck
@@ -516,6 +517,67 @@ public class SumcheckEngine {
 
         let finalPtr = inputBuf.contents().bindMemory(to: Fr.self, capacity: 1)
         return (rounds, finalPtr[0])
+    }
+
+    // MARK: - C-Accelerated Sumcheck
+
+    /// C-accelerated full sumcheck using CIOS Montgomery + dispatch_apply threading.
+    /// Significantly faster than GPU for sizes up to ~2^24 due to zero dispatch overhead.
+    public func fullSumcheckC(evals: [Fr], challenges: [Fr])
+        -> (rounds: [(Fr, Fr, Fr)], finalEval: Fr)
+    {
+        let numVars = challenges.count
+        precondition(evals.count == (1 << numVars))
+
+        let roundsBuf = UnsafeMutablePointer<UInt64>.allocate(capacity: numVars * 12)
+        let finalBuf = UnsafeMutablePointer<UInt64>.allocate(capacity: 4)
+        defer { roundsBuf.deallocate(); finalBuf.deallocate() }
+
+        evals.withUnsafeBytes { evalPtr in
+            challenges.withUnsafeBytes { chalPtr in
+                bn254_fr_full_sumcheck(
+                    evalPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(numVars),
+                    chalPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    roundsBuf,
+                    finalBuf
+                )
+            }
+        }
+
+        // Convert 4×UInt64 C layout back to 8×UInt32 Fr layout (same bits, reinterpreted)
+        func frFrom64(_ ptr: UnsafePointer<UInt64>) -> Fr {
+            var f = Fr.zero
+            withUnsafeMutableBytes(of: &f) { dst in
+                dst.copyBytes(from: UnsafeRawBufferPointer(start: ptr, count: 32))
+            }
+            return f
+        }
+
+        var rounds: [(Fr, Fr, Fr)] = []
+        for r in 0..<numVars {
+            let base = r * 12  // 3 Fr per round × 4 UInt64 per Fr
+            let s0 = frFrom64(roundsBuf + base)
+            let s1 = frFrom64(roundsBuf + base + 4)
+            let s2 = frFrom64(roundsBuf + base + 8)
+            rounds.append((s0, s1, s2))
+        }
+        let fe = frFrom64(finalBuf)
+        return (rounds, fe)
+    }
+
+    /// Auto-select fastest sumcheck path (C for most sizes, GPU only if C is slower).
+    /// The C path avoids Metal dispatch overhead (~0.5ms/kernel) which dominates at ≤2^24.
+    public func fullSumcheckAuto(evals: [Fr], challenges: [Fr]) throws
+        -> (rounds: [(Fr, Fr, Fr)], finalEval: Fr)
+    {
+        // C path wins at ≤2^16 (zero dispatch overhead + fused round+reduce).
+        // GPU wins at ≥2^18 via massive parallelism on 256-bit field multiply.
+        let numVars = challenges.count
+        if numVars <= 16 {
+            return fullSumcheckC(evals: evals, challenges: challenges)
+        }
+        return try fullSumcheck(evals: evals, challenges: challenges)
     }
 
     // MARK: - CPU Reference

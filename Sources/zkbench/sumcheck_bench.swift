@@ -118,7 +118,18 @@ public func runSumcheckBench() {
             times.sort()
             let median = times[2]
 
-            // CPU sumcheck for comparison (skip > 2^16 — too slow)
+            // C-accelerated sumcheck (threaded CIOS Montgomery)
+            let _ = engine.fullSumcheckC(evals: evals, challenges: chals)  // warmup
+            var cTimes = [Double]()
+            for _ in 0..<5 {
+                let ct0 = CFAbsoluteTimeGetCurrent()
+                let _ = engine.fullSumcheckC(evals: evals, challenges: chals)
+                cTimes.append((CFAbsoluteTimeGetCurrent() - ct0) * 1000)
+            }
+            cTimes.sort()
+            let cMedian = cTimes[2]
+
+            // Vanilla CPU sumcheck for comparison
             var cpuMs: Double = 0
             if numVars <= 22 && !skipCPU {
                 var cpuEvals = evals
@@ -130,12 +141,14 @@ public func runSumcheckBench() {
                 cpuMs = (CFAbsoluteTimeGetCurrent() - cpuT0) * 1000
             }
 
+            let best = min(median, cMedian)
+            let winner = median < cMedian ? "GPU" : "C"
             if cpuMs > 0 {
-                print(String(format: "  %d vars (2^%d evals): GPU %7.2fms | CPU %7.1fms | %.0fx",
-                            numVars, numVars, median, cpuMs, cpuMs / median))
+                print(String(format: "  2^%-2d | GPU %7.2fms | C %7.2fms | Vanilla %7.1fms | best: %@ (%.0fx vs vanilla)",
+                            numVars, median, cMedian, cpuMs, winner, cpuMs / best))
             } else {
-                print(String(format: "  %d vars (2^%d evals): GPU %7.2fms",
-                            numVars, numVars, median))
+                print(String(format: "  2^%-2d | GPU %7.2fms | C %7.2fms | best: %@",
+                            numVars, median, cMedian, winner))
             }
         }
 

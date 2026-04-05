@@ -1,6 +1,15 @@
 # zkMetal
 
-GPU-accelerated zero-knowledge cryptography library for Apple Silicon, written in Metal and Swift. 87 primitives spanning field arithmetic, MSM, NTT, hash functions, polynomial commitments, proof systems (Plonk, Groth16, STARK, Spartan, Marlin, Varuna), folding schemes (HyperNova, Protogalaxy, Nova/SuperNova IVC), zkVM (Jolt with RV32I, RISC-V decoder), signatures, post-quantum crypto, homomorphic encryption, and application tooling (Circom R1CS parser, Plonk constraint compiler, AIR constraint DSL, Groth16 Solidity verifier, universal proof format, data availability sampling, Verkle tree proofs) across 18 fields and 10 elliptic curves. 39 test files with 36 test suites. FFI bindings for Rust, Go, C++/Barretenberg, and WebGPU/WGSL.
+GPU-accelerated zero-knowledge proof library for Apple Silicon. Metal compute shaders + C/NEON field arithmetic + Swift orchestration.
+
+**87 primitives** across 18 fields and 10 elliptic curves:
+
+- **Core:** MSM (Pippenger+GLV), NTT (four-step FFT), Poseidon2/Keccak/Blake3/SHA-256, Merkle trees
+- **Proof systems:** Plonk, Groth16, STARK (Circle/BabyBear/Goldilocks/Stark252), Spartan, Marlin, GKR
+- **Commitments:** KZG, IPA, Basefold, Brakedown, Zeromorph, Verkle, Pedersen
+- **Folding/IVC:** HyperNova, Protogalaxy, Nova/SuperNova
+- **zkVM:** Jolt (RV32I, Lasso lookups, RISC-V decoder)
+- **Tooling:** Circom R1CS parser, AIR constraint DSL, Solidity verifier gen, proof serialization
 
 ## Contents
 
