@@ -1084,4 +1084,149 @@ void bt_afft_forward_64_neon(uint64_t *data, size_t n, const uint64_t *basis);
 /// Inverse additive FFT over GF(2^64) — NEON-accelerated.
 void bt_afft_inverse_64_neon(uint64_t *data, size_t n, const uint64_t *basis);
 
+// ============================================================
+// M31 (Mersenne-31, p = 2^31 - 1) NEON batch operations
+// All elements are uint32_t in [0, p). 4-wide NEON vectorized.
+// ============================================================
+
+/// Batch add: out[i] = (a[i] + b[i]) mod p.
+void m31_batch_add_neon(const uint32_t *a, const uint32_t *b, uint32_t *out, int n);
+
+/// Batch sub: out[i] = (a[i] - b[i]) mod p.
+void m31_batch_sub_neon(const uint32_t *a, const uint32_t *b, uint32_t *out, int n);
+
+/// Batch mul: out[i] = a[i] * b[i] mod p, using vmull_u32 + Mersenne reduction.
+void m31_batch_mul_neon(const uint32_t *a, const uint32_t *b, uint32_t *out, int n);
+
+/// Batch negate: out[i] = -a[i] mod p.
+void m31_batch_neg_neon(const uint32_t *a, uint32_t *out, int n);
+
+/// Batch scalar multiply: out[i] = a[i] * scalar mod p.
+void m31_batch_mul_scalar_neon(const uint32_t *a, uint32_t scalar, uint32_t *out, int n);
+
+/// Inner product: result = sum(a[i] * b[i]) mod p.
+uint32_t m31_inner_product_neon(const uint32_t *a, const uint32_t *b, int n);
+
+/// Batch dot products: results[v] = inner_product(a + v*vecLen, b + v*vecLen).
+void m31_batch_dot_product_neon(const uint32_t *a, const uint32_t *b,
+                                 int vecLen, int nVecs, uint32_t *results);
+
+/// M31 extension field Fp3 = M31[x]/(x^3 - 5): add.
+void m31_ext3_add_neon(const uint32_t a[3], const uint32_t b[3], uint32_t r[3]);
+
+/// M31 extension field Fp3: sub.
+void m31_ext3_sub_neon(const uint32_t a[3], const uint32_t b[3], uint32_t r[3]);
+
+/// M31 extension field Fp3: mul.
+void m31_ext3_mul_neon(const uint32_t a[3], const uint32_t b[3], uint32_t r[3]);
+
+/// M31 DIT butterfly: (a, b) -> (a + b*w, a - b*w). NEON-accelerated.
+void m31_butterfly_neon(uint32_t *data, int halfBlock, int nBlocks,
+                        const uint32_t *twiddles);
+
+/// M31 DIF butterfly: (a, b) -> (a + b, (a - b)*w). NEON-accelerated.
+void m31_butterfly_dif_neon(uint32_t *data, int halfBlock, int nBlocks,
+                            const uint32_t *twiddles);
+
+// ============================================================
+// BabyBear NEON batch operations (Montgomery form)
+// Extends babybear_ntt.c with general-purpose batch ops.
+// ============================================================
+
+/// Batch add: out[i] = (a[i] + b[i]) mod p (Montgomery form).
+void bb_batch_add_neon(const uint32_t *a, const uint32_t *b, uint32_t *out, int n);
+
+/// Batch sub: out[i] = (a[i] - b[i]) mod p.
+void bb_batch_sub_neon(const uint32_t *a, const uint32_t *b, uint32_t *out, int n);
+
+/// Batch mul: out[i] = a[i] * b[i] mod p (Plonky3 7-instruction Montgomery).
+void bb_batch_mul_neon(const uint32_t *a, const uint32_t *b, uint32_t *out, int n);
+
+/// Batch negate: out[i] = -a[i] mod p.
+void bb_batch_neg_neon(const uint32_t *a, uint32_t *out, int n);
+
+/// Batch scalar multiply: out[i] = a[i] * scalar mod p.
+void bb_batch_mul_scalar_neon(const uint32_t *a, uint32_t scalar, uint32_t *out, int n);
+
+/// Inner product: result = sum(a[i] * b[i]) mod p (Montgomery form).
+uint32_t bb_inner_product_neon(const uint32_t *a, const uint32_t *b, int n);
+
+/// Linear combination: out[i] = alpha * a[i] + beta * b[i] (Montgomery form).
+void bb_linear_combine_neon(const uint32_t *a, const uint32_t *b,
+                             uint32_t alpha, uint32_t beta,
+                             uint32_t *out, int n);
+
+/// Batch convert to Montgomery form.
+void bb_batch_to_monty_neon(const uint32_t *in, uint32_t *out, int n);
+
+/// Batch convert from Montgomery form.
+void bb_batch_from_monty_neon(const uint32_t *in, uint32_t *out, int n);
+
+// ============================================================
+// Extended Goldilocks batch operations
+// ============================================================
+
+/// Batch scale: out[i] = a[i] * scalar mod p.
+void gl_batch_scale_neon(const uint64_t *a, uint64_t scalar, uint64_t *out, int n);
+
+/// Inner product: result = sum(a[i] * b[i]) mod p.
+uint64_t gl_inner_product_neon(const uint64_t *a, const uint64_t *b, int n);
+
+/// Linear combination: out[i] = alpha*a[i] + beta*b[i] mod p.
+void gl_linear_combine_neon(const uint64_t *a, const uint64_t *b,
+                             uint64_t alpha, uint64_t beta,
+                             uint64_t *out, int n);
+
+/// Batch negate: out[i] = -a[i] mod p.
+void gl_batch_neg_neon(const uint64_t *a, uint64_t *out, int n);
+
+/// Goldilocks Fp2 = Fp[w]/(w^2 - 7): add. Elements are 2 x uint64_t.
+void gl_ext2_add_neon(const uint64_t a[2], const uint64_t b[2], uint64_t r[2]);
+
+/// Goldilocks Fp2: sub.
+void gl_ext2_sub_neon(const uint64_t a[2], const uint64_t b[2], uint64_t r[2]);
+
+/// Goldilocks Fp2: mul.
+void gl_ext2_mul_neon(const uint64_t a[2], const uint64_t b[2], uint64_t r[2]);
+
+/// Goldilocks Fp2: square.
+void gl_ext2_sqr_neon(const uint64_t a[2], uint64_t r[2]);
+
+/// Batch Goldilocks Fp2 mul: out[i] = a[i] * b[i] in Fp2.
+void gl_ext2_batch_mul_neon(const uint64_t *a, const uint64_t *b, uint64_t *out, int n);
+
+// ============================================================
+// Small-field Poseidon2 permutations (NEON-accelerated)
+// ============================================================
+
+/// BabyBear Poseidon2 permutation (width=16, x^7 S-box).
+/// @param state            16 uint32_t in Montgomery form, modified in-place.
+/// @param round_constants  (num_full_rounds * 16 + num_partial_rounds) constants.
+/// @param internal_diag    16 diagonal constants for internal matrix.
+/// @param num_full_rounds  Total full rounds (e.g. 8 = 4 before + 4 after partials).
+/// @param num_partial_rounds  Number of partial rounds (e.g. 13).
+void bb_poseidon2_permutation_neon(uint32_t state[16],
+                                    const uint32_t *round_constants,
+                                    const uint32_t internal_diag[16],
+                                    int num_full_rounds,
+                                    int num_partial_rounds);
+
+/// M31 Poseidon2 permutation (width=16, x^5 S-box).
+/// Same interface as BabyBear but elements in [0, 2^31 - 1).
+void m31_poseidon2_permutation_neon(uint32_t state[16],
+                                     const uint32_t *round_constants,
+                                     const uint32_t internal_diag[16],
+                                     int num_full_rounds,
+                                     int num_partial_rounds);
+
+/// Goldilocks Poseidon2 permutation (width=12, x^7 S-box).
+/// @param state            12 uint64_t elements in [0, p).
+/// @param round_constants  (num_full_rounds * 12 + num_partial_rounds) constants.
+/// @param internal_diag    12 diagonal constants.
+void gl_poseidon2_permutation_neon(uint64_t state[12],
+                                    const uint64_t *round_constants,
+                                    const uint64_t internal_diag[12],
+                                    int num_full_rounds,
+                                    int num_partial_rounds);
+
 #endif // NEON_FIELD_OPS_H
