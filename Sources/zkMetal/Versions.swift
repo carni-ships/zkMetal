@@ -56,7 +56,7 @@ public enum Versions {
 
     // --- Polynomial / STARK ---
     public static let fri            = PrimitiveVersion(version: "1.3.0", updated: "2026-04-03")
-    public static let stir            = PrimitiveVersion(version: "1.0.0", updated: "2026-04-04")
+    public static let stir            = PrimitiveVersion(version: "2.0.0", updated: "2026-04-05")
     public static let whir           = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let sumcheck       = PrimitiveVersion(version: "1.1.0", updated: "2026-04-02")
     public static let poly           = PrimitiveVersion(version: "1.0.0", updated: "2026-04-01")
@@ -70,7 +70,7 @@ public enum Versions {
     // --- Commitment Schemes ---
     public static let kzg            = PrimitiveVersion(version: "1.1.0", updated: "2026-04-03")
     public static let ipa            = PrimitiveVersion(version: "1.1.0", updated: "2026-04-03")
-    public static let zeromorph      = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
+    public static let zeromorph      = PrimitiveVersion(version: "2.0.0", updated: "2026-04-05")
 
     // --- GKR ---
     public static let gkr            = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")

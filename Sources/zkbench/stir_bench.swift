@@ -15,10 +15,10 @@ public func runSTIRBench() {
 
         // Domain shift round-trip test
         do {
-            let eng = try STIREngine(numQueries: 4, reductionFactor: 4)
+            let eng = try STIRProver(numQueries: 4, reductionFactor: 4)
             let alpha = frFromInt(42)
             let shifted = try eng.domainShift(evals: testEvals, alpha: alpha)
-            let cpuShifted = STIREngine.cpuDomainShift(evals: testEvals, alpha: alpha)
+            let cpuShifted = STIRProver.cpuDomainShift(evals: testEvals, alpha: alpha)
             var shiftOk = shifted.count == cpuShifted.count
             if shiftOk {
                 for i in 0..<shifted.count {
@@ -33,7 +33,7 @@ public func runSTIRBench() {
 
         // q=4, r=4
         do {
-            let eng = try STIREngine(numQueries: 4, reductionFactor: 4)
+            let eng = try STIRProver(numQueries: 4, reductionFactor: 4)
             let p = try eng.prove(evaluations: testEvals)
             let vf = eng.verifyFull(proof: p, evaluations: testEvals)
             let vs = eng.verify(proof: p, evaluations: testEvals)
@@ -44,7 +44,7 @@ public func runSTIRBench() {
 
         // q=4, r=2
         do {
-            let eng = try STIREngine(numQueries: 4, reductionFactor: 2)
+            let eng = try STIRProver(numQueries: 4, reductionFactor: 2)
             let p = try eng.prove(evaluations: testEvals)
             let vf = eng.verifyFull(proof: p, evaluations: testEvals)
             fputs("  (q=4,r=2): \(p.numRounds) rounds, \(p.proofSizeBytes) B | full=\(vf ? "OK" : "FAIL")\n", stderr)
@@ -52,7 +52,7 @@ public func runSTIRBench() {
 
         // q=2, r=4 (minimal)
         do {
-            let eng = try STIREngine(numQueries: 2, reductionFactor: 4)
+            let eng = try STIRProver(numQueries: 2, reductionFactor: 4)
             let p = try eng.prove(evaluations: testEvals)
             let vf = eng.verifyFull(proof: p, evaluations: testEvals)
             fputs("  (q=2,r=4): \(p.numRounds) rounds, \(p.proofSizeBytes) B | full=\(vf ? "OK" : "FAIL")\n", stderr)
@@ -60,8 +60,8 @@ public func runSTIRBench() {
 
         // Soundness analysis
         fputs("\n--- Soundness comparison (128-bit security, rate=1/4) ---\n", stderr)
-        let friQ = STIREngine.queriesNeeded(securityBits: 128, rate: 0.25, useSTIR: false)
-        let stirQ = STIREngine.queriesNeeded(securityBits: 128, rate: 0.25, useSTIR: true)
+        let friQ = STIRProver.queriesNeeded(securityBits: 128, rate: 0.25, useSTIR: false)
+        let stirQ = STIRProver.queriesNeeded(securityBits: 128, rate: 0.25, useSTIR: true)
         fputs("  FRI queries needed:  \(friQ)\n", stderr)
         fputs("  STIR queries needed: \(stirQ) (\(String(format: "%.0f", (1.0 - Double(stirQ)/Double(friQ)) * 100))%% fewer)\n", stderr)
 
@@ -75,7 +75,7 @@ public func runSTIRBench() {
             let configs: [(String, Int, Int)] = [("q=4,r=4", 4, 4), ("q=2,r=4", 2, 4)]
             for cfg in configs {
                 let (qLabel, q, r) = cfg
-                let stirEng = try STIREngine(numQueries: q, reductionFactor: r)
+                let stirEng = try STIRProver(numQueries: q, reductionFactor: r)
                 let _ = try stirEng.prove(evaluations: benchEvals)  // warmup
 
                 var pt = [Double](); var ps = 0; var pnr = 0
