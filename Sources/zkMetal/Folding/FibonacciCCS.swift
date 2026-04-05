@@ -96,12 +96,14 @@ public func foldFibonacci(steps: Int, a0: Fr, b0: Fr)
     for step in 1..<steps {
         let (pub, wit) = fibonacciWitness(a: a, b: b)
 
-        // Commit new instance
+        // Commit new instance + pre-compute affine for transcript
         let tCommit = CFAbsoluteTimeGetCurrent()
         let newCommitment = engine.pp.commit(witness: wit)
+        let (cAx, cAy) = engine.commitmentToAffineFr(newCommitment)
         timings.commitTime += CFAbsoluteTimeGetCurrent() - tCommit
 
-        let newCCCS = CCCS(commitment: newCommitment, publicInput: pub)
+        let newCCCS = CCCS(commitment: newCommitment, publicInput: pub,
+                           affineX: cAx, affineY: cAy)
 
         // Fold
         let tFold = CFAbsoluteTimeGetCurrent()

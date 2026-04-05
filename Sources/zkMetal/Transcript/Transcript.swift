@@ -233,21 +233,39 @@ private struct KeccakBackend: TranscriptBackend {
     static let rate: Int = 136  // bytes (Keccak-256: r = 1088 bits)
 
     mutating func absorbFr(_ value: Fr) {
-        // Convert Fr to 32 bytes (integer form, little-endian)
+        // Convert Fr to integer form, then XOR 4 limbs directly into state
+        // (avoids intermediate [UInt8] allocation)
         let limbs = frToInt(value)
-        var bytes = [UInt8]()
-        bytes.reserveCapacity(32)
-        for limb in limbs {
-            for b in 0..<8 {
-                bytes.append(UInt8((limb >> (b * 8)) & 0xFF))
+        if squeezing { squeezing = false }
+
+        // XOR 4 x UInt64 = 32 bytes directly into state
+        if rateOffset % 8 == 0 && rateOffset + 32 <= KeccakBackend.rate {
+            // Fast path: word-aligned, no need for byte decomposition
+            let wIdx = rateOffset / 8
+            state[wIdx] ^= limbs[0]
+            state[wIdx + 1] ^= limbs[1]
+            state[wIdx + 2] ^= limbs[2]
+            state[wIdx + 3] ^= limbs[3]
+            rateOffset += 32
+            if rateOffset == KeccakBackend.rate {
+                permute()
+                rateOffset = 0
             }
+        } else {
+            // Slow path: byte-by-byte
+            var bytes = [UInt8]()
+            bytes.reserveCapacity(32)
+            for limb in limbs {
+                for b in 0..<8 {
+                    bytes.append(UInt8((limb >> (b * 8)) & 0xFF))
+                }
+            }
+            absorbBytes(bytes)
         }
-        absorbBytes(bytes)
     }
 
     mutating func absorbBytes(_ data: [UInt8]) {
         if squeezing {
-            // Transition from squeeze to absorb: reset position
             squeezing = false
         }
 
@@ -268,7 +286,6 @@ private struct KeccakBackend: TranscriptBackend {
             offset += toAbsorb
 
             if rateOffset == KeccakBackend.rate {
-                // Rate is full, permute
                 permute()
                 rateOffset = 0
             }
@@ -276,17 +293,35 @@ private struct KeccakBackend: TranscriptBackend {
     }
 
     mutating func squeezeFr() -> Fr {
+        if !squeezing {
+            let pos0 = rateOffset
+            state[pos0 / 8] ^= UInt64(0x01) << ((pos0 % 8) * 8)
+            let lastPos = KeccakBackend.rate - 1
+            state[lastPos / 8] ^= UInt64(0x80) << ((lastPos % 8) * 8)
+            permute()
+            rateOffset = 0
+            squeezing = true
+        }
+
+        // Fast path: read 4 limbs directly from state (no intermediate [UInt8])
+        if rateOffset % 8 == 0 && rateOffset + 32 <= KeccakBackend.rate {
+            let wIdx = rateOffset / 8
+            var l3 = state[wIdx + 3]
+            l3 &= 0x3FFFFFFFFFFFFFFF
+            rateOffset += 32
+            let raw = Fr.from64([state[wIdx], state[wIdx + 1], state[wIdx + 2], l3])
+            return frMul(raw, Fr.from64(Fr.R2_MOD_R))
+        }
+
+        // Fallback
         let bytes = squeezeBytes(32)
-        // Interpret 32 bytes as 4 UInt64 limbs (little-endian)
         var limbs = [UInt64](repeating: 0, count: 4)
         for i in 0..<4 {
             for j in 0..<8 {
                 limbs[i] |= UInt64(bytes[i * 8 + j]) << (j * 8)
             }
         }
-        // Reduce mod r: mask top bit to stay within 254-bit range,
-        // then convert to Montgomery form
-        limbs[3] &= 0x3FFFFFFFFFFFFFFF  // Clear top 2 bits to ensure < 2^254 ~ p
+        limbs[3] &= 0x3FFFFFFFFFFFFFFF
         let raw = Fr.from64(limbs)
         return frMul(raw, Fr.from64(Fr.R2_MOD_R))
     }

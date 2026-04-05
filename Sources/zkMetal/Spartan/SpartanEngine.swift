@@ -12,8 +12,15 @@
 //   6. Open z_tilde via Basefold at the output point ry.
 //
 // Transparency: uses Poseidon2 Merkle commitments — no trusted setup.
+//
+// Optimizations:
+//   - C CIOS Montgomery field arithmetic for all sumcheck inner loops
+//   - Keccak-256 transcript (faster absorb than Poseidon2)
+//   - C-accelerated eq polynomial, MLE evaluation, sparse matvec
+//   - Buffer caching for repeated prove calls
 
 import Foundation
+import NeonFieldOps
 
 // MARK: - Proof
 
@@ -28,14 +35,78 @@ public struct SpartanProof {
     public let openingProof: BasefoldProof
 }
 
+// MARK: - Packed sparse entries for C interop
+
+/// Pack SpartanEntry arrays into C-compatible format: 5 uint64 per entry.
+/// Layout: [low32=row | high32=col, value_limb0, value_limb1, value_limb2, value_limb3]
+private func packEntries(_ entries: [SpartanEntry]) -> [UInt64] {
+    var packed = [UInt64](repeating: 0, count: entries.count * 5)
+    for (i, e) in entries.enumerated() {
+        let base = i * 5
+        packed[base] = UInt64(e.row) | (UInt64(e.col) << 32)
+        withUnsafeBytes(of: e.value) { src in
+            for j in 0..<4 {
+                packed[base + 1 + j] = src.load(fromByteOffset: j * 8, as: UInt64.self)
+            }
+        }
+    }
+    return packed
+}
+
 // MARK: - Engine
 
 public class SpartanEngine {
     public static let version = Versions.spartan
     private let basefold: BasefoldEngine
 
+    // Buffer caches for repeated prove calls (avoid re-packing)
+    private var cachedPackedA: [UInt64]?
+    private var cachedPackedB: [UInt64]?
+    private var cachedPackedC: [UInt64]?
+    private var cachedNumA: Int = 0
+    private var cachedNumB: Int = 0
+    private var cachedNumC: Int = 0
+
     public init() throws {
         self.basefold = try BasefoldEngine()
+    }
+
+    // MARK: - C-accelerated helpers
+
+    /// C-accelerated eq polynomial computation.
+    private func cEqPoly(point: [Fr]) -> [Fr] {
+        let n = point.count
+        let size = 1 << n
+        var eq = [Fr](repeating: Fr.zero, count: size)
+        point.withUnsafeBytes { ptBuf in
+            eq.withUnsafeMutableBytes { eqBuf in
+                spartan_eq_poly(
+                    ptBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(n),
+                    eqBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                )
+            }
+        }
+        return eq
+    }
+
+    /// C-accelerated MLE evaluation.
+    private func cMleEval(evals: [Fr], pt: [Fr]) -> Fr {
+        let numVars = pt.count
+        var result = Fr.zero
+        evals.withUnsafeBytes { evalBuf in
+            pt.withUnsafeBytes { ptBuf in
+                withUnsafeMutableBytes(of: &result) { resBuf in
+                    spartan_mle_eval(
+                        evalBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(numVars),
+                        ptBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        resBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    )
+                }
+            }
+        }
+        return result
     }
 
     // MARK: - Prover
@@ -49,146 +120,238 @@ public class SpartanEngine {
         let paddedM = instance.paddedM, paddedN = instance.paddedN
         let zTilde = instance.buildZTilde(z: z)
 
-        // Commit z_tilde via Basefold (Poseidon2 Merkle — transparent)
+        // Pack sparse entries for C interop (cache across calls)
+        if cachedPackedA == nil || cachedNumA != instance.A.count {
+            cachedPackedA = packEntries(instance.A)
+            cachedNumA = instance.A.count
+        }
+        if cachedPackedB == nil || cachedNumB != instance.B.count {
+            cachedPackedB = packEntries(instance.B)
+            cachedNumB = instance.B.count
+        }
+        if cachedPackedC == nil || cachedNumC != instance.C.count {
+            cachedPackedC = packEntries(instance.C)
+            cachedNumC = instance.C.count
+        }
+        let packedA = cachedPackedA!
+        let packedB = cachedPackedB!
+        let packedC = cachedPackedC!
+
+        // Commit z_tilde via Basefold (Poseidon2 Merkle -- transparent)
         let commitment = try basefold.commit(evaluations: zTilde)
 
-        let ts = Transcript(label: "spartan-r1cs")
-        // Bind to public inputs and commitment
+        // Keccak transcript (faster absorb)
+        let ts = Transcript(label: "spartan-r1cs", backend: .keccak256)
         for p in publicInputs { ts.absorb(p) }
         ts.absorb(commitment.root)
         ts.absorbLabel("tau")
         let tau = ts.squeezeN(logM)
 
-        // Compute (Az), (Bz), (Cz) as vectors of length paddedM
+        // Compute (Az), (Bz), (Cz) via C-accelerated sparse matvec
         var azVec = [Fr](repeating: Fr.zero, count: paddedM)
         var bzVec = [Fr](repeating: Fr.zero, count: paddedM)
         var czVec = [Fr](repeating: Fr.zero, count: paddedM)
-        for e in instance.A {
-            guard e.row < paddedM && e.col < z.count else { continue }
-            azVec[e.row] = frAdd(azVec[e.row], frMul(e.value, z[e.col]))
-        }
-        for e in instance.B {
-            guard e.row < paddedM && e.col < z.count else { continue }
-            bzVec[e.row] = frAdd(bzVec[e.row], frMul(e.value, z[e.col]))
-        }
-        for e in instance.C {
-            guard e.row < paddedM && e.col < z.count else { continue }
-            czVec[e.row] = frAdd(czVec[e.row], frMul(e.value, z[e.col]))
+
+        z.withUnsafeBytes { zBuf in
+            let zPtr = zBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+            let zLen = Int32(z.count)
+            packedA.withUnsafeBufferPointer { aBuf in
+                azVec.withUnsafeMutableBytes { azBuf in
+                    spartan_sparse_matvec(aBuf.baseAddress!, Int32(instance.A.count),
+                                          zPtr, zLen,
+                                          azBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                          Int32(paddedM))
+                }
+            }
+            packedB.withUnsafeBufferPointer { bBuf in
+                bzVec.withUnsafeMutableBytes { bzBuf in
+                    spartan_sparse_matvec(bBuf.baseAddress!, Int32(instance.B.count),
+                                          zPtr, zLen,
+                                          bzBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                          Int32(paddedM))
+                }
+            }
+            packedC.withUnsafeBufferPointer { cBuf in
+                czVec.withUnsafeMutableBytes { czBuf in
+                    spartan_sparse_matvec(cBuf.baseAddress!, Int32(instance.C.count),
+                                          zPtr, zLen,
+                                          czBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                          Int32(paddedM))
+                }
+            }
         }
 
-        // eq(tau, .) over {0,1}^logM
-        let eqTau = MultilinearPoly.eqPoly(point: tau)
+        // eq(tau, .) via C-accelerated eq poly
+        var eqTau = cEqPoly(point: tau)
 
-        // ---- Sumcheck #1 ----
-        // sum_x eq(tau,x)*[az(x)*bz(x) - cz(x)] = 0
-        // Degree 3 per variable: eq is linear, az*bz is degree 2, total degree 3.
+        // ---- Sumcheck #1 (C-accelerated, degree 3) ----
         ts.absorbLabel("sc1")
-        var eqC = eqTau, azC = azVec, bzC = bzVec, czC = czVec
         var sc1Rounds = [(Fr, Fr, Fr, Fr)]()
+        sc1Rounds.reserveCapacity(logM)
         var rx = [Fr]()
+        rx.reserveCapacity(logM)
+        var sc1Size = paddedM  // logical size of working arrays
 
         for _ in 0..<logM {
-            let h = eqC.count / 2
+            let h = sc1Size / 2
             var s0 = Fr.zero, s1 = Fr.zero, s2 = Fr.zero, s3 = Fr.zero
-            for j in 0..<h {
-                let eL = eqC[j], eH = eqC[j + h]
-                let aL = azC[j], aH = azC[j + h]
-                let bL = bzC[j], bH = bzC[j + h]
-                let cL = czC[j], cH = czC[j + h]
-                // f(t) = eq(t)*[az(t)*bz(t) - cz(t)]
-                // t=0: eL*(aL*bL - cL)
-                s0 = frAdd(s0, frMul(eL, frSub(frMul(aL, bL), cL)))
-                // t=1: eH*(aH*bH - cH)
-                s1 = frAdd(s1, frMul(eH, frSub(frMul(aH, bH), cH)))
-                // t=2: linear extrapolation at 2
-                let e2 = frSub(frAdd(eH, eH), eL)
-                let a2 = frSub(frAdd(aH, aH), aL)
-                let b2 = frSub(frAdd(bH, bH), bL)
-                let c2 = frSub(frAdd(cH, cH), cL)
-                s2 = frAdd(s2, frMul(e2, frSub(frMul(a2, b2), c2)))
-                // t=3: linear extrapolation at 3
-                let three = frFromInt(3), two = frFromInt(2)
-                let e3 = frSub(frMul(three, eH), frMul(two, eL))
-                let a3 = frSub(frMul(three, aH), frMul(two, aL))
-                let b3 = frSub(frMul(three, bH), frMul(two, bL))
-                let c3 = frSub(frMul(three, cH), frMul(two, cL))
-                s3 = frAdd(s3, frMul(e3, frSub(frMul(a3, b3), c3)))
+
+            eqTau.withUnsafeMutableBytes { eqBuf in
+                azVec.withUnsafeMutableBytes { azBuf in
+                    bzVec.withUnsafeMutableBytes { bzBuf in
+                        czVec.withUnsafeMutableBytes { czBuf in
+                            withUnsafeMutableBytes(of: &s0) { s0p in
+                                withUnsafeMutableBytes(of: &s1) { s1p in
+                                    withUnsafeMutableBytes(of: &s2) { s2p in
+                                        withUnsafeMutableBytes(of: &s3) { s3p in
+                                            spartan_sc1_round(
+                                                eqBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                                azBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                                bzBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                                czBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                                Int32(h),
+                                                s0p.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                                s1p.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                                s2p.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                                s3p.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
+
             sc1Rounds.append((s0, s1, s2, s3))
             ts.absorb(s0); ts.absorb(s1); ts.absorb(s2); ts.absorb(s3)
             let ri = ts.squeeze()
             rx.append(ri)
 
-            // Reduce: fix variable to ri
-            var eN = [Fr](repeating: Fr.zero, count: h)
-            var aN = [Fr](repeating: Fr.zero, count: h)
-            var bN = [Fr](repeating: Fr.zero, count: h)
-            var cN = [Fr](repeating: Fr.zero, count: h)
-            for j in 0..<h {
-                eN[j] = frAdd(eqC[j], frMul(ri, frSub(eqC[j + h], eqC[j])))
-                aN[j] = frAdd(azC[j], frMul(ri, frSub(azC[j + h], azC[j])))
-                bN[j] = frAdd(bzC[j], frMul(ri, frSub(bzC[j + h], bzC[j])))
-                cN[j] = frAdd(czC[j], frMul(ri, frSub(czC[j + h], czC[j])))
+            // Fold all 4 arrays in-place via C (no copy needed, just shrink logical size)
+            withUnsafeBytes(of: ri) { riBuf in
+                let riPtr = riBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                eqTau.withUnsafeMutableBytes { buf in
+                    spartan_fold_array(buf.baseAddress!.assumingMemoryBound(to: UInt64.self), Int32(h), riPtr)
+                }
+                azVec.withUnsafeMutableBytes { buf in
+                    spartan_fold_array(buf.baseAddress!.assumingMemoryBound(to: UInt64.self), Int32(h), riPtr)
+                }
+                bzVec.withUnsafeMutableBytes { buf in
+                    spartan_fold_array(buf.baseAddress!.assumingMemoryBound(to: UInt64.self), Int32(h), riPtr)
+                }
+                czVec.withUnsafeMutableBytes { buf in
+                    spartan_fold_array(buf.baseAddress!.assumingMemoryBound(to: UInt64.self), Int32(h), riPtr)
+                }
             }
-            eqC = eN; azC = aN; bzC = bN; czC = cN
+            sc1Size = h
         }
 
-        // After SC1: prover claims (Az)(rx), (Bz)(rx), (Cz)(rx)
-        let azAtRx = azC[0], bzAtRx = bzC[0], czAtRx = czC[0]
+        let azAtRx = azVec[0], bzAtRx = bzVec[0], czAtRx = czVec[0]
         ts.absorb(azAtRx); ts.absorb(bzAtRx); ts.absorb(czAtRx)
 
-        // ---- Sumcheck #2 ----
-        // Verify inner product: (Az)(rx) = sum_y A_tilde(rx,y)*z(y), etc.
-        // Combine: rr*Az(rx) + rs*Bz(rx) + Cz(rx) = sum_y [rr*A(rx,y)+rs*B(rx,y)+C(rx,y)]*z(y)
+        // ---- Sumcheck #2 (C-accelerated, degree 2) ----
         ts.absorbLabel("sc2-combine")
         let rr = ts.squeeze(), rs = ts.squeeze()
 
-        // Build combined weight: w[j] = rr*A_rx[j] + rs*B_rx[j] + C_rx[j]
-        // where A_rx[j] = sum_i A[i,j]*eq(rx, bin(i))
-        let eqRx = MultilinearPoly.eqPoly(point: rx)
+        // Build combined weight via C
+        let eqRx = cEqPoly(point: rx)
         var wVec = [Fr](repeating: Fr.zero, count: paddedN)
-        for e in instance.A {
-            guard e.row < eqRx.count && e.col < paddedN else { continue }
-            wVec[e.col] = frAdd(wVec[e.col], frMul(rr, frMul(e.value, eqRx[e.row])))
-        }
-        for e in instance.B {
-            guard e.row < eqRx.count && e.col < paddedN else { continue }
-            wVec[e.col] = frAdd(wVec[e.col], frMul(rs, frMul(e.value, eqRx[e.row])))
-        }
-        for e in instance.C {
-            guard e.row < eqRx.count && e.col < paddedN else { continue }
-            wVec[e.col] = frAdd(wVec[e.col], frMul(e.value, eqRx[e.row]))
+
+        eqRx.withUnsafeBytes { eqRxBuf in
+            let eqRxPtr = eqRxBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+            let eqRxLen = Int32(eqRx.count)
+            withUnsafeBytes(of: rr) { rrBuf in
+                packedA.withUnsafeBufferPointer { aBuf in
+                    wVec.withUnsafeMutableBytes { wBuf in
+                        spartan_build_weight_vec(
+                            aBuf.baseAddress!, Int32(instance.A.count),
+                            eqRxPtr, eqRxLen,
+                            rrBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            wBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(paddedN))
+                    }
+                }
+            }
+            withUnsafeBytes(of: rs) { rsBuf in
+                packedB.withUnsafeBufferPointer { bBuf in
+                    wVec.withUnsafeMutableBytes { wBuf in
+                        spartan_build_weight_vec(
+                            bBuf.baseAddress!, Int32(instance.B.count),
+                            eqRxPtr, eqRxLen,
+                            rsBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            wBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(paddedN))
+                    }
+                }
+            }
+            var one = Fr.one
+            withUnsafeBytes(of: &one) { oneBuf in
+                packedC.withUnsafeBufferPointer { cBuf in
+                    wVec.withUnsafeMutableBytes { wBuf in
+                        spartan_build_weight_vec(
+                            cBuf.baseAddress!, Int32(instance.C.count),
+                            eqRxPtr, eqRxLen,
+                            oneBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            wBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(paddedN))
+                    }
+                }
+            }
         }
 
-        // Sumcheck on f(y) = w(y)*z(y), degree 2
+        // SC2 sumcheck
         ts.absorbLabel("sc2")
-        var wC = wVec, zC2 = zTilde
+        var zC2 = zTilde
         var sc2Rounds = [(Fr, Fr, Fr)]()
+        sc2Rounds.reserveCapacity(logN)
         var ry = [Fr]()
+        ry.reserveCapacity(logN)
+        var sc2Size = paddedN
+
         for _ in 0..<logN {
-            let h = wC.count / 2
+            let h = sc2Size / 2
             var s0 = Fr.zero, s1 = Fr.zero, s2 = Fr.zero
-            for j in 0..<h {
-                s0 = frAdd(s0, frMul(wC[j], zC2[j]))
-                s1 = frAdd(s1, frMul(wC[j + h], zC2[j + h]))
-                let w2 = frSub(frAdd(wC[j + h], wC[j + h]), wC[j])
-                let z2 = frSub(frAdd(zC2[j + h], zC2[j + h]), zC2[j])
-                s2 = frAdd(s2, frMul(w2, z2))
+
+            wVec.withUnsafeMutableBytes { wBuf in
+                zC2.withUnsafeMutableBytes { zBuf in
+                    withUnsafeMutableBytes(of: &s0) { s0p in
+                        withUnsafeMutableBytes(of: &s1) { s1p in
+                            withUnsafeMutableBytes(of: &s2) { s2p in
+                                spartan_sc2_round(
+                                    wBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                    zBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                    Int32(h),
+                                    s0p.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                    s1p.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                    s2p.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                                )
+                            }
+                        }
+                    }
+                }
             }
+
             sc2Rounds.append((s0, s1, s2))
             ts.absorb(s0); ts.absorb(s1); ts.absorb(s2)
             let ri = ts.squeeze()
             ry.append(ri)
-            var wN = [Fr](repeating: Fr.zero, count: h)
-            var zN = [Fr](repeating: Fr.zero, count: h)
-            for j in 0..<h {
-                wN[j] = frAdd(wC[j], frMul(ri, frSub(wC[j + h], wC[j])))
-                zN[j] = frAdd(zC2[j], frMul(ri, frSub(zC2[j + h], zC2[j])))
+
+            // Fold both arrays in-place
+            withUnsafeBytes(of: ri) { riBuf in
+                let riPtr = riBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                wVec.withUnsafeMutableBytes { buf in
+                    spartan_fold_array(buf.baseAddress!.assumingMemoryBound(to: UInt64.self), Int32(h), riPtr)
+                }
+                zC2.withUnsafeMutableBytes { buf in
+                    spartan_fold_array(buf.baseAddress!.assumingMemoryBound(to: UInt64.self), Int32(h), riPtr)
+                }
             }
-            wC = wN; zC2 = zN
+            sc2Size = h
         }
 
-        let zEval = spartanEvalML(evals: zTilde, pt: ry)
+        let zEval = cMleEval(evals: zTilde, pt: ry)
         let op = try basefold.open(commitment: commitment, point: ry)
 
         return SpartanProof(witnessCommitment: commitment.root,
@@ -201,8 +364,8 @@ public class SpartanEngine {
     public func verify(instance: SpartanR1CS, publicInputs: [Fr], proof: SpartanProof) -> Bool {
         let logM = instance.logM, logN = instance.logN, paddedN = instance.paddedN
 
-        let ts = Transcript(label: "spartan-r1cs")
-        // Bind to public inputs and commitment
+        // Must match prover Keccak transcript
+        let ts = Transcript(label: "spartan-r1cs", backend: .keccak256)
         for p in publicInputs { ts.absorb(p) }
         ts.absorb(proof.witnessCommitment)
         ts.absorbLabel("tau")
@@ -211,11 +374,10 @@ public class SpartanEngine {
         // ---- Verify SC1 ----
         guard proof.sc1Rounds.count == logM else { return false }
         ts.absorbLabel("sc1")
-        var cur = Fr.zero  // claimed sum = 0 (R1CS is satisfied)
+        var cur = Fr.zero
         var rx = [Fr]()
         for i in 0..<logM {
             let (s0, s1, s2, s3) = proof.sc1Rounds[i]
-            // Check: s(0) + s(1) = current claim
             if !spartanFrEqual(frAdd(s0, s1), cur) { return false }
             ts.absorb(s0); ts.absorb(s1); ts.absorb(s2); ts.absorb(s3)
             let ri = ts.squeeze()
@@ -223,7 +385,6 @@ public class SpartanEngine {
             cur = spartanInterpCubic(s0: s0, s1: s1, s2: s2, s3: s3, t: ri)
         }
 
-        // After SC1: cur should equal eq(tau,rx)*[azRx*bzRx - czRx]
         let eqTauRx = spartanEvalEq(tau, rx)
         let expected = frMul(eqTauRx, frSub(frMul(proof.azRx, proof.bzRx), proof.czRx))
         if !spartanFrEqual(cur, expected) { return false }
@@ -248,26 +409,58 @@ public class SpartanEngine {
             cur2 = spartanInterpQuadratic(s0: s0, s1: s1, s2: s2, t: ri)
         }
 
-        // After SC2: cur2 = w(ry)*z(ry)
-        // Recompute w(ry) from the instance matrices
-        let eqRx = MultilinearPoly.eqPoly(point: rx)
+        // Recompute w(ry) using C-accelerated helpers
+        let eqRx = cEqPoly(point: rx)
+        let packedA = packEntries(instance.A)
+        let packedB = packEntries(instance.B)
+        let packedC = packEntries(instance.C)
         var wVec = [Fr](repeating: Fr.zero, count: paddedN)
-        for e in instance.A {
-            guard e.row < eqRx.count && e.col < paddedN else { continue }
-            wVec[e.col] = frAdd(wVec[e.col], frMul(rr, frMul(e.value, eqRx[e.row])))
+
+        eqRx.withUnsafeBytes { eqRxBuf in
+            let eqRxPtr = eqRxBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+            let eqRxLen = Int32(eqRx.count)
+            withUnsafeBytes(of: rr) { rrBuf in
+                packedA.withUnsafeBufferPointer { aBuf in
+                    wVec.withUnsafeMutableBytes { wBuf in
+                        spartan_build_weight_vec(
+                            aBuf.baseAddress!, Int32(instance.A.count),
+                            eqRxPtr, eqRxLen,
+                            rrBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            wBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(paddedN))
+                    }
+                }
+            }
+            withUnsafeBytes(of: rs) { rsBuf in
+                packedB.withUnsafeBufferPointer { bBuf in
+                    wVec.withUnsafeMutableBytes { wBuf in
+                        spartan_build_weight_vec(
+                            bBuf.baseAddress!, Int32(instance.B.count),
+                            eqRxPtr, eqRxLen,
+                            rsBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            wBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(paddedN))
+                    }
+                }
+            }
+            var one = Fr.one
+            withUnsafeBytes(of: &one) { oneBuf in
+                packedC.withUnsafeBufferPointer { cBuf in
+                    wVec.withUnsafeMutableBytes { wBuf in
+                        spartan_build_weight_vec(
+                            cBuf.baseAddress!, Int32(instance.C.count),
+                            eqRxPtr, eqRxLen,
+                            oneBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            wBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(paddedN))
+                    }
+                }
+            }
         }
-        for e in instance.B {
-            guard e.row < eqRx.count && e.col < paddedN else { continue }
-            wVec[e.col] = frAdd(wVec[e.col], frMul(rs, frMul(e.value, eqRx[e.row])))
-        }
-        for e in instance.C {
-            guard e.row < eqRx.count && e.col < paddedN else { continue }
-            wVec[e.col] = frAdd(wVec[e.col], frMul(e.value, eqRx[e.row]))
-        }
-        let wRy = spartanEvalML(evals: wVec, pt: ry)
+
+        let wRy = cMleEval(evals: wVec, pt: ry)
         if !spartanFrEqual(frMul(wRy, proof.zEval), cur2) { return false }
 
-        // Verify Basefold opening
         return basefold.verify(root: proof.witnessCommitment, point: ry,
                                claimedValue: proof.zEval, proof: proof.openingProof)
     }
@@ -324,13 +517,9 @@ func spartanInterpCubic(s0: Fr, s1: Fr, s2: Fr, s3: Fr, t: Fr) -> Fr {
     let six = frMul(two, three)
     let inv6 = frInverse(six), inv2 = frInverse(two)
     let tm1 = frSub(t, one), tm2 = frSub(t, two), tm3 = frSub(t, three)
-    // L0 = (t-1)(t-2)(t-3)/(-6)
     let l0 = frMul(frMul(frSub(Fr.zero, inv6), frMul(tm1, tm2)), tm3)
-    // L1 = t(t-2)(t-3)/2
     let l1 = frMul(frMul(inv2, frMul(t, tm2)), tm3)
-    // L2 = t(t-1)(t-3)/(-2)
     let l2 = frMul(frMul(frSub(Fr.zero, inv2), frMul(t, tm1)), tm3)
-    // L3 = t(t-1)(t-2)/6
     let l3 = frMul(frMul(inv6, frMul(t, tm1)), tm2)
     return frAdd(frAdd(frMul(s0, l0), frMul(s1, l1)), frAdd(frMul(s2, l2), frMul(s3, l3)))
 }

@@ -136,76 +136,110 @@ public class ECDSAEngine {
     /// where R_i is the curve point with x-coordinate r_i.
     ///
     /// This requires lifting r_i to a curve point (computing y = sqrt(x^3 + 7)).
-    /// If any signature is invalid, P != O with probability ≥ 1 - 2^(-128).
+    /// If any signature is invalid, P != O with probability >= 1 - 2^(-128).
+    ///
+    /// Optimized: all CPU scalar work (batch inverse, weights, liftX) done in C CIOS.
     public func batchVerifyProbabilistic(signatures: [ECDSASignature], pubkeys: [SecpPointAffine],
                                           recoveryBits: [UInt8]? = nil) throws -> Bool {
         let n = signatures.count
         precondition(pubkeys.count == n)
         if n == 0 { return true }
 
-        // Step 1: Batch-invert all s values
-        let sInvs = secpFrBatchInverse(signatures.map { $0.s })
-
-        // Step 2: Generate random 128-bit weights
-        var rng: UInt64 = UInt64(CFAbsoluteTimeGetCurrent().bitPattern) ^ 0xDEADBEEF
-        var weights = [SecpFr]()
-        weights.reserveCapacity(n)
-        for _ in 0..<n {
-            rng = rng &* 6364136223846793005 &+ 1442695040888963407
-            let w0 = rng
-            rng = rng &* 6364136223846793005 &+ 1442695040888963407
-            let w1 = rng
-            weights.append(secpFrFromRaw([w0, w1, 0, 0]))
+        // Pack signatures into flat buffer: n * 12 uint64 [r[4], s[4], z[4]]
+        let totalMSMPoints = 2 * n + 1
+        var flatSigs = [UInt64](repeating: 0, count: n * 12)
+        for i in 0..<n {
+            let base = i * 12
+            flatSigs[base + 0] = signatures[i].r.v.0
+            flatSigs[base + 1] = signatures[i].r.v.1
+            flatSigs[base + 2] = signatures[i].r.v.2
+            flatSigs[base + 3] = signatures[i].r.v.3
+            flatSigs[base + 4] = signatures[i].s.v.0
+            flatSigs[base + 5] = signatures[i].s.v.1
+            flatSigs[base + 6] = signatures[i].s.v.2
+            flatSigs[base + 7] = signatures[i].s.v.3
+            flatSigs[base + 8] = signatures[i].z.v.0
+            flatSigs[base + 9] = signatures[i].z.v.1
+            flatSigs[base + 10] = signatures[i].z.v.2
+            flatSigs[base + 11] = signatures[i].z.v.3
         }
 
-        // Step 3: Compute weighted scalars
-        // For G: scalar = sum(w_i * u1_i)
-        // For Q_i: scalar = w_i * u2_i
-        // For R_i: scalar = -w_i (we subtract R_i contributions)
-        var gScalar = SecpFr.zero
-        var msmPoints = [SecpPointAffine]()
-        var msmScalars = [[UInt32]]()
-
-        msmPoints.reserveCapacity(n + 1)
-        msmScalars.reserveCapacity(n + 1)
-
+        // Pack pubkeys: n * 8 uint64 [x[4], y[4]] (already Fp Montgomery form)
+        // SecpFp stores 8xUInt32 which is same memory layout as 4xUInt64 (LE)
+        var flatPubkeys = [UInt64](repeating: 0, count: n * 8)
         for i in 0..<n {
-            let u1 = secpFrMul(signatures[i].z, sInvs[i])
-            let u2 = secpFrMul(signatures[i].r, sInvs[i])
+            let base = i * 8
+            let xl = pubkeys[i].x.to64()
+            let yl = pubkeys[i].y.to64()
+            flatPubkeys[base + 0] = xl[0]
+            flatPubkeys[base + 1] = xl[1]
+            flatPubkeys[base + 2] = xl[2]
+            flatPubkeys[base + 3] = xl[3]
+            flatPubkeys[base + 4] = yl[0]
+            flatPubkeys[base + 5] = yl[1]
+            flatPubkeys[base + 6] = yl[2]
+            flatPubkeys[base + 7] = yl[3]
+        }
 
-            // Accumulate w_i * u1_i for G
-            gScalar = secpFrAdd(gScalar, secpFrMul(weights[i], u1))
+        // Output buffers
+        var outPoints = [UInt64](repeating: 0, count: totalMSMPoints * 8)
+        var outScalars = [UInt32](repeating: 0, count: totalMSMPoints * 8)
 
-            // w_i * u2_i for Q_i
-            let wu2 = secpFrMul(weights[i], u2)
-            let wu2Raw = secpFrToInt(wu2)
-            msmPoints.append(pubkeys[i])
-            msmScalars.append(wu2Raw.flatMap { [UInt32($0 & 0xFFFFFFFF), UInt32($0 >> 32)] })
-
-            // -w_i for R_i (need to lift r_i to curve point)
-            let rRaw = secpFrToInt(signatures[i].r)
-            if let rPoint = liftX(rRaw, parity: recoveryBits?[i] ?? 0) {
-                let negW = secpFrNeg(weights[i])
-                let negWRaw = secpFrToInt(negW)
-                msmPoints.append(rPoint)
-                msmScalars.append(negWRaw.flatMap { [UInt32($0 & 0xFFFFFFFF), UInt32($0 >> 32)] })
-            } else {
-                return false  // r_i not a valid x-coordinate
+        // Call C batch preparation (does all scalar work + liftX in CIOS)
+        let recov = recoveryBits ?? [UInt8](repeating: 0, count: n)
+        let rc = flatSigs.withUnsafeBufferPointer { sigsBuf in
+            flatPubkeys.withUnsafeBufferPointer { pkBuf in
+                recov.withUnsafeBufferPointer { recovBuf in
+                    outPoints.withUnsafeMutableBufferPointer { ptsBuf in
+                        outScalars.withUnsafeMutableBufferPointer { scBuf in
+                            secp256k1_ecdsa_batch_prepare(
+                                sigsBuf.baseAddress!, pkBuf.baseAddress!,
+                                recovBuf.baseAddress!, Int32(n),
+                                ptsBuf.baseAddress!, scBuf.baseAddress!)
+                        }
+                    }
+                }
             }
         }
 
-        // Add G term
-        let gen = secp256k1Generator()
-        let gScalarRaw = secpFrToInt(gScalar)
-        msmPoints.append(gen)
-        msmScalars.append(gScalarRaw.flatMap { [UInt32($0 & 0xFFFFFFFF), UInt32($0 >> 32)] })
+        if rc != 0 { return false }  // some r_i not a valid x-coordinate
 
-        // Step 4: Single MSM
+        // For small batches, C Pippenger is faster than GPU (no launch overhead)
+        if totalMSMPoints <= 300 {
+            var result = SecpPointProjective(x: SecpFp.one, y: SecpFp.one, z: SecpFp.zero)
+            outPoints.withUnsafeBufferPointer { ptsBuf in
+                outScalars.withUnsafeBufferPointer { scBuf in
+                    withUnsafeMutableBytes(of: &result) { resBuf in
+                        secp256k1_pippenger_msm(
+                            ptsBuf.baseAddress!,
+                            scBuf.baseAddress!,
+                            Int32(totalMSMPoints),
+                            resBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                    }
+                }
+            }
+            return secpPointIsIdentity(result)
+        }
+
+        // For large batches, use GPU MSM
+        var msmPoints = [SecpPointAffine]()
+        msmPoints.reserveCapacity(totalMSMPoints)
+        var msmScalars = [[UInt32]]()
+        msmScalars.reserveCapacity(totalMSMPoints)
+        for i in 0..<totalMSMPoints {
+            let pb = i * 8
+            let pt = SecpPointAffine(
+                x: SecpFp.from64(Array(outPoints[pb ..< pb+4])),
+                y: SecpFp.from64(Array(outPoints[pb+4 ..< pb+8]))
+            )
+            msmPoints.append(pt)
+            msmScalars.append(Array(outScalars[i*8 ..< i*8+8]))
+        }
         let result = try msmEngine.msm(points: msmPoints, scalars: msmScalars)
         return secpPointIsIdentity(result)
     }
 
-    /// Lift an x-coordinate to a curve point: y² = x³ + 7
+    /// Lift an x-coordinate to a curve point: y^2 = x^3 + 7
     /// Returns the point with the given parity of y (0 = even, 1 = odd).
     private func liftX(_ xRaw: [UInt64], parity: UInt8) -> SecpPointAffine? {
         let x = secpFromRawFp(xRaw)

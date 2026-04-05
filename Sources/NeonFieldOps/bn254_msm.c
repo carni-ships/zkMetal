@@ -1349,10 +1349,19 @@ void bn254_fr_full_sumcheck(const uint64_t *evals, int numVars,
 // evals: 2^numVars Fr elements. point: numVars Fr elements.
 // Returns single Fr in result.
 // Uses bn254_fr_vector_fold for the inner loop (same operation pattern).
+// Stack-based for numVars <= 6 (64 elements = 2KB), heap for larger.
 void bn254_fr_mle_eval(const uint64_t *evals, int numVars,
                         const uint64_t *point, uint64_t result[4]) {
     int n = 1 << numVars;
-    uint64_t *buf = (uint64_t *)malloc(n * 32);
+
+    // Stack buffer for small sizes (up to 2^6 = 64 elements = 2KB)
+    uint64_t stack_buf[256]; // 64 Fr elements * 4 uint64 each
+    uint64_t *buf;
+    if (numVars <= 6) {
+        buf = stack_buf;
+    } else {
+        buf = (uint64_t *)malloc(n * 32);
+    }
     memcpy(buf, evals, n * 32);
 
     for (int v = 0; v < numVars; v++) {
@@ -1366,7 +1375,57 @@ void bn254_fr_mle_eval(const uint64_t *evals, int numVars,
         n = half;
     }
     memcpy(result, buf, 32);
-    free(buf);
+    if (numVars > 6) free(buf);
+}
+
+// Fused sparse matvec + MLE eval: computes MLE(M*z)(point) without
+// materializing the M*z vector as a Swift array.
+// CSR format: rowPtr[rows+1], colIdx[nnz], values[nnz*4 uint64].
+// z: n Fr elements. point: numVars Fr elements.
+// padM: 1 << numVars (padded row count, must be >= rows).
+// result: single Fr element.
+void bn254_sparse_matvec_mle(
+    const int *rowPtr, const int *colIdx, const uint64_t *values,
+    int rows, const uint64_t *z,
+    const uint64_t *point, int numVars, int padM,
+    uint64_t result[4])
+{
+    // Stack buffer for padded matvec result (up to 64 rows)
+    uint64_t stack_mv[256]; // 64 Fr elements
+    uint64_t *mv;
+    if (padM <= 64) {
+        mv = stack_mv;
+    } else {
+        mv = (uint64_t *)malloc(padM * 32);
+    }
+
+    // Compute M*z
+    for (int i = 0; i < rows; i++) {
+        uint64_t acc[4] = {0,0,0,0};
+        for (int k = rowPtr[i]; k < rowPtr[i+1]; k++) {
+            uint64_t tmp[4];
+            fr_mul(values + k*4, z + colIdx[k]*4, tmp);
+            fr_add(acc, tmp, acc);
+        }
+        memcpy(mv + i*4, acc, 32);
+    }
+    // Zero-pad
+    for (int i = rows; i < padM; i++) {
+        memset(mv + i*4, 0, 32);
+    }
+
+    // MLE eval (reuse stack buffer — we modify in-place)
+    int n = padM;
+    for (int v = 0; v < numVars; v++) {
+        int half = n >> 1;
+        const uint64_t *r = point + v * 4;
+        uint64_t one_minus_r[4];
+        fr_sub(FR_ONE, r, one_minus_r);
+        bn254_fr_vector_fold(mv, mv + half * 4, one_minus_r, r, half, mv);
+        n = half;
+    }
+    memcpy(result, mv, 32);
+    if (padM > 64) free(mv);
 }
 
 // Fused: gather subtable values by index, add beta, batch inverse.

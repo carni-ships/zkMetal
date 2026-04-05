@@ -719,25 +719,44 @@ void gkr_sumcheck_round_x(
         const uint64_t *vx1 = (xIdx + vxHalf < vxSize) ? vx + (xIdx + vxHalf) * FR_LIMBS : ZERO;
         const uint64_t *vyVal = (yIdx < vySize) ? vy + yIdx * FR_LIMBS : ZERO;
 
-        // c0 = a0 + m0*vy, c1 = a1 + m1*vy
-        uint64_t m0vy[4], m1vy[4], c0[4], c1[4], a0vy[4], a1vy[4];
-        mont_mul_4limb(m0, vyVal, BN254_FR_P, BN254_FR_INV, m0vy);
-        mont_mul_4limb(m1, vyVal, BN254_FR_P, BN254_FR_INV, m1vy);
-        mont_add_4limb(a0, m0vy, BN254_FR_P, c0);
-        mont_add_4limb(a1, m1vy, BN254_FR_P, c1);
-        mont_mul_4limb(a0, vyVal, BN254_FR_P, BN254_FR_INV, a0vy);
-        mont_mul_4limb(a1, vyVal, BN254_FR_P, BN254_FR_INV, a1vy);
+        // Contribution per entry pair:
+        //   g(t) = (a_t + m_t*vy)*vx_t + a_t*vy
+        // where a_t, m_t are interpolated add/mul coefficients at t
+        // Optimize: skip multiplications for zero coefficients
+        uint64_t c0[4], c1[4], a0vy[4], a1vy[4];
+        int a0z = fr_is_zero(a0), m0z = fr_is_zero(m0);
+        int a1z = fr_is_zero(a1), m1z = fr_is_zero(m1);
+
+        // c0 = a0 + m0*vy
+        if (m0z) { fr_copy(c0, a0); }
+        else if (a0z) { mont_mul_4limb(m0, vyVal, BN254_FR_P, BN254_FR_INV, c0); }
+        else { uint64_t t[4]; mont_mul_4limb(m0, vyVal, BN254_FR_P, BN254_FR_INV, t); mont_add_4limb(a0, t, BN254_FR_P, c0); }
+
+        // c1 = a1 + m1*vy
+        if (m1z) { fr_copy(c1, a1); }
+        else if (a1z) { mont_mul_4limb(m1, vyVal, BN254_FR_P, BN254_FR_INV, c1); }
+        else { uint64_t t[4]; mont_mul_4limb(m1, vyVal, BN254_FR_P, BN254_FR_INV, t); mont_add_4limb(a1, t, BN254_FR_P, c1); }
+
+        // a0vy = a0*vy, a1vy = a1*vy
+        if (a0z) { fr_zero(a0vy); } else { mont_mul_4limb(a0, vyVal, BN254_FR_P, BN254_FR_INV, a0vy); }
+        if (a1z) { fr_zero(a1vy); } else { mont_mul_4limb(a1, vyVal, BN254_FR_P, BN254_FR_INV, a1vy); }
 
         // g0 = c0*vx0 + a0vy
         uint64_t g0[4], g1[4];
-        mont_mul_4limb(c0, vx0, BN254_FR_P, BN254_FR_INV, g0);
-        mont_add_4limb(g0, a0vy, BN254_FR_P, g0);
-        mont_add_4limb(s0, g0, BN254_FR_P, s0);
+        if (fr_is_zero(c0) && a0z) { /* g0 = 0, skip */ }
+        else {
+            mont_mul_4limb(c0, vx0, BN254_FR_P, BN254_FR_INV, g0);
+            if (!a0z) { mont_add_4limb(g0, a0vy, BN254_FR_P, g0); }
+            mont_add_4limb(s0, g0, BN254_FR_P, s0);
+        }
 
         // g1 = c1*vx1 + a1vy
-        mont_mul_4limb(c1, vx1, BN254_FR_P, BN254_FR_INV, g1);
-        mont_add_4limb(g1, a1vy, BN254_FR_P, g1);
-        mont_add_4limb(s1, g1, BN254_FR_P, s1);
+        if (fr_is_zero(c1) && a1z) { /* g1 = 0, skip */ }
+        else {
+            mont_mul_4limb(c1, vx1, BN254_FR_P, BN254_FR_INV, g1);
+            if (!a1z) { mont_add_4limb(g1, a1vy, BN254_FR_P, g1); }
+            mont_add_4limb(s1, g1, BN254_FR_P, s1);
+        }
 
         // g2: c2=2c1-c0, a2vy=2*a1vy-a0vy, vx2=2vx1-vx0
         uint64_t c2[4], a2vy[4], vx2[4], g2[4];
@@ -807,23 +826,36 @@ void gkr_sumcheck_round_y(
         const uint64_t *vy0 = (mergedIdx < vyHalf) ? vy + mergedIdx * FR_LIMBS : ZERO;
         const uint64_t *vy1 = (mergedIdx + vyHalf < vySize) ? vy + (mergedIdx + vyHalf) * FR_LIMBS : ZERO;
 
-        // c0 = a0 + m0*vx, c1 = a1 + m1*vx
-        uint64_t m0vx[4], m1vx[4], c0[4], c1[4], a0vx[4], a1vx[4];
-        mont_mul_4limb(m0, vxScalar, BN254_FR_P, BN254_FR_INV, m0vx);
-        mont_mul_4limb(m1, vxScalar, BN254_FR_P, BN254_FR_INV, m1vx);
-        mont_add_4limb(a0, m0vx, BN254_FR_P, c0);
-        mont_add_4limb(a1, m1vx, BN254_FR_P, c1);
-        mont_mul_4limb(a0, vxScalar, BN254_FR_P, BN254_FR_INV, a0vx);
-        mont_mul_4limb(a1, vxScalar, BN254_FR_P, BN254_FR_INV, a1vx);
+        // Optimize: skip multiplications for zero coefficients
+        uint64_t c0[4], c1[4], a0vx[4], a1vx[4];
+        int a0z = fr_is_zero(a0), m0z = fr_is_zero(m0);
+        int a1z = fr_is_zero(a1), m1z = fr_is_zero(m1);
+
+        if (m0z) { fr_copy(c0, a0); }
+        else if (a0z) { mont_mul_4limb(m0, vxScalar, BN254_FR_P, BN254_FR_INV, c0); }
+        else { uint64_t t[4]; mont_mul_4limb(m0, vxScalar, BN254_FR_P, BN254_FR_INV, t); mont_add_4limb(a0, t, BN254_FR_P, c0); }
+
+        if (m1z) { fr_copy(c1, a1); }
+        else if (a1z) { mont_mul_4limb(m1, vxScalar, BN254_FR_P, BN254_FR_INV, c1); }
+        else { uint64_t t[4]; mont_mul_4limb(m1, vxScalar, BN254_FR_P, BN254_FR_INV, t); mont_add_4limb(a1, t, BN254_FR_P, c1); }
+
+        if (a0z) { fr_zero(a0vx); } else { mont_mul_4limb(a0, vxScalar, BN254_FR_P, BN254_FR_INV, a0vx); }
+        if (a1z) { fr_zero(a1vx); } else { mont_mul_4limb(a1, vxScalar, BN254_FR_P, BN254_FR_INV, a1vx); }
 
         uint64_t g0[4], g1[4];
-        mont_mul_4limb(c0, vy0, BN254_FR_P, BN254_FR_INV, g0);
-        mont_add_4limb(g0, a0vx, BN254_FR_P, g0);
-        mont_add_4limb(s0, g0, BN254_FR_P, s0);
+        if (fr_is_zero(c0) && a0z) { /* skip */ }
+        else {
+            mont_mul_4limb(c0, vy0, BN254_FR_P, BN254_FR_INV, g0);
+            if (!a0z) { mont_add_4limb(g0, a0vx, BN254_FR_P, g0); }
+            mont_add_4limb(s0, g0, BN254_FR_P, s0);
+        }
 
-        mont_mul_4limb(c1, vy1, BN254_FR_P, BN254_FR_INV, g1);
-        mont_add_4limb(g1, a1vx, BN254_FR_P, g1);
-        mont_add_4limb(s1, g1, BN254_FR_P, s1);
+        if (fr_is_zero(c1) && a1z) { /* skip */ }
+        else {
+            mont_mul_4limb(c1, vy1, BN254_FR_P, BN254_FR_INV, g1);
+            if (!a1z) { mont_add_4limb(g1, a1vx, BN254_FR_P, g1); }
+            mont_add_4limb(s1, g1, BN254_FR_P, s1);
+        }
 
         uint64_t c2[4], a2vx[4], vy2[4], g2[4];
         mont_add_4limb(c1, c1, BN254_FR_P, c2);
@@ -874,23 +906,56 @@ int gkr_wiring_reduce(
 
         if (lowIdx < highIdx) {
             out[0] = (uint64_t)lowIdx;
-            mont_mul_4limb(oneMinusC, WENTRY_ADD(wiring, li), BN254_FR_P, BN254_FR_INV, out + 1);
-            mont_mul_4limb(oneMinusC, WENTRY_MUL(wiring, li), BN254_FR_P, BN254_FR_INV, out + 5);
+            const uint64_t *aCoeff = WENTRY_ADD(wiring, li);
+            const uint64_t *mCoeff = WENTRY_MUL(wiring, li);
+            // Skip zero coefficients to save mont_mul
+            if (fr_is_zero(aCoeff)) { fr_zero(out + 1); }
+            else { mont_mul_4limb(oneMinusC, aCoeff, BN254_FR_P, BN254_FR_INV, out + 1); }
+            if (fr_is_zero(mCoeff)) { fr_zero(out + 5); }
+            else { mont_mul_4limb(oneMinusC, mCoeff, BN254_FR_P, BN254_FR_INV, out + 5); }
             li++;
         } else if (highIdx < lowIdx) {
             out[0] = (uint64_t)highIdx;
-            mont_mul_4limb(challenge, WENTRY_ADD(wiring, hi_ptr), BN254_FR_P, BN254_FR_INV, out + 1);
-            mont_mul_4limb(challenge, WENTRY_MUL(wiring, hi_ptr), BN254_FR_P, BN254_FR_INV, out + 5);
+            const uint64_t *aCoeff = WENTRY_ADD(wiring, hi_ptr);
+            const uint64_t *mCoeff = WENTRY_MUL(wiring, hi_ptr);
+            if (fr_is_zero(aCoeff)) { fr_zero(out + 1); }
+            else { mont_mul_4limb(challenge, aCoeff, BN254_FR_P, BN254_FR_INV, out + 1); }
+            if (fr_is_zero(mCoeff)) { fr_zero(out + 5); }
+            else { mont_mul_4limb(challenge, mCoeff, BN254_FR_P, BN254_FR_INV, out + 5); }
             hi_ptr++;
         } else {
             out[0] = (uint64_t)lowIdx;
+            const uint64_t *aLo = WENTRY_ADD(wiring, li);
+            const uint64_t *aHi = WENTRY_ADD(wiring, hi_ptr);
+            const uint64_t *mLo = WENTRY_MUL(wiring, li);
+            const uint64_t *mHi = WENTRY_MUL(wiring, hi_ptr);
             uint64_t t1[4], t2[4];
-            mont_mul_4limb(oneMinusC, WENTRY_ADD(wiring, li), BN254_FR_P, BN254_FR_INV, t1);
-            mont_mul_4limb(challenge, WENTRY_ADD(wiring, hi_ptr), BN254_FR_P, BN254_FR_INV, t2);
-            mont_add_4limb(t1, t2, BN254_FR_P, out + 1);
-            mont_mul_4limb(oneMinusC, WENTRY_MUL(wiring, li), BN254_FR_P, BN254_FR_INV, t1);
-            mont_mul_4limb(challenge, WENTRY_MUL(wiring, hi_ptr), BN254_FR_P, BN254_FR_INV, t2);
-            mont_add_4limb(t1, t2, BN254_FR_P, out + 5);
+            // Add coefficients
+            int aLoZ = fr_is_zero(aLo), aHiZ = fr_is_zero(aHi);
+            if (aLoZ && aHiZ) {
+                fr_zero(out + 1);
+            } else if (aLoZ) {
+                mont_mul_4limb(challenge, aHi, BN254_FR_P, BN254_FR_INV, out + 1);
+            } else if (aHiZ) {
+                mont_mul_4limb(oneMinusC, aLo, BN254_FR_P, BN254_FR_INV, out + 1);
+            } else {
+                mont_mul_4limb(oneMinusC, aLo, BN254_FR_P, BN254_FR_INV, t1);
+                mont_mul_4limb(challenge, aHi, BN254_FR_P, BN254_FR_INV, t2);
+                mont_add_4limb(t1, t2, BN254_FR_P, out + 1);
+            }
+            // Mul coefficients
+            int mLoZ = fr_is_zero(mLo), mHiZ = fr_is_zero(mHi);
+            if (mLoZ && mHiZ) {
+                fr_zero(out + 5);
+            } else if (mLoZ) {
+                mont_mul_4limb(challenge, mHi, BN254_FR_P, BN254_FR_INV, out + 5);
+            } else if (mHiZ) {
+                mont_mul_4limb(oneMinusC, mLo, BN254_FR_P, BN254_FR_INV, out + 5);
+            } else {
+                mont_mul_4limb(oneMinusC, mLo, BN254_FR_P, BN254_FR_INV, t1);
+                mont_mul_4limb(challenge, mHi, BN254_FR_P, BN254_FR_INV, t2);
+                mont_add_4limb(t1, t2, BN254_FR_P, out + 5);
+            }
             li++;
             hi_ptr++;
         }

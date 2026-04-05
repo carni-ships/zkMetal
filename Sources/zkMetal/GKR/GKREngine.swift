@@ -53,8 +53,87 @@ public class GKREngine {
     public static let version = Versions.gkr
     public let circuit: LayeredCircuit
 
+    // Pre-computed gate data in C format: [type(0=add/1=mul), left, right] per gate
+    private let layerGateData: [[Int32]]
+    // Pre-computed sorted unique wiring indices per layer
+    private let layerWiringKeys: [[Int]]
+    // Pre-computed: for each wiring entry, list of (gateIndex, isAdd) pairs
+    private let layerWiringGates: [[(gateIdx: Int, isAdd: Bool)]]
+    // Flat gate-to-wiring-entry mapping
+    private let layerGateToWiring: [[Int]]
+
+    // Cached buffers for reuse across prove calls
+    private var _cachedWiring: [UInt64] = []
+    private var _cachedWiringAlt: [UInt64] = []
+    private var _cachedVx: [UInt64] = []
+    private var _cachedVy: [UInt64] = []
+
     public init(circuit: LayeredCircuit) {
         self.circuit = circuit
+
+        var gateData = [[Int32]]()
+        var wiringKeys = [[Int]]()
+        var wiringGates = [[(gateIdx: Int, isAdd: Bool)]]()
+        var gateToWiring = [[Int]]()
+
+        for layerIdx in 0..<circuit.layers.count {
+            let layer = circuit.layers[layerIdx]
+            let nIn = circuit.inputVars(layer: layerIdx)
+            let inSize = 1 << nIn
+
+            // Gate data in C format
+            var gd = [Int32](repeating: 0, count: layer.gates.count * 3)
+            for (i, gate) in layer.gates.enumerated() {
+                gd[i * 3] = gate.type == .add ? 0 : 1
+                gd[i * 3 + 1] = Int32(gate.leftInput)
+                gd[i * 3 + 2] = Int32(gate.rightInput)
+            }
+            gateData.append(gd)
+
+            // Build wiring topology
+            var dict = [Int: Int]()  // xyIdx -> wiring entry index
+            dict.reserveCapacity(layer.gates.count)
+            var keys = [Int]()
+            keys.reserveCapacity(layer.gates.count)
+            var g2w = [Int](repeating: 0, count: layer.gates.count)
+
+            for (gIdx, gate) in layer.gates.enumerated() {
+                let xyIdx = gate.leftInput * inSize + gate.rightInput
+                if let idx = dict[xyIdx] {
+                    g2w[gIdx] = idx
+                } else {
+                    let idx = keys.count
+                    dict[xyIdx] = idx
+                    keys.append(xyIdx)
+                    g2w[gIdx] = idx
+                }
+            }
+
+            // Sort keys and build remapping
+            let sortedIndices = keys.indices.sorted { keys[$0] < keys[$1] }
+            var remap = [Int](repeating: 0, count: keys.count)
+            var sortedKeys = [Int](repeating: 0, count: keys.count)
+            for (newIdx, oldIdx) in sortedIndices.enumerated() {
+                remap[oldIdx] = newIdx
+                sortedKeys[newIdx] = keys[oldIdx]
+            }
+
+            // Remap gate-to-wiring
+            for i in 0..<g2w.count {
+                g2w[i] = remap[g2w[i]]
+            }
+
+            wiringKeys.append(sortedKeys)
+            gateToWiring.append(g2w)
+
+            // Build per-entry gate lists (not used in hot path but useful for debugging)
+            wiringGates.append([])
+        }
+
+        self.layerGateData = gateData
+        self.layerWiringKeys = wiringKeys
+        self.layerWiringGates = wiringGates
+        self.layerGateToWiring = gateToWiring
     }
 
     // MARK: - Prover
@@ -93,7 +172,8 @@ public class GKREngine {
                 rPoints: rPoints,
                 layer: circuit.layers[layerIdx],
                 prevMLE: prevMLE, nOut: nOut, nIn: nIn,
-                transcript: transcript
+                transcript: transcript,
+                layerIdx: layerIdx
             )
 
             let vx = cMleEval(evals: prevMLE.evals, point: rx, numVars: nIn)
@@ -117,27 +197,31 @@ public class GKREngine {
 
     /// Batched sumcheck for one GKR layer using sparse wiring predicates.
     /// C-accelerated: eq polynomial, sumcheck rounds, wiring reduction, and MLE folding
-    /// all use CIOS Montgomery C code, eliminating Swift to64/from64 overhead.
+    /// all use CIOS Montgomery C code. Pre-computed wiring topology eliminates Dictionary
+    /// construction and sorting. Cached buffers eliminate per-call allocations.
     private func proverBatchedSumcheck(
         rPoints: [([Fr], Fr)],  // [(output_point, weight)]
         layer: CircuitLayer,
         prevMLE: MultilinearPoly,
         nOut: Int, nIn: Int,
-        transcript: Transcript
+        transcript: Transcript,
+        layerIdx: Int
     ) -> (msgs: [SumcheckRoundMsg], rx: [Fr], ry: [Fr]) {
 
         let totalVars = 2 * nIn
-        let inSize = 1 << nIn
         let numGates = layer.gates.count
         let eqSize = 1 << nOut
+        let sortedKeys = layerWiringKeys[layerIdx]
+        let g2w = layerGateToWiring[layerIdx]
+        let gd = layerGateData[layerIdx]
+        let numEntries = sortedKeys.count
 
-        // Build sparse wiring using C-accelerated eq polynomial + Swift Dictionary.
-        // Dictionary is O(numGates) space; eq polynomial computed in C.
-        var sparseWiringDict = [Int: (Fr, Fr)]()
-        sparseWiringDict.reserveCapacity(numGates)
+        // Build wiring coefficients using pre-computed topology
+        // addCoeffs[i] and mulCoeffs[i] correspond to sortedKeys[i]
+        var addCoeffs = [Fr](repeating: Fr.zero, count: numEntries)
+        var mulCoeffs = [Fr](repeating: Fr.zero, count: numEntries)
 
         for (rk, wk) in rPoints {
-            // Compute eq polynomial using C, then batch-multiply by weight
             var eqVals = [Fr](repeating: Fr.zero, count: eqSize)
             rk.withUnsafeBytes { rkBuf in
                 eqVals.withUnsafeMutableBytes { eqBuf in
@@ -148,73 +232,83 @@ public class GKREngine {
                     )
                 }
             }
-            // Batch multiply all eq values by weight using C (avoids per-element frMul)
-            var coeffs = [Fr](repeating: Fr.zero, count: eqSize)
-            eqVals.withUnsafeBytes { eqBuf in
-                withUnsafeBytes(of: wk) { wkBuf in
-                    coeffs.withUnsafeMutableBytes { outBuf in
-                        bn254_fr_batch_mul_scalar_neon(
-                            outBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            eqBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            wkBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            Int32(eqSize)
-                        )
+            // When weight = 1, skip batch multiply (identity in Montgomery form)
+            let isUnitWeight = gkrFrEqual(wk, Fr.one)
+            var coeffs: [Fr]
+            if isUnitWeight {
+                coeffs = eqVals
+            } else {
+                coeffs = [Fr](repeating: Fr.zero, count: eqSize)
+                eqVals.withUnsafeBytes { eqBuf in
+                    withUnsafeBytes(of: wk) { wkBuf in
+                        coeffs.withUnsafeMutableBytes { outBuf in
+                            bn254_fr_batch_mul_scalar_neon(
+                                outBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                eqBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                wkBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                Int32(eqSize)
+                            )
+                        }
                     }
                 }
             }
 
-            for (gIdx, gate) in layer.gates.enumerated() {
-                let coeff = gIdx < coeffs.count ? coeffs[gIdx] : Fr.zero
+            // Accumulate using pre-computed gate-to-wiring mapping (no Dictionary)
+            for gIdx in 0..<numGates {
+                let coeff = gIdx < eqSize ? coeffs[gIdx] : Fr.zero
                 if coeff.isZero { continue }
-                let xyIdx = gate.leftInput * inSize + gate.rightInput
-
-                var entry = sparseWiringDict[xyIdx] ?? (Fr.zero, Fr.zero)
-                switch gate.type {
-                case .add: entry.0 = frAdd(entry.0, coeff)
-                case .mul: entry.1 = frAdd(entry.1, coeff)
+                let wIdx = g2w[gIdx]
+                if gd[gIdx * 3] == 0 { // add
+                    addCoeffs[wIdx] = frAdd(addCoeffs[wIdx], coeff)
+                } else { // mul
+                    mulCoeffs[wIdx] = frAdd(mulCoeffs[wIdx], coeff)
                 }
-                sparseWiringDict[xyIdx] = entry
             }
         }
 
-        // Convert to sorted C wiring format: [idx(1), addCoeff(4), mulCoeff(4)] per entry
-        var entries = [(Int, Fr, Fr)]()
-        entries.reserveCapacity(sparseWiringDict.count)
-        for (idx, coeffs) in sparseWiringDict {
-            if !coeffs.0.isZero || !coeffs.1.isZero {
-                entries.append((idx, coeffs.0, coeffs.1))
-            }
+        // Pack into C wiring format using cached buffers (already sorted)
+        let wiringSize = numEntries * 9
+        if _cachedWiring.count < wiringSize {
+            _cachedWiring = [UInt64](repeating: 0, count: max(wiringSize, 1024 * 9))
+            _cachedWiringAlt = [UInt64](repeating: 0, count: max(wiringSize, 1024 * 9))
         }
-        entries.sort { $0.0 < $1.0 }
 
-        let numEntries = entries.count
-        var cWiring = [UInt64](repeating: 0, count: numEntries * 9)
-        for (i, entry) in entries.enumerated() {
-            let base = i * 9
-            cWiring[base] = UInt64(entry.0)
-            withUnsafeBytes(of: entry.1) { src in
-                for j in 0..<4 {
-                    cWiring[base + 1 + j] = src.load(fromByteOffset: j * 8, as: UInt64.self)
-                }
-            }
-            withUnsafeBytes(of: entry.2) { src in
-                for j in 0..<4 {
-                    cWiring[base + 5 + j] = src.load(fromByteOffset: j * 8, as: UInt64.self)
+        _cachedWiring.withUnsafeMutableBufferPointer { wBuf in
+            let p = wBuf.baseAddress!
+            addCoeffs.withUnsafeBytes { addBuf in
+                let ap = addBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                mulCoeffs.withUnsafeBytes { mulBuf in
+                    let mp = mulBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    for i in 0..<numEntries {
+                        let base = i * 9
+                        p[base] = UInt64(sortedKeys[i])
+                        p[base + 1] = ap[i * 4]
+                        p[base + 2] = ap[i * 4 + 1]
+                        p[base + 3] = ap[i * 4 + 2]
+                        p[base + 4] = ap[i * 4 + 3]
+                        p[base + 5] = mp[i * 4]
+                        p[base + 6] = mp[i * 4 + 1]
+                        p[base + 7] = mp[i * 4 + 2]
+                        p[base + 8] = mp[i * 4 + 3]
+                    }
                 }
             }
         }
         var numWiringEntries = numEntries
 
-        // Convert MLE evaluations to flat UInt64 arrays for C functions
+        // Set up MLE evaluations using cached buffers
         let evalCount = prevMLE.evals.count
-        var curVx = [UInt64](repeating: 0, count: evalCount * 4)
-        var curVy = [UInt64](repeating: 0, count: evalCount * 4)
+        let evalU64Count = evalCount * 4
+        if _cachedVx.count < evalU64Count {
+            _cachedVx = [UInt64](repeating: 0, count: evalU64Count)
+            _cachedVy = [UInt64](repeating: 0, count: evalU64Count)
+        }
         prevMLE.evals.withUnsafeBytes { src in
-            curVx.withUnsafeMutableBytes { dst in
-                dst.copyMemory(from: UnsafeRawBufferPointer(src))
+            _cachedVx.withUnsafeMutableBytes { dst in
+                dst.baseAddress!.copyMemory(from: src.baseAddress!, byteCount: evalCount * 32)
             }
-            curVy.withUnsafeMutableBytes { dst in
-                dst.copyMemory(from: UnsafeRawBufferPointer(src))
+            _cachedVy.withUnsafeMutableBytes { dst in
+                dst.baseAddress!.copyMemory(from: src.baseAddress!, byteCount: evalCount * 32)
             }
         }
         var vxSize = Int32(evalCount)
@@ -226,25 +320,24 @@ public class GKREngine {
         challenges.reserveCapacity(totalVars)
 
         var currentTableSize = Int32(1 << totalVars)
-        var cWiringAlt = [UInt64](repeating: 0, count: numEntries * 9)
+
+        // Pre-allocate round buffers outside the loop
+        var s0 = [UInt64](repeating: 0, count: 4)
+        var s1 = [UInt64](repeating: 0, count: 4)
+        var s2 = [UInt64](repeating: 0, count: 4)
+        var chal = [UInt64](repeating: 0, count: 4)
 
         for round in 0..<totalVars {
             let halfSize = currentTableSize / 2
 
-            // Compute s0, s1, s2 using C
-            var s0 = [UInt64](repeating: 0, count: 4)
-            var s1 = [UInt64](repeating: 0, count: 4)
-            var s2 = [UInt64](repeating: 0, count: 4)
-
             gkr_sumcheck_step(
-                cWiring, Int32(numWiringEntries),
-                curVx, vxSize,
-                curVy, vySize,
+                _cachedWiring, Int32(numWiringEntries),
+                _cachedVx, vxSize,
+                _cachedVy, vySize,
                 Int32(round), Int32(nIn), currentTableSize,
                 &s0, &s1, &s2
             )
 
-            // Convert s0, s1, s2 back to Fr for transcript
             let frS0 = s0.withUnsafeBytes { Fr(v: $0.load(as: (UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32).self)) }
             let frS1 = s1.withUnsafeBytes { Fr(v: $0.load(as: (UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32).self)) }
             let frS2 = s2.withUnsafeBytes { Fr(v: $0.load(as: (UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32).self)) }
@@ -257,35 +350,31 @@ public class GKREngine {
             let challenge = transcript.squeeze()
             challenges.append(challenge)
 
-            // Convert challenge to UInt64[4]
-            var chal = [UInt64](repeating: 0, count: 4)
             withUnsafeBytes(of: challenge) { src in
                 chal.withUnsafeMutableBytes { dst in
-                    dst.copyMemory(from: UnsafeRawBufferPointer(src))
+                    dst.baseAddress!.copyMemory(from: src.baseAddress!, byteCount: 32)
                 }
             }
 
-            // Reduce wiring using C
             let newCount = gkr_wiring_reduce(
-                cWiring, Int32(numWiringEntries),
+                _cachedWiring, Int32(numWiringEntries),
                 chal, halfSize,
-                &cWiringAlt
+                &_cachedWiringAlt
             )
-            swap(&cWiring, &cWiringAlt)
+            swap(&_cachedWiring, &_cachedWiringAlt)
             numWiringEntries = Int(newCount)
             currentTableSize = halfSize
 
-            // MLE fold using C
             if round < nIn {
                 let vxHalf = vxSize / 2
                 if vxHalf > 0 {
-                    gkr_mle_fold(&curVx, Int32(vxHalf), chal)
+                    gkr_mle_fold(&_cachedVx, Int32(vxHalf), chal)
                     vxSize = vxHalf
                 }
             } else {
                 let vyHalf = vySize / 2
                 if vyHalf > 0 {
-                    gkr_mle_fold(&curVy, Int32(vyHalf), chal)
+                    gkr_mle_fold(&_cachedVy, Int32(vyHalf), chal)
                     vySize = vyHalf
                 }
             }

@@ -35,7 +35,8 @@ public func runFoldingBench() {
     let b1 = frAdd(a0, b0)  // = 2
     let (pub1, wit1) = fibonacciWitness(a: a1, b: b1)
     let newC = engine.pp.commit(witness: wit1)
-    let newCCCS = CCCS(commitment: newC, publicInput: pub1)
+    let (cAx1, cAy1) = engine.commitmentToAffineFr(newC)
+    let newCCCS = CCCS(commitment: newC, publicInput: pub1, affineX: cAx1, affineY: cAy1)
     let (folded1, foldedWit1, proof1) = engine.fold(
         running: lcccs0, runningWitness: wit,
         new: newCCCS, newWitness: wit1)
@@ -92,7 +93,8 @@ public func runFoldingBench() {
         let b1B = frFromInt(2)
         let (pub1B, wit1B) = fibonacciWitness(a: a1B, b: b1B)
         let newCB = engineB.pp.commit(witness: wit1B)
-        let newCCCSB = CCCS(commitment: newCB, publicInput: pub1B)
+        let (cAxB, cAyB) = engineB.commitmentToAffineFr(newCB)
+        let newCCCSB = CCCS(commitment: newCB, publicInput: pub1B, affineX: cAxB, affineY: cAyB)
 
         let iters = 1000
         // Measure fold

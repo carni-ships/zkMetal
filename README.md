@@ -281,15 +281,15 @@ Verification now **VALID**. Cached affine points, CPU NTT for small sizes, paral
 
 | Circuit | Prove | Verify |
 |---------|-------|--------|
-| 2^4 width, d=4 | 0.20ms | 0.31ms |
-| 2^5 width, d=4 | 0.35ms | 0.49ms |
-| 2^6 width, d=4 | 0.62ms | 0.76ms |
-| 2^6 width, d=8 | 1.2ms | 1.6ms |
-| 2^8 width, d=4 | 2.5ms | 2.3ms |
-| 2^8 width, d=8 | 5.0ms | 4.7ms |
-| 2^10 width, d=4 | 11ms | 8.2ms |
+| 2^4 width, d=4 | 0.15ms | 0.30ms |
+| 2^5 width, d=4 | 0.25ms | 0.46ms |
+| 2^6 width, d=4 | 0.44ms | 0.73ms |
+| 2^6 width, d=8 | 0.99ms | 1.51ms |
+| 2^8 width, d=4 | 1.78ms | 2.39ms |
+| 2^8 width, d=8 | 3.53ms | 4.61ms |
+| 2^10 width, d=4 | 7.68ms | 8.39ms |
 
-C CIOS Montgomery acceleration: eq polynomial, sumcheck rounds, wiring reduction, MLE fold all in C. Previous Swift-only: 241ms at 2^10 d=4 -- **22x** improvement.
+C CIOS Montgomery acceleration: pre-computed wiring topology, cached buffers, eq polynomial, sumcheck rounds, MLE fold all in C. Previous Swift-only: 241ms at 2^10 d=4 -- **31x** improvement.
 
 ### GPU Radix Sort
 
@@ -324,7 +324,7 @@ C CIOS Montgomery acceleration: eq polynomial, sumcheck rounds, wiring reduction
 | Blake3 NEON | 2^18 | 17ms | 1.4ms (GPU) | **12x** | NEON 0.10 us/hash, GPU overtakes at 2^14 |
 | BN254 batch add (C) | 100K | 16ms | 264 us | **60x** | 2.6 ns/op vectorized |
 | BN254 batch mul (C) | 100K | -- | 1.3ms | -- | 13.4 ns/op CIOS |
-| ECDSA batch 64 (CPU) | 64 sigs | -- | 8.0ms | **12x** | 0.13ms/sig, C CIOS scalar mul |
+| ECDSA batch 64 (CPU) | 64 sigs | -- | 1.7ms | **57x** | 0.03ms/sig, C CIOS Fr + batch prepare |
 
 ### Supporting Primitives
 
@@ -343,7 +343,7 @@ C CIOS Montgomery acceleration: eq polynomial, sumcheck rounds, wiring reduction
 
 | Primitive | Key Benchmark | Notes |
 |-----------|---------------|-------|
-| HyperNova fold | 0.11ms/fold (10-1000 steps) | Keccak256 transcript + C CIOS: **33x** improvement (3.6ms→0.11ms) |
+| HyperNova fold | 0.09ms/fold (10-1000 steps) | Keccak256 transcript + C CIOS + pre-computed affine: **40x** (3.6ms→0.09ms) |
 | Basefold open 2^18 | 144ms | NTT-free multilinear PCS |
 | Brakedown PCS | -- | Crashes on some hardware (signal 139) |
 | Zeromorph PCS | -- | Crashes on some hardware (signal 139) |
@@ -352,6 +352,7 @@ C CIOS Montgomery acceleration: eq polynomial, sumcheck rounds, wiring reduction
 | IPA Accumulation (Pallas) | 7.3ms accumulate (n=4) | Halo-style, batch decide 2.7x |
 | Tensor compress 2^18 | 229ms compress, 39ms verify | **460.7x** compression ratio |
 | WHIR 2^14 | 53ms prove, 16ms verify | 28.2 KB proof size |
+| Spartan prove 2^14 | 121ms prove, 8ms verify | C CIOS sumcheck + sparse matvec: **8.6x** (1051→122ms) |
 | Lasso 2^18 | 56ms prove, 31ms verify | C-accelerated: prove **8.2x** (481→56ms), verify **52x** (1.6s→31ms) |
 | LogUp 2^12 | 15ms prove, 16ms verify | Optimal for small-medium tables |
 | cq | Correctness passes | Crashes at larger benchmark sizes |
@@ -393,20 +394,20 @@ Methodology: Compute-bound = total_ops / 3.6T flops (BN254 mul = ~64 32-bit muls
 |------|-----------|---------|-------------------|------------|----------|
 | 1 | Groth16 prove 256 | 14ms | ~10ms | MSM dominated (cached affine + CPU NTT) | ~1.4x |
 | 2 | Lasso prove 2^18 | 56ms | ~30ms | Near floor — C-accelerated + fused GPU | ~2x |
-| 3 | GKR 2^10 d=4 | 11ms | ~5ms | C CIOS sumcheck + wiring (near compute floor) | ~2x |
+| 3 | GKR 2^10 d=4 | 7.7ms | ~5ms | C CIOS + pre-computed wiring topology (near floor) | ~1.5x |
 | 4 | Plonk prove 1024 | 49ms | ~15ms | C CIOS + Keccak transcript + batched poly ops | ~3x |
 | 5 | NTT BN254 2^22 | 26ms | ~2.9ms | Compute + strided BW (256-bit: 64 muls/elem) | ~9x |
 | 6 | MSM BN254 2^18 | 45ms | ~5ms | Random-access BW (scatter bucket accumulation) | ~9x |
 | 7 | KZG commit 2^10 | 0.7ms | ~0.5ms | C Horner + fused eval/div, cached affine SRS | ~1.4x |
 | 8 | Sumcheck 2^20 | 7.3ms | ~0.85ms | Bandwidth (2^20 x 32B per round) | ~9x |
-| 9 | ECDSA batch 64 (CPU) | 8ms | ~1ms | C CIOS scalar mul (64 x ~300 doublings) | ~8x |
+| 9 | ECDSA batch 64 (CPU) | 1.7ms | ~0.5ms | C CIOS Fr + fused batch prepare (was 8ms) | ~3x |
 | 10 | Basefold open 2^18 | 144ms | ~20ms | Iterative fold+commit (18 rounds x Merkle) | ~7x |
 | 11 | FRI Fold 2^20 | 1.96ms | ~0.3ms | Bandwidth (2^20 x 32B read+write) | ~7x |
 | 12 | BLS12-377 MSM 2^18 | 218ms | ~35ms | Wider limbs (253-bit), less optimized window sizes | ~6x |
 | 13 | Keccak Merkle 2^20 | 13ms | ~2.2ms | Compute (24 rounds x 64-bit) + 20 levels | ~6x |
 | 14 | Blake3 Batch 2^20 | 3.5ms | ~0.6ms | Bandwidth (2^20 x 64B) | ~6x |
 | 15 | Circle STARK prove 2^14 | 21ms | ~10ms | Batched CBs, trace caching (56ms→21ms, **2.7x**) | ~2x |
-| 16 | HyperNova per-fold | 0.11ms | ~0.07ms | Near floor: C CIOS + Keccak transcript (33x from 3.6ms) | ~1.6x |
+| 16 | HyperNova per-fold | 0.09ms | ~0.07ms | Near floor: C CIOS + Keccak + pre-computed affine (40x from 3.6ms) | ~1.3x |
 | 17 | secp256k1 MSM 2^18 | 113ms | ~30ms | No GLV, buffer caching + mixed-add unsafe (**10x** from 1133ms) | ~4x |
 | 18 | Poseidon2 batch 2^16 | 8.1ms | ~1.8ms | Compute (390 ops/elem, 22 sequential rounds limit parallelism) | ~4.5x |
 | 19 | Radix Sort 2^20 | 2.1ms | ~1ms | Vectorized histogram + flat clearing | ~2x |

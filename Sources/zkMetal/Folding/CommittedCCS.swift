@@ -85,11 +85,25 @@ public struct CCCS {
     public let commitment: PointProjective  // Pedersen commitment to witness portion
     public let publicInput: [Fr]            // Public input x (portion of z)
     public let ccsRef: Int                  // Index/tag identifying the CCS structure
+    public let cachedAffineX: Fr?           // Cached affine x for transcript
+    public let cachedAffineY: Fr?           // Cached affine y for transcript
 
     public init(commitment: PointProjective, publicInput: [Fr], ccsRef: Int = 0) {
         self.commitment = commitment
         self.publicInput = publicInput
         self.ccsRef = ccsRef
+        self.cachedAffineX = nil
+        self.cachedAffineY = nil
+    }
+
+    /// Init with pre-computed affine coordinates.
+    public init(commitment: PointProjective, publicInput: [Fr], ccsRef: Int = 0,
+                affineX: Fr, affineY: Fr) {
+        self.commitment = commitment
+        self.publicInput = publicInput
+        self.ccsRef = ccsRef
+        self.cachedAffineX = affineX
+        self.cachedAffineY = affineY
     }
 }
 
@@ -110,6 +124,9 @@ public struct LCCCS {
     public let r: [Fr]                      // Random evaluation point (log(m)-dimensional)
     public let v: [Fr]                      // Claimed evaluations: v_i = MLE(M_i * z)(r)
     public let ccsRef: Int                  // Reference to CCS structure
+    // Cached affine coordinates of commitment (avoids repeated projective-to-affine in transcript)
+    public let cachedAffineX: Fr?
+    public let cachedAffineY: Fr?
 
     public init(commitment: PointProjective, publicInput: [Fr],
                 u: Fr, r: [Fr], v: [Fr], ccsRef: Int = 0) {
@@ -119,6 +136,22 @@ public struct LCCCS {
         self.r = r
         self.v = v
         self.ccsRef = ccsRef
+        self.cachedAffineX = nil
+        self.cachedAffineY = nil
+    }
+
+    /// Init with pre-computed affine coords (avoids repeated projective-to-affine).
+    public init(commitment: PointProjective, publicInput: [Fr],
+                u: Fr, r: [Fr], v: [Fr], ccsRef: Int = 0,
+                affineX: Fr, affineY: Fr) {
+        self.commitment = commitment
+        self.publicInput = publicInput
+        self.u = u
+        self.r = r
+        self.v = v
+        self.ccsRef = ccsRef
+        self.cachedAffineX = affineX
+        self.cachedAffineY = affineY
     }
 }
 

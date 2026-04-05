@@ -40,21 +40,33 @@ public class HyperNovaEngine {
     public let pp: PedersenParams       // Pedersen parameters (SRS)
     public let msmEngine: MetalMSM?     // Optional GPU MSM engine
     public let logM: Int                // log2(m) for multilinear variables
+    let isPow2M: Bool                   // true if m is already power-of-2 (skip padToPow2)
+
+    // Pre-packed CSR data for fused C matvec+MLE (avoids per-fold Swift array creation)
+    private let packedRowPtr: [[Int32]]   // rowPtr for each matrix (Int32 for C)
+    private let packedColIdx: [[Int32]]   // colIdx for each matrix
+    private let packedValues: [[UInt64]]  // values as flat uint64 for each matrix
 
     /// Initialize with a CCS structure and matching Pedersen parameters.
-    /// - Parameters:
-    ///   - ccs: The constraint system
-    ///   - witnessSize: Size of witness portion (n - 1 - numPublicInputs)
-    ///   - msmEngine: Optional GPU MSM engine for large commitments
     public init(ccs: CCSInstance, msmEngine: MetalMSM? = nil) {
         self.ccs = ccs
         self.msmEngine = msmEngine
-        // SRS size = witness portion of z
         let witnessSize = ccs.n - 1 - ccs.numPublicInputs
         self.pp = PedersenParams.generate(size: max(witnessSize, 1))
         var log = 0
         while (1 << log) < ccs.m { log += 1 }
         self.logM = log
+        self.isPow2M = (1 << log) == ccs.m
+        // Pack CSR data once at init
+        var rp = [[Int32]](); var ci = [[Int32]](); var vals = [[UInt64]]()
+        for mat in ccs.matrices {
+            rp.append(mat.rowPtr.map { Int32($0) })
+            ci.append(mat.colIdx.map { Int32($0) })
+            var v = [UInt64](); v.reserveCapacity(mat.nnz * 4)
+            for fr in mat.values { v.append(contentsOf: fr.to64()) }
+            vals.append(v)
+        }
+        self.packedRowPtr = rp; self.packedColIdx = ci; self.packedValues = vals
     }
 
     /// Initialize with pre-generated Pedersen parameters.
@@ -65,6 +77,16 @@ public class HyperNovaEngine {
         var log = 0
         while (1 << log) < ccs.m { log += 1 }
         self.logM = log
+        self.isPow2M = (1 << log) == ccs.m
+        var rp = [[Int32]](); var ci = [[Int32]](); var vals = [[UInt64]]()
+        for mat in ccs.matrices {
+            rp.append(mat.rowPtr.map { Int32($0) })
+            ci.append(mat.colIdx.map { Int32($0) })
+            var v = [UInt64](); v.reserveCapacity(mat.nnz * 4)
+            for fr in mat.values { v.append(contentsOf: fr.to64()) }
+            vals.append(v)
+        }
+        self.packedRowPtr = rp; self.packedColIdx = ci; self.packedValues = vals
     }
 
     // MARK: - Initialize (first instance -> LCCCS)
@@ -84,14 +106,16 @@ public class HyperNovaEngine {
         for x in publicInput { transcript.absorb(x) }
         let r = transcript.squeezeN(logM)
 
-        // Compute v_i = MLE(M_i * z)(r) for each matrix
-        let v = ccs.matrices.map { mat -> Fr in
-            let mv = mat.mulVec(z)
-            return cMleEvalFold(evals: padToPow2(mv), point: r)
+        // Compute v_i = MLE(M_i * z)(r) for each matrix (fused C)
+        var v = [Fr](repeating: .zero, count: ccs.t)
+        for i in 0..<ccs.t {
+            v[i] = fusedMatvecMle(matIdx: i, z: z, point: r)
         }
 
+        // Pre-compute affine for next fold's transcript absorption
+        let (ax, ay) = commitmentToAffineFr(commitment)
         return LCCCS(commitment: commitment, publicInput: publicInput,
-                      u: Fr.one, r: r, v: v)
+                      u: Fr.one, r: r, v: v, affineX: ax, affineY: ay)
     }
 
     // MARK: - Fold
@@ -109,15 +133,26 @@ public class HyperNovaEngine {
         let z1 = buildZ(publicInput: running.publicInput, witness: runningWitness)
         let z2 = buildZ(publicInput: new.publicInput, witness: newWitness)
 
-        // Step 1: Compute sigmas and thetas using C-accelerated MLE eval
-        let sigmas = ccs.matrices.map { mat -> Fr in
-            let mv = padToPow2(mat.mulVec(z1))
-            return cMleEvalFold(evals: mv, point: running.r)
+        let t = ccs.t
+
+        // Step 1: Compute all M_i * z vectors once (shared by sigma/theta and cross-term)
+        var mvZ1 = [[Fr]]()
+        var mvZ2 = [[Fr]]()
+        mvZ1.reserveCapacity(t)
+        mvZ2.reserveCapacity(t)
+        for i in 0..<t {
+            mvZ1.append(ccs.matrices[i].mulVec(z1))
+            mvZ2.append(ccs.matrices[i].mulVec(z2))
         }
 
-        let thetas = ccs.matrices.map { mat -> Fr in
-            let mv = padToPow2(mat.mulVec(z2))
-            return cMleEvalFold(evals: mv, point: running.r)
+        // Step 2: Compute sigmas and thetas via MLE eval on cached matvec results
+        var sigmas = [Fr](repeating: .zero, count: t)
+        var thetas = [Fr](repeating: .zero, count: t)
+        for i in 0..<t {
+            let padded1 = isPow2M ? mvZ1[i] : padToPow2(mvZ1[i])
+            sigmas[i] = cMleEvalFold(evals: padded1, point: running.r)
+            let padded2 = isPow2M ? mvZ2[i] : padToPow2(mvZ2[i])
+            thetas[i] = cMleEvalFold(evals: padded2, point: running.r)
         }
 
         // Build the Fiat-Shamir transcript (Keccak for speed: NEON-accelerated)
@@ -125,7 +160,7 @@ public class HyperNovaEngine {
         absorbLCCCS(transcript, running)
         absorbCCCS(transcript, new)
         for s in sigmas { transcript.absorb(s) }
-        for t in thetas { transcript.absorb(t) }
+        for th in thetas { transcript.absorb(th) }
 
         // Get challenge rho for the random linear combination
         let rho = transcript.squeeze()
@@ -134,37 +169,85 @@ public class HyperNovaEngine {
         let rhoC2 = cPointScalarMul(new.commitment, rho)
         let foldedCommitment = pointAdd(running.commitment, rhoC2)
 
-        // Fold public inputs: x' = x1 + rho * x2
-        let foldedPublicInput = zip(running.publicInput, new.publicInput).map { (x1, x2) in
-            frAdd(x1, frMul(rho, x2))
+        // Fold public inputs, u, v, witnesses (explicit loops)
+        let numPub = running.publicInput.count
+        var foldedPublicInput = [Fr](repeating: .zero, count: numPub)
+        for i in 0..<numPub {
+            foldedPublicInput[i] = frAdd(running.publicInput[i], frMul(rho, new.publicInput[i]))
         }
 
-        // Fold relaxation factor: u' = u1 + rho * 1
         let foldedU = frAdd(running.u, rho)
 
-        // Fold v values: v'_i = sigma_i + rho * theta_i
-        let foldedV = zip(sigmas, thetas).map { (si, ti) in
-            frAdd(si, frMul(rho, ti))
+        var foldedV = [Fr](repeating: .zero, count: t)
+        for i in 0..<t {
+            foldedV[i] = frAdd(sigmas[i], frMul(rho, thetas[i]))
         }
 
-        // r stays the same (both were evaluated at running.r)
         let foldedR = running.r
 
-        // Fold witnesses: w' = w1 + rho * w2
-        let foldedWitness = zip(runningWitness, newWitness).map { (w1, w2) in
-            frAdd(w1, frMul(rho, w2))
+        let witLen = runningWitness.count
+        var foldedWitness = [Fr](repeating: .zero, count: witLen)
+        for i in 0..<witLen {
+            foldedWitness[i] = frAdd(runningWitness[i], frMul(rho, newWitness[i]))
         }
 
-        // Build the sumcheck proof (C-accelerated cross-term)
-        let sumcheckProof = computeCrossTermSumcheckC(
-            z1: z1, z2: z2, rho: rho, r: running.r, transcript: transcript)
+        // Build the sumcheck proof using cached matvec results (no re-computation)
+        let sumcheckProof = computeCrossTermSumcheckCached(
+            mvZ1: mvZ1, mvZ2: mvZ2, rho: rho, r: running.r, transcript: transcript)
 
         let proof = FoldingProof(sigmas: sigmas, thetas: thetas, sumcheckProof: sumcheckProof)
 
+        // Pre-compute affine coords of folded commitment for next fold's transcript
+        let (ax, ay) = commitmentToAffineFr(foldedCommitment)
+
         let folded = LCCCS(commitment: foldedCommitment, publicInput: foldedPublicInput,
-                           u: foldedU, r: foldedR, v: foldedV)
+                           u: foldedU, r: foldedR, v: foldedV,
+                           affineX: ax, affineY: ay)
 
         return (folded, foldedWitness, proof)
+    }
+
+    /// Convert projective commitment to affine Fr coords for transcript.
+    @inline(__always)
+    public func commitmentToAffineFr(_ p: PointProjective) -> (Fr, Fr) {
+        if pointIsIdentity(p) {
+            return (Fr.zero, Fr.zero)
+        }
+        var affine = (Fp.zero, Fp.zero)
+        withUnsafeBytes(of: p) { pBuf in
+            withUnsafeMutableBytes(of: &affine) { aBuf in
+                bn254_projective_to_affine(
+                    pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                )
+            }
+        }
+        return (fpToFr(affine.0), fpToFr(affine.1))
+    }
+
+    /// Fused sparse matvec + MLE eval via C (avoids Swift intermediate arrays).
+    /// Computes MLE(M_i * z)(point) entirely in C.
+    func fusedMatvecMle(matIdx: Int, z: [Fr], point: [Fr]) -> Fr {
+        var result = Fr.zero
+        let padM = 1 << logM
+        packedRowPtr[matIdx].withUnsafeBufferPointer { rpBuf in
+        packedColIdx[matIdx].withUnsafeBufferPointer { ciBuf in
+        packedValues[matIdx].withUnsafeBufferPointer { valBuf in
+        z.withUnsafeBytes { zBuf in
+        point.withUnsafeBytes { ptBuf in
+        withUnsafeMutableBytes(of: &result) { resBuf in
+            bn254_sparse_matvec_mle(
+                rpBuf.baseAddress!,
+                ciBuf.baseAddress!,
+                valBuf.baseAddress!,
+                Int32(ccs.m),
+                zBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                ptBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                Int32(logM), Int32(padM),
+                resBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+            )
+        }}}}}}
+        return result
     }
 
     // MARK: - Verify Fold (verifier side)
@@ -229,10 +312,9 @@ public class HyperNovaEngine {
             return false
         }
 
-        // Check 2: v_i = MLE(M_i * z)(r) for all i
+        // Check 2: v_i = MLE(M_i * z)(r) for all i (fused C)
         for i in 0..<ccs.t {
-            let mv = ccs.matrices[i].mulVec(z)
-            let eval = cMleEvalFold(evals: padToPow2(mv), point: lcccs.r)
+            let eval = fusedMatvecMle(matIdx: i, z: z, point: lcccs.r)
             guard frEq(eval, lcccs.v[i]) else {
                 return false
             }
@@ -248,9 +330,12 @@ public class HyperNovaEngine {
 
     // MARK: - Internal Helpers
 
-    /// Build z = [1, publicInput, witness]
+    /// Build z = [1, publicInput, witness] with pre-allocated capacity.
+    @inline(__always)
     func buildZ(publicInput: [Fr], witness: [Fr]) -> [Fr] {
-        var z = [Fr.one]
+        var z = [Fr]()
+        z.reserveCapacity(1 + publicInput.count + witness.count)
+        z.append(Fr.one)
         z.append(contentsOf: publicInput)
         z.append(contentsOf: witness)
         return z
@@ -278,9 +363,15 @@ public class HyperNovaEngine {
     }
 
     /// Absorb LCCCS into transcript.
+    /// Uses cached affine coords if available (avoids projective-to-affine conversion).
     func absorbLCCCS(_ transcript: Transcript, _ lcccs: LCCCS) {
         transcript.absorbLabel("lcccs")
-        absorbPoint(transcript, lcccs.commitment)
+        if let ax = lcccs.cachedAffineX, let ay = lcccs.cachedAffineY {
+            transcript.absorb(ax)
+            transcript.absorb(ay)
+        } else {
+            absorbPoint(transcript, lcccs.commitment)
+        }
         transcript.absorb(lcccs.u)
         for x in lcccs.publicInput { transcript.absorb(x) }
         for r in lcccs.r { transcript.absorb(r) }
@@ -288,9 +379,15 @@ public class HyperNovaEngine {
     }
 
     /// Absorb CCCS into transcript.
+    /// Uses cached affine coords if available (avoids projective-to-affine).
     func absorbCCCS(_ transcript: Transcript, _ cccs: CCCS) {
         transcript.absorbLabel("cccs")
-        absorbPoint(transcript, cccs.commitment)
+        if let ax = cccs.cachedAffineX, let ay = cccs.cachedAffineY {
+            transcript.absorb(ax)
+            transcript.absorb(ay)
+        } else {
+            absorbPoint(transcript, cccs.commitment)
+        }
         for x in cccs.publicInput { transcript.absorb(x) }
     }
 
@@ -396,17 +493,18 @@ public class HyperNovaEngine {
             crossTermEvals[i] = frMul(crossTermEvals[i], eqR[i])
         }
 
-        // Run sumcheck rounds
+        // Run sumcheck rounds IN-PLACE (avoids `next` array allocation per round)
         var roundPolys = [[Fr]]()
-        var current = crossTermEvals
+        roundPolys.reserveCapacity(numRounds)
+        var currentSize = size
 
-        for round in 0..<numRounds {
-            let half = current.count / 2
+        for _ in 0..<numRounds {
+            let half = currentSize >> 1
             var s0 = Fr.zero
             var s1 = Fr.zero
             for j in 0..<half {
-                s0 = frAdd(s0, current[2 * j])
-                s1 = frAdd(s1, current[2 * j + 1])
+                s0 = frAdd(s0, crossTermEvals[2 * j])
+                s1 = frAdd(s1, crossTermEvals[2 * j + 1])
             }
             roundPolys.append([s0, s1])
 
@@ -415,15 +513,88 @@ public class HyperNovaEngine {
             let challenge = transcript.squeeze()
 
             let oneMinusC = frSub(Fr.one, challenge)
-            var next = [Fr](repeating: .zero, count: half)
             for j in 0..<half {
-                next[j] = frAdd(frMul(oneMinusC, current[2 * j]),
-                                frMul(challenge, current[2 * j + 1]))
+                crossTermEvals[j] = frAdd(frMul(oneMinusC, crossTermEvals[2 * j]),
+                                          frMul(challenge, crossTermEvals[2 * j + 1]))
             }
-            current = next
+            currentSize = half
         }
 
-        let finalEval = current.isEmpty ? Fr.zero : current[0]
+        let finalEval = currentSize > 0 ? crossTermEvals[0] : Fr.zero
+        return SumcheckFoldProof(roundPolys: roundPolys, finalEval: finalEval)
+    }
+
+    /// Cross-term sumcheck using pre-computed matvec results (avoids recomputation).
+    /// mvZ1[i] = M_i * z1, mvZ2[i] = M_i * z2.
+    func computeCrossTermSumcheckCached(
+        mvZ1: [[Fr]], mvZ2: [[Fr]], rho: Fr,
+        r: [Fr], transcript: Transcript) -> SumcheckFoldProof
+    {
+        let numRounds = logM
+        let size = 1 << logM
+        var crossTermEvals = [Fr](repeating: .zero, count: size)
+
+        for j in 0..<ccs.q {
+            let sj = ccs.multisets[j]
+            if sj.count < 2 { continue }
+
+            if sj.count == 2 {
+                let m0z1 = mvZ1[sj[0]]
+                let m0z2 = mvZ2[sj[0]]
+                let m1z1 = mvZ1[sj[1]]
+                let m1z2 = mvZ2[sj[1]]
+                let rhoTimesC = frMul(rho, ccs.coefficients[j])
+                let limit = min(ccs.m, size)
+                for i in 0..<limit {
+                    let cross = frAdd(frMul(m0z1[i], m1z2[i]), frMul(m0z2[i], m1z1[i]))
+                    crossTermEvals[i] = frAdd(crossTermEvals[i], frMul(rhoTimesC, cross))
+                }
+            }
+        }
+
+        // Weight by eq(r, x) using C-accelerated eq poly
+        var eqR = [Fr](repeating: Fr.zero, count: size)
+        r.withUnsafeBytes { ptBuf in
+            eqR.withUnsafeMutableBytes { evalBuf in
+                gkr_eq_poly(
+                    ptBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(r.count),
+                    evalBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                )
+            }
+        }
+        for i in 0..<size {
+            crossTermEvals[i] = frMul(crossTermEvals[i], eqR[i])
+        }
+
+        // Run sumcheck rounds IN-PLACE
+        var roundPolys = [[Fr]]()
+        roundPolys.reserveCapacity(numRounds)
+        var currentSize = size
+
+        for _ in 0..<numRounds {
+            let half = currentSize >> 1
+            var s0 = Fr.zero
+            var s1 = Fr.zero
+            for j in 0..<half {
+                s0 = frAdd(s0, crossTermEvals[2 * j])
+                s1 = frAdd(s1, crossTermEvals[2 * j + 1])
+            }
+            roundPolys.append([s0, s1])
+
+            transcript.absorb(s0)
+            transcript.absorb(s1)
+            let challenge = transcript.squeeze()
+
+            let oneMinusC = frSub(Fr.one, challenge)
+            for j in 0..<half {
+                crossTermEvals[j] = frAdd(frMul(oneMinusC, crossTermEvals[2 * j]),
+                                          frMul(challenge, crossTermEvals[2 * j + 1]))
+            }
+            currentSize = half
+        }
+
+        let finalEval = currentSize > 0 ? crossTermEvals[0] : Fr.zero
         return SumcheckFoldProof(roundPolys: roundPolys, finalEval: finalEval)
     }
 }

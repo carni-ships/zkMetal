@@ -392,4 +392,74 @@ void bn254_dual_msm_projective(
 /// Uses C CIOS Montgomery mul (~100x faster than Swift frInverse).
 void bn254_fr_inverse(const uint64_t a[4], uint64_t r[4]);
 
+/// Fused sparse matvec + MLE eval: MLE(M*z)(point) in one C call.
+/// Avoids Swift intermediate array allocation for M*z.
+/// CSR: rowPtr[rows+1], colIdx[nnz], values[nnz*4 uint64 Fr].
+/// z: n Fr elements. point: numVars Fr elements.
+void bn254_sparse_matvec_mle(
+    const int *rowPtr, const int *colIdx, const uint64_t *values,
+    int rows, const uint64_t *z,
+    const uint64_t *point, int numVars, int padM,
+    uint64_t result[4]);
+
+// ============================================================
+// secp256k1 Fr (scalar field) CIOS Montgomery operations
+// ============================================================
+
+/// secp256k1 Fr Montgomery multiplication: r = a * b * R^{-1} mod n.
+void secp256k1_fr_mul(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]);
+
+/// secp256k1 Fr inverse via Fermat: r = a^{n-2} mod n.
+void secp256k1_fr_inverse(const uint64_t a[4], uint64_t r[4]);
+
+/// secp256k1 Fr batch inverse via Montgomery's trick.
+void secp256k1_fr_batch_inverse(const uint64_t *a, int n, uint64_t *out);
+
+/// Prepare MSM inputs for probabilistic ECDSA batch verification.
+/// All CPU scalar work (batch inverse, random weights, liftX) done in C.
+/// @param sigs      n * 12 uint64_t: per sig [r[4], s[4], z[4]] in Fr Montgomery form.
+/// @param pubkeys   n * 8 uint64_t: per key [x[4], y[4]] in Fp Montgomery form.
+/// @param recov     n bytes: y-parity for lifting r to curve point (NULL for all 0).
+/// @param n         Number of signatures.
+/// @param out_points  Output (2n+1) * 8 uint64_t affine points (Fp Montgomery).
+/// @param out_scalars Output (2n+1) * 8 uint32_t scalars (integer form).
+/// @return 0 on success, -1 if any r_i is not a valid x-coordinate.
+int secp256k1_ecdsa_batch_prepare(
+    const uint64_t *sigs, const uint64_t *pubkeys, const uint8_t *recov,
+    int n, uint64_t *out_points, uint32_t *out_scalars);
+
+// ============================================================
+// Spartan-specific accelerated operations
+// ============================================================
+
+/// Sparse matrix-vector multiply for Spartan R1CS.
+void spartan_sparse_matvec(const uint64_t *entries, int numEntries,
+                           const uint64_t *z, int zLen,
+                           uint64_t *result, int numRows);
+
+/// Spartan SC1 round: degree-3 sumcheck over eq*[az*bz - cz].
+void spartan_sc1_round(uint64_t *eqC, uint64_t *azC, uint64_t *bzC, uint64_t *czC,
+                       int halfSize,
+                       uint64_t s0[4], uint64_t s1[4], uint64_t s2[4], uint64_t s3[4]);
+
+/// Fold an Fr array in-place: arr[j] = arr[j] + ri*(arr[j+half] - arr[j]).
+void spartan_fold_array(uint64_t *arr, int halfSize, const uint64_t ri[4]);
+
+/// Spartan SC2 round: degree-2 sumcheck over w*z.
+void spartan_sc2_round(uint64_t *wC, uint64_t *zC, int halfSize,
+                       uint64_t s0[4], uint64_t s1[4], uint64_t s2[4]);
+
+/// Build combined weight vector for SC2.
+void spartan_build_weight_vec(const uint64_t *entries, int numEntries,
+                              const uint64_t *eqRx, int eqRxLen,
+                              const uint64_t weight[4],
+                              uint64_t *wVec, int paddedN);
+
+/// Compute eq polynomial for Spartan.
+void spartan_eq_poly(const uint64_t *point, int n, uint64_t *eq);
+
+/// MLE evaluation via successive halving for Spartan.
+void spartan_mle_eval(const uint64_t *evals, int numVars,
+                      const uint64_t *point, uint64_t result[4]);
+
 #endif // NEON_FIELD_OPS_H

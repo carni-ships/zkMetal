@@ -682,3 +682,292 @@ void secp256k1_pippenger_msm(const uint64_t *points, const uint32_t *scalars,
     free(tasks);
     free(threads);
 }
+
+// ============================================================
+// secp256k1 Fr (scalar field) CIOS Montgomery arithmetic
+// n = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
+// ============================================================
+
+static const uint64_t SECP_N[4] = {
+    0xBFD25E8CD0364141ULL, 0xBAAEDCE6AF48A03BULL,
+    0xFFFFFFFFFFFFFFFEULL, 0xFFFFFFFFFFFFFFFFULL
+};
+static const uint64_t SECP_FR_INV = 0x4B0DFF665588B13FULL;
+static const uint64_t SECP_FR_ONE[4] = {
+    0x402DA1732FC9BEBFULL, 0x4551231950B75FC4ULL,
+    0x0000000000000001ULL, 0x0000000000000000ULL
+};
+static const uint64_t SECP_FR_R2[4] = {
+    0x896CF21467D7D140ULL, 0x741496C20E7CF878ULL,
+    0xE697F5E45BCD07C6ULL, 0x9D671CD581C69BC5ULL
+};
+
+static inline void secp_fr_mul(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]) {
+    uint64_t t0 = 0, t1 = 0, t2 = 0, t3 = 0, t4 = 0;
+#define SECP_FR_ITER(I) do { \
+        uint128_t w; uint64_t c; \
+        w = (uint128_t)a[I] * b[0] + t0; t0 = (uint64_t)w; c = (uint64_t)(w >> 64); \
+        w = (uint128_t)a[I] * b[1] + t1 + c; t1 = (uint64_t)w; c = (uint64_t)(w >> 64); \
+        w = (uint128_t)a[I] * b[2] + t2 + c; t2 = (uint64_t)w; c = (uint64_t)(w >> 64); \
+        w = (uint128_t)a[I] * b[3] + t3 + c; t3 = (uint64_t)w; c = (uint64_t)(w >> 64); \
+        t4 += c; \
+        uint64_t m = t0 * SECP_FR_INV; \
+        w = (uint128_t)m * SECP_N[0] + t0; c = (uint64_t)(w >> 64); \
+        w = (uint128_t)m * SECP_N[1] + t1 + c; t0 = (uint64_t)w; c = (uint64_t)(w >> 64); \
+        w = (uint128_t)m * SECP_N[2] + t2 + c; t1 = (uint64_t)w; c = (uint64_t)(w >> 64); \
+        w = (uint128_t)m * SECP_N[3] + t3 + c; t2 = (uint64_t)w; c = (uint64_t)(w >> 64); \
+        t3 = t4 + c; t4 = (t3 < c) ? 1 : 0; \
+    } while(0)
+    SECP_FR_ITER(0); SECP_FR_ITER(1); SECP_FR_ITER(2); SECP_FR_ITER(3);
+#undef SECP_FR_ITER
+    if (t4 || (t3 > SECP_N[3]) ||
+        (t3 == SECP_N[3] && (t2 > SECP_N[2] ||
+        (t2 == SECP_N[2] && (t1 > SECP_N[1] ||
+        (t1 == SECP_N[1] && t0 >= SECP_N[0])))))) {
+        uint128_t borrow;
+        borrow = (uint128_t)t0 - SECP_N[0]; t0 = (uint64_t)borrow;
+        uint64_t b1 = (uint64_t)(borrow >> 64) & 1;
+        borrow = (uint128_t)t1 - SECP_N[1] - b1; t1 = (uint64_t)borrow;
+        uint64_t b2 = (uint64_t)(borrow >> 64) & 1;
+        borrow = (uint128_t)t2 - SECP_N[2] - b2; t2 = (uint64_t)borrow;
+        uint64_t b3 = (uint64_t)(borrow >> 64) & 1;
+        t3 = t3 - SECP_N[3] - b3;
+    }
+    r[0] = t0; r[1] = t1; r[2] = t2; r[3] = t3;
+}
+
+static inline void secp_fr_add(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]) {
+    uint128_t s;
+    s = (uint128_t)a[0] + b[0]; r[0] = (uint64_t)s;
+    s = (uint128_t)a[1] + b[1] + (uint64_t)(s >> 64); r[1] = (uint64_t)s;
+    s = (uint128_t)a[2] + b[2] + (uint64_t)(s >> 64); r[2] = (uint64_t)s;
+    s = (uint128_t)a[3] + b[3] + (uint64_t)(s >> 64); r[3] = (uint64_t)s;
+    uint64_t carry = (uint64_t)(s >> 64);
+    if (carry || (r[3] > SECP_N[3]) ||
+        (r[3] == SECP_N[3] && (r[2] > SECP_N[2] ||
+        (r[2] == SECP_N[2] && (r[1] > SECP_N[1] ||
+        (r[1] == SECP_N[1] && r[0] >= SECP_N[0])))))) {
+        uint128_t borrow;
+        borrow = (uint128_t)r[0] - SECP_N[0]; r[0] = (uint64_t)borrow;
+        uint64_t b1 = (uint64_t)(borrow >> 64) & 1;
+        borrow = (uint128_t)r[1] - SECP_N[1] - b1; r[1] = (uint64_t)borrow;
+        uint64_t b2 = (uint64_t)(borrow >> 64) & 1;
+        borrow = (uint128_t)r[2] - SECP_N[2] - b2; r[2] = (uint64_t)borrow;
+        uint64_t b3 = (uint64_t)(borrow >> 64) & 1;
+        r[3] = r[3] - SECP_N[3] - b3;
+    }
+}
+
+static inline void secp_fr_neg(const uint64_t a[4], uint64_t r[4]) {
+    if (a[0] == 0 && a[1] == 0 && a[2] == 0 && a[3] == 0) {
+        r[0] = 0; r[1] = 0; r[2] = 0; r[3] = 0; return;
+    }
+    uint128_t borrow;
+    borrow = (uint128_t)SECP_N[0] - a[0]; r[0] = (uint64_t)borrow;
+    uint64_t b1 = (uint64_t)(borrow >> 64) & 1;
+    borrow = (uint128_t)SECP_N[1] - a[1] - b1; r[1] = (uint64_t)borrow;
+    uint64_t b2 = (uint64_t)(borrow >> 64) & 1;
+    borrow = (uint128_t)SECP_N[2] - a[2] - b2; r[2] = (uint64_t)borrow;
+    uint64_t b3 = (uint64_t)(borrow >> 64) & 1;
+    r[3] = SECP_N[3] - a[3] - b3;
+}
+
+static inline void secp_fr_from_mont(const uint64_t a[4], uint64_t r[4]) {
+    const uint64_t one[4] = {1, 0, 0, 0};
+    secp_fr_mul(a, one, r);
+}
+
+static inline void secp_fr_to_mont(const uint64_t a[4], uint64_t r[4]) {
+    secp_fr_mul(a, SECP_FR_R2, r);
+}
+
+static void secp_fr_inv(const uint64_t a[4], uint64_t r[4]) {
+    uint64_t exp[4] = { SECP_N[0] - 2, SECP_N[1], SECP_N[2], SECP_N[3] };
+    uint64_t result[4], base[4];
+    memcpy(result, SECP_FR_ONE, 32);
+    memcpy(base, a, 32);
+    for (int i = 0; i < 4; i++) {
+        uint64_t word = exp[i];
+        for (int bit = 0; bit < 64; bit++) {
+            if (word & 1) { uint64_t t[4]; secp_fr_mul(result, base, t); memcpy(result, t, 32); }
+            uint64_t t2[4]; secp_fr_mul(base, base, t2); memcpy(base, t2, 32);
+            word >>= 1;
+        }
+    }
+    memcpy(r, result, 32);
+}
+
+static void secp_fr_batch_inv(const uint64_t *a, int n, uint64_t *out) {
+    if (n == 0) return;
+    uint64_t *prods = (uint64_t *)malloc(n * 32);
+    memcpy(prods, a, 32);
+    for (int i = 1; i < n; i++)
+        secp_fr_mul(prods + (i-1)*4, a + i*4, prods + i*4);
+    uint64_t inv[4];
+    secp_fr_inv(prods + (n-1)*4, inv);
+    for (int i = n-1; i >= 1; i--) {
+        secp_fr_mul(inv, prods + (i-1)*4, out + i*4);
+        uint64_t tmp[4]; secp_fr_mul(inv, a + i*4, tmp); memcpy(inv, tmp, 32);
+    }
+    memcpy(out, inv, 32);
+    free(prods);
+}
+
+// R^2 mod p for secp256k1 Fp
+static const uint64_t SECP_FP_R2[4] = {
+    0x000007a2000e90a1ULL, 0x0000000000000001ULL,
+    0x0000000000000000ULL, 0x0000000000000000ULL
+};
+
+int secp256k1_ecdsa_batch_prepare(
+    const uint64_t *sigs, const uint64_t *pubkeys, const uint8_t *recov,
+    int n, uint64_t *out_points, uint32_t *out_scalars)
+{
+    if (n == 0) return 0;
+
+    uint64_t *s_vals = (uint64_t *)malloc(n * 32);
+    for (int i = 0; i < n; i++)
+        memcpy(s_vals + i*4, sigs + i*12 + 4, 32);
+    uint64_t *s_invs = (uint64_t *)malloc(n * 32);
+    secp_fr_batch_inv(s_vals, n, s_invs);
+    free(s_vals);
+
+    uint64_t rng = 0xDEADBEEF12345678ULL;
+    rng ^= (uint64_t)(uintptr_t)&rng;
+    uint64_t *weights = (uint64_t *)malloc(n * 32);
+    for (int i = 0; i < n; i++) {
+        rng = rng * 6364136223846793005ULL + 1442695040888963407ULL;
+        uint64_t w0 = rng;
+        rng = rng * 6364136223846793005ULL + 1442695040888963407ULL;
+        uint64_t w1 = rng;
+        uint64_t raw[4] = {w0, w1, 0, 0};
+        secp_fr_to_mont(raw, weights + i*4);
+    }
+
+    uint64_t gScalar[4] = {0, 0, 0, 0};
+
+    static const uint64_t GEN_X_RAW[4] = {
+        0x59F2815B16F81798ULL, 0x029BFCDB2DCE28D9ULL,
+        0x55A06295CE870B07ULL, 0x79BE667EF9DCBBACULL
+    };
+    static const uint64_t GEN_Y_RAW[4] = {
+        0x9C47D08FFB10D4B8ULL, 0xFD17B448A6855419ULL,
+        0x5DA4FBFC0E1108A8ULL, 0x483ADA7726A3C465ULL
+    };
+    uint64_t genX[4], genY[4];
+    secp_fp_mul(GEN_X_RAW, SECP_FP_R2, genX);
+    secp_fp_mul(GEN_Y_RAW, SECP_FP_R2, genY);
+
+    uint64_t seven_raw[4] = {7, 0, 0, 0};
+    uint64_t seven_mont[4];
+    secp_fp_mul(seven_raw, SECP_FP_R2, seven_mont);
+
+    uint64_t exp_sqrt[4];
+    {
+        uint128_t s = (uint128_t)SECP_P[0] + 1;
+        exp_sqrt[0] = (uint64_t)s;
+        s = (uint128_t)SECP_P[1] + (s >> 64);
+        exp_sqrt[1] = (uint64_t)s;
+        s = (uint128_t)SECP_P[2] + (s >> 64);
+        exp_sqrt[2] = (uint64_t)s;
+        s = (uint128_t)SECP_P[3] + (s >> 64);
+        exp_sqrt[3] = (uint64_t)s;
+        for (int j = 0; j < 3; j++)
+            exp_sqrt[j] = (exp_sqrt[j] >> 2) | (exp_sqrt[j+1] << 62);
+        exp_sqrt[3] >>= 2;
+    }
+
+    int outIdx = 0;
+    for (int i = 0; i < n; i++) {
+        const uint64_t *ri = sigs + i*12;
+        const uint64_t *zi = sigs + i*12 + 8;
+        const uint64_t *sInv = s_invs + i*4;
+        const uint64_t *wi = weights + i*4;
+
+        uint64_t u1[4], u2[4];
+        secp_fr_mul(zi, sInv, u1);
+        secp_fr_mul(ri, sInv, u2);
+
+        uint64_t wu1[4], tmp[4];
+        secp_fr_mul(wi, u1, wu1);
+        secp_fr_add(gScalar, wu1, tmp);
+        memcpy(gScalar, tmp, 32);
+
+        memcpy(out_points + outIdx*8, pubkeys + i*8, 64);
+        uint64_t wu2[4], wu2_int[4];
+        secp_fr_mul(wi, u2, wu2);
+        secp_fr_from_mont(wu2, wu2_int);
+        for (int j = 0; j < 4; j++) {
+            out_scalars[outIdx*8 + j*2] = (uint32_t)(wu2_int[j] & 0xFFFFFFFF);
+            out_scalars[outIdx*8 + j*2 + 1] = (uint32_t)(wu2_int[j] >> 32);
+        }
+        outIdx++;
+
+        uint64_t r_int[4];
+        secp_fr_from_mont(ri, r_int);
+        uint64_t x_fp[4];
+        secp_fp_mul(r_int, SECP_FP_R2, x_fp);
+
+        uint64_t x2[4], x3[4], rhs[4];
+        secp_fp_sqr(x_fp, x2);
+        secp_fp_mul(x2, x_fp, x3);
+        secp_fp_add(x3, seven_mont, rhs);
+
+        uint64_t y_fp[4], base_s[4];
+        memcpy(y_fp, SECP_ONE, 32);
+        memcpy(base_s, rhs, 32);
+        for (int j = 0; j < 4; j++) {
+            uint64_t word = exp_sqrt[j];
+            for (int bit = 0; bit < 64; bit++) {
+                if (word & 1) { uint64_t t[4]; secp_fp_mul(y_fp, base_s, t); memcpy(y_fp, t, 32); }
+                uint64_t t2[4]; secp_fp_sqr(base_s, t2); memcpy(base_s, t2, 32);
+                word >>= 1;
+            }
+        }
+
+        uint64_t check[4];
+        secp_fp_sqr(y_fp, check);
+        if (check[0] != rhs[0] || check[1] != rhs[1] ||
+            check[2] != rhs[2] || check[3] != rhs[3]) {
+            free(s_invs); free(weights); return -1;
+        }
+
+        uint64_t y_int[4];
+        const uint64_t one_raw[4] = {1, 0, 0, 0};
+        secp_fp_mul(y_fp, one_raw, y_int);
+        uint8_t yParity = (uint8_t)(y_int[0] & 1);
+        uint8_t wantParity = recov ? recov[i] : 0;
+        if (yParity != wantParity) {
+            uint64_t zero[4] = {0, 0, 0, 0};
+            secp_fp_sub(zero, y_fp, y_fp);
+        }
+
+        memcpy(out_points + outIdx*8, x_fp, 32);
+        memcpy(out_points + outIdx*8 + 4, y_fp, 32);
+
+        uint64_t negW[4], negW_int[4];
+        secp_fr_neg(wi, negW);
+        secp_fr_from_mont(negW, negW_int);
+        for (int j = 0; j < 4; j++) {
+            out_scalars[outIdx*8 + j*2] = (uint32_t)(negW_int[j] & 0xFFFFFFFF);
+            out_scalars[outIdx*8 + j*2 + 1] = (uint32_t)(negW_int[j] >> 32);
+        }
+        outIdx++;
+    }
+
+    memcpy(out_points + outIdx*8, genX, 32);
+    memcpy(out_points + outIdx*8 + 4, genY, 32);
+    uint64_t gScalar_int[4];
+    secp_fr_from_mont(gScalar, gScalar_int);
+    for (int j = 0; j < 4; j++) {
+        out_scalars[outIdx*8 + j*2] = (uint32_t)(gScalar_int[j] & 0xFFFFFFFF);
+        out_scalars[outIdx*8 + j*2 + 1] = (uint32_t)(gScalar_int[j] >> 32);
+    }
+
+    free(s_invs); free(weights);
+    return 0;
+}
+
+void secp256k1_fr_inverse(const uint64_t a[4], uint64_t r[4]) { secp_fr_inv(a, r); }
+void secp256k1_fr_mul(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]) { secp_fr_mul(a, b, r); }
+void secp256k1_fr_batch_inverse(const uint64_t *a, int n, uint64_t *out) { secp_fr_batch_inv(a, n, out); }
