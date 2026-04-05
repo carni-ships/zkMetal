@@ -358,7 +358,7 @@ C CIOS Montgomery acceleration: pre-computed wiring topology, cached buffers, eq
 | LogUp 2^12 | 15ms prove, 16ms verify | Optimal for small-medium tables |
 | cq | Correctness passes | Crashes at larger benchmark sizes |
 | Binius FFT 2^16 | 21ms (CPU) | Binary tower GF(2^32) GPU batch: 0.67ms mul at 2^18 |
-| BLS12-381 | Sign 26ms, Verify 78ms, Pairing 78ms | C CIOS 6-limb Fp + 4-limb Fr + G1 ops |
+| BLS12-381 | Sign 26ms, Verify 82ms, **Pairing 2.6ms** | C tower (Fp→Fp12) + Miller loop + final exp: **30×** (78→2.6ms) |
 | BN254 GPU Pairing (n=16) | 51ms (vs 239ms CPU = **4.7x**) | Projective Miller loop, batched final exp |
 | Schnorr BIP 340 | Sign 0.30ms, Batch verify 0.20ms/sig | x-only pubkeys, SHA-256 tagged hashing |
 | Stark252 NTT 2^20 | 238M elem/s (GPU) | StarkNet/Cairo native field |
