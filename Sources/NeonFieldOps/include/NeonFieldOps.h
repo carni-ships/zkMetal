@@ -1031,4 +1031,57 @@ void bt_gf128_batch_add(const uint64_t *a, const uint64_t *b, uint64_t *out, int
 /// Batch tower-form GF(2^128) multiply.
 void bt_tower128_batch_mul(const uint64_t *a, const uint64_t *b, uint64_t *out, int n);
 
+// ============================================================
+// Additive FFT for binary fields (Lin-Chung-Han / Cantor algorithm)
+// ============================================================
+// For binary fields, the standard multiplicative NTT doesn't work (no 2-power
+// multiplicative subgroup). Additive FFT evaluates polynomials at all points
+// of an affine subspace using subspace polynomials s(x) = x^2 + x.
+// Complexity: O(n log^2 n) field muls, O(n log n) XOR additions.
+// Required for Binius-style binary field polynomial commitments and STARKs.
+
+/// Generate the standard Frobenius basis for GF(2^64) additive FFT.
+/// basis: output array of k uint64_t elements.
+/// k: number of basis vectors (transform size is 2^k).
+void bt_afft_basis_64(uint64_t *basis, int k);
+
+/// Generate the standard Frobenius basis for GF(2^128) additive FFT.
+/// basis: output array of k elements, each 2 x uint64_t (interleaved lo/hi).
+/// k: number of basis vectors (transform size is 2^k).
+void bt_afft_basis_128(uint64_t *basis, int k);
+
+/// Forward additive FFT over GF(2^64) — recursive.
+/// Evaluates polynomial (in novel basis) at all 2^k subspace points.
+/// coeffs: in-place, n = 2^k uint64_t elements. basis: k elements.
+void bt_afft_forward_64(uint64_t *coeffs, size_t n, const uint64_t *basis);
+
+/// Inverse additive FFT over GF(2^64) — recursive.
+/// Interpolates: evaluations -> novel basis coefficients.
+void bt_afft_inverse_64(uint64_t *evals, size_t n, const uint64_t *basis);
+
+/// Forward additive FFT over GF(2^128) — recursive.
+/// coeffs: n elements, each 2 x uint64_t (2*n uint64_t total). basis: k elements (2*k uint64_t).
+void bt_afft_forward_128(uint64_t *coeffs, size_t n, const uint64_t *basis);
+
+/// Inverse additive FFT over GF(2^128) — recursive.
+void bt_afft_inverse_128(uint64_t *evals, size_t n, const uint64_t *basis);
+
+/// Forward additive FFT over GF(2^64) — iterative (cache-friendly, no recursion overhead).
+void bt_afft_forward_64_iter(uint64_t *data, size_t n, const uint64_t *basis);
+
+/// Inverse additive FFT over GF(2^64) — iterative.
+void bt_afft_inverse_64_iter(uint64_t *data, size_t n, const uint64_t *basis);
+
+/// Forward additive FFT over GF(2^128) — iterative.
+void bt_afft_forward_128_iter(uint64_t *data, size_t n, const uint64_t *basis);
+
+/// Inverse additive FFT over GF(2^128) — iterative.
+void bt_afft_inverse_128_iter(uint64_t *data, size_t n, const uint64_t *basis);
+
+/// Forward additive FFT over GF(2^64) — NEON-accelerated (vectorized XOR propagation).
+void bt_afft_forward_64_neon(uint64_t *data, size_t n, const uint64_t *basis);
+
+/// Inverse additive FFT over GF(2^64) — NEON-accelerated.
+void bt_afft_inverse_64_neon(uint64_t *data, size_t n, const uint64_t *basis);
+
 #endif // NEON_FIELD_OPS_H
