@@ -545,3 +545,64 @@ uint16_t bt_gf16_mul(uint16_t a, uint16_t b) {
 uint16_t bt_gf16_sqr(uint16_t a) {
     return bt_gf16_mul(a, a);
 }
+
+// GF(2^16) inverse via Itoh-Tsujii: a^(-1) = a^(2^16-2)
+uint16_t bt_gf16_inv(uint16_t a) {
+    if (a == 0) return 0;
+
+    // Build a^(2^k - 1) for k = 1,2,4,8,15
+    // r1 = a
+    uint16_t r1 = a;
+    // r2 = a^(2^2-1) = a^2 * a = a^3
+    uint16_t r2 = bt_gf16_mul(bt_gf16_sqr(r1), r1);
+    // r4 = a^(2^4-1) = (r2^(2^2)) * r2
+    uint16_t t = r2;
+    for (int i = 0; i < 2; i++) t = bt_gf16_sqr(t);
+    uint16_t r4 = bt_gf16_mul(t, r2);
+    // r8 = a^(2^8-1)
+    t = r4;
+    for (int i = 0; i < 4; i++) t = bt_gf16_sqr(t);
+    uint16_t r8 = bt_gf16_mul(t, r4);
+    // r3 = a^(2^3-1) = (r2^2) * r1
+    uint16_t r3 = bt_gf16_mul(bt_gf16_sqr(r2), r1);
+    // r7 = (r4^(2^3)) * r3
+    t = r4;
+    for (int i = 0; i < 3; i++) t = bt_gf16_sqr(t);
+    uint16_t r7 = bt_gf16_mul(t, r3);
+    // r15 = (r8^(2^7)) * r7
+    t = r8;
+    for (int i = 0; i < 7; i++) t = bt_gf16_sqr(t);
+    uint16_t r15 = bt_gf16_mul(t, r7);
+    // a^(2^16-2) = r15^2
+    return bt_gf16_sqr(r15);
+}
+
+// GF(2^32) inverse via Itoh-Tsujii: a^(-1) = a^(2^32-2)
+uint32_t bt_gf32_inv(uint32_t a) {
+    if (a == 0) return 0;
+
+    uint32_t r1 = a;
+    uint32_t r2 = bt_gf32_mul(bt_gf32_sqr(r1), r1);
+    uint32_t t = r2;
+    for (int i = 0; i < 2; i++) t = bt_gf32_sqr(t);
+    uint32_t r4 = bt_gf32_mul(t, r2);
+    t = r4;
+    for (int i = 0; i < 4; i++) t = bt_gf32_sqr(t);
+    uint32_t r8 = bt_gf32_mul(t, r4);
+    t = r8;
+    for (int i = 0; i < 8; i++) t = bt_gf32_sqr(t);
+    uint32_t r16 = bt_gf32_mul(t, r8);
+    // Build r3, r7, r15, r31
+    uint32_t r3 = bt_gf32_mul(bt_gf32_sqr(r2), r1);
+    t = r4;
+    for (int i = 0; i < 3; i++) t = bt_gf32_sqr(t);
+    uint32_t r7 = bt_gf32_mul(t, r3);
+    t = r8;
+    for (int i = 0; i < 7; i++) t = bt_gf32_sqr(t);
+    uint32_t r15 = bt_gf32_mul(t, r7);
+    t = r16;
+    for (int i = 0; i < 15; i++) t = bt_gf32_sqr(t);
+    uint32_t r31 = bt_gf32_mul(t, r15);
+    // a^(2^32-2) = r31^2
+    return bt_gf32_sqr(r31);
+}

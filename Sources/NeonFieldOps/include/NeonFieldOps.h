@@ -985,11 +985,15 @@ uint8_t bt_gf8_inv(uint8_t a);
 uint16_t bt_gf16_mul(uint16_t a, uint16_t b);
 /// GF(2^16) square.
 uint16_t bt_gf16_sqr(uint16_t a);
+/// GF(2^16) inverse via Itoh-Tsujii (0 maps to 0).
+uint16_t bt_gf16_inv(uint16_t a);
 
 /// GF(2^32) multiply using PMULL (irreducible x^32+x^7+x^3+x^2+1).
 uint32_t bt_gf32_mul(uint32_t a, uint32_t b);
 /// GF(2^32) square.
 uint32_t bt_gf32_sqr(uint32_t a);
+/// GF(2^32) inverse via Itoh-Tsujii (0 maps to 0).
+uint32_t bt_gf32_inv(uint32_t a);
 
 /// GF(2^64) multiply using PMULL (irreducible x^64+x^4+x^3+x+1).
 uint64_t bt_gf64_mul(uint64_t a, uint64_t b);
