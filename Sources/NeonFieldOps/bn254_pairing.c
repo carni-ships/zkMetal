@@ -2,7 +2,7 @@
 // C-accelerated implementation using __uint128_t CIOS for Fp base field
 //
 // Tower: Fp2 = Fp[u]/(u^2+1), Fp6 = Fp2[v]/(v^3 - xi) where xi=9+u, Fp12 = Fp6[w]/(w^2 - v)
-// Pairing: optimal ate, loop parameter = 6x+2, x = 4965661367192848881 (0x44E992B44A6909F1)
+// Pairing: optimal ate, loop parameter = 6x+2, x = 4965661367071055936
 //
 // Memory layout:
 //   Fp   = 4 x uint64_t (Montgomery form, 256-bit)
@@ -368,111 +368,165 @@ static inline void fp12_one(uint64_t r[FP12]) { fp6_one(r); fp6_zero(r+24); }
 
 // ============================================================
 // Frobenius coefficients for BN254
-// Hardcoded Montgomery form constants
+// Hardcoded Montgomery form constants (ALG6 optimization)
+// All intermediate products precomputed to eliminate runtime fp2_sqr/fp2_mul
 // ============================================================
 
 // gamma_{1,1} = xi^((p-1)/6)
 static const uint64_t GAMMA_1_1[8] = {
-    // c0
-    0xaf9ba69633144907ULL, 0xca6b1d7387afb78aULL,
-    0x11bded5ef08a2087ULL, 0x02f34d751a1f3a7cULL,
-    // c1
-    0xa222ae234c492d72ULL, 0xd00f02a4565de15bULL,
-    0xdc2ff3a253dfc926ULL, 0x10a75716b3899551ULL
+    0x3bf938e377b802a8ULL, 0x020b1b273633535dULL,
+    0x26b7edf049755260ULL, 0x2514c6324384a86dULL,
+    0x38e7ecccd1dcff67ULL, 0x65f0b37d93ce0d3eULL,
+    0xd749cb3920b906eeULL, 0x1c4042e1025615c5ULL
 };
 
 // gamma_{1,2} = xi^((p-1)/3)
 static const uint64_t GAMMA_1_2[8] = {
-    // c0
-    0xb5773b104563ab30ULL, 0x347f91c8a9aa6454ULL,
-    0x7a007127242e0991ULL, 0x1956bcd8118214ecULL,
-    // c1
-    0x6e849f1ea0aa4757ULL, 0xaa1c7b6d89f89141ULL,
-    0xb6e713cdfae0ca3aULL, 0x26694fbb4e82ebc3ULL
+    0x42f8a1b1933a930fULL, 0xc9e6b005abc8f1d6ULL,
+    0xc53c42c661bbd82cULL, 0x23a1c3b40ecf47b0ULL,
+    0xd2fa8cc9fc0c7a1fULL, 0x7ef5e98c39e2bee6ULL,
+    0x1e0b7a19c378bd59ULL, 0x14b6f265e90de0ecULL
 };
 
 // gamma_{1,3} = xi^((p-1)/2)
 static const uint64_t GAMMA_1_3[8] = {
-    // c0
-    0xe4bbdd0c2936b629ULL, 0xbb30f162e133bacbULL,
-    0x31a9d1b6f9645366ULL, 0x253570bea500f8ddULL,
-    // c1
-    0xa1d77ce45ffe77c7ULL, 0x07affd117826d1dbULL,
-    0x6d16bd27bb7edc6bULL, 0x2c87200285defeccULL
+    0x00a4d9e8f42d1a71ULL, 0x04cfdd7101ff5fdaULL,
+    0x26cb8a2b2ceab9eaULL, 0x00e0ac78b3c91af4ULL,
+    0xb6f00fe35c2d8d8eULL, 0x86c6a34d2f6ee9f7ULL,
+    0x3a6e60b0be24caf8ULL, 0x0cf4cbf7e3ad0e4fULL
+};
+
+// Precomputed: gamma_{1,2}^2
+static const uint64_t GAMMA_1_2_SQ[8] = {
+    0x621ff07ea1666bfcULL, 0x52735f7f664538a1ULL,
+    0xf530658eab878679ULL, 0x1862175f49524d30ULL,
+    0x3773ad71048e1bdeULL, 0x5c861ed86fa5c0b3ULL,
+    0xb36a91535a6d641cULL, 0x1927eedac8b235f8ULL
+};
+
+// Precomputed: gamma_{1,1} * gamma_{1,2}^2
+static const uint64_t GAMMA_1_1_MUL_1_2_SQ[8] = {
+    0x30b8320af43502a3ULL, 0x98bf0ee9b9e63317ULL,
+    0xd8a8a477da41d501ULL, 0x1e61ae3cf64fe2e4ULL,
+    0x80a624acbd64b0abULL, 0x766f3d11c5cce684ULL,
+    0x9ba141ff8b6cb3cfULL, 0x2ed33049ac88e30fULL
 };
 
 // gamma_{2,1} = xi^((p^2-1)/6) -- in Fp (c1=0)
 static const uint64_t GAMMA_2_1[4] = {
-    0xca8d800500fa1bf2ULL, 0xf0c5d61468b39769ULL,
-    0x0e201271ad0d4418ULL, 0x04290f65bad856e6ULL
+    0x5763473177fffffcULL, 0xd4f263f1acdb5c4fULL,
+    0x59e26bcea0d48baaULL, 0x0000000000000000ULL
 };
 
 // gamma_{2,2} = xi^((p^2-1)/3)
 static const uint64_t GAMMA_2_2[4] = {
-    0x3350c88e13e80b9cULL, 0x7dce557cdb5e56b9ULL,
-    0x6001b4b8b615564aULL, 0x2682e617020217e0ULL
+    0x5763473177fffffbULL, 0xd4f263f1acdb5c4fULL,
+    0x59e26bcea0d48baaULL, 0x0000000000000000ULL
 };
 
 // gamma_{2,3} = xi^((p^2-1)/2)
 static const uint64_t GAMMA_2_3[4] = {
-    0x68c3488912edefaaULL, 0x8d087f6872aabf4fULL,
-    0x51e1a24709081231ULL, 0x2259d6b14729c0faULL
+    0x100000000000000aULL, 0x5d0f6fc5d20f0689ULL,
+    0xf6422449e4502ad8ULL, 0x30644e72e131a029ULL
+};
+
+// Precomputed: gamma_{2,2}^2
+static const uint64_t GAMMA_2_2_SQ[4] = {
+    0xfefb17299d158954ULL, 0x33a7e011f0b3c3d3ULL,
+    0xb0848e24bcf57c32ULL, 0x2c55d1b2eb9cd688ULL
+};
+
+// Precomputed: gamma_{2,1} * gamma_{2,2}^2
+static const uint64_t GAMMA_2_1_MUL_2_2_SQ[4] = {
+    0x7342c9391edad64dULL, 0x38d1d56be5623a5aULL,
+    0x59f3db58805b40c0ULL, 0x12b5cd75aa6dbc00ULL
+};
+
+// Frobenius^3 precomputed constants (direct, not chained frob2+frob)
+// gamma_{3,1} = gamma_{1,1} * gamma_{2,1}
+static const uint64_t GAMMA_3_1[8] = {
+    0x5a393e9f554c10efULL, 0xb021ea35938ceb96ULL,
+    0x6505a8d2139b29bdULL, 0x1fde272c6ed5c0e3ULL,
+    0x017fb8ee2bbab660ULL, 0xd96705c1c120dc15ULL,
+    0xac4abfea6922e602ULL, 0x127658b76c10053dULL
+};
+// gamma_{3,2} = gamma_{1,2} * gamma_{2,2}
+static const uint64_t GAMMA_3_2[8] = {
+    0xfa7b9a00aafddd90ULL, 0xb105b1689931c2fdULL,
+    0x884e822745198464ULL, 0x2d4e6cc2d65c6d20ULL,
+    0xfa053df8f5612991ULL, 0x2055da10d83b413aULL,
+    0x2d92dd5635c72037ULL, 0x105b2264be121bdcULL
+};
+// gamma_{3,3} = gamma_{1,3} * gamma_{2,3}
+static const uint64_t GAMMA_3_3[8] = {
+    0x205131f2b6add0a2ULL, 0x3ce155b761bb6394ULL,
+    0xa45ee54bc44f5ab1ULL, 0x20346e04945fc98cULL,
+    0xbc65beab923326e3ULL, 0xfaf9c0da7bcc9440ULL,
+    0x97ae14e180812053ULL, 0x303007185d7b81ddULL
+};
+// Precomputed: gamma_{3,2}^2
+static const uint64_t GAMMA_3_2_SQ[8] = {
+    0x925ba6947e0aa8acULL, 0x94a286484565415fULL,
+    0xb7734ae059e92c24ULL, 0x1e86ea500f935e0eULL,
+    0x1417a2aec58adafaULL, 0x2217a459cd15ce9aULL,
+    0x3d7fbabaa1ea7abdULL, 0x0cf6430d86852128ULL
+};
+// Precomputed: gamma_{3,1} * gamma_{3,2}^2
+static const uint64_t GAMMA_3_1_MUL_3_2_SQ[8] = {
+    0xe4f088ce315c7216ULL, 0x75ae3c31ec2e9ceaULL,
+    0x4b6ce2365e71add8ULL, 0x0f99d3446d1e709fULL,
+    0xa2b4fd01e528913cULL, 0xe352fea129f03437ULL,
+    0x8e800e5380ef3ab6ULL, 0x0814a1826db46a32ULL
 };
 
 // ============================================================
-// Frobenius endomorphisms on Fp12
+// Frobenius endomorphisms on Fp12 (ALG6: all constants precomputed)
 // ============================================================
 
-// Frobenius^1
+// Frobenius^1: uses precomputed GAMMA_1_2_SQ and GAMMA_1_1_MUL_1_2_SQ
 static void fp12_frobenius(const uint64_t a[FP12], uint64_t r[FP12]) {
     uint64_t t[8];
     // c0 part
-    fp2_conj(a, r);                           // c0.c0 = conj(a.c0.c0)
+    fp2_conj(a, r);                              // c0.c0 = conj(a.c0.c0)
     fp2_conj(a+8, t);
-    fp2_mul(t, GAMMA_1_2, r+8);              // c0.c1 = conj(a.c0.c1) * gamma_{1,2}
-
-    // gamma_{1,2}^2 for c0.c2
-    uint64_t g12sq[8];
-    fp2_sqr(GAMMA_1_2, g12sq);
+    fp2_mul(t, GAMMA_1_2, r+8);                 // c0.c1
     fp2_conj(a+16, t);
-    fp2_mul(t, g12sq, r+16);                 // c0.c2
+    fp2_mul(t, GAMMA_1_2_SQ, r+16);             // c0.c2
 
-    // c1 part: multiply by gamma_{1,1}, gamma_{1,3}, gamma_{1,1}*gamma_{1,2}^2
+    // c1 part
     fp2_conj(a+24, t);
-    fp2_mul(t, GAMMA_1_1, r+24);             // c1.c0
-
+    fp2_mul(t, GAMMA_1_1, r+24);                // c1.c0
     fp2_conj(a+32, t);
-    fp2_mul(t, GAMMA_1_3, r+32);             // c1.c1
-
-    uint64_t g11_g12sq[8];
-    fp2_mul(GAMMA_1_1, g12sq, g11_g12sq);
+    fp2_mul(t, GAMMA_1_3, r+32);                // c1.c1
     fp2_conj(a+40, t);
-    fp2_mul(t, g11_g12sq, r+40);             // c1.c2
+    fp2_mul(t, GAMMA_1_1_MUL_1_2_SQ, r+40);    // c1.c2
 }
 
-// Frobenius^2
+// Frobenius^2: uses precomputed GAMMA_2_2_SQ and GAMMA_2_1_MUL_2_2_SQ
 static void fp12_frobenius2(const uint64_t a[FP12], uint64_t r[FP12]) {
-    // Frobenius^2 on Fp2 = identity, coefficients in Fp
-    fp2_copy(r, a);                           // c0.c0 unchanged
-    fp2_mul_fp(a+8, GAMMA_2_2, r+8);         // c0.c1
-
-    uint64_t g22sq[4];
-    fp_mul(GAMMA_2_2, GAMMA_2_2, g22sq);
-    fp2_mul_fp(a+16, g22sq, r+16);           // c0.c2
-
-    fp2_mul_fp(a+24, GAMMA_2_1, r+24);       // c1.c0
-    fp2_mul_fp(a+32, GAMMA_2_3, r+32);       // c1.c1
-
-    uint64_t g21_g22sq[4];
-    fp_mul(GAMMA_2_1, g22sq, g21_g22sq);
-    fp2_mul_fp(a+40, g21_g22sq, r+40);       // c1.c2
+    fp2_copy(r, a);                              // c0.c0 unchanged
+    fp2_mul_fp(a+8, GAMMA_2_2, r+8);            // c0.c1
+    fp2_mul_fp(a+16, GAMMA_2_2_SQ, r+16);       // c0.c2
+    fp2_mul_fp(a+24, GAMMA_2_1, r+24);          // c1.c0
+    fp2_mul_fp(a+32, GAMMA_2_3, r+32);          // c1.c1
+    fp2_mul_fp(a+40, GAMMA_2_1_MUL_2_2_SQ, r+40); // c1.c2
 }
 
-// Frobenius^3 = Frobenius(Frobenius^2)
+// Frobenius^3: direct computation (not chained frob2+frob), saves ~50% work
 static void fp12_frobenius3(const uint64_t a[FP12], uint64_t r[FP12]) {
-    uint64_t t[48];
-    fp12_frobenius2(a, t);
-    fp12_frobenius(t, r);
+    uint64_t t[8];
+    // p^3 is odd, so Fp2 Frobenius = conjugation
+    fp2_conj(a, r);                              // c0.c0
+    fp2_conj(a+8, t);
+    fp2_mul(t, GAMMA_3_2, r+8);                 // c0.c1
+    fp2_conj(a+16, t);
+    fp2_mul(t, GAMMA_3_2_SQ, r+16);             // c0.c2
+    fp2_conj(a+24, t);
+    fp2_mul(t, GAMMA_3_1, r+24);                // c1.c0
+    fp2_conj(a+32, t);
+    fp2_mul(t, GAMMA_3_3, r+32);                // c1.c1
+    fp2_conj(a+40, t);
+    fp2_mul(t, GAMMA_3_1_MUL_3_2_SQ, r+40);    // c1.c2
 }
 
 // ============================================================
@@ -547,7 +601,7 @@ static void line_eval(const uint64_t lambda[FP2], const uint64_t xT[FP2], const 
 
 // ============================================================
 // Miller Loop
-// NAF of 6x+2, x = 4965661367192848881 = 0x44E992B44A6909F1
+// NAF of 6x+2, x = 4965661367071055936 = 0x44E992B44A6909F1
 // ============================================================
 
 // NAF representation of 6x+2 (MSB first, 66 entries)
@@ -639,17 +693,85 @@ static void miller_loop(const uint64_t p_aff[8], const uint64_t q_aff[16], uint6
 }
 
 // ============================================================
+// Granger-Scott cyclotomic squaring for BN254
+// Same algorithm as BLS12-381: 3 Fp4 squarings on pairs (A,D), (C,F), (E,B)
+// ============================================================
+
+// Fp4 squaring: (x+y*u)^2 where u^2 = xi (non-residue)
+static inline void fp4_sqr(const uint64_t x[FP2], const uint64_t y[FP2],
+                           uint64_t rx[FP2], uint64_t ry[FP2]) {
+    uint64_t t1[8], t2[8], t3[8];
+    fp2_sqr(x, t1);              // x^2
+    fp2_sqr(y, t2);              // y^2
+    fp2_mul_nr(t2, t3);          // xi*y^2
+    fp2_add(t1, t3, rx);         // rx = x^2 + xi*y^2
+    // ry = 2*x*y via Karatsuba
+    fp2_add(x, y, t3);
+    fp2_sqr(t3, ry);
+    fp2_sub(ry, t1, ry);
+    fp2_sub(ry, t2, ry);
+}
+
+static void fp12_cyc_sqr(const uint64_t f[FP12], uint64_t r[FP12]) {
+    const uint64_t *A = f;        // c0.c0
+    const uint64_t *C = f + 8;    // c0.c1
+    const uint64_t *E = f + 16;   // c0.c2
+    const uint64_t *B = f + 24;   // c1.c0
+    const uint64_t *D = f + 32;   // c1.c1
+    const uint64_t *F = f + 40;   // c1.c2
+
+    uint64_t t0r[8], t0i[8], t1r[8], t1i[8], t2r[8], t2i[8];
+    uint64_t tmp[8];
+
+    fp4_sqr(A, D, t0r, t0i);
+    fp4_sqr(C, F, t1r, t1i);
+    fp4_sqr(E, B, t2r, t2i);
+
+    // A' = 3*t0r - 2*A
+    fp2_sub(t0r, A, r);
+    fp2_dbl(r, r);
+    fp2_add(r, t0r, r);
+
+    // C' = 3*(xi*t1i) + 2*C
+    fp2_mul_nr(t1i, tmp);
+    fp2_add(tmp, C, r+8);
+    fp2_dbl(r+8, r+8);
+    fp2_add(r+8, tmp, r+8);
+
+    // E' = 3*t2r - 2*E
+    fp2_sub(t2r, E, r+16);
+    fp2_dbl(r+16, r+16);
+    fp2_add(r+16, t2r, r+16);
+
+    // B' = 3*t0i + 2*B
+    fp2_add(t0i, B, r+24);
+    fp2_dbl(r+24, r+24);
+    fp2_add(r+24, t0i, r+24);
+
+    // D' = 3*t1r - 2*D
+    fp2_sub(t1r, D, r+32);
+    fp2_dbl(r+32, r+32);
+    fp2_add(r+32, t1r, r+32);
+
+    // F' = 3*t2i + 2*F
+    fp2_add(t2i, F, r+40);
+    fp2_dbl(r+40, r+40);
+    fp2_add(r+40, t2i, r+40);
+}
+
+// ============================================================
 // Final Exponentiation
 // f^((p^12 - 1) / r) = easy part * hard part
 // ============================================================
 
-// f^x, x = 4965661367192848881 = 0x44E992B44A6909F1
+// f^x using cyclotomic squaring (for elements in cyclotomic subgroup)
+// x = 4965661367071055936 = 0x44E992B44A6909F1
 static void fp12_pow_by_x(const uint64_t a[FP12], uint64_t r[FP12]) {
     const uint64_t x = 0x44E992B44A6909F1ULL;
-    fp12_copy(r, a);  // start with a (handles leading 1 bit at position 62)
+    fp12_copy(r, a);
     uint64_t tmp[48];
-    for (int i = 61; i >= 0; i--) {  // start at 61, one below the leading 1
-        fp12_sqr(r, tmp);
+    for (int i = 62; i >= 0; i--) {
+        fp12_cyc_sqr(r, tmp);    // cyclotomic squaring (faster than generic)
         fp12_copy(r, tmp);
         if ((x >> i) & 1) {
             fp12_mul(r, a, tmp);
@@ -658,7 +780,7 @@ static void fp12_pow_by_x(const uint64_t a[FP12], uint64_t r[FP12]) {
     }
 }
 
-// f^n for small n
+// f^n for small n, using cyclotomic squaring
 static void fp12_pow_small(const uint64_t a[FP12], int n, uint64_t r[FP12]) {
     if (n == 0) { fp12_one(r); return; }
     if (n == 1) { fp12_copy(r, a); return; }
@@ -668,7 +790,7 @@ static void fp12_pow_small(const uint64_t a[FP12], int n, uint64_t r[FP12]) {
     int k = n;
     while (k > 0) {
         if (k & 1) { fp12_mul(r, base, tmp); fp12_copy(r, tmp); }
-        fp12_sqr(base, tmp); fp12_copy(base, tmp);
+        fp12_cyc_sqr(base, tmp); fp12_copy(base, tmp);
         k >>= 1;
     }
 }

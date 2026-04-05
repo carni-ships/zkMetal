@@ -464,146 +464,119 @@ static inline void fp12_one(uint64_t r[FP12]) {
 }
 
 // ============================================================
-// Frobenius coefficients
-// These are hardcoded Montgomery-form constants for BLS12-381.
+// Frobenius coefficients (ALG6 optimization)
+// Hardcoded Montgomery-form constants for BLS12-381.
 // Computed as (1+u)^((p^k-1)/j) for the appropriate k,j.
+// Using precomputed constants eliminates expensive fp2_pow at init time.
 // ============================================================
 
-// We compute them on first use and cache.
-static int frob_coeffs_initialized = 0;
-
 // Frobenius^1 coefficients (in Fp2)
-static uint64_t FROB_FP6_C1_1[12];  // gamma_{1,1} = (1+u)^((p-1)/3)
-static uint64_t FROB_FP6_C2_1[12];  // gamma_{2,1} = gamma_{1,1}^2
-static uint64_t FROB_FP12_C1_1[12]; // (1+u)^((p-1)/6)
-// Precomputed combined: gamma6 * gamma12 for c1 part of frobenius^1
-static uint64_t FROB1_C1_C1[12];    // FROB_FP6_C1_1 * FROB_FP12_C1_1
-static uint64_t FROB1_C2_C1[12];    // FROB_FP6_C2_1 * FROB_FP12_C1_1
+// gamma_{1,1} = (1+u)^((p-1)/3) -- pure imaginary
+static const uint64_t FROB_FP6_C1_1[12] = {
+    0x0000000000000000ULL, 0x0000000000000000ULL, 0x0000000000000000ULL,
+    0x0000000000000000ULL, 0x0000000000000000ULL, 0x0000000000000000ULL,
+    0xcd03c9e48671f071ULL, 0x5dab22461fcda5d2ULL, 0x587042afd3851b95ULL,
+    0x8eb60ebe01bacb9eULL, 0x03f97d6e83d050d2ULL, 0x18f0206554638741ULL
+};
+// gamma_{2,1} = gamma_{1,1}^2
+static const uint64_t FROB_FP6_C2_1[12] = {
+    0x890dc9e4867545c3ULL, 0x2af322533285a5d5ULL, 0x50880866309b7e2cULL,
+    0xa20d1b8c7e881024ULL, 0x14e4f04fe2db9068ULL, 0x14e56d3f1564853aULL,
+    0x0000000000000000ULL, 0x0000000000000000ULL, 0x0000000000000000ULL,
+    0x0000000000000000ULL, 0x0000000000000000ULL, 0x0000000000000000ULL
+};
+// (1+u)^((p-1)/6)
+static const uint64_t FROB_FP12_C1_1[12] = {
+    0x07089552b319d465ULL, 0xc6695f92b50a8313ULL, 0x97e83cccd117228fULL,
+    0xa35baecab2dc29eeULL, 0x1ce393ea5daace4dULL, 0x08f2220fb0fb66ebULL,
+    0xb2f66aad4ce5d646ULL, 0x5842a06bfc497cecULL, 0xcf4895d42599d394ULL,
+    0xc11b9cba40a8e8d0ULL, 0x2e3813cbe5a0de89ULL, 0x110eefda88847fafULL
+};
+// Precomputed combined: FROB_FP6_C1_1 * FROB_FP12_C1_1
+static const uint64_t FROB1_C1_C1[12] = {
+    0x7bcfa7a25aa30fdaULL, 0xdc17dec12a927e7cULL, 0x2f088dd86b4ebef1ULL,
+    0xd1ca2087da74d4a7ULL, 0x2da2596696cebc1dULL, 0x0e2b7eedbbfd87d2ULL,
+    0x7bcfa7a25aa30fdaULL, 0xdc17dec12a927e7cULL, 0x2f088dd86b4ebef1ULL,
+    0xd1ca2087da74d4a7ULL, 0x2da2596696cebc1dULL, 0x0e2b7eedbbfd87d2ULL
+};
+// Precomputed combined: FROB_FP6_C2_1 * FROB_FP12_C1_1
+static const uint64_t FROB1_C2_C1[12] = {
+    0x82d83cf50dbce43fULL, 0xa2813e53df9d018fULL, 0xc6f0caa53c65e181ULL,
+    0x7525cf528d50fe95ULL, 0x4a85ed50f4798a6bULL, 0x171da0fd6cf8eebdULL,
+    0x3726c30af242c66cULL, 0x7c2ac1aad1b6fe70ULL, 0xa04007fbba4b14a2ULL,
+    0xef517c3266341429ULL, 0x0095ba654ed2226bULL, 0x02e370eccc86f7ddULL
+};
 
 // Frobenius^2 coefficients (in Fp, stored as Fp2 with c1=0)
-static uint64_t FROB_FP6_C1_2[12];
-static uint64_t FROB_FP6_C2_2[12];
-static uint64_t FROB_FP12_C1_2[12];
+static const uint64_t FROB_FP6_C1_2[12] = {
+    0x30f1361b798a64e8ULL, 0xf3b8ddab7ece5a2aULL, 0x16a8ca3ac61577f7ULL,
+    0xc26a2ff874fd029bULL, 0x3636b76660701c6eULL, 0x051ba4ab241b6160ULL,
+    0x0000000000000000ULL, 0x0000000000000000ULL, 0x0000000000000000ULL,
+    0x0000000000000000ULL, 0x0000000000000000ULL, 0x0000000000000000ULL
+};
+static const uint64_t FROB_FP6_C2_2[12] = {
+    0xcd03c9e48671f071ULL, 0x5dab22461fcda5d2ULL, 0x587042afd3851b95ULL,
+    0x8eb60ebe01bacb9eULL, 0x03f97d6e83d050d2ULL, 0x18f0206554638741ULL,
+    0x0000000000000000ULL, 0x0000000000000000ULL, 0x0000000000000000ULL,
+    0x0000000000000000ULL, 0x0000000000000000ULL, 0x0000000000000000ULL
+};
+static const uint64_t FROB_FP12_C1_2[12] = {
+    0xecfb361b798dba3aULL, 0xc100ddb891865a2cULL, 0x0ec08ff1232bda8eULL,
+    0xd5c13cc6f1ca4721ULL, 0x47222a47bf7b5c04ULL, 0x0110f184e51c5f59ULL,
+    0x0000000000000000ULL, 0x0000000000000000ULL, 0x0000000000000000ULL,
+    0x0000000000000000ULL, 0x0000000000000000ULL, 0x0000000000000000ULL
+};
 // Precomputed combined for frobenius^2 (in Fp)
-static uint64_t FROB2_C1_C1[6];     // FROB_FP6_C1_2[Fp] * FROB_FP12_C1_2[Fp]
-static uint64_t FROB2_C2_C1[6];     // FROB_FP6_C2_2[Fp] * FROB_FP12_C1_2[Fp]
+static const uint64_t FROB2_C1_C1[6] = {
+    0x43f5fffffffcaaaeULL, 0x32b7fff2ed47fffdULL, 0x07e83a49a2e99d69ULL,
+    0xeca8f3318332bb7aULL, 0xef148d1ea0f4c069ULL, 0x040ab3263eff0206ULL
+};
+static const uint64_t FROB2_C2_C1[6] = {
+    0x890dc9e4867545c3ULL, 0x2af322533285a5d5ULL, 0x50880866309b7e2cULL,
+    0xa20d1b8c7e881024ULL, 0x14e4f04fe2db9068ULL, 0x14e56d3f1564853aULL
+};
 
 // Frobenius^3 coefficients (in Fp2)
-static uint64_t FROB_FP6_C1_3[12];
-static uint64_t FROB_FP6_C2_3[12];
-static uint64_t FROB_FP12_C1_3[12];
+// gamma_{1,3} -- pure imaginary (c0=0, c1=1 in Montgomery)
+static const uint64_t FROB_FP6_C1_3[12] = {
+    0x0000000000000000ULL, 0x0000000000000000ULL, 0x0000000000000000ULL,
+    0x0000000000000000ULL, 0x0000000000000000ULL, 0x0000000000000000ULL,
+    0x760900000002fffdULL, 0xebf4000bc40c0002ULL, 0x5f48985753c758baULL,
+    0x77ce585370525745ULL, 0x5c071a97a256ec6dULL, 0x15f65ec3fa80e493ULL
+};
+static const uint64_t FROB_FP6_C2_3[12] = {
+    0x43f5fffffffcaaaeULL, 0x32b7fff2ed47fffdULL, 0x07e83a49a2e99d69ULL,
+    0xeca8f3318332bb7aULL, 0xef148d1ea0f4c069ULL, 0x040ab3263eff0206ULL,
+    0x0000000000000000ULL, 0x0000000000000000ULL, 0x0000000000000000ULL,
+    0x0000000000000000ULL, 0x0000000000000000ULL, 0x0000000000000000ULL
+};
+static const uint64_t FROB_FP12_C1_3[12] = {
+    0x3e2f585da55c9ad1ULL, 0x4294213d86c18183ULL, 0x382844c88b623732ULL,
+    0x92ad2afd19103e18ULL, 0x1d794e4fac7cf0b9ULL, 0x0bd592fc7d825ec8ULL,
+    0x7bcfa7a25aa30fdaULL, 0xdc17dec12a927e7cULL, 0x2f088dd86b4ebef1ULL,
+    0xd1ca2087da74d4a7ULL, 0x2da2596696cebc1dULL, 0x0e2b7eedbbfd87d2ULL
+};
 // Precomputed combined for frobenius^3
-static uint64_t FROB3_C1_C1[12];    // FROB_FP6_C1_3 * FROB_FP12_C1_3
-static uint64_t FROB3_C2_C1[12];    // FROB_FP6_C2_3 * FROB_FP12_C1_3
-
-// Helper: fp2_pow for bootstrapping Frobenius constants
-static void fp2_pow(const uint64_t base[FP2], const uint64_t exp[6], uint64_t result[FP2]) {
-    uint64_t r[12], b[12];
-    fp2_one(r);
-    fp2_copy(b, base);
-    for (int i = 0; i < 6; i++) {
-        for (int bit = 0; bit < 64; bit++) {
-            if ((exp[i] >> bit) & 1) fp2_mul(r, b, r);
-            fp2_sqr(b, b);
-        }
-    }
-    fp2_copy(result, r);
-}
-
-// Divide 384-bit number by small constant
-static void div_by_3(const uint64_t a[6], uint64_t r[6]) {
-    memset(r, 0, 48);
-    uint64_t remainder = 0;
-    for (int i = 5; i >= 0; i--) {
-        for (int bit = 63; bit >= 0; bit--) {
-            remainder = (remainder << 1) | ((a[i] >> bit) & 1);
-            if (remainder >= 3) {
-                r[i] |= (uint64_t)1 << bit;
-                remainder -= 3;
-            }
-        }
-    }
-}
-
-static void div_by_2(const uint64_t a[6], uint64_t r[6]) {
-    for (int i = 0; i < 6; i++) {
-        r[i] = a[i] >> 1;
-        if (i < 5) r[i] |= (a[i+1] & 1) << 63;
-    }
-}
-
-static void init_frobenius_coeffs(void) {
-    if (frob_coeffs_initialized) return;
-
-    // non-residue = 1 + u (in Montgomery form)
-    uint64_t nr[12];
-    fp_copy(nr, FP_ONE);      // c0 = 1
-    fp_copy(nr+6, FP_ONE);    // c1 = 1
-
-    uint64_t pm1[6];
-    for (int i = 0; i < 6; i++) pm1[i] = P[i];
-    pm1[0] -= 1;  // p-1
-
-    uint64_t pm1_3[6], pm1_6[6], pm1_2[6];
-    div_by_3(pm1, pm1_3);       // (p-1)/3
-    div_by_2(pm1, pm1_2);       // (p-1)/2
-    div_by_3(pm1_2, pm1_6);     // (p-1)/6
-
-    // Fp6 Frobenius^1
-    fp2_pow(nr, pm1_3, FROB_FP6_C1_1);
-    fp2_sqr(FROB_FP6_C1_1, FROB_FP6_C2_1);
-
-    // Fp6 Frobenius^2 (norm = g * conj(g), in Fp)
-    uint64_t t[12];
-    fp2_conj(FROB_FP6_C1_1, t);
-    fp2_mul(t, FROB_FP6_C1_1, FROB_FP6_C1_2);
-    fp2_sqr(FROB_FP6_C1_2, FROB_FP6_C2_2);
-
-    // Fp6 Frobenius^3
-    uint64_t gp[12];
-    fp2_conj(FROB_FP6_C1_1, gp);
-    fp2_mul(FROB_FP6_C1_1, gp, t);
-    fp2_mul(t, FROB_FP6_C1_1, FROB_FP6_C1_3);
-    fp2_sqr(FROB_FP6_C1_3, FROB_FP6_C2_3);
-
-    // Fp12 Frobenius^1
-    fp2_pow(nr, pm1_6, FROB_FP12_C1_1);
-
-    // Fp12 Frobenius^2
-    uint64_t hp[12];
-    fp2_conj(FROB_FP12_C1_1, hp);
-    fp2_mul(hp, FROB_FP12_C1_1, FROB_FP12_C1_2);
-
-    // Fp12 Frobenius^3
-    fp2_mul(FROB_FP12_C1_2, FROB_FP12_C1_1, t);
-    // Actually: h^3 = h * (h * conj(h)) = h * norm(h)
-    // But simpler: use h*hp*h pattern
-    fp2_mul(FROB_FP12_C1_1, hp, t);
-    fp2_mul(t, FROB_FP12_C1_1, FROB_FP12_C1_3);
-
-    // Precompute combined coefficients for frobenius^1
-    fp2_mul(FROB_FP6_C1_1, FROB_FP12_C1_1, FROB1_C1_C1);
-    fp2_mul(FROB_FP6_C2_1, FROB_FP12_C1_1, FROB1_C2_C1);
-
-    // Precompute combined coefficients for frobenius^2 (all in Fp)
-    fp_mul(FROB_FP6_C1_2, FROB_FP12_C1_2, FROB2_C1_C1);
-    fp_mul(FROB_FP6_C2_2, FROB_FP12_C1_2, FROB2_C2_C1);
-
-    // Precompute combined coefficients for frobenius^3
-    fp2_mul(FROB_FP6_C1_3, FROB_FP12_C1_3, FROB3_C1_C1);
-    fp2_mul(FROB_FP6_C2_3, FROB_FP12_C1_3, FROB3_C2_C1);
-
-    frob_coeffs_initialized = 1;
-}
+static const uint64_t FROB3_C1_C1[12] = {
+    0x3e2f585da55c9ad1ULL, 0x4294213d86c18183ULL, 0x382844c88b623732ULL,
+    0x92ad2afd19103e18ULL, 0x1d794e4fac7cf0b9ULL, 0x0bd592fc7d825ec8ULL,
+    0x3e2f585da55c9ad1ULL, 0x4294213d86c18183ULL, 0x382844c88b623732ULL,
+    0x92ad2afd19103e18ULL, 0x1d794e4fac7cf0b9ULL, 0x0bd592fc7d825ec8ULL
+};
+static const uint64_t FROB3_C2_C1[12] = {
+    0x7bcfa7a25aa30fdaULL, 0xdc17dec12a927e7cULL, 0x2f088dd86b4ebef1ULL,
+    0xd1ca2087da74d4a7ULL, 0x2da2596696cebc1dULL, 0x0e2b7eedbbfd87d2ULL,
+    0x3e2f585da55c9ad1ULL, 0x4294213d86c18183ULL, 0x382844c88b623732ULL,
+    0x92ad2afd19103e18ULL, 0x1d794e4fac7cf0b9ULL, 0x0bd592fc7d825ec8ULL
+};
 
 // ============================================================
 // Frobenius endomorphisms on Fp12
 // ============================================================
 
-// Frobenius^1 on Fp12
-// Uses precomputed combined coefficients to avoid chained fp2_mul in c1 part
+// Frobenius^1 on Fp12 (ALG6: O(1) permutation + precomputed constant muls)
+// Uses hardcoded precomputed combined coefficients
 static void fp12_frobenius(const uint64_t a[FP12], uint64_t r[FP12]) {
-    init_frobenius_coeffs();
     // c0 part: frob(c0 + c1*v + c2*v^2) = conj(c0) + conj(c1)*gamma_{1,1}*v + conj(c2)*gamma_{2,1}*v^2
     uint64_t t[12];
     fp2_conj(a, r);                         // r.c0.c0 = conj(a.c0.c0)
@@ -621,10 +594,8 @@ static void fp12_frobenius(const uint64_t a[FP12], uint64_t r[FP12]) {
     fp2_mul(t, FROB1_C2_C1, r+60);         // r.c1.c2 = conj(a.c1.c2) * (gamma6_c2 * gamma12_1)
 }
 
-// Frobenius^2 on Fp12 (coefficients are in Fp)
-// Uses precomputed combined coefficients to avoid runtime fp_mul
+// Frobenius^2 on Fp12 (ALG6: coefficients are in Fp, so only fp_mul needed)
 static void fp12_frobenius2(const uint64_t a[FP12], uint64_t r[FP12]) {
-    init_frobenius_coeffs();
     // Frobenius^2 on Fp2 = identity, so no conjugation needed
     fp2_copy(r, a);                         // c0.c0 unchanged
     fp2_mul_fp(a+12, FROB_FP6_C1_2, r+12); // c0.c1 * gamma6_c1
@@ -636,10 +607,8 @@ static void fp12_frobenius2(const uint64_t a[FP12], uint64_t r[FP12]) {
     fp2_mul_fp(a+60, FROB2_C2_C1, r+60);
 }
 
-// Frobenius^3 on Fp12
-// Uses precomputed combined coefficients to avoid chained fp2_mul in c1 part
+// Frobenius^3 on Fp12 (ALG6: direct computation, not chained frob2+frob)
 static void fp12_frobenius3(const uint64_t a[FP12], uint64_t r[FP12]) {
-    init_frobenius_coeffs();
     uint64_t t[12];
     fp2_conj(a, r);
     fp2_conj(a+12, t);
@@ -657,19 +626,83 @@ static void fp12_frobenius3(const uint64_t a[FP12], uint64_t r[FP12]) {
 }
 
 // ============================================================
-// Cyclotomic squaring
-// For f = a + b*w in cyclotomic subgroup: f^2 = (2*a^2 - 1) + 2*a*b*w
+// Granger-Scott cyclotomic squaring (2010)
+// For f in cyclotomic subgroup GΦ6(Fp2), exploit the norm-1 constraint.
+// Uses 3 "Fp4 squarings" (each = 2 Fp2 sqr + 1 Fp2 mul_nr + adds)
+// instead of full Fp6 mul + Fp6 sqr (~30% fewer Fp2 muls).
+//
+// Fp12 = c0 + c1*w, c0 = (a0, a1, a2), c1 = (b0, b1, b2) in Fp6.
+// Decompose into: A=a0, B=b0, C=a1, D=b1, E=a2, F=b2
+// Three Fp4 squarings on pairs: (A,D), (C,F), (E,B)
+// Reference: Algorithm 5.5.4, Guide to Pairing-Based Cryptography
 // ============================================================
 
-static void fp12_cyc_sqr(const uint64_t f[FP12], uint64_t r[FP12]) {
-    uint64_t ab[36], asqr[36], one6[36];
-    fp6_mul(f, f+36, ab);          // ab = a*b
-    fp6_sqr(f, asqr);              // a^2
+// Fp4 squaring: given (x,y) in Fp2×Fp2 viewed as Fp4 = Fp2[u]/(u^2-xi),
+// returns (x',y') = (x+y*u)^2 = (x^2 + xi*y^2) + 2xy*u
+// Uses Karatsuba: 2 Fp2 sqr + 1 Fp2 mul_nr + 2 Fp2 add/sub
+static inline void fp4_sqr(const uint64_t x[FP2], const uint64_t y[FP2],
+                           uint64_t rx[FP2], uint64_t ry[FP2]) {
+    uint64_t t1[12], t2[12], t3[12];
+    fp2_sqr(x, t1);              // x^2
+    fp2_sqr(y, t2);              // y^2
+    fp2_mul_nr(t2, t3);          // xi*y^2
+    fp2_add(t1, t3, rx);         // rx = x^2 + xi*y^2
 
-    fp6_add(ab, ab, r+36);         // c1 = 2*ab
-    fp6_add(asqr, asqr, r);        // 2*a^2
-    fp6_one(one6);
-    fp6_sub(r, one6, r);           // c0 = 2*a^2 - 1
+    // ry = 2*x*y via Karatsuba: (x+y)^2 - x^2 - y^2
+    fp2_add(x, y, t3);
+    fp2_sqr(t3, ry);
+    fp2_sub(ry, t1, ry);
+    fp2_sub(ry, t2, ry);         // ry = 2*x*y
+}
+
+static void fp12_cyc_sqr(const uint64_t f[FP12], uint64_t r[FP12]) {
+    const uint64_t *A = f;        // c0.c0 = a0
+    const uint64_t *C = f + 12;   // c0.c1 = a1
+    const uint64_t *E = f + 24;   // c0.c2 = a2
+    const uint64_t *B = f + 36;   // c1.c0 = b0
+    const uint64_t *D = f + 48;   // c1.c1 = b1
+    const uint64_t *F = f + 60;   // c1.c2 = b2
+
+    uint64_t t0r[12], t0i[12];   // Fp4 sqr of (A, D)
+    uint64_t t1r[12], t1i[12];   // Fp4 sqr of (C, F)
+    uint64_t t2r[12], t2i[12];   // Fp4 sqr of (E, B)
+
+    fp4_sqr(A, D, t0r, t0i);
+    fp4_sqr(C, F, t1r, t1i);
+    fp4_sqr(E, B, t2r, t2i);
+
+    // Update A (c0.c0): A' = 3*t0r - 2*A
+    fp2_sub(t0r, A, r);
+    fp2_dbl(r, r);
+    fp2_add(r, t0r, r);
+
+    // Update C (c0.c1): C' = 3*(xi*t1i) + 2*C
+    // Note: t1 came from pair (C,F), and the "imaginary" part wraps with xi
+    uint64_t tmp[12];
+    fp2_mul_nr(t1i, tmp);        // xi * t1i (wrap-around from v^3 = xi)
+    fp2_add(tmp, C, r+12);
+    fp2_dbl(r+12, r+12);
+    fp2_add(r+12, tmp, r+12);
+
+    // Update E (c0.c2): E' = 3*t2r - 2*E
+    fp2_sub(t2r, E, r+24);
+    fp2_dbl(r+24, r+24);
+    fp2_add(r+24, t2r, r+24);
+
+    // Update B (c1.c0): B' = 3*t0i + 2*B
+    fp2_add(t0i, B, r+36);
+    fp2_dbl(r+36, r+36);
+    fp2_add(r+36, t0i, r+36);
+
+    // Update D (c1.c1): D' = 3*t1r - 2*D
+    fp2_sub(t1r, D, r+48);
+    fp2_dbl(r+48, r+48);
+    fp2_add(r+48, t1r, r+48);
+
+    // Update F (c1.c2): F' = 3*t2i + 2*F
+    fp2_add(t2i, F, r+60);
+    fp2_dbl(r+60, r+60);
+    fp2_add(r+60, t2i, r+60);
 }
 
 // ============================================================
