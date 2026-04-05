@@ -391,7 +391,339 @@ func runPlonkTests() {
             expect(false, "Tampered proof error: \(error)")
         }
 
-        // ========== Test 11: Wrong witness — gate constraint violation ==========
+        // ========== Test 11: Constraint Compiler — addition circuit ==========
+        do {
+            let compiler = PlonkConstraintCompiler()
+            let a = compiler.addVariable()
+            let b = compiler.addVariable()
+            let c = compiler.addVariable()
+
+            // a + b - c = 0
+            compiler.addArithmeticGate(
+                qL: Fr.one, qR: Fr.one,
+                qO: frSub(Fr.zero, Fr.one),
+                qM: Fr.zero, qC: Fr.zero,
+                wires: [a, b, c])
+
+            let data = compiler.compile()
+            expect(data.domainSize >= 1, "Compiler: domain size >= 1")
+            expect(data.domainSize & (data.domainSize - 1) == 0, "Compiler: domain is power of 2")
+            expect(data.circuit.gates.count == data.domainSize, "Compiler: gate count matches domain")
+            expect(data.circuit.wireAssignments.count == data.domainSize, "Compiler: wire assignments match domain")
+
+            // Full prove-verify round trip through compiler
+            let setup = try preprocessor.setup(circuit: data.circuit, srsSecret: srsSecret)
+            let prover = PlonkProver(setup: setup, kzg: kzg, ntt: ntt)
+            let verifier = PlonkVerifier(setup: setup, kzg: kzg)
+
+            var witness = [Fr](repeating: Fr.zero, count: data.numVariables)
+            witness[a] = frFromInt(7)
+            witness[b] = frFromInt(11)
+            witness[c] = frFromInt(18)
+
+            let proof = try prover.prove(witness: witness, circuit: data.circuit)
+            let valid = verifier.verify(proof: proof)
+            expect(valid, "Constraint Compiler addition: prove then verify")
+        } catch {
+            expect(false, "Constraint Compiler addition error: \(error)")
+        }
+
+        // ========== Test 12: Constraint Compiler — multiplication circuit ==========
+        do {
+            let compiler = PlonkConstraintCompiler()
+            let a = compiler.addVariable()
+            let b = compiler.addVariable()
+            let c = compiler.addVariable()
+
+            // a * b - c = 0
+            compiler.addArithmeticGate(
+                qL: Fr.zero, qR: Fr.zero,
+                qO: frSub(Fr.zero, Fr.one),
+                qM: Fr.one, qC: Fr.zero,
+                wires: [a, b, c])
+
+            let data = compiler.compile()
+            let setup = try preprocessor.setup(circuit: data.circuit, srsSecret: srsSecret)
+            let prover = PlonkProver(setup: setup, kzg: kzg, ntt: ntt)
+            let verifier = PlonkVerifier(setup: setup, kzg: kzg)
+
+            var witness = [Fr](repeating: Fr.zero, count: data.numVariables)
+            witness[a] = frFromInt(6)
+            witness[b] = frFromInt(9)
+            witness[c] = frFromInt(54)
+
+            let proof = try prover.prove(witness: witness, circuit: data.circuit)
+            let valid = verifier.verify(proof: proof)
+            expect(valid, "Constraint Compiler multiplication: prove then verify")
+        } catch {
+            expect(false, "Constraint Compiler multiplication error: \(error)")
+        }
+
+        // ========== Test 13: Constraint Compiler — copy constraints ==========
+        do {
+            let compiler = PlonkConstraintCompiler()
+            let x = compiler.addVariable()
+            let y = compiler.addVariable()
+            let sum = compiler.addVariable()
+            let prod = compiler.addVariable()
+            let result = compiler.addVariable()
+
+            // Gate 1: x + y = sum
+            compiler.addArithmeticGate(
+                qL: Fr.one, qR: Fr.one,
+                qO: frSub(Fr.zero, Fr.one),
+                qM: Fr.zero, qC: Fr.zero,
+                wires: [x, y, sum])
+
+            // Gate 2: x * y = prod
+            compiler.addArithmeticGate(
+                qL: Fr.zero, qR: Fr.zero,
+                qO: frSub(Fr.zero, Fr.one),
+                qM: Fr.one, qC: Fr.zero,
+                wires: [x, y, prod])
+
+            // Gate 3: sum + prod = result
+            compiler.addArithmeticGate(
+                qL: Fr.one, qR: Fr.one,
+                qO: frSub(Fr.zero, Fr.one),
+                qM: Fr.zero, qC: Fr.zero,
+                wires: [sum, prod, result])
+
+            let data = compiler.compile()
+            let setup = try preprocessor.setup(circuit: data.circuit, srsSecret: srsSecret)
+            let prover = PlonkProver(setup: setup, kzg: kzg, ntt: ntt)
+            let verifier = PlonkVerifier(setup: setup, kzg: kzg)
+
+            // x=4, y=3 => sum=7, prod=12, result=19
+            var witness = [Fr](repeating: Fr.zero, count: data.numVariables)
+            witness[x] = frFromInt(4)
+            witness[y] = frFromInt(3)
+            witness[sum] = frFromInt(7)
+            witness[prod] = frFromInt(12)
+            witness[result] = frFromInt(19)
+
+            let proof = try prover.prove(witness: witness, circuit: data.circuit)
+            let valid = verifier.verify(proof: proof)
+            expect(valid, "Constraint Compiler copy constraints: prove then verify")
+        } catch {
+            expect(false, "Constraint Compiler copy constraints error: \(error)")
+        }
+
+        // ========== Test 14: Constraint Compiler — compileAndPreprocess ==========
+        do {
+            let compiler = PlonkConstraintCompiler()
+            let a = compiler.addVariable()
+            let b = compiler.addVariable()
+            let c = compiler.addVariable()
+
+            compiler.addArithmeticGate(
+                qL: Fr.one, qR: Fr.one,
+                qO: frSub(Fr.zero, Fr.one),
+                qM: Fr.zero, qC: Fr.zero,
+                wires: [a, b, c])
+
+            let (setup, data) = try compiler.compileAndPreprocess(
+                kzg: kzg, ntt: ntt, srsSecret: srsSecret)
+
+            let prover = PlonkProver(setup: setup, kzg: kzg, ntt: ntt)
+            let verifier = PlonkVerifier(setup: setup, kzg: kzg)
+
+            var witness = [Fr](repeating: Fr.zero, count: data.numVariables)
+            witness[a] = frFromInt(100)
+            witness[b] = frFromInt(200)
+            witness[c] = frFromInt(300)
+
+            let proof = try prover.prove(witness: witness, circuit: data.circuit)
+            let valid = verifier.verify(proof: proof)
+            expect(valid, "compileAndPreprocess: prove then verify")
+
+            // Verify VK extraction works
+            let vk = VerifierKeyBuilder.build(from: setup)
+            expect(vk.n == data.domainSize, "compileAndPreprocess: VK domain size")
+        } catch {
+            expect(false, "compileAndPreprocess error: \(error)")
+        }
+
+        // ========== Test 15: Constraint Compiler — bad witness rejected ==========
+        do {
+            let compiler = PlonkConstraintCompiler()
+            let a = compiler.addVariable()
+            let b = compiler.addVariable()
+            let c = compiler.addVariable()
+
+            compiler.addArithmeticGate(
+                qL: Fr.one, qR: Fr.one,
+                qO: frSub(Fr.zero, Fr.one),
+                qM: Fr.zero, qC: Fr.zero,
+                wires: [a, b, c])
+
+            let data = compiler.compile()
+            let setup = try preprocessor.setup(circuit: data.circuit, srsSecret: srsSecret)
+            let prover = PlonkProver(setup: setup, kzg: kzg, ntt: ntt)
+            let verifier = PlonkVerifier(setup: setup, kzg: kzg)
+
+            // Bad witness: 7 + 11 != 99
+            var witness = [Fr](repeating: Fr.zero, count: data.numVariables)
+            witness[a] = frFromInt(7)
+            witness[b] = frFromInt(11)
+            witness[c] = frFromInt(99)
+
+            let proof = try prover.prove(witness: witness, circuit: data.circuit)
+            let valid = verifier.verify(proof: proof)
+            expect(!valid, "Constraint Compiler bad witness rejected")
+        } catch {
+            expect(true, "Constraint Compiler bad witness rejected (threw)")
+        }
+
+        // ========== Test 16: Constraint Compiler — lookup gate ==========
+        do {
+            let compiler = PlonkConstraintCompiler()
+            let tableValues: [Fr] = [frFromInt(0), frFromInt(1), frFromInt(2), frFromInt(3)]
+            let tableId = compiler.addLookupTable(values: tableValues)
+
+            let v = compiler.addVariable()
+            let dummyB = compiler.addVariable()
+            let dummyC = compiler.addVariable()
+
+            compiler.addGate(.lookup(LookupGateDesc(
+                inputWire: v, tableId: tableId, auxWires: [dummyB, dummyC])))
+
+            let data = compiler.compile()
+            expect(data.lookupTables.count == 1, "Compiler lookup: table registered")
+            expect(data.circuit.lookupTables.count == 1, "Compiler lookup: circuit has table")
+
+            // Verify the lookup gate was encoded with qLookup=1
+            let g0 = data.circuit.gates[0]
+            expect(!frEqual(g0.qLookup, Fr.zero), "Compiler lookup: qLookup is set")
+        } catch {
+            expect(false, "Constraint Compiler lookup error: \(error)")
+        }
+
+        // ========== Test 17: Constraint Compiler — public inputs ==========
+        do {
+            let compiler = PlonkConstraintCompiler()
+            let a = compiler.addVariable()
+            let b = compiler.addVariable()
+            let c = compiler.addVariable()
+
+            compiler.addPublicInput(a)
+
+            compiler.addArithmeticGate(
+                qL: Fr.one, qR: Fr.one,
+                qO: frSub(Fr.zero, Fr.one),
+                qM: Fr.zero, qC: Fr.zero,
+                wires: [a, b, c])
+
+            let data = compiler.compile()
+            expect(data.circuit.publicInputIndices.count == 1, "Compiler public input: count")
+            expect(data.circuit.publicInputIndices[0] == a, "Compiler public input: index")
+
+            let setup = try preprocessor.setup(circuit: data.circuit, srsSecret: srsSecret)
+            let prover = PlonkProver(setup: setup, kzg: kzg, ntt: ntt)
+
+            var witness = [Fr](repeating: Fr.zero, count: data.numVariables)
+            witness[a] = frFromInt(42)
+            witness[b] = frFromInt(8)
+            witness[c] = frFromInt(50)
+
+            let proof = try prover.prove(witness: witness, circuit: data.circuit)
+            expect(proof.publicInputs.count == 1, "Compiler public input: proof has PI")
+            let pubVal = frToInt(proof.publicInputs[0])
+            expect(pubVal[0] == 42, "Compiler public input: value = 42")
+        } catch {
+            expect(false, "Constraint Compiler public input error: \(error)")
+        }
+
+        // ========== Test 18: Constraint Compiler — explicit domain size ==========
+        do {
+            let compiler = PlonkConstraintCompiler()
+            let a = compiler.addVariable()
+            let b = compiler.addVariable()
+            let c = compiler.addVariable()
+
+            compiler.addArithmeticGate(
+                qL: Fr.one, qR: Fr.one,
+                qO: frSub(Fr.zero, Fr.one),
+                qM: Fr.zero, qC: Fr.zero,
+                wires: [a, b, c])
+
+            let data = compiler.compile(domainSize: 16)
+            expect(data.domainSize == 16, "Compiler explicit domain: size = 16")
+            expect(data.circuit.gates.count == 16, "Compiler explicit domain: gate count = 16")
+        } catch {
+            expect(false, "Constraint Compiler explicit domain error: \(error)")
+        }
+
+        // ========== Test 19: SigmaPermutationBuilder ==========
+        do {
+            // Two gates sharing variable 'x' across different wire positions
+            // Gate 0: a=x, b=y, c=z
+            // Gate 1: a=z, b=x, c=w
+            // x appears at (col=0, row=0) and (col=1, row=1) -> cycle
+            // z appears at (col=2, row=0) and (col=0, row=1) -> cycle
+            let wireAssignments = [[0, 1, 2], [2, 0, 3]]
+            let n = 4
+            let logN = 2
+            let omega = computeNthRootOfUnity(logN: logN)
+            var domain = [Fr](repeating: Fr.zero, count: n)
+            domain[0] = Fr.one
+            for i in 1..<n { domain[i] = frMul(domain[i-1], omega) }
+
+            let k1 = frFromInt(2)
+            let k2 = frFromInt(3)
+
+            let sigmas = SigmaPermutationBuilder.buildSigmaEvals(
+                wireAssignments: wireAssignments,
+                copyConstraints: [],
+                n: n, domain: domain, k1: k1, k2: k2)
+
+            expect(sigmas.count == 3, "SigmaBuilder: 3 sigma columns")
+            expect(sigmas[0].count == n, "SigmaBuilder: sigma1 length = n")
+
+            // Variable 0 (x): positions (0,0) and (1,1)
+            // sigma[0][0] should point to (1,1) = k1 * omega^1
+            let expected_s0_0 = frMul(k1, domain[1])
+            expect(frEqual(sigmas[0][0], expected_s0_0), "SigmaBuilder: x cycle (0,0)->(1,1)")
+
+            // sigma[1][1] should point back to (0,0) = 1 * omega^0
+            let expected_s1_1 = domain[0]
+            expect(frEqual(sigmas[1][1], expected_s1_1), "SigmaBuilder: x cycle (1,1)->(0,0)")
+
+            // Variable 2 (z): positions (2,0) and (0,1)
+            // sigma[2][0] should point to (0,1) = 1 * omega^1
+            let expected_s2_0 = domain[1]
+            expect(frEqual(sigmas[2][0], expected_s2_0), "SigmaBuilder: z cycle (2,0)->(0,1)")
+
+            // sigma[0][1] should point back to (2,0) = k2 * omega^0
+            let expected_s0_1 = frMul(k2, domain[0])
+            expect(frEqual(sigmas[0][1], expected_s0_1), "SigmaBuilder: z cycle (0,1)->(2,0)")
+        }
+
+        // ========== Test 20: Constraint Compiler — custom BoolCheck gate ==========
+        do {
+            let compiler = PlonkConstraintCompiler()
+            let bit = compiler.addVariable()
+            let dummyB = compiler.addVariable()
+            let dummyC = compiler.addVariable()
+
+            let selectorIdx = compiler.allocateCustomSelector()
+            let boolGate = BoolCheckGate(column: 0)
+            compiler.addGate(.custom(CustomGateDesc(
+                gate: boolGate,
+                wires: [[bit, dummyB, dummyC]],
+                selectorIndex: selectorIdx)))
+
+            let data = compiler.compile()
+
+            // The gate should have qRange set (BoolCheckGate maps to range selector)
+            let g0 = data.circuit.gates[0]
+            expect(!frEqual(g0.qRange, Fr.zero), "Compiler BoolCheck: qRange is set")
+            expect(data.maxRotation == 0, "Compiler BoolCheck: no rotation")
+        } catch {
+            expect(false, "Constraint Compiler BoolCheck error: \(error)")
+        }
+
+        // ========== Original Test 11: Wrong witness — gate constraint violation ==========
         // Mul gate a*b=c with inconsistent witness: a=4, b=9, c=99 (should be 36)
         // This violates the gate constraint directly (not just copy constraints).
         do {
