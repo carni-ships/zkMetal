@@ -462,7 +462,7 @@ public class ProtogalaxyVerifier {
 /// Returns coefficients [c_0, c_1, ..., c_{n-1}] where p(x) = sum c_i x^i.
 ///
 /// O(n^2) algorithm; for Protogalaxy k is typically small (2-16).
-func lagrangeInterpolate(points: [Fr], values: [Fr]) -> [Fr] {
+public func lagrangeInterpolate(points: [Fr], values: [Fr]) -> [Fr] {
     let n = points.count
     precondition(n == values.count)
     if n == 0 { return [] }
@@ -514,7 +514,7 @@ func lagrangeInterpolate(points: [Fr], values: [Fr]) -> [Fr] {
 /// L_i(alpha) = prod_{j!=i} (alpha - j) / (i - j)
 ///
 /// O(k^2) for small k (typically 2-16 in Protogalaxy).
-func lagrangeBasisAtPoint(domainSize k: Int, point alpha: Fr) -> [Fr] {
+public func lagrangeBasisAtPoint(domainSize k: Int, point alpha: Fr) -> [Fr] {
     precondition(k >= 1)
     if k == 1 { return [Fr.one] }
 
@@ -549,7 +549,7 @@ func lagrangeBasisAtPoint(domainSize k: Int, point alpha: Fr) -> [Fr] {
 
 /// Horner's method polynomial evaluation: p(x) = sum_i coeffs[i] * x^i
 /// O(n) multiplications.
-func hornerEvaluate(coeffs: [Fr], at x: Fr) -> Fr {
+public func hornerEvaluate(coeffs: [Fr], at x: Fr) -> Fr {
     if coeffs.isEmpty { return Fr.zero }
     var result = coeffs[coeffs.count - 1]
     for i in stride(from: coeffs.count - 2, through: 0, by: -1) {

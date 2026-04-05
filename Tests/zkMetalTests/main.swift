@@ -20,6 +20,7 @@ runGroth16ProverTests()
 runUnifiedLookupTests()
 runMultiMSMTests()
 runWitnessGenTests()
+runProtogalaxyTests()
 
 let elapsed = CFAbsoluteTimeGetCurrent() - t0
 print(String(format: "\nCompleted in %.1fs", elapsed))
