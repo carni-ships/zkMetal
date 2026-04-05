@@ -3,6 +3,7 @@
 // Field elements as 8x32-bit limbs in Montgomery form (little-endian).
 
 import Foundation
+import NeonFieldOps
 
 public struct Fp {
     public var v: (UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32)
@@ -227,7 +228,16 @@ public func fpSub(_ a: Fp, _ b: Fp) -> Fp {
     return Fp.from64(r)
 }
 
-public func fpSqr(_ a: Fp) -> Fp { fpMul(a, a) }
+public func fpSqr(_ a: Fp) -> Fp {
+    let al = a.to64()
+    var r = [UInt64](repeating: 0, count: 4)
+    al.withUnsafeBufferPointer { aPtr in
+        r.withUnsafeMutableBufferPointer { rPtr in
+            bn254_fp_sqr(aPtr.baseAddress!, rPtr.baseAddress!)
+        }
+    }
+    return Fp.from64(r)
+}
 public func fpDouble(_ a: Fp) -> Fp { fpAdd(a, a) }
 
 // Convert integer to Montgomery form: a * R mod p

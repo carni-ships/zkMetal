@@ -3,6 +3,7 @@
 // Used for NTT and scalar operations.
 
 import Foundation
+import NeonFieldOps
 
 public struct Fr {
     public var v: (UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32)
@@ -130,7 +131,16 @@ public func frSub(_ a: Fr, _ b: Fr) -> Fr {
     return Fr.from64(r)
 }
 
-public func frSqr(_ a: Fr) -> Fr { frMul(a, a) }
+public func frSqr(_ a: Fr) -> Fr {
+    let al = a.to64()
+    var r = [UInt64](repeating: 0, count: 4)
+    al.withUnsafeBufferPointer { aPtr in
+        r.withUnsafeMutableBufferPointer { rPtr in
+            bn254_fr_sqr(aPtr.baseAddress!, rPtr.baseAddress!)
+        }
+    }
+    return Fr.from64(r)
+}
 
 public func frFromInt(_ val: UInt64) -> Fr {
     let limbs: [UInt64] = [val, 0, 0, 0]

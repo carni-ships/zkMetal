@@ -637,6 +637,13 @@ void grumpkin_point_double(const uint64_t p[12], uint64_t r[12]);
 void grumpkin_scalar_mul(const uint64_t p[12], const uint64_t scalar[4], uint64_t r[12]);
 
 // ============================================================
+// BN254 optimized squaring (upper-triangle, 37.5% fewer muls)
+// ============================================================
+
+void bn254_fr_sqr(const uint64_t a[4], uint64_t r[4]);
+void bn254_fp_sqr(const uint64_t a[4], uint64_t r[4]);
+
+// ============================================================
 // BN254 Fr fused pointwise ops (Groth16 computeH)
 // ============================================================
 

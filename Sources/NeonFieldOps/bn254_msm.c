@@ -154,7 +154,116 @@ static inline void fp_mul(const uint64_t a[4], const uint64_t b[4], uint64_t res
 }
 
 static inline void fp_sqr(const uint64_t a[4], uint64_t r[4]) {
-    fp_mul(a, a, r);
+    // Optimized squaring: compute full 8-limb a^2 via upper-triangle
+    // doubling + diagonal (10 muls vs 16), then Montgomery reduce.
+    uint128_t w;
+    uint64_t c;
+    uint64_t s0, s1, s2, s3, s4, s5, s6, s7;
+
+    // Step 1: Upper triangle products a[i]*a[j] for j>i
+    // Row 0: a[0]*a[1..3]
+    w = (uint128_t)a[0] * a[1];
+    s1 = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)a[0] * a[2] + c;
+    s2 = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)a[0] * a[3] + c;
+    s3 = (uint64_t)w; s4 = (uint64_t)(w >> 64);
+
+    // Row 1: a[1]*a[2..3]
+    w = (uint128_t)a[1] * a[2] + s3;
+    s3 = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)a[1] * a[3] + s4 + c;
+    s4 = (uint64_t)w; s5 = (uint64_t)(w >> 64);
+
+    // Row 2: a[2]*a[3]
+    w = (uint128_t)a[2] * a[3] + s5;
+    s5 = (uint64_t)w; s6 = (uint64_t)(w >> 64);
+
+    // Step 2: Double the upper triangle (shift left by 1 bit)
+    s7 = s6 >> 63;
+    s6 = (s6 << 1) | (s5 >> 63);
+    s5 = (s5 << 1) | (s4 >> 63);
+    s4 = (s4 << 1) | (s3 >> 63);
+    s3 = (s3 << 1) | (s2 >> 63);
+    s2 = (s2 << 1) | (s1 >> 63);
+    s1 = s1 << 1;
+
+    // Step 3: Add diagonal a[i]*a[i]
+    w = (uint128_t)a[0] * a[0];
+    s0 = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)s1 + c;
+    s1 = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)a[1] * a[1] + s2 + c;
+    s2 = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)s3 + c;
+    s3 = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)a[2] * a[2] + s4 + c;
+    s4 = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)s5 + c;
+    s5 = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)a[3] * a[3] + s6 + c;
+    s6 = (uint64_t)w; c = (uint64_t)(w >> 64);
+    s7 += c;
+
+    // Step 4: Montgomery reduction (4 iterations)
+    // Iteration 0
+    {
+        uint64_t m = s0 * FP_INV;
+        w = (uint128_t)m * FP_P[0] + s0; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FP_P[1] + s1 + c; s0 = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FP_P[2] + s2 + c; s1 = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FP_P[3] + s3 + c; s2 = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)s4 + c; s3 = (uint64_t)w; c = (uint64_t)(w >> 64);
+        s4 = s5 + c; s5 = s6; s6 = s7; s7 = 0;
+    }
+    // Iteration 1
+    {
+        uint64_t m = s0 * FP_INV;
+        w = (uint128_t)m * FP_P[0] + s0; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FP_P[1] + s1 + c; s0 = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FP_P[2] + s2 + c; s1 = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FP_P[3] + s3 + c; s2 = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)s4 + c; s3 = (uint64_t)w; c = (uint64_t)(w >> 64);
+        s4 = s5 + c; s5 = s6; s6 = 0;
+    }
+    // Iteration 2
+    {
+        uint64_t m = s0 * FP_INV;
+        w = (uint128_t)m * FP_P[0] + s0; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FP_P[1] + s1 + c; s0 = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FP_P[2] + s2 + c; s1 = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FP_P[3] + s3 + c; s2 = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)s4 + c; s3 = (uint64_t)w; c = (uint64_t)(w >> 64);
+        s4 = s5 + c; s5 = 0;
+    }
+    // Iteration 3
+    {
+        uint64_t m = s0 * FP_INV;
+        w = (uint128_t)m * FP_P[0] + s0; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FP_P[1] + s1 + c; s0 = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FP_P[2] + s2 + c; s1 = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FP_P[3] + s3 + c; s2 = (uint64_t)w; c = (uint64_t)(w >> 64);
+        s3 = s4 + c;
+    }
+
+    // Final conditional subtraction
+    uint64_t borrow = 0;
+    uint64_t r0, r1, r2, r3;
+    uint128_t d;
+    d = (uint128_t)s0 - FP_P[0] - borrow;
+    r0 = (uint64_t)d; borrow = (d >> 127) & 1;
+    d = (uint128_t)s1 - FP_P[1] - borrow;
+    r1 = (uint64_t)d; borrow = (d >> 127) & 1;
+    d = (uint128_t)s2 - FP_P[2] - borrow;
+    r2 = (uint64_t)d; borrow = (d >> 127) & 1;
+    d = (uint128_t)s3 - FP_P[3] - borrow;
+    r3 = (uint64_t)d; borrow = (d >> 127) & 1;
+
+    if (!borrow) {
+        r[0] = r0; r[1] = r1; r[2] = r2; r[3] = r3;
+    } else {
+        r[0] = s0; r[1] = s1; r[2] = s2; r[3] = s3;
+    }
 }
 
 static inline void fp_add(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]) {
@@ -239,7 +348,7 @@ static void fp_inv(const uint64_t a[4], uint64_t result[4]) {
         for (int bit = 0; bit < 64; bit++) {
             if ((pm2[i] >> bit) & 1)
                 fp_mul(result, b, result);
-            fp_mul(b, b, b);
+            fp_sqr(b, b);
         }
     }
 }
@@ -630,6 +739,99 @@ static inline void fr_mul(const uint64_t a[4], const uint64_t b[4], uint64_t r[4
     else{r[0]=t0;r[1]=t1;r[2]=t2;r[3]=t3;}
 }
 
+static inline void fr_sqr(const uint64_t a[4], uint64_t r[4]) {
+    // Optimized squaring for Fr: upper-triangle doubled + diagonal (10 muls vs 16)
+    uint128_t w;
+    uint64_t c;
+    uint64_t s0, s1, s2, s3, s4, s5, s6, s7;
+
+    // Upper triangle: a[i]*a[j] for j>i
+    w = (uint128_t)a[0] * a[1];
+    s1 = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)a[0] * a[2] + c;
+    s2 = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)a[0] * a[3] + c;
+    s3 = (uint64_t)w; s4 = (uint64_t)(w >> 64);
+    w = (uint128_t)a[1] * a[2] + s3;
+    s3 = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)a[1] * a[3] + s4 + c;
+    s4 = (uint64_t)w; s5 = (uint64_t)(w >> 64);
+    w = (uint128_t)a[2] * a[3] + s5;
+    s5 = (uint64_t)w; s6 = (uint64_t)(w >> 64);
+
+    // Double
+    s7 = s6 >> 63;
+    s6 = (s6 << 1) | (s5 >> 63);
+    s5 = (s5 << 1) | (s4 >> 63);
+    s4 = (s4 << 1) | (s3 >> 63);
+    s3 = (s3 << 1) | (s2 >> 63);
+    s2 = (s2 << 1) | (s1 >> 63);
+    s1 = s1 << 1;
+
+    // Add diagonal
+    w = (uint128_t)a[0] * a[0];
+    s0 = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)s1 + c;
+    s1 = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)a[1] * a[1] + s2 + c;
+    s2 = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)s3 + c;
+    s3 = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)a[2] * a[2] + s4 + c;
+    s4 = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)s5 + c;
+    s5 = (uint64_t)w; c = (uint64_t)(w >> 64);
+    w = (uint128_t)a[3] * a[3] + s6 + c;
+    s6 = (uint64_t)w; c = (uint64_t)(w >> 64);
+    s7 += c;
+
+    // Montgomery reduction (4 iterations)
+    {
+        uint64_t m = s0 * FR_INV;
+        w = (uint128_t)m * FR_P[0] + s0; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FR_P[1] + s1 + c; s0 = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FR_P[2] + s2 + c; s1 = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FR_P[3] + s3 + c; s2 = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)s4 + c; s3 = (uint64_t)w; c = (uint64_t)(w >> 64);
+        s4 = s5 + c; s5 = s6; s6 = s7; s7 = 0;
+    }
+    {
+        uint64_t m = s0 * FR_INV;
+        w = (uint128_t)m * FR_P[0] + s0; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FR_P[1] + s1 + c; s0 = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FR_P[2] + s2 + c; s1 = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FR_P[3] + s3 + c; s2 = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)s4 + c; s3 = (uint64_t)w; c = (uint64_t)(w >> 64);
+        s4 = s5 + c; s5 = s6; s6 = 0;
+    }
+    {
+        uint64_t m = s0 * FR_INV;
+        w = (uint128_t)m * FR_P[0] + s0; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FR_P[1] + s1 + c; s0 = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FR_P[2] + s2 + c; s1 = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FR_P[3] + s3 + c; s2 = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)s4 + c; s3 = (uint64_t)w; c = (uint64_t)(w >> 64);
+        s4 = s5 + c; s5 = 0;
+    }
+    {
+        uint64_t m = s0 * FR_INV;
+        w = (uint128_t)m * FR_P[0] + s0; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FR_P[1] + s1 + c; s0 = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FR_P[2] + s2 + c; s1 = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FR_P[3] + s3 + c; s2 = (uint64_t)w; c = (uint64_t)(w >> 64);
+        s3 = s4 + c;
+    }
+
+    // Final conditional subtraction
+    uint64_t borrow=0; uint64_t r0,r1,r2,r3; uint128_t d;
+    d=(uint128_t)s0-FR_P[0]-borrow; r0=(uint64_t)d; borrow=(d>>127)&1;
+    d=(uint128_t)s1-FR_P[1]-borrow; r1=(uint64_t)d; borrow=(d>>127)&1;
+    d=(uint128_t)s2-FR_P[2]-borrow; r2=(uint64_t)d; borrow=(d>>127)&1;
+    d=(uint128_t)s3-FR_P[3]-borrow; r3=(uint64_t)d; borrow=(d>>127)&1;
+    if(!borrow){r[0]=r0;r[1]=r1;r[2]=r2;r[3]=r3;}
+    else{r[0]=s0;r[1]=s1;r[2]=s2;r[3]=s3;}
+}
+
 static inline void fr_add(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]) {
     uint128_t w; uint64_t c=0;
     w=(uint128_t)a[0]+b[0]; r[0]=(uint64_t)w; c=(uint64_t)(w>>64);
@@ -668,7 +870,7 @@ static void fr_inv(const uint64_t a[4], uint64_t result[4]) {
         for (int bit = 0; bit < 64; bit++) {
             if ((pm2[i] >> bit) & 1)
                 fr_mul(result, b, result);
-            fr_mul(b, b, b);
+            fr_sqr(b, b);
         }
     }
 }
@@ -1106,6 +1308,14 @@ void bn254_fr_mul(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]) {
     fr_mul(a, b, r);
 }
 
+void bn254_fr_sqr(const uint64_t a[4], uint64_t r[4]) {
+    fr_sqr(a, r);
+}
+
+void bn254_fp_sqr(const uint64_t a[4], uint64_t r[4]) {
+    fp_sqr(a, r);
+}
+
 void bn254_fr_add(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]) {
     fr_add(a, b, r);
 }
@@ -1124,7 +1334,7 @@ void bn254_fr_pow(const uint64_t a[4], uint64_t exp, uint64_t r[4]) {
     uint64_t base[4]; memcpy(base, a, 32);
     while (exp > 0) {
         if (exp & 1) fr_mul(r, base, r);
-        fr_mul(base, base, base);
+        fr_sqr(base, base);
         exp >>= 1;
     }
 }
@@ -1255,7 +1465,7 @@ void bn254_projective_to_affine(const uint64_t p[12], uint64_t affine[8]) {
     }
     uint64_t zinv[4], zinv2[4], zinv3[4];
     fp_inv(p + 8, zinv);
-    fp_mul(zinv, zinv, zinv2);
+    fp_sqr(zinv, zinv2);
     fp_mul(zinv2, zinv, zinv3);
     fp_mul(p, zinv2, affine);        // x_aff = X / Z^2
     fp_mul(p + 4, zinv3, affine + 4); // y_aff = Y / Z^3
