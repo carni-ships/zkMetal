@@ -142,8 +142,8 @@ private func hardPartExponentiation(_ f: Fp12_381) -> Fp12_381 {
     var t0, t1, t2: Fp12_381
     var result = f
 
-    // t[0] = result^2
-    t0 = fp12_381Sqr(result)
+    // t[0] = result^2 (cyclotomic squaring: result is in cyclotomic subgroup after easy part)
+    t0 = fp12_381CyclotomicSqr(result)
 
     // t[1] = t[0]^(x/2)  (ExptHalf: (result^2)^(|x|/2) then conjugate = result^x)
     t1 = fp12_381PowByXHalf(t0)

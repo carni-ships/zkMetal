@@ -320,12 +320,120 @@ public func runBLS12381Test() {
     _ = frAcc
     print(String(format: "  Fr mul: %.0f ns/op", frMulTime))
 
+    // --- Frobenius Endomorphism Tests & Benchmarks ---
+    print("\n--- Frobenius Endomorphism ---")
+
+    // Correctness: frob(1) == 1
+    let frobOneOk = fp12_381Equal(fp12_381Frobenius(.one), .one)
+    print("  frob(1) == 1: \(frobOneOk ? "PASS" : "FAIL")")
+
+    // frob2(1) == 1
+    let frob2OneOk = fp12_381Equal(fp12_381Frobenius2(.one), .one)
+    print("  frob2(1) == 1: \(frob2OneOk ? "PASS" : "FAIL")")
+
+    // frob3(1) == 1
+    let frob3OneOk = fp12_381Equal(fp12_381Frobenius3(.one), .one)
+    print("  frob3(1) == 1: \(frob3OneOk ? "PASS" : "FAIL")")
+
+    // frob(frob(a)) == frob2(a) -- consistency check
+    let frobA = fp12_381Frobenius(fp12_a)
+    let frobFrobA = fp12_381Frobenius(frobA)
+    let frob2A = fp12_381Frobenius2(fp12_a)
+    let frob2ConsistOk = fp12_381Equal(frobFrobA, frob2A)
+    print("  frob(frob(a)) == frob2(a): \(frob2ConsistOk ? "PASS" : "FAIL")")
+
+    // frob(frob2(a)) == frob3(a)
+    let frobFrob2A = fp12_381Frobenius(frob2A)
+    let frob3A = fp12_381Frobenius3(fp12_a)
+    let frob3ConsistOk = fp12_381Equal(frobFrob2A, frob3A)
+    print("  frob(frob2(a)) == frob3(a): \(frob3ConsistOk ? "PASS" : "FAIL")")
+
+    // Cyclotomic squaring: on a cyclotomic element, should match regular squaring
+    // Create a cyclotomic element via easy part of final exp
+    let gen1_381 = bls12381G1Generator()
+    let gen2_381 = bls12381G2SimplePoint()
+    let mlResult = millerLoop381(gen1_381, gen2_381)
+    let fConj381 = fp12_381Conjugate(mlResult)
+    let fInv381 = fp12_381Inverse(mlResult)
+    var cyclElem = fp12_381Mul(fConj381, fInv381) // f^(p^6-1)
+    let cyclElemP2 = fp12_381Frobenius2(cyclElem)
+    cyclElem = fp12_381Mul(cyclElemP2, cyclElem) // f^((p^6-1)(p^2+1))
+
+    // Now cyclElem is in cyclotomic subgroup: conj(cyclElem) == cyclElem^{-1}
+    let cyclConj = fp12_381Conjugate(cyclElem)
+    let cyclInv = fp12_381Inverse(cyclElem)
+    let cyclUnitaryOk = fp12_381Equal(cyclConj, cyclInv)
+    print("  cyclotomic: conj(f) == f^{-1}: \(cyclUnitaryOk ? "PASS" : "FAIL")")
+
+    // Compare cyclotomic squaring vs generic squaring
+    let cyclSqrGeneric = fp12_381Sqr(cyclElem)
+    let cyclSqrCyclo = fp12_381CyclotomicSqr(cyclElem)
+    let cyclSqrMatch = fp12_381Equal(cyclSqrGeneric, cyclSqrCyclo)
+    print("  cyclotomic_sqr(f) == generic_sqr(f): \(cyclSqrMatch ? "PASS" : "FAIL")")
+
+    // Benchmark: Fp12 squaring vs cyclotomic squaring
+    let sqrIters = 10_000
+
+    let fp12SqrT0 = CFAbsoluteTimeGetCurrent()
+    var sqrAcc = cyclElem
+    for _ in 0..<sqrIters { sqrAcc = fp12_381Sqr(sqrAcc) }
+    let fp12SqrTime = (CFAbsoluteTimeGetCurrent() - fp12SqrT0) * 1e6 / Double(sqrIters)
+    _ = sqrAcc
+    print(String(format: "  Fp12 generic sqr: %.1f us/op", fp12SqrTime))
+
+    let cyclSqrT0 = CFAbsoluteTimeGetCurrent()
+    var cyclAcc = cyclElem
+    for _ in 0..<sqrIters { cyclAcc = fp12_381CyclotomicSqr(cyclAcc) }
+    let cyclSqrTime = (CFAbsoluteTimeGetCurrent() - cyclSqrT0) * 1e6 / Double(sqrIters)
+    _ = cyclAcc
+    print(String(format: "  Fp12 cyclotomic sqr: %.1f us/op", cyclSqrTime))
+
+    if fp12SqrTime > 0 {
+        print(String(format: "  Cyclotomic speedup: %.1fx", fp12SqrTime / cyclSqrTime))
+    }
+
+    // Benchmark: Frobenius maps
+    let frobIters = 10_000
+
+    let frob1T0 = CFAbsoluteTimeGetCurrent()
+    var frobAcc = fp12_a
+    for _ in 0..<frobIters { frobAcc = fp12_381Frobenius(frobAcc) }
+    let frob1Time = (CFAbsoluteTimeGetCurrent() - frob1T0) * 1e6 / Double(frobIters)
+    _ = frobAcc
+    print(String(format: "  Fp12 Frobenius^1: %.1f us/op", frob1Time))
+
+    let frob2T0 = CFAbsoluteTimeGetCurrent()
+    var frob2Acc = fp12_a
+    for _ in 0..<frobIters { frob2Acc = fp12_381Frobenius2(frob2Acc) }
+    let frob2Time = (CFAbsoluteTimeGetCurrent() - frob2T0) * 1e6 / Double(frobIters)
+    _ = frob2Acc
+    print(String(format: "  Fp12 Frobenius^2: %.1f us/op (MulByFp optimized)", frob2Time))
+
+    let frob3T0 = CFAbsoluteTimeGetCurrent()
+    var frob3Acc = fp12_a
+    for _ in 0..<frobIters { frob3Acc = fp12_381Frobenius3(frob3Acc) }
+    let frob3Time = (CFAbsoluteTimeGetCurrent() - frob3T0) * 1e6 / Double(frobIters)
+    _ = frob3Acc
+    print(String(format: "  Fp12 Frobenius^3: %.1f us/op", frob3Time))
+
+    // Benchmark: Full pairing
+    let pairIters = 3
+    let pairT0 = CFAbsoluteTimeGetCurrent()
+    for _ in 0..<pairIters {
+        _ = bls12381Pairing(gen1_381, gen2_381)
+    }
+    let pairTime = (CFAbsoluteTimeGetCurrent() - pairT0) * 1000 / Double(pairIters)
+    print(String(format: "  Full pairing: %.1f ms", pairTime))
+
     // Summary
     let allFields = oneOk && zeroOk && addZeroOk381 && addNegOk381 && mulOneOk381 &&
                     mulInvOk381 && distOk381 && rootOk && rootFullOk &&
                     fpOneOk && fpAddOk && fpInvOk &&
                     fp2MulOk && fp2InvOk && conjOk &&
                     fp6InvOk && fp12InvOk &&
-                    g1OnCurve && negOk && g2OnCurve && g2NegOk
+                    g1OnCurve && negOk && g2OnCurve && g2NegOk &&
+                    frobOneOk && frob2OneOk && frob3OneOk &&
+                    frob2ConsistOk && frob3ConsistOk &&
+                    cyclUnitaryOk && cyclSqrMatch
     print("\n  Overall: \(allFields ? "ALL PASS" : "SOME FAILED")")
 }

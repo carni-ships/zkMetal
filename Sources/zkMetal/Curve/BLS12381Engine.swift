@@ -157,6 +157,14 @@ public class BLS12381Engine {
     public func fp12Inv(_ a: Fp12_381) -> Fp12_381 { fp12_381Inverse(a) }
     public func fp12Conj(_ a: Fp12_381) -> Fp12_381 { fp12_381Conjugate(a) }
 
+    /// Frobenius endomorphism: x -> x^p, x^(p^2), x^(p^3) on Fp12
+    public func fp12Frobenius(_ a: Fp12_381) -> Fp12_381 { fp12_381Frobenius(a) }
+    public func fp12Frobenius2(_ a: Fp12_381) -> Fp12_381 { fp12_381Frobenius2(a) }
+    public func fp12Frobenius3(_ a: Fp12_381) -> Fp12_381 { fp12_381Frobenius3(a) }
+
+    /// Cyclotomic squaring (for elements in the cyclotomic subgroup after easy part of final exp)
+    public func fp12CyclotomicSqr(_ a: Fp12_381) -> Fp12_381 { fp12_381CyclotomicSqr(a) }
+
     /// Fr (scalar field) arithmetic
     public func frAdd(_ a: Fr381, _ b: Fr381) -> Fr381 { fr381Add(a, b) }
     public func frSub(_ a: Fr381, _ b: Fr381) -> Fr381 { fr381Sub(a, b) }
