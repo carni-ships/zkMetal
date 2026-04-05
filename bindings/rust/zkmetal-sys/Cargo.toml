@@ -2,8 +2,14 @@
 name = "zkmetal-sys"
 version = "0.1.0"
 edition = "2021"
-description = "Raw FFI bindings to zkMetal GPU-accelerated ZK primitives (Apple Silicon)"
-license = "MIT OR Apache-2.0"
-links = "zkmetal_ffi"
+description = "Raw FFI bindings to NeonFieldOps: Metal-accelerated ZK cryptographic primitives for Apple Silicon"
+license = "Apache-2.0 OR MIT"
+repository = "https://github.com/Carbearnara/zkMetal"
+categories = ["cryptography", "external-ffi-bindings"]
+keywords = ["zk", "metal", "apple-silicon", "cryptography", "neon"]
 
 [build-dependencies]
+cc = "1"
+
+[features]
+default = []

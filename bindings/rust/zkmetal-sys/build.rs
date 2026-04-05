@@ -1,108 +1,59 @@
-use std::env;
 use std::path::PathBuf;
-use std::process::Command;
 
 fn main() {
-    // Find the zkMetal root directory (3 levels up from this build.rs)
-    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    let zkmetal_root = manifest_dir
-        .parent() // rust/
-        .unwrap()
-        .parent() // bindings/
-        .unwrap()
-        .parent() // zkMetal root
-        .unwrap();
-
-    let lib_dir = zkmetal_root.join("bindings").join("lib");
-    let static_lib = lib_dir.join("libzkmetal_ffi.a");
-
-    // Build the FFI library if it doesn't exist
-    if !static_lib.exists() {
-        let build_script = zkmetal_root.join("bindings").join("build-ffi.sh");
-        eprintln!("zkmetal-sys: Building FFI library via {:?}", build_script);
-        let status = Command::new("bash")
-            .arg(&build_script)
-            .current_dir(zkmetal_root)
-            .status()
-            .expect("Failed to run build-ffi.sh");
-        if !status.success() {
-            panic!("build-ffi.sh failed with status: {}", status);
-        }
+    // Only build on aarch64 (Apple Silicon)
+    let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+    if target_arch != "aarch64" {
+        println!("cargo:warning=zkmetal-sys only supports aarch64 (Apple Silicon). Skipping C compilation.");
+        return;
     }
 
-    // Tell cargo where to find the library
-    println!("cargo:rustc-link-search=native={}", lib_dir.display());
-    println!("cargo:rustc-link-lib=static=zkmetal_ffi");
+    let neon_dir: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("..")
+        .join("Sources")
+        .join("NeonFieldOps");
 
-    // Swift runtime
-    // Find the Swift toolchain lib directory
-    let swift_lib = Command::new("xcrun")
-        .args(["--toolchain", "default", "--find", "swift"])
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| {
-            PathBuf::from(s.trim())
-                .parent()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .join("lib")
-                .join("swift")
-                .join("macosx")
-        });
+    let include_dir = neon_dir.join("include");
 
-    if let Some(swift_lib_dir) = swift_lib {
-        if swift_lib_dir.exists() {
-            println!("cargo:rustc-link-search=native={}", swift_lib_dir.display());
-        }
-    }
-
-    // Also check Xcode's toolchain path
-    if let Ok(output) = Command::new("xcode-select").arg("-p").output() {
-        if let Ok(dev_dir) = String::from_utf8(output.stdout) {
-            let xcode_swift_lib = PathBuf::from(dev_dir.trim())
-                .join("Toolchains")
-                .join("XcodeDefault.xctoolchain")
-                .join("usr")
-                .join("lib")
-                .join("swift")
-                .join("macosx");
-            if xcode_swift_lib.exists() {
-                println!(
-                    "cargo:rustc-link-search=native={}",
-                    xcode_swift_lib.display()
-                );
+    // Collect all .c files
+    let c_files: Vec<PathBuf> = std::fs::read_dir(&neon_dir)
+        .expect("Failed to read NeonFieldOps source directory")
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let path = entry.path();
+            if path.extension().map_or(false, |ext| ext == "c") {
+                Some(path)
+            } else {
+                None
             }
-        }
+        })
+        .collect();
+
+    if c_files.is_empty() {
+        panic!("No C source files found in {}", neon_dir.display());
     }
 
-    // macOS frameworks needed by Metal + Swift runtime
-    println!("cargo:rustc-link-lib=framework=Metal");
-    println!("cargo:rustc-link-lib=framework=Foundation");
-    println!("cargo:rustc-link-lib=framework=CoreGraphics");
-    println!("cargo:rustc-link-lib=framework=IOKit");
+    let mut build = cc::Build::new();
+    build
+        .files(&c_files)
+        .include(&include_dir)
+        .opt_level(3)
+        .flag("-march=armv8-a+crypto")
+        .flag("-mtune=apple-m1")
+        // NEON is always available on aarch64
+        .define("__ARM_NEON", None)
+        .warnings(false);
 
-    // Swift runtime libraries
-    println!("cargo:rustc-link-lib=dylib=swiftCore");
-    println!("cargo:rustc-link-lib=dylib=swiftFoundation");
-    println!("cargo:rustc-link-lib=dylib=swiftMetal");
-    println!("cargo:rustc-link-lib=dylib=swiftDarwin");
-    println!("cargo:rustc-link-lib=dylib=swiftDispatch");
-    println!("cargo:rustc-link-lib=dylib=swiftObjectiveC");
+    // macOS frameworks for Metal GPU support (optional, used by some .c files)
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    if target_os == "macos" {
+        println!("cargo:rustc-link-lib=framework=Foundation");
+    }
 
-    // Emit the shader directory path for downstream crates
-    let shader_dir = zkmetal_root.join("Sources").join("Shaders");
-    println!("cargo:shader_dir={}", shader_dir.display());
+    build.compile("neon_field_ops");
 
-    // Rerun if the static lib changes
-    println!("cargo:rerun-if-changed={}", static_lib.display());
-    println!(
-        "cargo:rerun-if-changed={}",
-        zkmetal_root
-            .join("Sources")
-            .join("zkMetal-ffi")
-            .join("zkMetal_ffi.swift")
-            .display()
-    );
+    println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed={}", neon_dir.display());
 }

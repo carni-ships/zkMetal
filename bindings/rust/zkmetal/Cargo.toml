@@ -2,8 +2,11 @@
 name = "zkmetal"
 version = "0.1.0"
 edition = "2021"
-description = "Safe Rust bindings to zkMetal GPU-accelerated ZK primitives (Apple Silicon)"
-license = "MIT OR Apache-2.0"
+description = "Safe Rust wrappers for Metal-accelerated ZK cryptographic primitives on Apple Silicon"
+license = "Apache-2.0 OR MIT"
+repository = "https://github.com/Carbearnara/zkMetal"
+categories = ["cryptography"]
+keywords = ["zk", "metal", "apple-silicon", "cryptography", "neon"]
 
 [dependencies]
 zkmetal-sys = { path = "../zkmetal-sys" }
