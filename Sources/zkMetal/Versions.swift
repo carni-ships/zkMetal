@@ -57,7 +57,7 @@ public enum Versions {
     // --- Polynomial / STARK ---
     public static let fri            = PrimitiveVersion(version: "1.3.0", updated: "2026-04-03")
     public static let stir            = PrimitiveVersion(version: "2.0.0", updated: "2026-04-05")
-    public static let whir           = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
+    public static let whir           = PrimitiveVersion(version: "2.0.0", updated: "2026-04-05")
     public static let sumcheck       = PrimitiveVersion(version: "1.1.0", updated: "2026-04-02")
     public static let poly           = PrimitiveVersion(version: "1.0.0", updated: "2026-04-01")
     public static let basefold       = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
@@ -109,8 +109,6 @@ public enum Versions {
     public static let joltVM            = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let groth16Batch      = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let proofAggregation  = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
-    public static let novaIVC           = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
-    public static let superNovaIVC      = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
 
     /// Print all primitive versions
     public static func printAll() {
@@ -178,8 +176,6 @@ public enum Versions {
             ("Jolt VM",          joltVM),
             ("Groth16 Batch",    groth16Batch),
             ("Proof Aggregation", proofAggregation),
-            ("Nova IVC",          novaIVC),
-            ("SuperNova IVC",     superNovaIVC),
             ("Marlin",           marlin),
             ("Varuna",           varuna),
             ("Unified Verify",   unifiedVerify),
