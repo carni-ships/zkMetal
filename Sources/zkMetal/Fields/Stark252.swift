@@ -4,6 +4,7 @@
 // Used for StarkNet compatibility, NTT, and scalar operations.
 
 import Foundation
+import NeonFieldOps
 
 public struct Stark252 {
     public var v: (UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32)
@@ -82,69 +83,37 @@ public struct Stark252 {
 // MARK: - Stark252 Field Operations
 
 public func stark252Mul(_ a: Stark252, _ b: Stark252) -> Stark252 {
-    let al = a.to64(), bl = b.to64()
-    var t = [UInt64](repeating: 0, count: 5)
-
-    for i in 0..<4 {
-        var carry: UInt64 = 0
-        for j in 0..<4 {
-            let (hi, lo) = al[i].multipliedFullWidth(by: bl[j])
-            let (s1, c1) = t[j].addingReportingOverflow(lo)
-            let (s2, c2) = s1.addingReportingOverflow(carry)
-            t[j] = s2
-            carry = hi + (c1 ? 1 : 0) + (c2 ? 1 : 0)
-        }
-        t[4] = t[4] &+ carry
-
-        let m = t[0] &* Stark252.INV
-        carry = 0
-        for j in 0..<4 {
-            let (hi, lo) = m.multipliedFullWidth(by: Stark252.P[j])
-            let (s1, c1) = t[j].addingReportingOverflow(lo)
-            let (s2, c2) = s1.addingReportingOverflow(carry)
-            t[j] = s2
-            carry = hi + (c1 ? 1 : 0) + (c2 ? 1 : 0)
-        }
-        t[4] = t[4] &+ carry
-
-        t[0] = t[1]; t[1] = t[2]; t[2] = t[3]; t[3] = t[4]; t[4] = 0
-    }
-
-    var r = Array(t[0..<4])
-    if gte256(r, Stark252.P) {
-        (r, _) = sub256(r, Stark252.P)
-    }
+    var al = a.to64(), bl = b.to64()
+    var r = [UInt64](repeating: 0, count: 4)
+    stark252_fp_mul(&al, &bl, &r)
     return Stark252.from64(r)
 }
 
 public func stark252Add(_ a: Stark252, _ b: Stark252) -> Stark252 {
-    var (r, carry) = add256(a.to64(), b.to64())
-    if carry != 0 || gte256(r, Stark252.P) {
-        (r, _) = sub256(r, Stark252.P)
-    }
+    var al = a.to64(), bl = b.to64()
+    var r = [UInt64](repeating: 0, count: 4)
+    stark252_fp_add(&al, &bl, &r)
     return Stark252.from64(r)
 }
 
 public func stark252Sub(_ a: Stark252, _ b: Stark252) -> Stark252 {
-    var (r, borrow) = sub256(a.to64(), b.to64())
-    if borrow {
-        (r, _) = add256(r, Stark252.P)
-    }
+    var al = a.to64(), bl = b.to64()
+    var r = [UInt64](repeating: 0, count: 4)
+    stark252_fp_sub(&al, &bl, &r)
     return Stark252.from64(r)
 }
 
-public func stark252Sqr(_ a: Stark252) -> Stark252 { stark252Mul(a, a) }
+public func stark252Sqr(_ a: Stark252) -> Stark252 {
+    var al = a.to64()
+    var r = [UInt64](repeating: 0, count: 4)
+    stark252_fp_sqr(&al, &r)
+    return Stark252.from64(r)
+}
 
 public func stark252Neg(_ a: Stark252) -> Stark252 {
-    if a.isZero { return a }
+    var al = a.to64()
     var r = [UInt64](repeating: 0, count: 4)
-    var borrow: Bool = false
-    for i in 0..<4 {
-        let (s1, b1) = Stark252.P[i].subtractingReportingOverflow(a.to64()[i])
-        let (s2, b2) = s1.subtractingReportingOverflow(borrow ? 1 : 0)
-        r[i] = s2
-        borrow = b1 || b2
-    }
+    stark252_fp_neg(&al, &r)
     return Stark252.from64(r)
 }
 

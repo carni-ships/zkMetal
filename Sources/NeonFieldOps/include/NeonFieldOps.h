@@ -739,4 +739,14 @@ void vesta_point_double(const uint64_t p[12], uint64_t r[12]);
 void vesta_point_add_mixed(const uint64_t p[12], const uint64_t q_aff[8], uint64_t r[12]);
 void vesta_scalar_mul(const uint64_t p[12], const uint64_t scalar[4], uint64_t r[12]);
 
+// ============================================================
+// Stark252 field (p = 2^251 + 17*2^192 + 1)
+// ============================================================
+
+void stark252_fp_mul(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]);
+void stark252_fp_sqr(const uint64_t a[4], uint64_t r[4]);
+void stark252_fp_add(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]);
+void stark252_fp_sub(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]);
+void stark252_fp_neg(const uint64_t a[4], uint64_t r[4]);
+
 #endif // NEON_FIELD_OPS_H
