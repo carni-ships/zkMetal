@@ -36,6 +36,7 @@ public class BatchFieldEngine {
     public var gpuThreshold: Int = 1024
 
     private let tuning: TuningConfig
+    private let pool: GPUBufferPool
 
     public init() throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
@@ -70,6 +71,7 @@ public class BatchFieldEngine {
         self.batchAddBB = try device.makeComputePipelineState(function: addBB)
         self.batchEvalBB = try device.makeComputePipelineState(function: evalBB)
         self.tuning = TuningManager.shared.config(device: device)
+        self.pool = GPUBufferPool(device: device)
     }
 
     // MARK: - Shader Compilation
@@ -120,7 +122,7 @@ public class BatchFieldEngine {
 
     private func createFrBuffer(_ data: [Fr]) -> MTLBuffer {
         let bytes = data.count * MemoryLayout<Fr>.stride
-        let buf = device.makeBuffer(length: bytes, options: .storageModeShared)!
+        let buf = pool.allocate(size: bytes)!
         data.withUnsafeBytes { src in memcpy(buf.contents(), src.baseAddress!, bytes) }
         return buf
     }
@@ -132,7 +134,7 @@ public class BatchFieldEngine {
 
     private func createBbBuffer(_ data: [Bb]) -> MTLBuffer {
         let bytes = data.count * MemoryLayout<Bb>.stride
-        let buf = device.makeBuffer(length: bytes, options: .storageModeShared)!
+        let buf = pool.allocate(size: bytes)!
         data.withUnsafeBytes { src in memcpy(buf.contents(), src.baseAddress!, bytes) }
         return buf
     }
@@ -185,7 +187,7 @@ public class BatchFieldEngine {
         }
 
         let aBuf = createFrBuffer(a)
-        let outBuf = device.makeBuffer(length: n * MemoryLayout<Fr>.stride, options: .storageModeShared)!
+        let outBuf = pool.allocate(size: n * MemoryLayout<Fr>.stride)!
 
         guard let cmdBuf = commandQueue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
         let enc = cmdBuf.makeComputeCommandEncoder()!
@@ -202,8 +204,13 @@ public class BatchFieldEngine {
         enc.endEncoding()
         cmdBuf.commit()
         cmdBuf.waitUntilCompleted()
-        if let error = cmdBuf.error { throw MSMError.gpuError(error.localizedDescription) }
-        return readFrBuffer(outBuf, count: n)
+        if let error = cmdBuf.error {
+            pool.release(buffer: aBuf); pool.release(buffer: outBuf)
+            throw MSMError.gpuError(error.localizedDescription)
+        }
+        let result = readFrBuffer(outBuf, count: n)
+        pool.release(buffer: aBuf); pool.release(buffer: outBuf)
+        return result
     }
 
     /// CPU fallback: Montgomery's trick for batch inverse.
@@ -245,9 +252,11 @@ public class BatchFieldEngine {
 
         let aBuf = createFrBuffer(a)
         let bBuf = createFrBuffer(b)
-        let outBuf = device.makeBuffer(length: n * MemoryLayout<Fr>.stride, options: .storageModeShared)!
+        let outBuf = pool.allocate(size: n * MemoryLayout<Fr>.stride)!
         try dispatchElementWise(batchMulBN254, aBuf, bBuf, outBuf, n: n)
-        return readFrBuffer(outBuf, count: n)
+        let result = readFrBuffer(outBuf, count: n)
+        pool.release(buffer: aBuf); pool.release(buffer: bBuf); pool.release(buffer: outBuf)
+        return result
     }
 
     private func batchMulCPU_BN254(_ a: [Fr], _ b: [Fr]) -> [Fr] {
@@ -272,9 +281,11 @@ public class BatchFieldEngine {
 
         let aBuf = createFrBuffer(a)
         let bBuf = createFrBuffer(b)
-        let outBuf = device.makeBuffer(length: n * MemoryLayout<Fr>.stride, options: .storageModeShared)!
+        let outBuf = pool.allocate(size: n * MemoryLayout<Fr>.stride)!
         try dispatchElementWise(batchAddBN254, aBuf, bBuf, outBuf, n: n)
-        return readFrBuffer(outBuf, count: n)
+        let result = readFrBuffer(outBuf, count: n)
+        pool.release(buffer: aBuf); pool.release(buffer: bBuf); pool.release(buffer: outBuf)
+        return result
     }
 
     private func batchAddCPU_BN254(_ a: [Fr], _ b: [Fr]) -> [Fr] {
@@ -302,7 +313,7 @@ public class BatchFieldEngine {
 
         let coeffsBuf = createFrBuffer(coeffs)
         let pointsBuf = createFrBuffer(points)
-        let resultsBuf = device.makeBuffer(length: numPoints * MemoryLayout<Fr>.stride, options: .storageModeShared)!
+        let resultsBuf = pool.allocate(size: numPoints * MemoryLayout<Fr>.stride)!
 
         guard let cmdBuf = commandQueue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
         let enc = cmdBuf.makeComputeCommandEncoder()!
@@ -320,8 +331,13 @@ public class BatchFieldEngine {
         enc.endEncoding()
         cmdBuf.commit()
         cmdBuf.waitUntilCompleted()
-        if let error = cmdBuf.error { throw MSMError.gpuError(error.localizedDescription) }
-        return readFrBuffer(resultsBuf, count: numPoints)
+        if let error = cmdBuf.error {
+            pool.release(buffer: coeffsBuf); pool.release(buffer: pointsBuf); pool.release(buffer: resultsBuf)
+            throw MSMError.gpuError(error.localizedDescription)
+        }
+        let result = readFrBuffer(resultsBuf, count: numPoints)
+        pool.release(buffer: coeffsBuf); pool.release(buffer: pointsBuf); pool.release(buffer: resultsBuf)
+        return result
     }
 
     /// CPU fallback: Horner evaluation at each point.
@@ -352,7 +368,7 @@ public class BatchFieldEngine {
         }
 
         let aBuf = createBbBuffer(a)
-        let outBuf = device.makeBuffer(length: n * MemoryLayout<Bb>.stride, options: .storageModeShared)!
+        let outBuf = pool.allocate(size: n * MemoryLayout<Bb>.stride)!
 
         guard let cmdBuf = commandQueue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
         let enc = cmdBuf.makeComputeCommandEncoder()!
@@ -369,8 +385,13 @@ public class BatchFieldEngine {
         enc.endEncoding()
         cmdBuf.commit()
         cmdBuf.waitUntilCompleted()
-        if let error = cmdBuf.error { throw MSMError.gpuError(error.localizedDescription) }
-        return readBbBuffer(outBuf, count: n)
+        if let error = cmdBuf.error {
+            pool.release(buffer: aBuf); pool.release(buffer: outBuf)
+            throw MSMError.gpuError(error.localizedDescription)
+        }
+        let result = readBbBuffer(outBuf, count: n)
+        pool.release(buffer: aBuf); pool.release(buffer: outBuf)
+        return result
     }
 
     private func batchInverseCPU_BB(_ a: [Bb]) -> [Bb] {
@@ -408,9 +429,11 @@ public class BatchFieldEngine {
 
         let aBuf = createBbBuffer(a)
         let bBuf = createBbBuffer(b)
-        let outBuf = device.makeBuffer(length: n * MemoryLayout<Bb>.stride, options: .storageModeShared)!
+        let outBuf = pool.allocate(size: n * MemoryLayout<Bb>.stride)!
         try dispatchElementWise(batchMulBB, aBuf, bBuf, outBuf, n: n)
-        return readBbBuffer(outBuf, count: n)
+        let result = readBbBuffer(outBuf, count: n)
+        pool.release(buffer: aBuf); pool.release(buffer: bBuf); pool.release(buffer: outBuf)
+        return result
     }
 
     private func batchMulCPU_BB(_ a: [Bb], _ b: [Bb]) -> [Bb] {
@@ -435,9 +458,11 @@ public class BatchFieldEngine {
 
         let aBuf = createBbBuffer(a)
         let bBuf = createBbBuffer(b)
-        let outBuf = device.makeBuffer(length: n * MemoryLayout<Bb>.stride, options: .storageModeShared)!
+        let outBuf = pool.allocate(size: n * MemoryLayout<Bb>.stride)!
         try dispatchElementWise(batchAddBB, aBuf, bBuf, outBuf, n: n)
-        return readBbBuffer(outBuf, count: n)
+        let result = readBbBuffer(outBuf, count: n)
+        pool.release(buffer: aBuf); pool.release(buffer: bBuf); pool.release(buffer: outBuf)
+        return result
     }
 
     private func batchAddCPU_BB(_ a: [Bb], _ b: [Bb]) -> [Bb] {
@@ -462,7 +487,7 @@ public class BatchFieldEngine {
 
         let coeffsBuf = createBbBuffer(coeffs)
         let pointsBuf = createBbBuffer(points)
-        let resultsBuf = device.makeBuffer(length: numPoints * MemoryLayout<Bb>.stride, options: .storageModeShared)!
+        let resultsBuf = pool.allocate(size: numPoints * MemoryLayout<Bb>.stride)!
 
         guard let cmdBuf = commandQueue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
         let enc = cmdBuf.makeComputeCommandEncoder()!
@@ -480,8 +505,13 @@ public class BatchFieldEngine {
         enc.endEncoding()
         cmdBuf.commit()
         cmdBuf.waitUntilCompleted()
-        if let error = cmdBuf.error { throw MSMError.gpuError(error.localizedDescription) }
-        return readBbBuffer(resultsBuf, count: numPoints)
+        if let error = cmdBuf.error {
+            pool.release(buffer: coeffsBuf); pool.release(buffer: pointsBuf); pool.release(buffer: resultsBuf)
+            throw MSMError.gpuError(error.localizedDescription)
+        }
+        let result = readBbBuffer(resultsBuf, count: numPoints)
+        pool.release(buffer: coeffsBuf); pool.release(buffer: pointsBuf); pool.release(buffer: resultsBuf)
+        return result
     }
 
     private func batchEvalCPU_BB(coeffs: [Bb], points: [Bb]) -> [Bb] {

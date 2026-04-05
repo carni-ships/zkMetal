@@ -28,6 +28,7 @@ public class ParallelReduceEngine {
     // Cached intermediate buffers for multi-pass reduction
     private var scratchBufs: [MTLBuffer] = []
     private var scratchCapacity: Int = 0
+    private let pool: GPUBufferPool
 
     public init(threadgroupSize: Int = 256) throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
@@ -39,6 +40,7 @@ public class ParallelReduceEngine {
         }
         self.commandQueue = queue
         self.threadgroupSize = threadgroupSize
+        self.pool = GPUBufferPool(device: device)
 
         let library = try ParallelReduceEngine.compileShaders(device: device)
 
@@ -167,11 +169,16 @@ public class ParallelReduceEngine {
                            elementCount: Int,
                            elementStride: Int) -> [UInt32] {
         let inputSize = elementCount * elementStride
-        guard let inputBuf = device.makeBuffer(bytes: elements, length: inputSize, options: .storageModeShared) else {
+        guard let inputBuf = pool.allocate(size: inputSize) else {
             return [UInt32](repeating: 0, count: elementStride / MemoryLayout<UInt32>.size)
         }
-        return gpuReduceBuffer(pipeline: pipeline, inputBuffer: inputBuf,
+        elements.withUnsafeBytes { src in
+            memcpy(inputBuf.contents(), src.baseAddress!, inputSize)
+        }
+        let result = gpuReduceBuffer(pipeline: pipeline, inputBuffer: inputBuf,
                                elementCount: elementCount, elementStride: elementStride)
+        pool.release(buffer: inputBuf)
+        return result
     }
 
     private func gpuReduceBuffer(pipeline: MTLComputePipelineState,
@@ -181,16 +188,20 @@ public class ParallelReduceEngine {
         let elementsPerU32 = elementStride / MemoryLayout<UInt32>.size
         var currentBuf = inputBuffer
         var currentCount = elementCount
+        var intermediateBuffers: [MTLBuffer] = []
 
         while currentCount > 1 {
             let numGroups = (currentCount + threadgroupSize - 1) / threadgroupSize
             let outputSize = numGroups * elementStride
-            guard let outputBuf = device.makeBuffer(length: outputSize, options: .storageModeShared) else {
+            guard let outputBuf = pool.allocate(size: outputSize) else {
+                for buf in intermediateBuffers { pool.release(buffer: buf) }
                 return [UInt32](repeating: 0, count: elementsPerU32)
             }
 
             guard let cmdBuf = commandQueue.makeCommandBuffer(),
                   let encoder = cmdBuf.makeComputeCommandEncoder() else {
+                pool.release(buffer: outputBuf)
+                for buf in intermediateBuffers { pool.release(buffer: buf) }
                 return [UInt32](repeating: 0, count: elementsPerU32)
             }
 
@@ -207,19 +218,25 @@ public class ParallelReduceEngine {
             cmdBuf.commit()
             cmdBuf.waitUntilCompleted()
 
+            intermediateBuffers.append(outputBuf)
             currentBuf = outputBuf
             currentCount = numGroups
         }
 
         // Read back the single result
         let ptr = currentBuf.contents().bindMemory(to: UInt32.self, capacity: elementsPerU32)
-        return Array(UnsafeBufferPointer(start: ptr, count: elementsPerU32))
+        let result = Array(UnsafeBufferPointer(start: ptr, count: elementsPerU32))
+        for buf in intermediateBuffers { pool.release(buffer: buf) }
+        return result
     }
 
     private func gpuReduceMinMax(elements: [UInt32], elementCount: Int) -> (min: UInt32, max: UInt32) {
         let inputSize = elementCount * MemoryLayout<UInt32>.size
-        guard let inputBuf = device.makeBuffer(bytes: elements, length: inputSize, options: .storageModeShared) else {
+        guard let inputBuf = pool.allocate(size: inputSize) else {
             return (.max, 0)
+        }
+        elements.withUnsafeBytes { src in
+            memcpy(inputBuf.contents(), src.baseAddress!, inputSize)
         }
 
         // MinMaxResult = 2x uint32 = 8 bytes
@@ -227,16 +244,20 @@ public class ParallelReduceEngine {
         var currentBuf = inputBuf
         var currentCount = elementCount
         var isFirstPass = true
+        var intermediateBuffers: [MTLBuffer] = [inputBuf]
 
         while currentCount > 1 {
             let numGroups = (currentCount + threadgroupSize - 1) / threadgroupSize
             let outputSize = numGroups * resultStride
-            guard let outputBuf = device.makeBuffer(length: outputSize, options: .storageModeShared) else {
+            guard let outputBuf = pool.allocate(size: outputSize) else {
+                for buf in intermediateBuffers { pool.release(buffer: buf) }
                 return (.max, 0)
             }
 
             guard let cmdBuf = commandQueue.makeCommandBuffer(),
                   let encoder = cmdBuf.makeComputeCommandEncoder() else {
+                pool.release(buffer: outputBuf)
+                for buf in intermediateBuffers { pool.release(buffer: buf) }
                 return (.max, 0)
             }
 
@@ -257,6 +278,8 @@ public class ParallelReduceEngine {
                     mx = Swift.max(mx, ptr[i * 2 + 1])
                 }
                 encoder.endEncoding()
+                pool.release(buffer: outputBuf)
+                for buf in intermediateBuffers { pool.release(buffer: buf) }
                 return (mn, mx)
             }
             encoder.setBuffer(outputBuf, offset: 0, index: 1)
@@ -270,13 +293,16 @@ public class ParallelReduceEngine {
             cmdBuf.commit()
             cmdBuf.waitUntilCompleted()
 
+            intermediateBuffers.append(outputBuf)
             currentBuf = outputBuf
             currentCount = numGroups
             isFirstPass = false
         }
 
         let ptr = currentBuf.contents().bindMemory(to: UInt32.self, capacity: 2)
-        return (ptr[0], ptr[1])
+        let result = (ptr[0], ptr[1])
+        for buf in intermediateBuffers { pool.release(buffer: buf) }
+        return result
     }
 
     // MARK: - CPU fallbacks
