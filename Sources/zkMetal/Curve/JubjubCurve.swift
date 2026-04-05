@@ -11,6 +11,7 @@
 // Reference: https://zips.z.cash/protocol/protocol.pdf (Section 5.4.9.3)
 
 import Foundation
+import NeonFieldOps
 
 // MARK: - Point Types
 
@@ -129,56 +130,36 @@ public func jubjubPointToAffine(_ p: JubjubPointExtended) -> JubjubPointAffine {
 // MARK: - Point Operations
 
 /// Point addition using extended coordinates (unified formula)
-/// For ax^2 + y^2 = 1 + dx^2y^2 with general a:
-/// A = X1*X2, B = Y1*Y2, C = d*T1*T2, D = Z1*Z2
-/// E = (X1+Y1)*(X2+Y2) - A - B
-/// F = D - C, G = D + C
-/// H = B - a*A
-/// X3 = E*F, Y3 = G*H, T3 = E*H, Z3 = F*G
+/// Uses C CIOS Montgomery field ops for ~10-30x speedup.
 public func jubjubPointAdd(_ p: JubjubPointExtended, _ q: JubjubPointExtended) -> JubjubPointExtended {
-    let aConst = jubjubA()
-    let dConst = jubjubD()
-    let aa = fr381Mul(p.x, q.x)
-    let bb = fr381Mul(p.y, q.y)
-    let cc = fr381Mul(fr381Mul(p.t, q.t), dConst)
-    let dd = fr381Mul(p.z, q.z)
-    let e = fr381Sub(fr381Mul(fr381Add(p.x, p.y), fr381Add(q.x, q.y)), fr381Add(aa, bb))
-    let f = fr381Sub(dd, cc)
-    let g = fr381Add(dd, cc)
-    let h = fr381Sub(bb, fr381Mul(aConst, aa))
-
-    return JubjubPointExtended(
-        x: fr381Mul(e, f),
-        y: fr381Mul(g, h),
-        z: fr381Mul(f, g),
-        t: fr381Mul(e, h)
-    )
+    var result = jubjubPointIdentity()
+    withUnsafeBytes(of: p) { pBuf in
+        withUnsafeBytes(of: q) { qBuf in
+            withUnsafeMutableBytes(of: &result) { resBuf in
+                jubjub_point_add(
+                    pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    qBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    resBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                )
+            }
+        }
+    }
+    return result
 }
 
 /// Point doubling (more efficient than generic add)
-/// For ax^2 + y^2 = 1 + dx^2y^2 with general a:
-/// A = X^2, B = Y^2, C = 2*Z^2
-/// D = a*A
-/// E = (X+Y)^2 - A - B
-/// G = D + B, F = G - C, H = D - B
-/// X3 = E*F, Y3 = G*H, T3 = E*H, Z3 = F*G
+/// Uses C CIOS Montgomery field ops for ~10-30x speedup.
 public func jubjubPointDouble(_ p: JubjubPointExtended) -> JubjubPointExtended {
-    let aConst = jubjubA()
-    let aa = fr381Sqr(p.x)
-    let bb = fr381Sqr(p.y)
-    let cc = fr381Double(fr381Sqr(p.z))
-    let dd = fr381Mul(aConst, aa)
-    let e = fr381Sub(fr381Sqr(fr381Add(p.x, p.y)), fr381Add(aa, bb))
-    let g = fr381Add(dd, bb)
-    let f = fr381Sub(g, cc)
-    let h = fr381Sub(dd, bb)
-
-    return JubjubPointExtended(
-        x: fr381Mul(e, f),
-        y: fr381Mul(g, h),
-        z: fr381Mul(f, g),
-        t: fr381Mul(e, h)
-    )
+    var result = jubjubPointIdentity()
+    withUnsafeBytes(of: p) { pBuf in
+        withUnsafeMutableBytes(of: &result) { resBuf in
+            jubjub_point_double(
+                pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                resBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+            )
+        }
+    }
+    return result
 }
 
 /// Negate a point: -(x, y) = (-x, y)
@@ -195,19 +176,25 @@ public func jubjubPointNegAffine(_ p: JubjubPointAffine) -> JubjubPointAffine {
     JubjubPointAffine(x: fr381Neg(p.x), y: p.y)
 }
 
-/// Scalar multiplication: double-and-add
+/// Scalar multiplication using windowed method (w=4)
+/// Uses C CIOS Montgomery field ops via jubjub_scalar_mul.
 /// Scalar is given as raw (non-Montgomery) 64-bit limbs
 public func jubjubPointMulScalar(_ p: JubjubPointExtended, _ scalar: [UInt64]) -> JubjubPointExtended {
+    // Ensure scalar is exactly 4 limbs
+    var scalarLimbs: [UInt64] = [0, 0, 0, 0]
+    for i in 0..<min(scalar.count, 4) {
+        scalarLimbs[i] = scalar[i]
+    }
     var result = jubjubPointIdentity()
-    var base = p
-    for i in 0..<scalar.count {
-        var word = scalar[i]
-        for _ in 0..<64 {
-            if word & 1 == 1 {
-                result = jubjubPointAdd(result, base)
+    withUnsafeBytes(of: p) { pBuf in
+        scalarLimbs.withUnsafeBufferPointer { scBuf in
+            withUnsafeMutableBytes(of: &result) { resBuf in
+                jubjub_scalar_mul(
+                    pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    scBuf.baseAddress!,
+                    resBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                )
             }
-            base = jubjubPointDouble(base)
-            word >>= 1
         }
     }
     return result

@@ -780,6 +780,14 @@ void bls12_381_g1_point_add_mixed(const uint64_t p[18], const uint64_t q_aff[12]
 void bls12_381_g1_scalar_mul(const uint64_t p[18], const uint64_t scalar[4], uint64_t r[18]);
 
 // ============================================================
+// Jubjub twisted Edwards curve (over BLS12-381 Fr)
+// ============================================================
+
+void jubjub_point_add(const uint64_t p[16], const uint64_t q[16], uint64_t r[16]);
+void jubjub_point_double(const uint64_t p[16], uint64_t r[16]);
+void jubjub_scalar_mul(const uint64_t p[16], const uint64_t scalar[4], uint64_t r[16]);
+
+// ============================================================
 // BLS12-377 Fq (base field, 377-bit, 6x64-bit limbs)
 // ============================================================
 
