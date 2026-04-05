@@ -807,6 +807,27 @@ void bls12_381_g1_pippenger_msm(const uint64_t *points, const uint32_t *scalars,
                                  int n, uint64_t *result);
 
 // ============================================================
+// BLS12-381 Fp2 tower (Fp[u]/(u²+1), 12 uint64_t per element)
+// ============================================================
+
+void bls12_381_fp2_add(const uint64_t a[12], const uint64_t b[12], uint64_t r[12]);
+void bls12_381_fp2_sub(const uint64_t a[12], const uint64_t b[12], uint64_t r[12]);
+void bls12_381_fp2_neg(const uint64_t a[12], uint64_t r[12]);
+void bls12_381_fp2_mul(const uint64_t a[12], const uint64_t b[12], uint64_t r[12]);
+void bls12_381_fp2_sqr(const uint64_t a[12], uint64_t r[12]);
+void bls12_381_fp2_conj(const uint64_t a[12], uint64_t r[12]);
+void bls12_381_fp2_mul_by_nonresidue(const uint64_t a[12], uint64_t r[12]);
+
+// ============================================================
+// BLS12-381 G2 curve ops (Fp2 coords, 36 uint64_t projective)
+// ============================================================
+
+void bls12_381_g2_point_add(const uint64_t p[36], const uint64_t q[36], uint64_t r[36]);
+void bls12_381_g2_point_double(const uint64_t p[36], uint64_t r[36]);
+void bls12_381_g2_point_add_mixed(const uint64_t p[36], const uint64_t q_aff[24], uint64_t r[36]);
+void bls12_381_g2_scalar_mul(const uint64_t p[36], const uint64_t scalar[4], uint64_t r[36]);
+
+// ============================================================
 // Jubjub twisted Edwards curve (over BLS12-381 Fr)
 // ============================================================
 

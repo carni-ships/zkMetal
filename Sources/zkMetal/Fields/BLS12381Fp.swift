@@ -192,50 +192,96 @@ public struct Fp2_381 {
     public var isZero: Bool { c0.isZero && c1.isZero }
 }
 
-/// Fp2 addition
+/// Fp2 addition — C accelerated
 public func fp2_381Add(_ a: Fp2_381, _ b: Fp2_381) -> Fp2_381 {
-    Fp2_381(c0: fp381Add(a.c0, b.c0), c1: fp381Add(a.c1, b.c1))
+    var result = Fp2_381.zero
+    withUnsafeBytes(of: a) { aBuf in
+        withUnsafeBytes(of: b) { bBuf in
+            withUnsafeMutableBytes(of: &result) { rBuf in
+                bls12_381_fp2_add(
+                    aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+            }
+        }
+    }
+    return result
 }
 
-/// Fp2 subtraction
+/// Fp2 subtraction — C accelerated
 public func fp2_381Sub(_ a: Fp2_381, _ b: Fp2_381) -> Fp2_381 {
-    Fp2_381(c0: fp381Sub(a.c0, b.c0), c1: fp381Sub(a.c1, b.c1))
+    var result = Fp2_381.zero
+    withUnsafeBytes(of: a) { aBuf in
+        withUnsafeBytes(of: b) { bBuf in
+            withUnsafeMutableBytes(of: &result) { rBuf in
+                bls12_381_fp2_sub(
+                    aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+            }
+        }
+    }
+    return result
 }
 
-/// Fp2 negation
+/// Fp2 negation — C accelerated
 public func fp2_381Neg(_ a: Fp2_381) -> Fp2_381 {
-    Fp2_381(c0: fp381Neg(a.c0), c1: fp381Neg(a.c1))
+    var result = Fp2_381.zero
+    withUnsafeBytes(of: a) { aBuf in
+        withUnsafeMutableBytes(of: &result) { rBuf in
+            bls12_381_fp2_neg(
+                aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+        }
+    }
+    return result
 }
 
-/// Fp2 doubling
+/// Fp2 doubling — C accelerated (via add)
 public func fp2_381Double(_ a: Fp2_381) -> Fp2_381 {
-    Fp2_381(c0: fp381Double(a.c0), c1: fp381Double(a.c1))
+    fp2_381Add(a, a)
 }
 
-/// Fp2 multiplication: (a0 + a1*u)(b0 + b1*u) = (a0*b0 - a1*b1) + (a0*b1 + a1*b0)*u
+/// Fp2 multiplication — C accelerated (Karatsuba, 3 Fp muls)
 public func fp2_381Mul(_ a: Fp2_381, _ b: Fp2_381) -> Fp2_381 {
-    let a0b0 = fp381Mul(a.c0, b.c0)
-    let a1b1 = fp381Mul(a.c1, b.c1)
-    // Karatsuba: (a0+a1)(b0+b1) - a0b0 - a1b1 = a0b1 + a1b0
-    let t = fp381Mul(fp381Add(a.c0, a.c1), fp381Add(b.c0, b.c1))
-    return Fp2_381(
-        c0: fp381Sub(a0b0, a1b1),
-        c1: fp381Sub(fp381Sub(t, a0b0), a1b1)
-    )
+    var result = Fp2_381.zero
+    withUnsafeBytes(of: a) { aBuf in
+        withUnsafeBytes(of: b) { bBuf in
+            withUnsafeMutableBytes(of: &result) { rBuf in
+                bls12_381_fp2_mul(
+                    aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+            }
+        }
+    }
+    return result
 }
 
-/// Fp2 squaring: (a0 + a1*u)^2 = (a0^2 - a1^2) + 2*a0*a1*u
-/// Using complex squaring: (a0+a1)(a0-a1) and 2*a0*a1
+/// Fp2 squaring — C accelerated (2 Fp muls)
 public func fp2_381Sqr(_ a: Fp2_381) -> Fp2_381 {
-    let v0 = fp381Mul(a.c0, a.c1)
-    let c0 = fp381Mul(fp381Add(a.c0, a.c1), fp381Sub(a.c0, a.c1))
-    let c1 = fp381Double(v0)
-    return Fp2_381(c0: c0, c1: c1)
+    var result = Fp2_381.zero
+    withUnsafeBytes(of: a) { aBuf in
+        withUnsafeMutableBytes(of: &result) { rBuf in
+            bls12_381_fp2_sqr(
+                aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+        }
+    }
+    return result
 }
 
-/// Fp2 conjugation: (a0 + a1*u)* = a0 - a1*u
+/// Fp2 conjugation — C accelerated
 public func fp2_381Conjugate(_ a: Fp2_381) -> Fp2_381 {
-    Fp2_381(c0: a.c0, c1: fp381Neg(a.c1))
+    var result = Fp2_381.zero
+    withUnsafeBytes(of: a) { aBuf in
+        withUnsafeMutableBytes(of: &result) { rBuf in
+            bls12_381_fp2_conj(
+                aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+        }
+    }
+    return result
 }
 
 /// Fp2 inverse: 1/(a0 + a1*u) = (a0 - a1*u) / (a0^2 + a1^2)
@@ -250,10 +296,17 @@ public func fp2_381MulByFp(_ a: Fp2_381, _ b: Fp381) -> Fp2_381 {
     Fp2_381(c0: fp381Mul(a.c0, b), c1: fp381Mul(a.c1, b))
 }
 
-/// Multiply by the non-residue (1 + u) for the Fp6 tower
-/// (a0 + a1*u)(1 + u) = (a0 - a1) + (a0 + a1)*u
+/// Multiply by the non-residue (1 + u) for the Fp6 tower — C accelerated
 public func fp2_381MulByNonResidue(_ a: Fp2_381) -> Fp2_381 {
-    Fp2_381(c0: fp381Sub(a.c0, a.c1), c1: fp381Add(a.c0, a.c1))
+    var result = Fp2_381.zero
+    withUnsafeBytes(of: a) { aBuf in
+        withUnsafeMutableBytes(of: &result) { rBuf in
+            bls12_381_fp2_mul_by_nonresidue(
+                aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+        }
+    }
+    return result
 }
 
 // MARK: - Fp6 = Fp2[v]/(v^3 - (1+u))

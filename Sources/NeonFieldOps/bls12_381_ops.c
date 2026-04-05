@@ -489,7 +489,7 @@ void bls12_381_g1_point_add_mixed(const uint64_t p[18], const uint64_t q_aff[12]
 }
 
 // ============================================================
-// Fp inversion via Fermat: a^(p-2) mod p
+// BLS12-381 G1 Pippenger MSM
 // ============================================================
 
 static void fp_inv(const uint64_t a[6], uint64_t result[6]) {
@@ -500,7 +500,6 @@ static void fp_inv(const uint64_t a[6], uint64_t result[6]) {
     pm2[3] = FP381_P[3];
     pm2[4] = FP381_P[4];
     pm2[5] = FP381_P[5];
-
     memcpy(result, FP381_ONE, 48);
     uint64_t b[6];
     memcpy(b, a, 48);
@@ -513,11 +512,6 @@ static void fp_inv(const uint64_t a[6], uint64_t result[6]) {
     }
 }
 
-// ============================================================
-// Batch projective-to-affine (Montgomery's trick)
-// Single inversion for all non-identity points
-// ============================================================
-
 static inline int g1_aff_is_id(const uint64_t q[12]) {
     return (q[0] | q[1] | q[2] | q[3] | q[4] | q[5] |
             q[6] | q[7] | q[8] | q[9] | q[10] | q[11]) == 0;
@@ -525,11 +519,8 @@ static inline int g1_aff_is_id(const uint64_t q[12]) {
 
 static void g1_batch_to_affine(const uint64_t *proj, uint64_t *aff, int n) {
     if (n == 0) return;
-
-    // Compute cumulative products of Z values
     uint64_t *prods = (uint64_t *)malloc((size_t)n * 48);
     int first_valid = -1;
-
     for (int i = 0; i < n; i++) {
         if (g1_is_id(proj + i * 18)) {
             if (i == 0) memcpy(prods, FP381_ONE, 48);
@@ -537,108 +528,74 @@ static void g1_batch_to_affine(const uint64_t *proj, uint64_t *aff, int n) {
         } else {
             if (first_valid < 0) {
                 first_valid = i;
-                memcpy(prods + i * 6, proj + i * 18 + 12, 48);  // Z_i
+                memcpy(prods + i * 6, proj + i * 18 + 12, 48);
             } else {
                 fp_mul(prods + (i-1) * 6, proj + i * 18 + 12, prods + i * 6);
             }
         }
     }
-
     if (first_valid < 0) {
-        // All identity
         memset(aff, 0, (size_t)n * 96);
         free(prods);
         return;
     }
-
-    // Invert the product
     uint64_t inv[6];
     fp_inv(prods + (n-1) * 6, inv);
-
-    // Back-propagate
     for (int i = n - 1; i >= 0; i--) {
         if (g1_is_id(proj + i * 18)) {
             memset(aff + i * 12, 0, 96);
             continue;
         }
-
         uint64_t zinv[6];
         if (i > first_valid) {
             fp_mul(inv, prods + (i-1) * 6, zinv);
-            fp_mul(inv, proj + i * 18 + 12, inv);  // inv *= z_i
+            fp_mul(inv, proj + i * 18 + 12, inv);
         } else {
             memcpy(zinv, inv, 48);
         }
-
         uint64_t zinv2[6], zinv3[6];
         fp_sqr(zinv, zinv2);
         fp_mul(zinv2, zinv, zinv3);
-        fp_mul(proj + i * 18, zinv2, aff + i * 12);           // x_aff = X * Z^{-2}
-        fp_mul(proj + i * 18 + 6, zinv3, aff + i * 12 + 6);   // y_aff = Y * Z^{-3}
+        fp_mul(proj + i * 18, zinv2, aff + i * 12);
+        fp_mul(proj + i * 18 + 6, zinv3, aff + i * 12 + 6);
     }
-
     free(prods);
 }
-
-// ============================================================
-// Scalar window extraction
-// ============================================================
 
 static inline uint32_t g1_extract_window(const uint32_t *scalar, int window_idx, int window_bits) {
     int bit_offset = window_idx * window_bits;
     int word_idx = bit_offset / 32;
     int bit_in_word = bit_offset % 32;
-
     uint64_t word = scalar[word_idx];
-    if (word_idx + 1 < 8)
-        word |= ((uint64_t)scalar[word_idx + 1]) << 32;
-
+    if (word_idx + 1 < 8) word |= ((uint64_t)scalar[word_idx + 1]) << 32;
     return (uint32_t)((word >> bit_in_word) & ((1u << window_bits) - 1));
 }
 
-// ============================================================
-// Adaptive window sizing
-// ============================================================
-
 static int g1_optimal_window_bits(int n) {
-    if (n <= 4)     return 3;
-    if (n <= 32)    return 5;
-    if (n <= 256)   return 8;
-    if (n <= 2048)  return 10;
-    if (n <= 8192)  return 11;
+    if (n <= 4) return 3;
+    if (n <= 32) return 5;
+    if (n <= 256) return 8;
+    if (n <= 2048) return 10;
+    if (n <= 8192) return 11;
     if (n <= 32768) return 13;
     if (n <= 131072) return 14;
     if (n <= 524288) return 15;
     return 16;
 }
 
-// ============================================================
-// Per-window worker
-// ============================================================
-
 typedef struct {
-    const uint64_t *points;     // n affine points (12 limbs each)
-    const uint32_t *scalars;    // n scalars (8 uint32 each)
-    int n;
-    int window_bits;
-    int window_idx;
-    int num_buckets;
-    uint64_t result[18];        // output projective point
+    const uint64_t *points;
+    const uint32_t *scalars;
+    int n, window_bits, window_idx, num_buckets;
+    uint64_t result[18];
 } G1WindowTask;
 
 static void *g1_window_worker(void *arg) {
     G1WindowTask *task = (G1WindowTask *)arg;
-    int wb = task->window_bits;
-    int w = task->window_idx;
-    int nb = task->num_buckets;
-    int nn = task->n;
-
-    // Allocate projective buckets (identity-initialized)
+    int wb = task->window_bits, w = task->window_idx;
+    int nb = task->num_buckets, nn = task->n;
     uint64_t *buckets = (uint64_t *)malloc((size_t)(nb + 1) * 144);
-    for (int b = 0; b <= nb; b++)
-        g1_set_id(buckets + b * 18);
-
-    // Phase 1: Bucket accumulation (mixed affine addition)
+    for (int b = 0; b <= nb; b++) g1_set_id(buckets + b * 18);
     for (int i = 0; i < nn; i++) {
         uint32_t digit = g1_extract_window(task->scalars + i * 8, w, wb);
         if (digit != 0) {
@@ -647,19 +604,11 @@ static void *g1_window_worker(void *arg) {
             memcpy(buckets + digit * 18, tmp, 144);
         }
     }
-
-    // Phase 2: Batch convert buckets to affine (Montgomery's trick)
-    // Only convert buckets 1..nb (skip bucket 0)
     uint64_t *bucket_aff = (uint64_t *)malloc((size_t)nb * 96);
     g1_batch_to_affine(buckets + 18, bucket_aff, nb);
-
-    // Phase 3: Running-sum reduction using mixed addition
     uint64_t running[18], window_sum[18];
-    g1_set_id(running);
-    g1_set_id(window_sum);
-
+    g1_set_id(running); g1_set_id(window_sum);
     for (int j = nb - 1; j >= 0; j--) {
-        // bucket_aff[j] corresponds to original bucket j+1
         if (!g1_aff_is_id(bucket_aff + j * 12)) {
             uint64_t tmp[18];
             g1_add_mixed(running, bucket_aff + j * 12, tmp);
@@ -669,62 +618,369 @@ static void *g1_window_worker(void *arg) {
         g1_add(window_sum, running, tmp);
         memcpy(window_sum, tmp, 144);
     }
-
     memcpy(task->result, window_sum, 144);
-    free(buckets);
-    free(bucket_aff);
+    free(buckets); free(bucket_aff);
     return NULL;
 }
 
-// ============================================================
-// BLS12-381 G1 Pippenger MSM
-// Multi-threaded windows, mixed affine addition, batch-to-affine
-// ============================================================
-
-void bls12_381_g1_pippenger_msm(
-    const uint64_t *points,    // n affine points: n × 12 uint64_t
-    const uint32_t *scalars,   // n scalars: n × 8 uint32_t
-    int n,
-    uint64_t *result)          // output: 18 uint64_t (projective)
-{
+void bls12_381_g1_pippenger_msm(const uint64_t *points, const uint32_t *scalars,
+                                 int n, uint64_t *result) {
     if (n == 0) { g1_set_id(result); return; }
-
     int wb = g1_optimal_window_bits(n);
     int num_windows = (256 + wb - 1) / wb;
     int num_buckets = (1 << wb) - 1;
-
-    // Allocate tasks and threads
     G1WindowTask *tasks = (G1WindowTask *)malloc((size_t)num_windows * sizeof(G1WindowTask));
     pthread_t *threads = (pthread_t *)malloc((size_t)num_windows * sizeof(pthread_t));
-
     for (int w = 0; w < num_windows; w++) {
-        tasks[w].points = points;
-        tasks[w].scalars = scalars;
-        tasks[w].n = n;
-        tasks[w].window_bits = wb;
-        tasks[w].window_idx = w;
-        tasks[w].num_buckets = num_buckets;
+        tasks[w].points = points; tasks[w].scalars = scalars;
+        tasks[w].n = n; tasks[w].window_bits = wb;
+        tasks[w].window_idx = w; tasks[w].num_buckets = num_buckets;
     }
-
-    // Launch threads (one per window)
     for (int w = 0; w < num_windows; w++)
         pthread_create(&threads[w], NULL, g1_window_worker, &tasks[w]);
-
     for (int w = 0; w < num_windows; w++)
         pthread_join(threads[w], NULL);
-
-    // Horner combination: result = sum windowResults[w] * 2^(w * wb)
     memcpy(result, tasks[num_windows - 1].result, 144);
     for (int w = num_windows - 2; w >= 0; w--) {
         uint64_t tmp[18];
-        for (int s = 0; s < wb; s++) {
-            g1_dbl(result, tmp);
-            memcpy(result, tmp, 144);
-        }
+        for (int s = 0; s < wb; s++) { g1_dbl(result, tmp); memcpy(result, tmp, 144); }
         g1_add(result, tasks[w].result, tmp);
         memcpy(result, tmp, 144);
     }
+    free(tasks); free(threads);
+}
 
-    free(tasks);
-    free(threads);
+// ============================================================
+// BLS12-381 Fp2 = Fp[u]/(u^2+1) tower arithmetic
+// Layout: [c0[6], c1[6]] = 12 uint64_t
+// Element represents c0 + c1*u
+// ============================================================
+
+static inline void fp2_add(const uint64_t a[12], const uint64_t b[12], uint64_t r[12]) {
+    fp_add(a, b, r);
+    fp_add(a + 6, b + 6, r + 6);
+}
+
+static inline void fp2_sub(const uint64_t a[12], const uint64_t b[12], uint64_t r[12]) {
+    fp_sub(a, b, r);
+    fp_sub(a + 6, b + 6, r + 6);
+}
+
+static inline void fp2_neg(const uint64_t a[12], uint64_t r[12]) {
+    fp_neg(a, r);
+    fp_neg(a + 6, r + 6);
+}
+
+static inline void fp2_dbl(const uint64_t a[12], uint64_t r[12]) {
+    fp_dbl(a, r);
+    fp_dbl(a + 6, r + 6);
+}
+
+static inline int fp2_is_zero(const uint64_t a[12]) {
+    return fp_is_zero(a) && fp_is_zero(a + 6);
+}
+
+// Conjugate: (a0, -a1)
+static inline void fp2_conj(const uint64_t a[12], uint64_t r[12]) {
+    memcpy(r, a, 48);
+    fp_neg(a + 6, r + 6);
+}
+
+// Karatsuba multiplication: 3 Fp muls
+// c0 = a0*b0 - a1*b1
+// c1 = (a0+a1)(b0+b1) - a0*b0 - a1*b1
+static inline void fp2_mul(const uint64_t a[12], const uint64_t b[12], uint64_t r[12]) {
+    uint64_t a0b0[6], a1b1[6], t1[6], t2[6], t3[6];
+
+    fp_mul(a, b, a0b0);          // a0*b0
+    fp_mul(a + 6, b + 6, a1b1);  // a1*b1
+
+    fp_add(a, a + 6, t1);        // a0 + a1
+    fp_add(b, b + 6, t2);        // b0 + b1
+    fp_mul(t1, t2, t3);          // (a0+a1)(b0+b1)
+
+    fp_sub(a0b0, a1b1, r);       // c0 = a0*b0 - a1*b1
+    fp_sub(t3, a0b0, r + 6);     // c1 = t3 - a0*b0 - a1*b1
+    fp_sub(r + 6, a1b1, r + 6);
+}
+
+// Optimized squaring: 2 Fp muls
+// c0 = (a0+a1)(a0-a1) = a0^2 - a1^2
+// c1 = 2*a0*a1
+static inline void fp2_sqr(const uint64_t a[12], uint64_t r[12]) {
+    uint64_t v0[6], t1[6], t2[6];
+
+    fp_mul(a, a + 6, v0);       // a0*a1
+    fp_add(a, a + 6, t1);       // a0 + a1
+    fp_sub(a, a + 6, t2);       // a0 - a1
+    fp_mul(t1, t2, r);          // c0 = (a0+a1)(a0-a1)
+    fp_dbl(v0, r + 6);          // c1 = 2*a0*a1
+}
+
+// Multiply by non-residue (1+u) for Fp6 tower:
+// (a0 + a1*u)(1 + u) = (a0 - a1) + (a0 + a1)*u
+static inline void fp2_mul_by_nonresidue(const uint64_t a[12], uint64_t r[12]) {
+    uint64_t t0[6], t1[6];
+    fp_sub(a, a + 6, t0);      // a0 - a1
+    fp_add(a, a + 6, t1);      // a0 + a1
+    memcpy(r, t0, 48);
+    memcpy(r + 6, t1, 48);
+}
+
+// Multiply Fp2 element by Fp scalar
+static inline void fp2_mul_by_fp(const uint64_t a[12], const uint64_t b[6], uint64_t r[12]) {
+    fp_mul(a, b, r);
+    fp_mul(a + 6, b, r + 6);
+}
+
+// ============================================================
+// Exported Fp2 operations
+// ============================================================
+
+void bls12_381_fp2_add(const uint64_t a[12], const uint64_t b[12], uint64_t r[12]) { fp2_add(a, b, r); }
+void bls12_381_fp2_sub(const uint64_t a[12], const uint64_t b[12], uint64_t r[12]) { fp2_sub(a, b, r); }
+void bls12_381_fp2_neg(const uint64_t a[12], uint64_t r[12]) { fp2_neg(a, r); }
+void bls12_381_fp2_mul(const uint64_t a[12], const uint64_t b[12], uint64_t r[12]) { fp2_mul(a, b, r); }
+void bls12_381_fp2_sqr(const uint64_t a[12], uint64_t r[12]) { fp2_sqr(a, r); }
+void bls12_381_fp2_conj(const uint64_t a[12], uint64_t r[12]) { fp2_conj(a, r); }
+void bls12_381_fp2_mul_by_nonresidue(const uint64_t a[12], uint64_t r[12]) { fp2_mul_by_nonresidue(a, r); }
+
+// ============================================================
+// BLS12-381 G2 Jacobian projective point operations over Fp2
+// Layout: [x0..x11, y0..y11, z0..z11] = 36 uint64_t
+// Identity: Z = 0
+// Curve: y^2 = x^3 + 4(1+u) (a=0, b'=4(1+u))
+// ============================================================
+
+static inline void g2_set_id(uint64_t p[36]) {
+    // x = 1 (Fp2 one = (Fp_one, 0))
+    memcpy(p, FP381_ONE, 48);
+    memset(p + 6, 0, 48);
+    // y = 1
+    memcpy(p + 12, FP381_ONE, 48);
+    memset(p + 18, 0, 48);
+    // z = 0
+    memset(p + 24, 0, 96);
+}
+
+static inline int g2_is_id(const uint64_t p[36]) {
+    return fp2_is_zero(p + 24);
+}
+
+// Point doubling for a=0 curve over Fp2 (same algorithm as G1)
+static void g2_dbl(const uint64_t p[36], uint64_t r[36]) {
+    if (g2_is_id(p)) { memcpy(r, p, 288); return; }
+
+    const uint64_t *px = p, *py = p + 12, *pz = p + 24;
+    uint64_t a[12], b[12], c[12], d[12], e[12], f[12], t1[12], t2[12];
+
+    fp2_sqr(px, a);             // a = x^2
+    fp2_sqr(py, b);             // b = y^2
+    fp2_sqr(b, c);              // c = y^4
+
+    // d = 2((x+b)^2 - a - c)
+    fp2_add(px, b, t1);
+    fp2_sqr(t1, t1);
+    fp2_sub(t1, a, t1);
+    fp2_sub(t1, c, t1);
+    fp2_dbl(t1, d);
+
+    // e = 3a = 3*x^2
+    fp2_dbl(a, t1);
+    fp2_add(t1, a, e);
+
+    fp2_sqr(e, f);              // f = e^2
+
+    // x3 = f - 2d
+    fp2_dbl(d, t1);
+    fp2_sub(f, t1, r);
+
+    // y3 = e(d - x3) - 8c
+    fp2_sub(d, r, t1);
+    fp2_mul(e, t1, t2);
+    fp2_dbl(c, t1);
+    fp2_dbl(t1, t1);
+    fp2_dbl(t1, t1);            // 8c
+    fp2_sub(t2, t1, r + 12);
+
+    // z3 = (y+z)^2 - b - z^2
+    fp2_add(py, pz, t1);
+    fp2_sqr(t1, t1);
+    fp2_sub(t1, b, t1);
+    fp2_sqr(pz, t2);
+    fp2_sub(t1, t2, r + 24);
+}
+
+// Full projective addition over Fp2
+static void g2_add(const uint64_t p[36], const uint64_t q[36], uint64_t r[36]) {
+    if (g2_is_id(p)) { memcpy(r, q, 288); return; }
+    if (g2_is_id(q)) { memcpy(r, p, 288); return; }
+
+    const uint64_t *px = p, *py = p+12, *pz = p+24;
+    const uint64_t *qx = q, *qy = q+12, *qz = q+24;
+
+    uint64_t z1z1[12], z2z2[12], u1[12], u2[12], s1[12], s2[12];
+    uint64_t h[12], rr[12], ii[12], j[12], vv[12], t1[12];
+
+    fp2_sqr(pz, z1z1);
+    fp2_sqr(qz, z2z2);
+    fp2_mul(px, z2z2, u1);
+    fp2_mul(qx, z1z1, u2);
+    fp2_mul(qz, z2z2, t1);
+    fp2_mul(py, t1, s1);
+    fp2_mul(pz, z1z1, t1);
+    fp2_mul(qy, t1, s2);
+
+    fp2_sub(u2, u1, h);
+    fp2_sub(s2, s1, t1);
+    fp2_dbl(t1, rr);
+
+    if (fp2_is_zero(h)) {
+        if (fp2_is_zero(rr)) { g2_dbl(p, r); return; }
+        g2_set_id(r); return;
+    }
+
+    fp2_dbl(h, t1);
+    fp2_sqr(t1, ii);
+    fp2_mul(h, ii, j);
+    fp2_mul(u1, ii, vv);
+
+    // x3 = r^2 - j - 2v
+    fp2_sqr(rr, r);
+    fp2_sub(r, j, r);
+    fp2_dbl(vv, t1);
+    fp2_sub(r, t1, r);
+
+    // y3 = r(v - x3) - 2*s1*j
+    fp2_sub(vv, r, t1);
+    fp2_mul(rr, t1, r + 12);
+    fp2_mul(s1, j, t1);
+    fp2_dbl(t1, t1);
+    fp2_sub(r + 12, t1, r + 12);
+
+    // z3 = ((z1+z2)^2 - z1z1 - z2z2) * h
+    fp2_add(pz, qz, t1);
+    fp2_sqr(t1, t1);
+    fp2_sub(t1, z1z1, t1);
+    fp2_sub(t1, z2z2, t1);
+    fp2_mul(t1, h, r + 24);
+}
+
+// Mixed addition: projective P + affine Q (Z_Q = 1) over Fp2
+static void g2_add_mixed(const uint64_t p[36], const uint64_t q_aff[24], uint64_t r[36]) {
+    if (g2_is_id(p)) {
+        memcpy(r, q_aff, 192);
+        // z = Fp2(1) = (Fp_one, 0)
+        memcpy(r + 24, FP381_ONE, 48);
+        memset(r + 30, 0, 48);
+        return;
+    }
+
+    const uint64_t *px = p, *py = p+12, *pz = p+24;
+    const uint64_t *qx = q_aff, *qy = q_aff+12;
+
+    uint64_t z1z1[12], u2[12], s2[12], h[12], hh[12], rr[12], t1[12];
+
+    fp2_sqr(pz, z1z1);
+    fp2_mul(qx, z1z1, u2);         // u2 = qx * z1^2
+    fp2_mul(pz, z1z1, t1);
+    fp2_mul(qy, t1, s2);           // s2 = qy * z1^3
+
+    fp2_sub(u2, px, h);            // h = u2 - px
+    fp2_sub(s2, py, t1);           // t1 = s2 - py
+    fp2_dbl(t1, rr);
+
+    if (fp2_is_zero(h)) {
+        if (fp2_is_zero(rr)) { g2_dbl(p, r); return; }
+        g2_set_id(r); return;
+    }
+
+    fp2_sqr(h, hh);
+    uint64_t j[12], vv[12];
+    fp2_mul(h, hh, j);
+    fp2_mul(px, hh, vv);
+
+    // x3 = r^2 - j - 2v
+    fp2_sqr(rr, r);
+    fp2_sub(r, j, r);
+    fp2_dbl(vv, t1);
+    fp2_sub(r, t1, r);
+
+    // y3 = r(v - x3) - 2*s1*j
+    fp2_sub(vv, r, t1);
+    fp2_mul(rr, t1, r + 12);
+    fp2_mul(py, j, t1);
+    fp2_dbl(t1, t1);
+    fp2_sub(r + 12, t1, r + 12);
+
+    // z3 = (z1 + h)^2 - z1z1 - hh
+    fp2_add(pz, h, t1);
+    fp2_sqr(t1, t1);
+    fp2_sub(t1, z1z1, t1);
+    fp2_sub(t1, hh, r + 24);
+}
+
+// ============================================================
+// G2 scalar multiplication using windowed method (w=4)
+// scalar: 4 x uint64_t in non-Montgomery integer form
+// ============================================================
+
+void bls12_381_g2_scalar_mul(const uint64_t p[36], const uint64_t scalar[4], uint64_t r[36]) {
+    uint64_t table[16 * 36];
+
+    g2_set_id(table);
+    memcpy(table + 36, p, 288);
+    for (int i = 2; i < 16; i++) {
+        g2_add(table + (i - 1) * 36, p, table + i * 36);
+    }
+
+    uint8_t nibbles[64];
+    for (int i = 0; i < 4; i++) {
+        uint64_t word = scalar[i];
+        for (int j = 0; j < 16; j++) {
+            nibbles[i * 16 + j] = (uint8_t)(word & 0xF);
+            word >>= 4;
+        }
+    }
+
+    int top = 63;
+    while (top >= 0 && nibbles[top] == 0) top--;
+
+    if (top < 0) {
+        g2_set_id(r);
+        return;
+    }
+
+    uint64_t result[36];
+    memcpy(result, table + nibbles[top] * 36, 288);
+
+    for (int i = top - 1; i >= 0; i--) {
+        uint64_t tmp[36];
+        g2_dbl(result, tmp); memcpy(result, tmp, 288);
+        g2_dbl(result, tmp); memcpy(result, tmp, 288);
+        g2_dbl(result, tmp); memcpy(result, tmp, 288);
+        g2_dbl(result, tmp); memcpy(result, tmp, 288);
+        if (nibbles[i]) {
+            g2_add(result, table + nibbles[i] * 36, tmp);
+            memcpy(result, tmp, 288);
+        }
+    }
+
+    memcpy(r, result, 288);
+}
+
+// ============================================================
+// Exported G2 point operations
+// ============================================================
+
+void bls12_381_g2_point_add(const uint64_t p[36], const uint64_t q[36], uint64_t r[36]) {
+    g2_add(p, q, r);
+}
+
+void bls12_381_g2_point_double(const uint64_t p[36], uint64_t r[36]) {
+    g2_dbl(p, r);
+}
+
+void bls12_381_g2_point_add_mixed(const uint64_t p[36], const uint64_t q_aff[24], uint64_t r[36]) {
+    g2_add_mixed(p, q_aff, r);
 }
