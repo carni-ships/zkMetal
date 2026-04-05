@@ -42,6 +42,7 @@ runRISCVDecoderTests()
 runVerkleProofTests()
 runMultilinearTests()
 runBatchKZGTests()
+runPrefixScanTests()
 
 let elapsed = CFAbsoluteTimeGetCurrent() - t0
 print(String(format: "\nCompleted in %.1fs", elapsed))
