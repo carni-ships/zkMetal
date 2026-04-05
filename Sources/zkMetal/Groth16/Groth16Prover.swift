@@ -1,6 +1,7 @@
 // Groth16 Prover
 import Foundation
 import Metal
+import NeonFieldOps
 
 public class Groth16Prover {
     public let msm: MetalMSM; public let ntt: NTTEngine
@@ -96,8 +97,22 @@ public class Groth16Prover {
             aE = try ntt.ntt(aPad); bE = try ntt.ntt(bPad); cE = try ntt.ntt(cPad)
         }
 
+        // Fused pointwise mul-sub via C: pE[i] = aE[i]*bE[i] - cE[i]
         var pE = [Fr](repeating: .zero, count: bigN)
-        for i in 0..<bigN { pE[i] = frSub(frMul(aE[i], bE[i]), cE[i]) }
+        aE.withUnsafeBytes { aPtr in
+            bE.withUnsafeBytes { bPtr in
+                cE.withUnsafeBytes { cPtr in
+                    pE.withUnsafeMutableBytes { pPtr in
+                        bn254_fr_pointwise_mul_sub(
+                            aPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            bPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            cPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            pPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(bigN))
+                    }
+                }
+            }
+        }
 
         let pCoeffs: [Fr]
         if useCPU {
@@ -106,13 +121,15 @@ public class Groth16Prover {
             pCoeffs = try ntt.intt(pE)
         }
 
+        // Coefficient division by vanishing polynomial via C
         var hCoeffs = [Fr](repeating: .zero, count: domainN)
-        var rem = Array(pCoeffs.prefix(bigN))
-        for i in stride(from: bigN - 1, through: domainN, by: -1) {
-            let q = rem[i]
-            hCoeffs[i - domainN] = q
-            rem[i] = .zero
-            rem[i - domainN] = frAdd(rem[i - domainN], q)
+        pCoeffs.withUnsafeBytes { pPtr in
+            hCoeffs.withUnsafeMutableBytes { hPtr in
+                bn254_fr_coeff_div_vanishing(
+                    pPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(domainN),
+                    hPtr.baseAddress!.assumingMemoryBound(to: UInt64.self))
+            }
         }
         return hCoeffs
     }

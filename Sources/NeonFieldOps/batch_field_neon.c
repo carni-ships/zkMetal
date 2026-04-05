@@ -8,6 +8,7 @@
 // - __uint128_t for clean carry propagation
 
 #include "NeonFieldOps.h"
+#include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
 
@@ -585,9 +586,96 @@ void bn254_fr_batch_decompose(const uint64_t *lookups, int m,
 }
 
 // ============================================================
-// Linear combine: result[i] = running[i] + rho * new_vals[i]
-// Used by HyperNova witness folding. Multi-threaded for large n.
+// Fused pointwise mul-sub: result[i] = a[i]*b[i] - c[i]
+// Used by Groth16 computeH for p(x) = a(x)*b(x) - c(x)
 // ============================================================
+
+static void fr_pointwise_mul_sub_range(
+    uint64_t *result, const uint64_t *a, const uint64_t *b,
+    const uint64_t *c, int start, int end)
+{
+    for (int i = start; i < end; i++) {
+        uint64_t tmp[4];
+        fr_mont_mul(&a[i * 4], &b[i * 4], tmp);
+        fr_sub_branchless(tmp, &c[i * 4], &result[i * 4]);
+    }
+}
+
+typedef struct {
+    uint64_t *result;
+    const uint64_t *a;
+    const uint64_t *b;
+    const uint64_t *c;
+    int start, end;
+} PointwiseMulSubArg;
+
+static void *pointwise_mul_sub_worker(void *arg) {
+    PointwiseMulSubArg *t = (PointwiseMulSubArg *)arg;
+    fr_pointwise_mul_sub_range(t->result, t->a, t->b, t->c, t->start, t->end);
+    return NULL;
+}
+
+void bn254_fr_pointwise_mul_sub(const uint64_t *a, const uint64_t *b,
+                                 const uint64_t *c, uint64_t *result, int n)
+{
+    if (n < BATCH_THREAD_THRESHOLD) {
+        fr_pointwise_mul_sub_range(result, a, b, c, 0, n);
+        return;
+    }
+
+    int nThreads = MAX_THREADS;
+    if (n < nThreads * 1024) nThreads = 4;
+    int chunkSize = n / nThreads;
+
+    pthread_t threads[MAX_THREADS];
+    PointwiseMulSubArg args[MAX_THREADS];
+
+    for (int t = 0; t < nThreads; t++) {
+        args[t].result = result;
+        args[t].a = a;
+        args[t].b = b;
+        args[t].c = c;
+        args[t].start = t * chunkSize;
+        args[t].end = (t == nThreads - 1) ? n : (t + 1) * chunkSize;
+        pthread_create(&threads[t], NULL, pointwise_mul_sub_worker, &args[t]);
+    }
+    for (int t = 0; t < nThreads; t++)
+        pthread_join(threads[t], NULL);
+}
+
+// ============================================================
+// Coefficient division by vanishing polynomial Z_H(x) = x^n - 1
+// Given polynomial p of degree 2n-1, computes h = p / Z_H
+// where Z_H(x) = x^n - 1, so long division yields:
+//   for i from 2n-1 downto n: h[i-n] = rem[i]; rem[i-n] += rem[i]
+// ============================================================
+
+void bn254_fr_coeff_div_vanishing(const uint64_t *pCoeffs, int domainN,
+                                   uint64_t *hCoeffs)
+{
+    int bigN = domainN * 2;
+
+    // Copy p into working buffer
+    uint64_t *rem = (uint64_t *)malloc(bigN * 4 * sizeof(uint64_t));
+    memcpy(rem, pCoeffs, bigN * 4 * sizeof(uint64_t));
+
+    // Zero output
+    memset(hCoeffs, 0, domainN * 4 * sizeof(uint64_t));
+
+    // Long division: for i from bigN-1 down to domainN
+    for (int i = bigN - 1; i >= domainN; i--) {
+        // h[i - domainN] = rem[i]
+        memcpy(&hCoeffs[(i - domainN) * 4], &rem[i * 4], 4 * sizeof(uint64_t));
+        // rem[i - domainN] += rem[i]
+        fr_add_branchless(&rem[(i - domainN) * 4], &rem[i * 4],
+                          &rem[(i - domainN) * 4]);
+    }
+
+    free(rem);
+}
+
+// Linear combine: result[i] = running[i] + rho * new_vals[i]
+// Used by HyperNova witness folding.
 
 typedef struct {
     const uint64_t *running;
@@ -596,58 +684,37 @@ typedef struct {
     uint64_t *result;
     int start;
     int end;
-} LinearCombineChunk;
+} lc_args_t;
 
-static void *linear_combine_worker(void *arg) {
-    LinearCombineChunk *c = (LinearCombineChunk *)arg;
-    const uint64_t *rho = c->rho;
-    for (int i = c->start; i < c->end; i++) {
-        if (i + 4 < c->end) {
-            __builtin_prefetch(&c->new_vals[(i + 4) * 4], 0, 1);
-            __builtin_prefetch(&c->running[(i + 4) * 4], 0, 1);
-        }
-        uint64_t tmp[4];
-        fr_mont_mul(rho, &c->new_vals[i * 4], tmp);
-        fr_add_branchless(&c->running[i * 4], tmp, &c->result[i * 4]);
+static void *lc_worker(void *arg) {
+    lc_args_t *a = (lc_args_t *)arg;
+    uint64_t tmp[4];
+    for (int i = a->start; i < a->end; i++) {
+        fr_mont_mul(a->rho, &a->new_vals[i * 4], tmp);
+        fr_add_branchless(&a->running[i * 4], tmp, &a->result[i * 4]);
     }
     return NULL;
 }
 
 void bn254_fr_linear_combine(const uint64_t *running, const uint64_t *new_vals,
-                              const uint64_t rho[4], uint64_t *result, int count)
-{
-    if (count <= 0) return;
-
+                              const uint64_t rho[4], uint64_t *result, int count) {
     if (count < 4096) {
-        // Single-threaded path
+        uint64_t tmp[4];
         for (int i = 0; i < count; i++) {
-            if (i + 4 < count) {
-                __builtin_prefetch(&new_vals[(i + 4) * 4], 0, 1);
-                __builtin_prefetch(&running[(i + 4) * 4], 0, 1);
-            }
-            uint64_t tmp[4];
             fr_mont_mul(rho, &new_vals[i * 4], tmp);
             fr_add_branchless(&running[i * 4], tmp, &result[i * 4]);
         }
         return;
     }
-
-    int nThreads = 8;
-    if (count < nThreads * 1024) nThreads = 4;
-    int perThread = (count + nThreads - 1) / nThreads;
-
+    int nthreads = 8;
+    if (count < nthreads * 512) nthreads = (count + 511) / 512;
     pthread_t threads[8];
-    LinearCombineChunk chunks[8];
-    for (int t = 0; t < nThreads; t++) {
-        chunks[t].running = running;
-        chunks[t].new_vals = new_vals;
-        chunks[t].rho = rho;
-        chunks[t].result = result;
-        chunks[t].start = t * perThread;
-        chunks[t].end = (t + 1) * perThread;
-        if (chunks[t].end > count) chunks[t].end = count;
-        pthread_create(&threads[t], NULL, linear_combine_worker, &chunks[t]);
+    lc_args_t args[8];
+    int chunk = (count + nthreads - 1) / nthreads;
+    for (int t = 0; t < nthreads; t++) {
+        args[t] = (lc_args_t){running, new_vals, rho, result,
+                               t * chunk, (t + 1) * chunk < count ? (t + 1) * chunk : count};
+        pthread_create(&threads[t], NULL, lc_worker, &args[t]);
     }
-    for (int t = 0; t < nThreads; t++)
-        pthread_join(threads[t], NULL);
+    for (int t = 0; t < nthreads; t++) pthread_join(threads[t], NULL);
 }

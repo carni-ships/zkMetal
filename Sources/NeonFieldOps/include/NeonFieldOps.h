@@ -637,6 +637,18 @@ void grumpkin_point_double(const uint64_t p[12], uint64_t r[12]);
 void grumpkin_scalar_mul(const uint64_t p[12], const uint64_t scalar[4], uint64_t r[12]);
 
 // ============================================================
+// BN254 Fr fused pointwise ops (Groth16 computeH)
+// ============================================================
+
+/// Fused pointwise mul-sub: result[i] = a[i]*b[i] - c[i]. Multi-threaded for n >= 4096.
+void bn254_fr_pointwise_mul_sub(const uint64_t *a, const uint64_t *b,
+                                 const uint64_t *c, uint64_t *result, int n);
+
+/// Coefficient division by vanishing polynomial Z_H(x) = x^n - 1.
+void bn254_fr_coeff_div_vanishing(const uint64_t *pCoeffs, int domainN,
+                                   uint64_t *hCoeffs);
+
+// ============================================================
 // BN254 Fr linear combine (HyperNova witness fold)
 // ============================================================
 
