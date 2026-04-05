@@ -249,6 +249,12 @@ public class GrumpkinMSM {
             throw MSMError.invalidInput
         }
 
+        // For small n, CPU Pippenger is faster than GPU (avoids command buffer overhead)
+        if n <= 2048 {
+            let msmScalars = scalars.map { Self.reduceModR($0) }
+            return grumpkinCpuMSM(points: points, scalars: msmScalars)
+        }
+
         let msmScalars = scalars.map { Self.reduceModR($0) }
         let scalarBits = 254
         let effectiveN = n

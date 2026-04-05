@@ -636,6 +636,13 @@ void grumpkin_point_double(const uint64_t p[12], uint64_t r[12]);
 /// @param r       Output projective point (12 uint64_t).
 void grumpkin_scalar_mul(const uint64_t p[12], const uint64_t scalar[4], uint64_t r[12]);
 
+/// Grumpkin mixed addition: projective P + affine Q (Z_Q = 1).
+void grumpkin_point_add_mixed(const uint64_t p[12], const uint64_t q_aff[8], uint64_t r[12]);
+
+/// Grumpkin Pippenger MSM (multi-threaded, mixed affine, batch-to-affine).
+void grumpkin_pippenger_msm(const uint64_t *points, const uint32_t *scalars,
+                             int n, uint64_t *result);
+
 // ============================================================
 // BN254 optimized squaring (upper-triangle, 37.5% fewer muls)
 // ============================================================

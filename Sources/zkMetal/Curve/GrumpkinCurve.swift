@@ -169,6 +169,39 @@ public func batchGrumpkinToAffine(_ points: [GrumpkinPointProjective]) -> [Grump
     return result
 }
 
+// CPU Pippenger MSM for Grumpkin (calls C implementation).
+// Optimal for small n where GPU overhead dominates.
+public func grumpkinCpuMSM(points: [GrumpkinPointAffine], scalars: [[UInt32]]) -> GrumpkinPointProjective {
+    let n = points.count
+    guard n > 0, n == scalars.count else { return grumpkinPointIdentity() }
+
+    // Points: each GrumpkinPointAffine is (Fr x, Fr y) = 8 x UInt32 each coord
+    // In 64-bit view: 4 x uint64_t per Fr, 8 x uint64_t per affine point
+    var result = grumpkinPointIdentity()
+    points.withUnsafeBufferPointer { ptsBuf in
+        let ptsPtr = UnsafeRawPointer(ptsBuf.baseAddress!).assumingMemoryBound(to: UInt64.self)
+        // Flatten scalars into contiguous buffer (n x 8 uint32_t)
+        var flatScalars = [UInt32](repeating: 0, count: n * 8)
+        for i in 0..<n {
+            let s = scalars[i]
+            for j in 0..<min(s.count, 8) {
+                flatScalars[i * 8 + j] = s[j]
+            }
+        }
+        flatScalars.withUnsafeBufferPointer { scBuf in
+            withUnsafeMutableBytes(of: &result) { resBuf in
+                grumpkin_pippenger_msm(
+                    ptsPtr,
+                    scBuf.baseAddress!,
+                    Int32(n),
+                    resBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                )
+            }
+        }
+    }
+    return result
+}
+
 // Check if affine point is on curve: y^2 = x^3 - 17
 public func grumpkinPointIsOnCurve(_ p: GrumpkinPointAffine) -> Bool {
     let x2 = frSqr(p.x)
