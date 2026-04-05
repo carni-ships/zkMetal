@@ -136,6 +136,28 @@ public struct FiatShamirTranscript<H: TranscriptHasher> {
         return bytesToFr(bytes)
     }
 
+    /// Squeeze labeled output bytes from the transcript (alternate signature).
+    ///
+    /// Equivalent to `squeeze(_:byteCount:)` with a `count` parameter name.
+    /// - Parameters:
+    ///   - label: Domain separator for this squeeze operation
+    ///   - count: Number of bytes to squeeze
+    /// - Returns: `count` pseudorandom bytes
+    public mutating func squeeze(_ label: String, count: Int) -> [UInt8] {
+        return squeeze(label, byteCount: count)
+    }
+
+    /// Squeeze a BN254 field element challenge from the transcript.
+    ///
+    /// Squeezes 32 bytes, interprets as a 256-bit little-endian integer,
+    /// and reduces modulo the BN254 scalar field order r.
+    ///
+    /// - Parameter label: Domain separator for this challenge
+    /// - Returns: A BN254Fr element in Montgomery form, uniformly distributed mod r
+    public mutating func challengeField(_ label: String) -> BN254Fr {
+        return challengeScalar(label)
+    }
+
     /// Squeeze multiple field element challenges.
     ///
     /// Each challenge gets an indexed sub-label for domain separation.
@@ -453,6 +475,11 @@ public struct Blake3TranscriptHasher: TranscriptHasher {
         return copy
     }
 }
+
+// MARK: - BN254Fr Alias
+
+/// BN254 scalar field element alias for protocol-level clarity.
+public typealias BN254Fr = Fr
 
 // MARK: - Convenience Type Aliases
 
