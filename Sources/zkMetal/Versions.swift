@@ -92,6 +92,7 @@ public enum Versions {
     public static let transcript     = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let serialization  = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let circleSTARK    = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
+    public static let babyBearSTARK  = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let folding        = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let brakedown      = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let binaryTower    = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
