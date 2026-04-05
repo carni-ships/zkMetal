@@ -344,14 +344,14 @@ C CIOS Montgomery acceleration: pre-computed wiring topology, cached buffers, eq
 | Primitive | Key Benchmark | Notes |
 |-----------|---------------|-------|
 | HyperNova fold | 0.09ms/fold (10-1000 steps) | Keccak256 transcript + C CIOS + pre-computed affine: **40x** (3.6ms→0.09ms) |
-| Basefold open 2^18 | 144ms | NTT-free multilinear PCS, fold 0.73ms for 2^14→1 |
+| Basefold open 2^18 | 110ms | C CIOS fold + zero-copy Merkle paths: **1.3x** faster |
 | Brakedown PCS | -- | Crashes on some hardware (signal 139) |
 | Zeromorph PCS | -- | Crashes on some hardware (signal 139) |
 | IPA prove n=256 | 11.8ms | Log(n) halving rounds, C CIOS batch fold + Blake3 NEON |
 | Verkle Trees (CPU) | 14ms build, 5ms proof, 2.4ms verify | C CIOS Pedersen+IPA: build **24x**, proof **134x**, verify **38x** |
 | IPA Accumulation (Pallas) | 7.3ms accumulate (n=4) | Halo-style, batch decide 2.7x |
 | Tensor compress 2^18 | 8.9ms compress, 2.1ms verify | **460.7x** compression ratio, Keccak transcript: **26x** compress, **19x** verify |
-| WHIR 2^14 | 55ms prove, 9.2ms verify | 28.2 KB proof size, C fold + Keccak: verify **1.7x** |
+| WHIR 2^14 | 30ms prove, 4.8ms verify | C CIOS fold + CPU P2 Merkle: prove **1.9x**, verify **3.6x** |
 | Spartan prove 2^14 | 121ms prove, 8ms verify | C CIOS sumcheck + sparse matvec: **8.6x** (1051→122ms) |
 | Lasso 2^18 | 56ms prove, 31ms verify | C-accelerated: prove **8.2x** (481→56ms), verify **52x** (1.6s→31ms) |
 | LogUp 2^12 | 15ms prove, 16ms verify | Optimal for small-medium tables |
