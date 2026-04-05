@@ -308,7 +308,7 @@ C CIOS Montgomery acceleration: pre-computed wiring topology, cached buffers, eq
 |--------|-----------|---------------|---------------|-----------------|------------|-----------|
 | 2^8 | 1.1ms | 9ms | 1.3ms | 1.4ms | 5.3ms | 4.9ms |
 | 2^10 | 3.0ms | 35ms | 4.3ms | 4.3ms | 12ms | 10ms |
-| 2^12 | -- | -- | -- | -- | 17ms | 17ms |
+| 2^12 | 8.1ms | 14ms | 6.5ms | 10ms | 17ms | 17ms |
 | 2^14 | 22ms | 36ms | 12ms | 31ms | 20ms | 20ms |
 | 2^16 | 27ms | 176ms | 24ms | 92ms | 39ms | 39ms |
 | 2^18 | 45ms | 205ms | 113ms | 339ms | 66ms | 65ms |
@@ -428,7 +428,13 @@ Methodology: Compute-bound = total_ops / 3.6T flops (BN254 mul = ~64 32-bit muls
 | 32 | IPA prove n=256 | 13ms | ~10ms | C scalar mul + GPU batch fold | ~1.3x |
 | 33 | NTT BabyBear 2^24 | 2.0ms | ~1.7ms | Bandwidth (2^24 x 4B) | ~1.2x |
 
-BabyBear/Goldilocks NTT and IPA are near-optimal (within 1-2x of hardware limits). Biggest opportunities: Groth16/Plonk/GKR (MSM/NTT bottleneck) and Lasso (algorithmic complexity). P2 Merkle is compute-bound (~2.8x headroom) — fused subtree kernel with shared memory is 1.7x faster than level-by-level despite 80% thread waste.
+BabyBear/Goldilocks NTT and IPA are near-optimal (within 1-2x of hardware limits). Biggest remaining opportunities:
+
+**Systemic**: Command buffer chaining (163 `waitUntilCompleted` sync points → could batch into ~10 chained dispatches, saving 3-8ms scheduling overhead across a full prove). FRI fold-by-4 halves round count, reducing Merkle commit overhead.
+
+**Algorithmic**: Dedicated squaring (37-42% fewer muls for BLS12-381/BLS12-377 Fq). Frobenius precomputation saves ~10 fp_mul per BLS12-381 pairing. Binary tower PMULL intrinsics make GF(2^64) multiply a single instruction (~3ns vs ~50ns).
+
+**Near floor** (< 1.5x headroom): BabyBear NTT, Goldilocks NTT, Circle NTT, IPA prove, HyperNova fold, KZG commit, Groth16 prove (cached). These are within noise of hardware limits — further gains require algorithmic breakthroughs.
 
 ## Supported Fields
 
