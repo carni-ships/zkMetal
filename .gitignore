@@ -17,3 +17,4 @@ bindings/lib/
 gkr_test.swift
 pairing_out.txt
 stderr.txt
+.claude/
