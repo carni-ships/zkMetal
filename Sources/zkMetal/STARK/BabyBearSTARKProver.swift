@@ -181,6 +181,19 @@ public struct BabyBearSTARKProof {
     public let numColumns: Int
     public let logBlowup: Int
 
+    public init(traceCommitments: [[Bb]], compositionCommitment: [Bb],
+                friProof: BabyBearFRIProof, queryResponses: [BabyBearSTARKQueryResponse],
+                alpha: Bb, traceLength: Int, numColumns: Int, logBlowup: Int) {
+        self.traceCommitments = traceCommitments
+        self.compositionCommitment = compositionCommitment
+        self.friProof = friProof
+        self.queryResponses = queryResponses
+        self.alpha = alpha
+        self.traceLength = traceLength
+        self.numColumns = numColumns
+        self.logBlowup = logBlowup
+    }
+
     /// Estimated proof size in bytes
     public var estimatedSizeBytes: Int {
         var size = 0
