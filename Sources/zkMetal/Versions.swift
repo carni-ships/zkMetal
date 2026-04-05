@@ -76,6 +76,8 @@ public enum Versions {
     public static let gkr            = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let dataParallel   = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let structuredGKR  = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let grandProductGKR = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let memoryChecking  = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
 
     // --- Other ---
     public static let ecdsa          = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
