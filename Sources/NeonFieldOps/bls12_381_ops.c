@@ -357,8 +357,8 @@ static inline void fp_sqr(const uint64_t a[6], uint64_t r[6]) {
     s[10] = (uint64_t)w; c = (uint64_t)(w >> 64);
     s[11] += c;
 
-    // Montgomery reduction (6 iterations)
-    for (int i = 0; i < 6; i++) {
+    // Montgomery reduction (6 iterations, fully unrolled)
+    {
         uint64_t m = s[0] * FP381_INV;
         w = (uint128_t)m * FP381_P[0] + s[0]; c = (uint64_t)(w >> 64);
         w = (uint128_t)m * FP381_P[1] + s[1] + c; s[0] = (uint64_t)w; c = (uint64_t)(w >> 64);
@@ -367,11 +367,71 @@ static inline void fp_sqr(const uint64_t a[6], uint64_t r[6]) {
         w = (uint128_t)m * FP381_P[4] + s[4] + c; s[3] = (uint64_t)w; c = (uint64_t)(w >> 64);
         w = (uint128_t)m * FP381_P[5] + s[5] + c; s[4] = (uint64_t)w; c = (uint64_t)(w >> 64);
         w = (uint128_t)s[6] + c; s[5] = (uint64_t)w; c = (uint64_t)(w >> 64);
-        // Shift remaining limbs down
-        for (int j = 6; j < 11 - i; j++) {
-            w = (uint128_t)s[j+1] + c; s[j] = (uint64_t)w; c = (uint64_t)(w >> 64);
-        }
-        s[11 - i] = 0;
+        w = (uint128_t)s[7] + c; s[6] = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)s[8] + c; s[7] = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)s[9] + c; s[8] = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)s[10] + c; s[9] = (uint64_t)w; c = (uint64_t)(w >> 64);
+        s[10] = s[11] + c; s[11] = 0;
+    }
+    {
+        uint64_t m = s[0] * FP381_INV;
+        w = (uint128_t)m * FP381_P[0] + s[0]; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FP381_P[1] + s[1] + c; s[0] = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FP381_P[2] + s[2] + c; s[1] = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FP381_P[3] + s[3] + c; s[2] = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FP381_P[4] + s[4] + c; s[3] = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FP381_P[5] + s[5] + c; s[4] = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)s[6] + c; s[5] = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)s[7] + c; s[6] = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)s[8] + c; s[7] = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)s[9] + c; s[8] = (uint64_t)w; c = (uint64_t)(w >> 64);
+        s[9] = s[10] + c; s[10] = 0;
+    }
+    {
+        uint64_t m = s[0] * FP381_INV;
+        w = (uint128_t)m * FP381_P[0] + s[0]; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FP381_P[1] + s[1] + c; s[0] = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FP381_P[2] + s[2] + c; s[1] = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FP381_P[3] + s[3] + c; s[2] = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FP381_P[4] + s[4] + c; s[3] = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FP381_P[5] + s[5] + c; s[4] = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)s[6] + c; s[5] = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)s[7] + c; s[6] = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)s[8] + c; s[7] = (uint64_t)w; c = (uint64_t)(w >> 64);
+        s[8] = s[9] + c; s[9] = 0;
+    }
+    {
+        uint64_t m = s[0] * FP381_INV;
+        w = (uint128_t)m * FP381_P[0] + s[0]; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FP381_P[1] + s[1] + c; s[0] = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FP381_P[2] + s[2] + c; s[1] = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FP381_P[3] + s[3] + c; s[2] = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FP381_P[4] + s[4] + c; s[3] = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FP381_P[5] + s[5] + c; s[4] = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)s[6] + c; s[5] = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)s[7] + c; s[6] = (uint64_t)w; c = (uint64_t)(w >> 64);
+        s[7] = s[8] + c; s[8] = 0;
+    }
+    {
+        uint64_t m = s[0] * FP381_INV;
+        w = (uint128_t)m * FP381_P[0] + s[0]; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FP381_P[1] + s[1] + c; s[0] = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FP381_P[2] + s[2] + c; s[1] = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FP381_P[3] + s[3] + c; s[2] = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FP381_P[4] + s[4] + c; s[3] = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FP381_P[5] + s[5] + c; s[4] = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)s[6] + c; s[5] = (uint64_t)w; c = (uint64_t)(w >> 64);
+        s[6] = s[7] + c; s[7] = 0;
+    }
+    {
+        uint64_t m = s[0] * FP381_INV;
+        w = (uint128_t)m * FP381_P[0] + s[0]; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FP381_P[1] + s[1] + c; s[0] = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FP381_P[2] + s[2] + c; s[1] = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FP381_P[3] + s[3] + c; s[2] = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FP381_P[4] + s[4] + c; s[3] = (uint64_t)w; c = (uint64_t)(w >> 64);
+        w = (uint128_t)m * FP381_P[5] + s[5] + c; s[4] = (uint64_t)w; c = (uint64_t)(w >> 64);
+        s[5] = s[6] + c;
     }
 
     // Final conditional subtraction
