@@ -75,6 +75,7 @@ public enum Versions {
     // --- GKR ---
     public static let gkr            = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let dataParallel   = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
+    public static let structuredGKR  = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
 
     // --- Other ---
     public static let ecdsa          = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
@@ -82,7 +83,7 @@ public enum Versions {
     public static let verkle         = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let lookup         = PrimitiveVersion(version: "1.0.0", updated: "2026-04-01")
     public static let lasso          = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
-    public static let cqLookup       = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
+    public static let cqLookup       = PrimitiveVersion(version: "2.0.0", updated: "2026-04-05")
     public static let constraint     = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let fusedNTTConstraint = PrimitiveVersion(version: "2.0.0", updated: "2026-04-05")
     public static let witness        = PrimitiveVersion(version: "2.0.0", updated: "2026-04-04")
