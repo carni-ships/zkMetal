@@ -125,6 +125,8 @@ public enum Versions {
     public static let witnessSolver     = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let protogalaxyDecider = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let marlinProver      = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let evmPrecompile     = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let customGateLib     = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
 
     /// Print all primitive versions
     public static func printAll() {

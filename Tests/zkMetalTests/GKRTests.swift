@@ -824,4 +824,94 @@ func runGKRTests() {
         expect(frEqual(proof.claimedProduct, naiveProduct), "Grand product perf n=256 correct")
         print(String(format: "  Grand product perf: n=%d — prove %.2fms", n, proveTime * 1000))
     }
+
+    // =========================================================================
+    // SECTION 17: Grand product prove + verify round-trip
+    // =========================================================================
+
+    // Test: grand product prove then verify (n=2, simplest case)
+    do {
+        let values: [Fr] = [frFromInt(6), frFromInt(7)]
+        let pt = Transcript(label: "gp-rt2", backend: .keccak256)
+        let proof = GrandProductEngine.prove(values: values, transcript: pt)
+
+        let vt = Transcript(label: "gp-rt2", backend: .keccak256)
+        let ok = GrandProductEngine.verify(values: values, proof: proof, transcript: vt)
+        expect(ok, "Grand product verify: 6*7 = 42 (n=2)")
+    }
+
+    // Test: grand product prove then verify (small known values)
+    do {
+        let values: [Fr] = [frFromInt(2), frFromInt(3), frFromInt(5), frFromInt(7)]
+        let pt = Transcript(label: "gp-rt", backend: .keccak256)
+        let proof = GrandProductEngine.prove(values: values, transcript: pt)
+
+        let vt = Transcript(label: "gp-rt", backend: .keccak256)
+        let ok = GrandProductEngine.verify(values: values, proof: proof, transcript: vt)
+        expect(ok, "Grand product verify: 2*3*5*7 = 210")
+    }
+
+    // Test: grand product prove+verify for n=16 random values
+    do {
+        let values = pseudoRandomInputs(16, seed: 0x1234)
+        let pt = Transcript(label: "gp-rt16", backend: .keccak256)
+        let proof = GrandProductEngine.prove(values: values, transcript: pt)
+
+        let vt = Transcript(label: "gp-rt16", backend: .keccak256)
+        let ok = GrandProductEngine.verify(values: values, proof: proof, transcript: vt)
+        expect(ok, "Grand product verify: n=16 random")
+    }
+
+    // Test: grand product prove+verify for n=64 random values
+    do {
+        let values = pseudoRandomInputs(64, seed: 0xABCD)
+        let pt = Transcript(label: "gp-rt64", backend: .keccak256)
+        let proof = GrandProductEngine.prove(values: values, transcript: pt)
+
+        let vt = Transcript(label: "gp-rt64", backend: .keccak256)
+        let ok = GrandProductEngine.verify(values: values, proof: proof, transcript: vt)
+        expect(ok, "Grand product verify: n=64 random")
+    }
+
+    // Test: grand product prove+verify for non-power-of-2 (padding)
+    do {
+        let values: [Fr] = [frFromInt(2), frFromInt(3), frFromInt(5)]
+        let pt = Transcript(label: "gp-rt-pad", backend: .keccak256)
+        let proof = GrandProductEngine.prove(values: values, transcript: pt)
+
+        let vt = Transcript(label: "gp-rt-pad", backend: .keccak256)
+        let ok = GrandProductEngine.verify(values: values, proof: proof, transcript: vt)
+        expect(ok, "Grand product verify: n=3 (padded)")
+    }
+
+    // Test: batch grand product prove+verify
+    do {
+        let sets: [[Fr]] = [
+            [frFromInt(2), frFromInt(3), frFromInt(5), frFromInt(7)],
+            [frFromInt(11), frFromInt(13)],
+        ]
+        let pt = Transcript(label: "gp-batch-rt", backend: .keccak256)
+        let batchProof = GrandProductEngine.proveBatch(valueSets: sets, transcript: pt)
+
+        let vt = Transcript(label: "gp-batch-rt", backend: .keccak256)
+        let ok = GrandProductEngine.verifyBatch(valueSets: sets, proof: batchProof, transcript: vt)
+        expect(ok, "Batch grand product verify: 2 products")
+    }
+
+    // Test: grand product verify rejects tampered proof
+    do {
+        let values: [Fr] = [frFromInt(2), frFromInt(3), frFromInt(5), frFromInt(7)]
+        let pt = Transcript(label: "gp-tamper", backend: .keccak256)
+        let proof = GrandProductEngine.prove(values: values, transcript: pt)
+
+        // Tamper: use different values for verification
+        let tampered: [Fr] = [frFromInt(2), frFromInt(3), frFromInt(5), frFromInt(11)]
+        let vt = Transcript(label: "gp-tamper", backend: .keccak256)
+        let ok = GrandProductEngine.verify(values: tampered, proof: proof, transcript: vt)
+        expect(!ok, "Grand product verify rejects tampered values")
+    }
+
+    // NOTE: MemoryCheckingGKR has a separate bug — the fingerprint includes timestamps,
+    // which breaks multiset equality (read and write fingerprint products differ).
+    // That is a protocol-level issue in MemoryCheckingGKR.swift, not the grand product engine.
 }

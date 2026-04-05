@@ -31,10 +31,27 @@ public struct GrandProductProof {
     public let claimedProduct: Fr
 }
 
+/// Round message for degree-3 sumcheck in the grand product.
+/// The polynomial eq(r,x)*left(x)*right(x) is degree 3 in each variable,
+/// requiring 4 evaluation points (at t=0,1,2,3) per round.
+public struct GPSumcheckRoundMsg {
+    public let s0: Fr  // polynomial evaluated at 0
+    public let s1: Fr  // polynomial evaluated at 1
+    public let s2: Fr  // polynomial evaluated at 2
+    public let s3: Fr  // polynomial evaluated at 3
+
+    public init(s0: Fr, s1: Fr, s2: Fr, s3: Fr) {
+        self.s0 = s0
+        self.s1 = s1
+        self.s2 = s2
+        self.s3 = s3
+    }
+}
+
 /// Single layer proof within the grand product GKR.
 public struct GrandProductLayerProof {
-    /// Sumcheck round messages for this layer.
-    public let sumcheckMsgs: [SumcheckRoundMsg]
+    /// Sumcheck round messages for this layer (degree-3 polynomial).
+    public let sumcheckMsgs: [GPSumcheckRoundMsg]
     /// Claimed evaluations of the previous layer's MLE at the random points.
     public let claimedVLeft: Fr
     public let claimedVRight: Fr
@@ -144,7 +161,8 @@ public class GrandProductEngine {
             // Combine claims for next layer using random linear combination
             let alpha = transcript.squeeze()
             claim = frAdd(frMul(alpha, vLeft), frMul(frSub(Fr.one, alpha), vRight))
-            rPoint = newR
+            // The combined claim equals V(newR, 1-alpha), so append (1-alpha) to the random point
+            rPoint = newR + [frSub(Fr.one, alpha)]
         }
 
         return GrandProductProof(layerProofs: layerProofs, claimedProduct: product)
@@ -164,7 +182,7 @@ public class GrandProductEngine {
         inputVars: Int,
         transcript: Transcript,
         layerIdx: Int
-    ) -> (msgs: [SumcheckRoundMsg], vLeft: Fr, vRight: Fr, newR: [Fr]) {
+    ) -> (msgs: [GPSumcheckRoundMsg], vLeft: Fr, vRight: Fr, newR: [Fr]) {
         let gateVars = inputVars - 1  // number of variables to index gates
         let gateCount = 1 << gateVars
 
@@ -190,8 +208,8 @@ public class GrandProductEngine {
         }
 
         // Sumcheck over gateVars variables:
-        // f(x) = eq(r, x) * left(x) * right(x)
-        var msgs = [SumcheckRoundMsg]()
+        // f(x) = eq(r, x) * left(x) * right(x)  [degree 3 in each variable]
+        var msgs = [GPSumcheckRoundMsg]()
         msgs.reserveCapacity(gateVars)
         var challenges = [Fr]()
         challenges.reserveCapacity(gateVars)
@@ -201,45 +219,49 @@ public class GrandProductEngine {
         var rightCurrent = rightVals
         var currentSize = gateCount
 
+        let two = frAdd(Fr.one, Fr.one)
+        let three = frAdd(two, Fr.one)
+
         for _ in 0..<gateVars {
             let half = currentSize / 2
 
-            // Compute s(0), s(1), s(2) for the current variable
+            // Compute s(0), s(1), s(2), s(3) for the current variable
             var s0 = Fr.zero
             var s1 = Fr.zero
             var s2 = Fr.zero
+            var s3 = Fr.zero
 
             for j in 0..<half {
-                // At t=0: use values at index j (first half)
+                // Values at t=0 (first half) and t=1 (second half)
                 let eq0 = eqCurrent[j]
                 let l0 = leftCurrent[j]
                 let r0 = rightCurrent[j]
-                let prod0 = frMul(eq0, frMul(l0, r0))
-                s0 = frAdd(s0, prod0)
-
-                // At t=1: use values at index j+half (second half)
                 let eq1 = eqCurrent[j + half]
                 let l1 = leftCurrent[j + half]
                 let r1 = rightCurrent[j + half]
-                let prod1 = frMul(eq1, frMul(l1, r1))
-                s1 = frAdd(s1, prod1)
 
-                // At t=2: linear extrapolation
-                // f(2) = 2*f(1) - f(0) for linear functions,
-                // but eq, left, right are each linear in this variable, so f is degree 3.
-                // eq(2) = 2*eq1 - eq0, left(2) = 2*l1 - l0, right(2) = 2*r1 - r0
+                s0 = frAdd(s0, frMul(eq0, frMul(l0, r0)))
+                s1 = frAdd(s1, frMul(eq1, frMul(l1, r1)))
+
+                // At t=2: linear extrapolation of each factor
                 let eq2 = frSub(frAdd(eq1, eq1), eq0)
                 let l2 = frSub(frAdd(l1, l1), l0)
                 let r2 = frSub(frAdd(r1, r1), r0)
-                let prod2 = frMul(eq2, frMul(l2, r2))
-                s2 = frAdd(s2, prod2)
+                s2 = frAdd(s2, frMul(eq2, frMul(l2, r2)))
+
+                // At t=3: linear extrapolation: f(3) = 3*f(1) - 2*f(0)
+                let eq3 = frSub(frMul(three, eq1), frMul(two, eq0))
+                let l3 = frSub(frMul(three, l1), frMul(two, l0))
+                let r3 = frSub(frMul(three, r1), frMul(two, r0))
+                s3 = frAdd(s3, frMul(eq3, frMul(l3, r3)))
             }
 
-            msgs.append(SumcheckRoundMsg(s0: s0, s1: s1, s2: s2))
+            msgs.append(GPSumcheckRoundMsg(s0: s0, s1: s1, s2: s2, s3: s3))
 
             transcript.absorb(s0)
             transcript.absorb(s1)
             transcript.absorb(s2)
+            transcript.absorb(s3)
             let challenge = transcript.squeeze()
             challenges.append(challenge)
 
@@ -297,8 +319,6 @@ public class GrandProductEngine {
         // Verify: compute the actual product and check it matches
         var actualProduct = Fr.one
         for v in values { actualProduct = frMul(actualProduct, v) }
-        // Pad with ones
-        // (ones don't change the product, so actualProduct is the correct full product)
 
         guard gpFrEqual(actualProduct, proof.claimedProduct) else { return false }
 
@@ -325,10 +345,11 @@ public class GrandProductEngine {
                 transcript.absorb(msg.s0)
                 transcript.absorb(msg.s1)
                 transcript.absorb(msg.s2)
+                transcript.absorb(msg.s3)
                 let challenge = transcript.squeeze()
                 challenges.append(challenge)
 
-                currentClaim = gpLagrangeEval3(s0: msg.s0, s1: msg.s1, s2: msg.s2, at: challenge)
+                currentClaim = gpLagrangeEval4(s0: msg.s0, s1: msg.s1, s2: msg.s2, s3: msg.s3, at: challenge)
             }
 
             // Check final claim: eq(r, challenges) * vLeft * vRight should equal currentClaim
@@ -351,7 +372,8 @@ public class GrandProductEngine {
 
             let alpha = transcript.squeeze()
             claim = frAdd(frMul(alpha, vLeft), frMul(frSub(Fr.one, alpha), vRight))
-            rPoint = challenges
+            // The combined claim equals V(challenges, 1-alpha), so append (1-alpha) to the random point
+            rPoint = challenges + [frSub(Fr.one, alpha)]
         }
 
         // Final check: the claim should match the input MLE evaluation
@@ -371,14 +393,8 @@ public class GrandProductEngine {
         let evalLeft = cMleEvalGP(evals: leftVals, point: rPoint, numVars: bottomGateVars)
         let evalRight = cMleEvalGP(evals: rightVals, point: rPoint, numVars: bottomGateVars)
 
-        // Reconstruct what the claim should be from the last alpha
-        // claim = alpha * evalLeft + (1 - alpha) * evalRight
-        let expectedFinal = claim
-        let lastAlpha = transcript.squeeze()  // This was already squeezed; we recompute
-        // Actually, we already computed claim from the last layer's alpha.
-        // We just need to verify claim matches alpha * evalLeft + (1-alpha) * evalRight
-        // But claim was set by the prover's vLeft/vRight. We need to check those match input.
         // The last layer's vLeft/vRight are evaluations of the input halves.
+        // We verify they match the actual MLE evaluations of the input layer.
         let lastProof = proof.layerProofs.last!
         guard gpFrEqual(lastProof.claimedVLeft, evalLeft) else { return false }
         guard gpFrEqual(lastProof.claimedVRight, evalRight) else { return false }
@@ -491,15 +507,34 @@ private func evalEqAtPoint(_ a: [Fr], _ b: [Fr]) -> Fr {
 /// Precomputed inverse of 2 in Montgomery form.
 private let gpInv2: Fr = frInverse(frAdd(Fr.one, Fr.one))
 
-/// Evaluate the degree-2 polynomial passing through (0, s0), (1, s1), (2, s2) at point x.
-private func gpLagrangeEval3(s0: Fr, s1: Fr, s2: Fr, at x: Fr) -> Fr {
-    let xm1 = frSub(x, Fr.one)
-    let xm2 = frSub(x, frAdd(Fr.one, Fr.one))
+/// Precomputed inverse of 6 in Montgomery form (for degree-3 Lagrange).
+private let gpInv6: Fr = frInverse(frAdd(frAdd(Fr.one, Fr.one), frAdd(frAdd(Fr.one, Fr.one), frAdd(Fr.one, Fr.one))))
+
+/// Evaluate the degree-3 polynomial passing through (0, s0), (1, s1), (2, s2), (3, s3) at point x.
+///
+/// Uses Lagrange basis:
+///   l0(x) = (x-1)(x-2)(x-3) / (-6)
+///   l1(x) = x(x-2)(x-3) / 2
+///   l2(x) = x(x-1)(x-3) / (-2)
+///   l3(x) = x(x-1)(x-2) / 6
+private func gpLagrangeEval4(s0: Fr, s1: Fr, s2: Fr, s3: Fr, at x: Fr) -> Fr {
+    let two = frAdd(Fr.one, Fr.one)
+    let three = frAdd(two, Fr.one)
     let negOne = frSub(Fr.zero, Fr.one)
 
-    let l0 = frMul(frMul(xm1, xm2), gpInv2)
-    let l1 = frMul(frMul(x, xm2), negOne)
-    let l2 = frMul(frMul(x, xm1), gpInv2)
+    let xm1 = frSub(x, Fr.one)
+    let xm2 = frSub(x, two)
+    let xm3 = frSub(x, three)
 
-    return frAdd(frAdd(frMul(s0, l0), frMul(s1, l1)), frMul(s2, l2))
+    // l0 = (x-1)(x-2)(x-3) / (0-1)(0-2)(0-3) = (x-1)(x-2)(x-3) / (-6)
+    let l0 = frMul(frMul(frMul(xm1, xm2), xm3), frMul(negOne, gpInv6))
+    // l1 = x(x-2)(x-3) / (1-0)(1-2)(1-3) = x(x-2)(x-3) / (1*-1*-2) = x(x-2)(x-3) / 2
+    let l1 = frMul(frMul(frMul(x, xm2), xm3), gpInv2)
+    // l2 = x(x-1)(x-3) / (2-0)(2-1)(2-3) = x(x-1)(x-3) / (2*1*-1) = x(x-1)(x-3) / (-2)
+    let l2 = frMul(frMul(frMul(x, xm1), xm3), frMul(negOne, gpInv2))
+    // l3 = x(x-1)(x-2) / (3-0)(3-1)(3-2) = x(x-1)(x-2) / (3*2*1) = x(x-1)(x-2) / 6
+    let l3 = frMul(frMul(frMul(x, xm1), xm2), gpInv6)
+
+    return frAdd(frAdd(frMul(s0, l0), frMul(s1, l1)),
+                 frAdd(frMul(s2, l2), frMul(s3, l3)))
 }
