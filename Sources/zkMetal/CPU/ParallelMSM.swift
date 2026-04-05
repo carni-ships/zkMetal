@@ -149,6 +149,26 @@ public func cFrVectorFold(_ a: [Fr], _ b: [Fr], x: Fr, xInv: Fr) -> [Fr] {
     return out
 }
 
+// MARK: - C batch-to-affine (uses C Montgomery batch inversion)
+
+/// Convert projective points to affine using C CIOS arithmetic.
+/// Single batch inversion chain -- much faster than per-point Swift conversion.
+public func cBatchToAffine(_ points: [PointProjective]) -> [PointAffine] {
+    let n = points.count
+    if n == 0 { return [] }
+    var affPts = [PointAffine](repeating: PointAffine(x: .one, y: .one), count: n)
+    points.withUnsafeBytes { projBuf in
+        affPts.withUnsafeMutableBytes { affBuf in
+            bn254_batch_to_affine(
+                projBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                affBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                Int32(n)
+            )
+        }
+    }
+    return affPts
+}
+
 // MARK: - C Pippenger MSM (CIOS Montgomery field ops, multi-threaded)
 
 /// Optimized CPU Pippenger MSM using C CIOS Montgomery arithmetic.
@@ -162,6 +182,26 @@ public func cPippengerMSM(points: [PointAffine], scalars: [[UInt32]]) -> PointPr
     var flatScalars = [UInt32]()
     flatScalars.reserveCapacity(n * 8)
     for s in scalars { flatScalars.append(contentsOf: s) }
+
+    var result = PointProjective(x: .one, y: .one, z: .zero)
+
+    points.withUnsafeBytes { ptsBuf in
+        flatScalars.withUnsafeBufferPointer { scBuf in
+            withUnsafeMutableBytes(of: &result) { resBuf in
+                let ptsPtr = ptsBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                let resPtr = resBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                bn254_pippenger_msm(ptsPtr, scBuf.baseAddress!, Int32(n), resPtr)
+            }
+        }
+    }
+    return result
+}
+
+/// Optimized CPU Pippenger MSM with pre-flattened scalars (avoids [[UInt32]] allocation).
+public func cPippengerMSMFlat(points: [PointAffine], flatScalars: [UInt32]) -> PointProjective {
+    let n = points.count
+    precondition(flatScalars.count == n * 8)
+    if n == 0 { return pointIdentity() }
 
     var result = PointProjective(x: .one, y: .one, z: .zero)
 

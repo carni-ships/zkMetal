@@ -8,9 +8,15 @@
 //   Round 5: Compute linearization and KZG opening proofs
 //
 // All polynomial arithmetic uses NTT for O(n log n) operations.
+// Optimized: CPU C NTT for small sizes, batch field ops, C synthetic division.
 
 import Foundation
 import NeonFieldOps
+
+// MARK: - CPU NTT threshold
+
+/// Below this size, use CPU C NTT instead of GPU dispatch (avoids Metal overhead).
+private let kCPU_NTT_THRESHOLD = 8192
 
 // MARK: - Proof
 
@@ -80,9 +86,17 @@ public class PlonkProver {
         // Add random blinding: a(x) = a_eval(x) + (b1*x + b2) * Z_H(x)
         // For simplicity (and soundness in the honest-verifier model),
         // we use the raw witness polynomials without blinding.
-        let aCoeffs = try ntt.intt(aEvals)
-        let bCoeffs = try ntt.intt(bEvals)
-        let cCoeffs = try ntt.intt(cEvals)
+        let logN = Int(log2(Double(n)))
+        let aCoeffs: [Fr], bCoeffs: [Fr], cCoeffs: [Fr]
+        if n <= kCPU_NTT_THRESHOLD {
+            aCoeffs = cINTT_Fr(aEvals, logN: logN)
+            bCoeffs = cINTT_Fr(bEvals, logN: logN)
+            cCoeffs = cINTT_Fr(cEvals, logN: logN)
+        } else {
+            aCoeffs = try ntt.intt(aEvals)
+            bCoeffs = try ntt.intt(bEvals)
+            cCoeffs = try ntt.intt(cEvals)
+        }
 
         let aCommit = try kzg.commit(aCoeffs)
         let bCommit = try kzg.commit(bCoeffs)
@@ -130,14 +144,23 @@ public class PlonkProver {
             dens[i] = frMul(frMul(den1, den2), den3)
         }
 
-        // Montgomery batch inversion: compute all 1/den[i] with a single frInverse
-        let denInvs = frBatchInverse(dens)
+        // Montgomery batch inversion: compute all 1/den[i] with a single frInverse (C path)
+        var denInvs = [Fr](repeating: Fr.zero, count: n - 1)
+        dens.withUnsafeBytes { dBuf in
+            denInvs.withUnsafeMutableBytes { rBuf in
+                bn254_fr_batch_inverse(
+                    dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(n - 1),
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                )
+            }
+        }
 
         for i in 0..<(n - 1) {
             zEvals[i + 1] = frMul(zEvals[i], frMul(nums[i], denInvs[i]))
         }
 
-        let zCoeffs = try ntt.intt(zEvals)
+        let zCoeffs = n <= kCPU_NTT_THRESHOLD ? cINTT_Fr(zEvals, logN: logN) : try ntt.intt(zEvals)
         let zCommit = try kzg.commit(zCoeffs)
         absorbPoint(transcript, zCommit)
 
@@ -165,25 +188,23 @@ public class PlonkProver {
         var gateCoeffs = try polyMulNTT(qLCoeffsR3, aCoeffs, ntt: ntt)
         gateCoeffs = polyAddCoeffs(gateCoeffs, try polyMulNTT(qRCoeffsR3, bCoeffs, ntt: ntt))
         gateCoeffs = polyAddCoeffs(gateCoeffs, try polyMulNTT(qOCoeffsR3, cCoeffs, ntt: ntt))
-        gateCoeffs = polyAddCoeffs(gateCoeffs, try polyMulNTT(qMCoeffsR3, try polyMulNTT(aCoeffs, bCoeffs, ntt: ntt), ntt: ntt))
+        // Reuse a*b product for qM and Poseidon
+        let abProd = try polyMulNTT(aCoeffs, bCoeffs, ntt: ntt)
+        gateCoeffs = polyAddCoeffs(gateCoeffs, try polyMulNTT(qMCoeffsR3, abProd, ntt: ntt))
         gateCoeffs = polyAddCoeffs(gateCoeffs, qCCoeffsR3)
 
-        // Custom gate: Range constraint: qRange * a * (1 - a) = 0
-        // = qRange * (a - a^2) = qRange * a - qRange * a * a
-        let qRangeTimesA = try polyMulNTT(qRangeCoeffsR3, aCoeffs, ntt: ntt)
-        let qRangeTimesASq = try polyMulNTT(qRangeCoeffsR3, try polyMulNTT(aCoeffs, aCoeffs, ntt: ntt), ntt: ntt)
-        gateCoeffs = polyAddCoeffs(gateCoeffs, polySubCoeffs(qRangeTimesA, qRangeTimesASq))
+        // Custom gate: Range constraint: qRange * (a - a^2)
+        let aSqProd = try polyMulNTT(aCoeffs, aCoeffs, ntt: ntt)
+        let aMinusASq = polySubCoeffs(aCoeffs, aSqProd)
+        gateCoeffs = polyAddCoeffs(gateCoeffs, try polyMulNTT(qRangeCoeffsR3, aMinusASq, ntt: ntt))
 
-        // Custom gate: Lookup constraint: qLookup * prod(a - t_i) = 0
-        // prod(a(x) - t_i) has degree n*|table|, so we must use polynomial multiplication.
-        // Start with polynomial (a(x) - t_0) and multiply by (a(x) - t_1), etc.
+        // Custom gate: Lookup constraint
         if !setup.lookupTables.isEmpty {
             for table in setup.lookupTables {
                 if table.values.isEmpty { continue }
-                // Build prod(a(x) - t_i) via iterated polynomial multiplication
-                var vanishPoly = polySubCoeffs(aCoeffs, [table.values[0]])  // a(x) - t_0
+                var vanishPoly = polySubCoeffs(aCoeffs, [table.values[0]])
                 for k in 1..<table.values.count {
-                    let factor = polySubCoeffs(aCoeffs, [table.values[k]])  // a(x) - t_k
+                    let factor = polySubCoeffs(aCoeffs, [table.values[k]])
                     vanishPoly = try polyMulNTT(vanishPoly, factor, ntt: ntt)
                 }
                 let lookupConstraint = try polyMulNTT(qLookupCoeffsR3, vanishPoly, ntt: ntt)
@@ -191,12 +212,9 @@ public class PlonkProver {
             }
         }
 
-        // Custom gate: Poseidon S-box constraint: qPoseidon * (c - a * b * b) = 0
-        // where b = a^2 (ensured by a prior standard mul gate), so a*b*b = a*a^4 = a^5
-        // Compute: a * b * b
-        let abCoeffs = try polyMulNTT(aCoeffs, bCoeffs, ntt: ntt)
-        let abbCoeffs = try polyMulNTT(abCoeffs, bCoeffs, ntt: ntt)
-        // c - a*b*b
+        // Custom gate: Poseidon S-box constraint: qPoseidon * (c - a*b*b)
+        // Reuse abProd from gate constraint
+        let abbCoeffs = try polyMulNTT(abProd, bCoeffs, ntt: ntt)
         let sboxDiff = polySubCoeffs(cCoeffs, abbCoeffs)
         let poseidonConstraint = try polyMulNTT(qPoseidonCoeffsR3, sboxDiff, ntt: ntt)
         gateCoeffs = polyAddCoeffs(gateCoeffs, poseidonConstraint)
@@ -212,6 +230,7 @@ public class PlonkProver {
         let permN1 = polyAddCoeffs(polyAddCoeffs(aCoeffs, polyScaleCoeffs(id1Coeffs, beta)), gammaConst)
         let permN2 = polyAddCoeffs(polyAddCoeffs(bCoeffs, polyScaleCoeffs(id2Coeffs, beta)), gammaConst)
         let permN3 = polyAddCoeffs(polyAddCoeffs(cCoeffs, polyScaleCoeffs(id3Coeffs, beta)), gammaConst)
+        // For triple+ products, use the optimized polyMulNTT which now uses CPU C NTT
         let permNumPoly = try polyMulNTT(try polyMulNTT(try polyMulNTT(permN1, permN2, ntt: ntt), permN3, ntt: ntt), zCoeffs, ntt: ntt)
 
         // Permutation denominator: (a + beta*sigma1 + gamma)(b + beta*sigma2 + gamma)(c + beta*sigma3 + gamma) * z(omega*x)
@@ -229,7 +248,7 @@ public class PlonkProver {
         // Boundary constraint: (z(x) - 1) * L_1(x)
         var l1EvalsRaw = [Fr](repeating: Fr.zero, count: n)
         l1EvalsRaw[0] = Fr.one
-        let l1Coeffs = try ntt.intt(l1EvalsRaw)
+        let l1Coeffs = n <= kCPU_NTT_THRESHOLD ? cINTT_Fr(l1EvalsRaw, logN: logN) : try ntt.intt(l1EvalsRaw)
         var zMinus1Coeffs = zCoeffs
         zMinus1Coeffs[0] = frSub(zMinus1Coeffs[0], Fr.one)
         let boundaryCoeffs = try polyMulNTT(zMinus1Coeffs, l1Coeffs, ntt: ntt)
@@ -348,18 +367,16 @@ public class PlonkProver {
         let bZetaSq = frSqr(bZeta)
         let poseidonScalar = frSub(cZeta, frMul(aZeta, bZetaSq))
 
-        for i in 0..<n {
-            var val = frMul(abZeta, qMCoeffs[i])
-            val = frAdd(val, frMul(aZeta, qLCoeffs[i]))
-            val = frAdd(val, frMul(bZeta, qRCoeffs[i]))
-            val = frAdd(val, frMul(cZeta, qOCoeffs[i]))
-            val = frAdd(val, qCCoeffs[i])
-            // Custom gate contributions
-            val = frAdd(val, frMul(rangeScalar, qRangeCoeffs[i]))
-            val = frAdd(val, frMul(lookupScalar, qLookupCoeffs[i]))
-            val = frAdd(val, frMul(poseidonScalar, qPoseidonCoeffs[i]))
-            rCoeffs[i] = val
-        }
+        // Gate part via batch ops: r = abZeta*qM + aZeta*qL + bZeta*qR + cZeta*qO + qC
+        //                         + rangeScalar*qRange + lookupScalar*qLookup + poseidonScalar*qPoseidon
+        rCoeffs = polyScaleCoeffs(qMCoeffs, abZeta)
+        rCoeffs = polyAddCoeffs(rCoeffs, polyScaleCoeffs(qLCoeffs, aZeta))
+        rCoeffs = polyAddCoeffs(rCoeffs, polyScaleCoeffs(qRCoeffs, bZeta))
+        rCoeffs = polyAddCoeffs(rCoeffs, polyScaleCoeffs(qOCoeffs, cZeta))
+        rCoeffs = polyAddCoeffs(rCoeffs, qCCoeffs)
+        rCoeffs = polyAddCoeffs(rCoeffs, polyScaleCoeffs(qRangeCoeffs, rangeScalar))
+        rCoeffs = polyAddCoeffs(rCoeffs, polyScaleCoeffs(qLookupCoeffs, lookupScalar))
+        rCoeffs = polyAddCoeffs(rCoeffs, polyScaleCoeffs(qPoseidonCoeffs, poseidonScalar))
 
         // Permutation part with z(x)
         let permNum = frMul(
@@ -374,25 +391,24 @@ public class PlonkProver {
             frMul(beta, zOmegaZeta)
         )
 
-        for i in 0..<n {
-            // + alpha * permNum * z[i]
-            rCoeffs[i] = frAdd(rCoeffs[i], frMul(alpha, frMul(permNum, zCoeffs[i])))
-            // - alpha * permDenPartial * sigma3[i]
-            rCoeffs[i] = frSub(rCoeffs[i], frMul(alpha, frMul(permDenPartial, sigma3Coeffs[i])))
-            // + alpha^2 * L_1(zeta) * z[i]
-            rCoeffs[i] = frAdd(rCoeffs[i], frMul(alpha2, frMul(l1Zeta, zCoeffs[i])))
-        }
+        // r += alpha*permNum*z - alpha*permDenPartial*sigma3 + alpha^2*L1(zeta)*z
+        let alphaPermNum = frMul(alpha, permNum)
+        let alphaPermDen = frMul(alpha, permDenPartial)
+        let alpha2L1 = frMul(alpha2, l1Zeta)
+        // Combined z coefficient: (alpha*permNum + alpha^2*L1(zeta))
+        let zScale = frAdd(alphaPermNum, alpha2L1)
+        rCoeffs = polyAddCoeffs(rCoeffs, polyScaleCoeffs(zCoeffs, zScale))
+        rCoeffs = polySubCoeffs(rCoeffs, polyScaleCoeffs(sigma3Coeffs, alphaPermDen))
 
         // Subtract Z_H(zeta) * sum_k(zeta^{k*n} * t_k)
-        for i in 0..<n {
-            var tVal = Fr.zero
-            var zetaNPow = Fr.one
-            for c in 0..<numChunks {
-                tVal = frAdd(tVal, frMul(zetaNPow, tChunkCoeffs[c][i]))
-                zetaNPow = frMul(zetaNPow, zetaN)
-            }
-            rCoeffs[i] = frSub(rCoeffs[i], frMul(zhZeta, tVal))
+        // Build combined t polynomial: sum_k(zeta^{k*n} * t_k)
+        var combinedT = tChunkCoeffs[0]
+        var zetaNPow = zetaN
+        for c in 1..<numChunks {
+            combinedT = polyAddCoeffs(combinedT, polyScaleCoeffs(tChunkCoeffs[c], zetaNPow))
+            zetaNPow = frMul(zetaNPow, zetaN)
         }
+        rCoeffs = polySubCoeffs(rCoeffs, polyScaleCoeffs(combinedT, zhZeta))
 
         // Opening proof at zeta: batch open r, a, b, c, sigma1, sigma2
         // W_zeta = (r(x) + v*a(x) + v^2*b(x) + v^3*c(x) + v^4*sigma1(x) + v^5*sigma2(x) - [r(z) + v*a(z) + ...]) / (x - zeta)
@@ -403,17 +419,15 @@ public class PlonkProver {
         let qLookupZeta = polyEval(qLookupCoeffs, at: zeta)
         let qPoseidonZeta = polyEval(qPoseidonCoeffs, at: zeta)
 
-        var combinedCoeffs = [Fr](repeating: Fr.zero, count: n)
+        // Batch combined polynomial: sum_k v^k * poly_k using C batch ops
         let polysToOpen = [rCoeffs, aCoeffs, bCoeffs, cCoeffs, setup.permutationPolys[0], setup.permutationPolys[1]]
         let evalsAtZeta = [rZeta, aZeta, bZeta, cZeta, sigma1Zeta, sigma2Zeta]
 
-        var vPow = Fr.one
-        var combinedEval = Fr.zero
-        for idx in 0..<polysToOpen.count {
-            let poly = polysToOpen[idx]
-            for i in 0..<min(poly.count, n) {
-                combinedCoeffs[i] = frAdd(combinedCoeffs[i], frMul(vPow, poly[i]))
-            }
+        var combinedCoeffs = rCoeffs  // v^0 * r (v^0 = 1)
+        var vPow = v
+        var combinedEval = rZeta
+        for idx in 1..<polysToOpen.count {
+            combinedCoeffs = polyAddCoeffs(combinedCoeffs, polyScaleCoeffs(polysToOpen[idx], vPow))
             combinedEval = frAdd(combinedEval, frMul(vPow, evalsAtZeta[idx]))
             vPow = frMul(vPow, v)
         }
@@ -482,16 +496,24 @@ func polyDivideByVanishing(_ coeffs: [Fr], n: Int) -> [Fr] {
 }
 
 /// Synthetic division: divide polynomial by (x - root), return quotient.
-/// Uses Horner-like recurrence: q[n-2] = c[n-1], q[i-1] = c[i] + root * q[i]
+/// Uses C CIOS for fast Montgomery field ops.
 func syntheticDivide(_ coeffs: [Fr], root: Fr) -> [Fr] {
     let n = coeffs.count
     if n <= 1 { return [] }
-    var q = [Fr](repeating: Fr.zero, count: n - 1)
-    q[n - 2] = coeffs[n - 1]
-    for i in stride(from: n - 2, through: 1, by: -1) {
-        q[i - 1] = frAdd(coeffs[i], frMul(root, q[i]))
+    var quotient = [Fr](repeating: Fr.zero, count: n - 1)
+    coeffs.withUnsafeBytes { cBuf in
+        withUnsafeBytes(of: root) { rBuf in
+            quotient.withUnsafeMutableBytes { qBuf in
+                bn254_fr_synthetic_div(
+                    cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(n),
+                    qBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                )
+            }
+        }
     }
-    return q
+    return quotient
 }
 
 /// Multiply two polynomials (coefficient form) naively in O(n*m).
@@ -516,7 +538,8 @@ func polyIsZero(_ a: [Fr]) -> Bool {
     return true
 }
 
-/// NTT-based polynomial multiplication in O(n log n) using GPU NTT.
+/// NTT-based polynomial multiplication in O(n log n).
+/// Uses CPU C NTT for small sizes to avoid GPU dispatch overhead.
 func polyMulNTT(_ a: [Fr], _ b: [Fr], ntt: NTTEngine) throws -> [Fr] {
     if a.isEmpty || b.isEmpty { return [] }
     if polyIsZero(a) || polyIsZero(b) { return [] }
@@ -530,6 +553,37 @@ func polyMulNTT(_ a: [Fr], _ b: [Fr], ntt: NTTEngine) throws -> [Fr] {
     var bPad = [Fr](repeating: Fr.zero, count: m)
     for i in 0..<b.count { bPad[i] = b[i] }
 
+    if m <= kCPU_NTT_THRESHOLD {
+        // CPU path: C CIOS NTT + batch pairwise multiply
+        var aData = aPad
+        var bData = bPad
+        aData.withUnsafeMutableBytes { buf in
+            bn254_fr_ntt(buf.baseAddress!.assumingMemoryBound(to: UInt64.self), Int32(logM))
+        }
+        bData.withUnsafeMutableBytes { buf in
+            bn254_fr_ntt(buf.baseAddress!.assumingMemoryBound(to: UInt64.self), Int32(logM))
+        }
+        // Pointwise multiply using C batch pairwise mul
+        var cData = [Fr](repeating: Fr.zero, count: m)
+        cData.withUnsafeMutableBytes { cBuf in
+            aData.withUnsafeBytes { aBuf in
+                bData.withUnsafeBytes { bBuf in
+                    mont_mul_pair_batch_asm(
+                        cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(m)
+                    )
+                }
+            }
+        }
+        cData.withUnsafeMutableBytes { buf in
+            bn254_fr_intt(buf.baseAddress!.assumingMemoryBound(to: UInt64.self), Int32(logM))
+        }
+        return Array(cData.prefix(resultLen))
+    }
+
+    // GPU path for large sizes
     let aEvals = try ntt.ntt(aPad)
     let bEvals = try ntt.ntt(bPad)
 
@@ -540,48 +594,122 @@ func polyMulNTT(_ a: [Fr], _ b: [Fr], ntt: NTTEngine) throws -> [Fr] {
     return Array(result.prefix(resultLen))
 }
 
-/// Add two polynomials (coefficient form).
+/// Add two polynomials (coefficient form). Uses C batch add for equal-length hot path.
 func polyAddCoeffs(_ a: [Fr], _ b: [Fr]) -> [Fr] {
     let n = max(a.count, b.count)
+    let minLen = min(a.count, b.count)
     var result = [Fr](repeating: Fr.zero, count: n)
-    for i in 0..<a.count { result[i] = a[i] }
-    for i in 0..<b.count { result[i] = frAdd(result[i], b[i]) }
-    return result
-}
 
-/// Subtract two polynomials (coefficient form): a - b.
-func polySubCoeffs(_ a: [Fr], _ b: [Fr]) -> [Fr] {
-    let n = max(a.count, b.count)
-    var result = [Fr](repeating: Fr.zero, count: n)
-    for i in 0..<a.count { result[i] = a[i] }
-    for i in 0..<b.count { result[i] = frSub(result[i], b[i]) }
-    return result
-}
-
-/// Scale polynomial by a scalar.
-func polyScaleCoeffs(_ a: [Fr], _ s: Fr) -> [Fr] {
-    return a.map { frMul($0, s) }
-}
-
-/// Compute f(omega * x) from f(x): coefficient i becomes c_i * omega^i.
-func polyShift(_ coeffs: [Fr], omega: Fr) -> [Fr] {
-    var result = [Fr](repeating: Fr.zero, count: coeffs.count)
-    var omegaPow = Fr.one
-    for i in 0..<coeffs.count {
-        result[i] = frMul(coeffs[i], omegaPow)
-        omegaPow = frMul(omegaPow, omega)
+    if minLen > 0 {
+        result.withUnsafeMutableBytes { rBuf in
+            a.withUnsafeBytes { aBuf in
+                b.withUnsafeBytes { bBuf in
+                    bn254_fr_batch_add_neon(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(minLen)
+                    )
+                }
+            }
+        }
+    }
+    // Copy remaining elements from whichever is longer
+    if a.count > minLen {
+        for i in minLen..<a.count { result[i] = a[i] }
+    } else if b.count > minLen {
+        for i in minLen..<b.count { result[i] = b[i] }
     }
     return result
 }
 
-/// Absorb a projective point into transcript (convert to affine, absorb x and y coordinates)
+/// Subtract two polynomials (coefficient form): a - b. Uses C batch sub.
+func polySubCoeffs(_ a: [Fr], _ b: [Fr]) -> [Fr] {
+    let n = max(a.count, b.count)
+    let minLen = min(a.count, b.count)
+    var result = [Fr](repeating: Fr.zero, count: n)
+
+    if minLen > 0 {
+        result.withUnsafeMutableBytes { rBuf in
+            a.withUnsafeBytes { aBuf in
+                b.withUnsafeBytes { bBuf in
+                    bn254_fr_batch_sub_neon(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(minLen)
+                    )
+                }
+            }
+        }
+    }
+    if a.count > minLen {
+        for i in minLen..<a.count { result[i] = a[i] }
+    } else if b.count > minLen {
+        // result[i] = 0 - b[i] = neg(b[i])
+        for i in minLen..<b.count { result[i] = frSub(Fr.zero, b[i]) }
+    }
+    return result
+}
+
+/// Scale polynomial by a scalar. Uses C batch scalar mul.
+func polyScaleCoeffs(_ a: [Fr], _ s: Fr) -> [Fr] {
+    if a.isEmpty { return [] }
+    var result = [Fr](repeating: Fr.zero, count: a.count)
+    result.withUnsafeMutableBytes { rBuf in
+        a.withUnsafeBytes { aBuf in
+            withUnsafeBytes(of: s) { sBuf in
+                bn254_fr_batch_mul_scalar_neon(
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(a.count)
+                )
+            }
+        }
+    }
+    return result
+}
+
+/// Compute f(omega * x) from f(x): coefficient i becomes c_i * omega^i.
+/// Uses C pairwise batch multiply for the omega power scaling.
+func polyShift(_ coeffs: [Fr], omega: Fr) -> [Fr] {
+    let n = coeffs.count
+    if n == 0 { return [] }
+    // Build omega powers: [1, omega, omega^2, ..., omega^{n-1}]
+    var powers = [Fr](repeating: Fr.one, count: n)
+    for i in 1..<n { powers[i] = frMul(powers[i-1], omega) }
+    // Pairwise multiply
+    var result = [Fr](repeating: Fr.zero, count: n)
+    result.withUnsafeMutableBytes { rBuf in
+        coeffs.withUnsafeBytes { cBuf in
+            powers.withUnsafeBytes { pBuf in
+                mont_mul_pair_batch_asm(
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(n)
+                )
+            }
+        }
+    }
+    return result
+}
+
+/// Absorb a projective point into transcript (convert to affine, absorb x and y coordinates).
+/// Uses C CIOS single-point conversion to avoid batchToAffine overhead.
 func absorbPoint(_ transcript: Transcript, _ p: PointProjective) {
-    let aff = batchToAffine([p])
-    // Absorb x coordinate limbs as field elements
-    let xInt = fpToInt(aff[0].x)
-    let yInt = fpToInt(aff[0].y)
-    let xFr = Fr.from64(xInt)
-    let yFr = Fr.from64(yInt)
+    var affine = [UInt64](repeating: 0, count: 8)  // x[4], y[4]
+    withUnsafeBytes(of: p) { pBuf in
+        affine.withUnsafeMutableBufferPointer { aBuf in
+            bn254_projective_to_affine(
+                pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                aBuf.baseAddress!
+            )
+        }
+    }
+    let xFr = Fr.from64(Array(affine[0..<4]))
+    let yFr = Fr.from64(Array(affine[4..<8]))
     transcript.absorb(xFr)
     transcript.absorb(yFr)
 }

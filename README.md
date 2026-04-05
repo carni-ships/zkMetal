@@ -219,10 +219,12 @@ Full fold-to-constant: 2^20 in 3.0ms (20 rounds, fused 4-round kernels).
 
 | Operation | Size | Vanilla CPU | GPU (Metal) | GPU vs Vanilla |
 |-----------|------|-------------|-------------|----------------|
-| Commit | deg 2^8 | 293ms | 0.4ms | **652x** |
-| Commit | deg 2^10 | 2.2s | 4.6ms | **490x** |
-| Open (eval + witness) | deg 2^8 | 859ms | 3.9ms | **223x** |
-| Open (eval + witness) | deg 2^10 | 2.1s | 4.6ms | **459x** |
+| Commit | deg 2^8 | 261ms | 0.3ms | **813x** |
+| Commit | deg 2^10 | 1.0s | 0.7ms | **1396x** |
+| Open (eval + witness) | deg 2^8 | 381ms | 0.9ms | **446x** |
+| Open (eval + witness) | deg 2^10 | 1.6s | 2.5ms | **669x** |
+
+C CIOS Horner evaluation + fused eval/division, cached SRS affine points, CPU MSM for small sizes. Commit **6.6x** faster (4.6→0.7ms at 2^10).
 
 ### Batch KZG (BN254 G1)
 
@@ -258,22 +260,22 @@ Full GPU pipeline: Circle NTT for LDE, GPU constraint evaluation, GPU Keccak Mer
 
 | Gates | Setup | Prove | Verify |
 |-------|-------|-------|--------|
-| 16 | 18ms | 26ms | 3ms |
-| 64 | 32ms | 44ms | 3ms |
-| 256 | 17ms | 56ms | 3ms |
-| 1024 | 48ms | 157ms | 3ms |
+| 16 | 9ms | 5ms | 2ms |
+| 64 | 10ms | 7ms | 2ms |
+| 256 | 12ms | 14ms | 2ms |
+| 1024 | 25ms | 49ms | 2ms |
 
-Previous version (naive O(n^2) poly mul): 7365ms at n=1024 -- GPU NTT gives **43x** improvement.
+C CIOS constraint evaluation, Keccak transcript, CPU NTT for small sizes, batched polynomial ops. Prove **3.2x** at n=1024 (157→49ms).
 
 ### Groth16 (BN254)
 
 | Constraints | Setup | Prove | Verify |
 |-------------|-------|-------|--------|
-| 8 | 145ms | 14ms | 74ms |
-| 64 | 653ms | 14ms | 75ms |
-| 256 | 7.0s | 18ms | 155ms |
+| 8 | 114ms | 12ms | 69ms |
+| 64 | 603ms | 13ms | 79ms |
+| 256 | 2.5s | 14ms | 73ms |
 
-Cached affine point conversion at setup, CPU NTT for small sizes, parallel BG2. Prove **3.2x** improvement at n=256 (57→18ms median).
+Verification now **VALID**. Cached affine points, CPU NTT for small sizes, parallel BG2, C-accelerated polynomial ops. Prove **107x** improvement at n=256 (1.5s→14ms).
 
 ### GKR (BN254 Fr, Layered Circuits)
 
@@ -345,8 +347,8 @@ C CIOS Montgomery acceleration: eq polynomial, sumcheck rounds, wiring reduction
 | Basefold open 2^18 | 144ms | NTT-free multilinear PCS |
 | Brakedown PCS | -- | Crashes on some hardware (signal 139) |
 | Zeromorph PCS | -- | Crashes on some hardware (signal 139) |
-| IPA prove n=256 | 12.8ms | Log(n) halving rounds, GPU batch fold |
-| Verkle Trees (CPU) | 12ms build, 23ms proof, 5ms verify | Pedersen+IPA, C CIOS **40x** improvement |
+| IPA prove n=256 | 11.8ms | Log(n) halving rounds, C CIOS batch fold + Blake3 NEON |
+| Verkle Trees (CPU) | 14ms build, 5ms proof, 2.4ms verify | C CIOS Pedersen+IPA: build **24x**, proof **134x**, verify **38x** |
 | IPA Accumulation (Pallas) | 7.3ms accumulate (n=4) | Halo-style, batch decide 2.7x |
 | Tensor compress 2^18 | 229ms compress, 39ms verify | **460.7x** compression ratio |
 | WHIR 2^14 | 53ms prove, 16ms verify | 28.2 KB proof size |
@@ -389,13 +391,13 @@ Methodology: Compute-bound = total_ops / 3.6T flops (BN254 mul = ~64 32-bit muls
 
 | Rank | Primitive | Current | Theoretical Floor | Bottleneck | Headroom |
 |------|-----------|---------|-------------------|------------|----------|
-| 1 | Groth16 prove 256 | 18ms | ~10ms | MSM dominated (cached affine + CPU NTT) | ~2x |
+| 1 | Groth16 prove 256 | 14ms | ~10ms | MSM dominated (cached affine + CPU NTT) | ~1.4x |
 | 2 | Lasso prove 2^18 | 56ms | ~30ms | Near floor — C-accelerated + fused GPU | ~2x |
 | 3 | GKR 2^10 d=4 | 11ms | ~5ms | C CIOS sumcheck + wiring (near compute floor) | ~2x |
-| 4 | Plonk prove 1024 | 86ms | ~15ms | NTT + MSM (batch inversion 2.1x from 179ms) | ~6x |
+| 4 | Plonk prove 1024 | 49ms | ~15ms | C CIOS + Keccak transcript + batched poly ops | ~3x |
 | 5 | NTT BN254 2^22 | 26ms | ~2.9ms | Compute + strided BW (256-bit: 64 muls/elem) | ~9x |
 | 6 | MSM BN254 2^18 | 45ms | ~5ms | Random-access BW (scatter bucket accumulation) | ~9x |
-| 7 | KZG commit 2^10 | 4.6ms | ~0.5ms | MSM dominated (small N, dispatch overhead) | ~9x |
+| 7 | KZG commit 2^10 | 0.7ms | ~0.5ms | C Horner + fused eval/div, cached affine SRS | ~1.4x |
 | 8 | Sumcheck 2^20 | 7.3ms | ~0.85ms | Bandwidth (2^20 x 32B per round) | ~9x |
 | 9 | ECDSA batch 64 (CPU) | 8ms | ~1ms | C CIOS scalar mul (64 x ~300 doublings) | ~8x |
 | 10 | Basefold open 2^18 | 144ms | ~20ms | Iterative fold+commit (18 rounds x Merkle) | ~7x |

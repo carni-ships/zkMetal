@@ -48,39 +48,152 @@ public class KZGEngine {
         return batchToAffine(points)
     }
 
+    // MARK: - Cached SRS slices and scalar conversion
+
+    /// Cache for SRS prefix slices to avoid re-allocation per commit/open.
+    private var srsSliceCache: [Int: [PointAffine]] = [:]
+
+    /// Get or cache an SRS prefix slice of the given size.
+    private func srsPrefix(_ n: Int) -> [PointAffine] {
+        if let cached = srsSliceCache[n] { return cached }
+        let slice = Array(srs.prefix(n))
+        srsSliceCache[n] = slice
+        return slice
+    }
+
+    /// Evaluate polynomial at a single point using C Horner (avoids GPU dispatch).
+    private func cEvaluate(_ coeffs: [Fr], at z: Fr) -> Fr {
+        var result = Fr.zero
+        coeffs.withUnsafeBytes { cBuf in
+            withUnsafeBytes(of: z) { zBuf in
+                withUnsafeMutableBytes(of: &result) { rBuf in
+                    bn254_fr_horner_eval(
+                        cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(coeffs.count),
+                        zBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    )
+                }
+            }
+        }
+        return result
+    }
+
+    /// Synthetic division on CPU using C CIOS (avoids GPU dispatch).
+    private func cDivideByLinear(_ coeffs: [Fr], z: Fr) -> [Fr] {
+        let n = coeffs.count
+        if n < 2 { return [] }
+        var quotient = [Fr](repeating: Fr.zero, count: n - 1)
+        coeffs.withUnsafeBytes { cBuf in
+            withUnsafeBytes(of: z) { zBuf in
+                quotient.withUnsafeMutableBytes { qBuf in
+                    bn254_fr_synthetic_div(
+                        cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        zBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n),
+                        qBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    )
+                }
+            }
+        }
+        return quotient
+    }
+
+    /// Convert Fr array to flat UInt32 limbs using C batch conversion.
+    /// Returns contiguous [UInt32] with 8 limbs per element, suitable for cPippengerMSMFlat.
+    private func batchFrToFlatLimbs(_ coeffs: [Fr]) -> [UInt32] {
+        let n = coeffs.count
+        var limbs = [UInt32](repeating: 0, count: n * 8)
+        coeffs.withUnsafeBytes { src in
+            limbs.withUnsafeMutableBufferPointer { dst in
+                bn254_fr_batch_to_limbs(
+                    src.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    dst.baseAddress!,
+                    Int32(n)
+                )
+            }
+        }
+        return limbs
+    }
+
+    /// Convert Fr array to [[UInt32]] limbs for GPU MSM path.
+    private func batchFrToLimbs(_ coeffs: [Fr]) -> [[UInt32]] {
+        let flat = batchFrToFlatLimbs(coeffs)
+        let n = coeffs.count
+        var result = [[UInt32]]()
+        result.reserveCapacity(n)
+        for i in 0..<n {
+            result.append(Array(flat[i*8..<(i+1)*8]))
+        }
+        return result
+    }
+
     /// Commit to a polynomial: C = MSM(SRS[0..deg], coefficients)
     public func commit(_ coeffs: [Fr]) throws -> PointProjective {
         let n = coeffs.count
         guard n <= srs.count else {
             throw MSMError.invalidInput
         }
-        let srsSlice = Array(srs.prefix(n))
-        let scalars = coeffs.map { frToLimbs($0) }
-        return try msmEngine.msm(points: srsSlice, scalars: scalars)
+        let pts = srsPrefix(n)
+        // For small sizes (CPU Pippenger path), use flat limbs to avoid [[UInt32]] allocation
+        if n <= 2048 {
+            let flatLimbs = batchFrToFlatLimbs(coeffs)
+            return cPippengerMSMFlat(points: pts, flatScalars: flatLimbs)
+        }
+        let scalars = batchFrToLimbs(coeffs)
+        return try msmEngine.msm(points: pts, scalars: scalars)
     }
 
     /// Open a polynomial at point z: compute evaluation and witness proof.
     /// Returns (p(z), proof_point) where proof_point = MSM(SRS, quotient_coeffs)
     /// and quotient = (p(x) - p(z)) / (x - z).
     public func open(_ coeffs: [Fr], at z: Fr) throws -> KZGProof {
-        // Evaluate p(z)
-        let evals = try polyEngine.evaluate(coeffs, at: [z])
-        let pz = evals[0]
-
-        // Compute quotient polynomial q(x) = (p(x) - p(z)) / (x - z)
-        // Using GPU parallel synthetic division for large polynomials.
         let n = coeffs.count
+
         guard n >= 2 else {
-            // Constant polynomial: quotient is zero, witness is identity
+            // Constant polynomial: evaluate directly, quotient is zero
+            let pz = cEvaluate(coeffs, at: z)
             return KZGProof(evaluation: pz, witness: pointIdentity())
         }
 
-        let quotient = try polyEngine.divideByLinear(coeffs, z: z)
+        // For small polynomials: fused eval + division in one C pass
+        let pz: Fr
+        let quotient: [Fr]
+        if n <= 131072 {
+            var eval = Fr.zero
+            var q = [Fr](repeating: Fr.zero, count: n - 1)
+            coeffs.withUnsafeBytes { cBuf in
+                withUnsafeBytes(of: z) { zBuf in
+                    withUnsafeMutableBytes(of: &eval) { eBuf in
+                        q.withUnsafeMutableBytes { qBuf in
+                            bn254_fr_eval_and_div(
+                                cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                Int32(n),
+                                zBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                eBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                qBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                            )
+                        }
+                    }
+                }
+            }
+            pz = eval
+            quotient = q
+        } else {
+            pz = cEvaluate(coeffs, at: z)
+            quotient = try polyEngine.divideByLinear(coeffs, z: z)
+        }
 
         // Witness = MSM(SRS[0..n-1], quotient)
-        let srsSlice = Array(srs.prefix(n - 1))
-        let scalars = quotient.map { frToLimbs($0) }
-        let witness = try msmEngine.msm(points: srsSlice, scalars: scalars)
+        let pts = srsPrefix(n - 1)
+        let witness: PointProjective
+        if (n - 1) <= 2048 {
+            let flatLimbs = batchFrToFlatLimbs(quotient)
+            witness = cPippengerMSMFlat(points: pts, flatScalars: flatLimbs)
+        } else {
+            let scalars = batchFrToLimbs(quotient)
+            witness = try msmEngine.msm(points: pts, scalars: scalars)
+        }
 
         return KZGProof(evaluation: pz, witness: witness)
     }
@@ -113,8 +226,7 @@ public class KZGEngine {
 
         for poly in polynomials {
             commitments.append(try commit(poly))
-            let evals = try polyEngine.evaluate(poly, at: [point])
-            evaluations.append(evals[0])
+            evaluations.append(cEvaluate(poly, at: point))
         }
 
         // 2. Compute combined polynomial h(x) = sum_i gamma^i * p_i(x)
@@ -151,12 +263,17 @@ public class KZGEngine {
             return BatchProof(commitments: commitments, proof: pointIdentity(), evaluations: evaluations)
         }
 
-        let quotient = try polyEngine.divideByLinear(combined, z: point)
+        let quotient: [Fr]
+        if deg <= 131072 {
+            quotient = cDivideByLinear(combined, z: point)
+        } else {
+            quotient = try polyEngine.divideByLinear(combined, z: point)
+        }
 
         // 5. Single MSM for the proof
-        let srsSlice = Array(srs.prefix(deg - 1))
-        let scalars = quotient.map { frToLimbs($0) }
-        let proof = try msmEngine.msm(points: srsSlice, scalars: scalars)
+        let pts = srsPrefix(deg - 1)
+        let scalars = batchFrToLimbs(quotient)
+        let proof = try msmEngine.msm(points: pts, scalars: scalars)
 
         return BatchProof(commitments: commitments, proof: proof, evaluations: evaluations)
     }
@@ -265,8 +382,7 @@ public class KZGEngine {
 
         for i in 0..<n {
             commitments.append(try commit(polynomials[i]))
-            let evals = try polyEngine.evaluate(polynomials[i], at: [points[i]])
-            evaluations.append(evals[0])
+            evaluations.append(cEvaluate(polynomials[i], at: points[i]))
         }
 
         // 2. For each polynomial, compute quotient q_i(x) = (p_i(x) - y_i) / (x - z_i)
@@ -291,8 +407,13 @@ public class KZGEngine {
             var shifted = poly
             shifted[0] = frSub(shifted[0], evaluations[i])
 
-            // Synthetic division by (x - z_i) using GPU parallel division
-            let quotient = try polyEngine.divideByLinear(shifted, z: points[i])
+            // Synthetic division by (x - z_i) using C path for small, GPU for large
+            let quotient: [Fr]
+            if deg <= 131072 {
+                quotient = cDivideByLinear(shifted, z: points[i])
+            } else {
+                quotient = try polyEngine.divideByLinear(shifted, z: points[i])
+            }
 
             // Accumulate gamma^i * q_i(x)
             for j in 0..<quotient.count {
@@ -311,9 +432,9 @@ public class KZGEngine {
         if combined.isEmpty || combined.allSatisfy({ frToInt($0) == frToInt(Fr.zero) }) {
             proof = pointIdentity()
         } else {
-            let srsSlice = Array(srs.prefix(combined.count))
-            let scalars = combined.map { frToLimbs($0) }
-            proof = try msmEngine.msm(points: srsSlice, scalars: scalars)
+            let pts = srsPrefix(combined.count)
+            let scalars = batchFrToLimbs(combined)
+            proof = try msmEngine.msm(points: pts, scalars: scalars)
         }
 
         return MultiPointBatchProof(commitments: commitments, proof: proof,
@@ -336,8 +457,7 @@ public class KZGEngine {
 
         for i in 0..<n {
             commitments.append(try commit(polynomials[i]))
-            let evals = try polyEngine.evaluate(polynomials[i], at: [points[i]])
-            evaluations.append(evals[0])
+            evaluations.append(cEvaluate(polynomials[i], at: points[i]))
         }
 
         // 2. Fused quotient accumulation: single GPU pass
@@ -353,9 +473,9 @@ public class KZGEngine {
         if combined.isEmpty || combined.allSatisfy({ frToInt($0) == frToInt(Fr.zero) }) {
             proof = pointIdentity()
         } else {
-            let srsSlice = Array(srs.prefix(combined.count))
-            let scalars = combined.map { frToLimbs($0) }
-            proof = try msmEngine.msm(points: srsSlice, scalars: scalars)
+            let pts = srsPrefix(combined.count)
+            let scalars = batchFrToLimbs(combined)
+            proof = try msmEngine.msm(points: pts, scalars: scalars)
         }
 
         return MultiPointBatchProof(commitments: commitments, proof: proof,

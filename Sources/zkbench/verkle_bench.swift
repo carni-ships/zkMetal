@@ -75,23 +75,52 @@ public func runVerkleBench() {
                 leaves.append(frFromInt(UInt64(i + 1)))
             }
 
-            let t0 = CFAbsoluteTimeGetCurrent()
-            let (levels, _) = try engine.buildTree(leaves: leaves)
-            let buildTime = (CFAbsoluteTimeGetCurrent() - t0) * 1000
-            fputs(String(format: "  Build tree (%d leaves, %d levels): %.1f ms\n",
-                  numLeaves, levels.count, buildTime), stderr)
+            // Warmup run
+            let (wLevels, wChunks) = try engine.buildTree(leaves: leaves)
+            let wProof = try engine.createPathProof(levels: wLevels, leafChunks: wChunks, leafIndex: 0)
+            _ = engine.verifyPathProof(wProof, root: wLevels.last![0])
 
-            let t1 = CFAbsoluteTimeGetCurrent()
-            let proof = try engine.createPathProof(leaves: leaves, leafIndex: 0)
-            let proveTime = (CFAbsoluteTimeGetCurrent() - t1) * 1000
-            fputs(String(format: "  Path proof (%d openings): %.1f ms\n",
-                  proof.openings.count, proveTime), stderr)
+            // Benchmark build (median of 5)
+            let iters = 5
+            var buildTimes = [Double]()
+            var lastLevels = wLevels
+            var lastChunks = wChunks
+            for _ in 0..<iters {
+                let t0 = CFAbsoluteTimeGetCurrent()
+                let (levels, leafChunks) = try engine.buildTree(leaves: leaves)
+                buildTimes.append((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+                lastLevels = levels
+                lastChunks = leafChunks
+            }
+            buildTimes.sort()
+            fputs(String(format: "  Build tree (%d leaves, %d levels): %.1f ms (median of %d)\n",
+                  numLeaves, lastLevels.count, buildTimes[iters/2], iters), stderr)
 
-            let root = levels.last![0]
-            let t2 = CFAbsoluteTimeGetCurrent()
-            let valid = engine.verifyPathProof(proof, root: root)
-            let verifyTime = (CFAbsoluteTimeGetCurrent() - t2) * 1000
-            fputs("  Verify path: \(String(format: "%.1f", verifyTime)) ms — \(valid ? "PASS" : "FAIL")\n", stderr)
+            // Benchmark path proof (median of 5, reusing pre-built tree)
+            var proveTimes = [Double]()
+            var lastProof = wProof
+            for _ in 0..<iters {
+                let t1 = CFAbsoluteTimeGetCurrent()
+                let proof = try engine.createPathProof(levels: lastLevels, leafChunks: lastChunks, leafIndex: 0)
+                proveTimes.append((CFAbsoluteTimeGetCurrent() - t1) * 1000)
+                lastProof = proof
+            }
+            proveTimes.sort()
+            fputs(String(format: "  Path proof (%d openings): %.1f ms (median of %d)\n",
+                  lastProof.openings.count, proveTimes[iters/2], iters), stderr)
+
+            // Benchmark verify (median of 5)
+            let root = lastLevels.last![0]
+            var verifyTimes = [Double]()
+            var lastValid = false
+            for _ in 0..<iters {
+                let t2 = CFAbsoluteTimeGetCurrent()
+                let valid = engine.verifyPathProof(lastProof, root: root)
+                verifyTimes.append((CFAbsoluteTimeGetCurrent() - t2) * 1000)
+                lastValid = valid
+            }
+            verifyTimes.sort()
+            fputs("  Verify path: \(String(format: "%.1f", verifyTimes[iters/2])) ms (median of \(iters)) — \(lastValid ? "PASS" : "FAIL")\n", stderr)
 
         } catch {
             fputs("  ERROR: \(error)\n", stderr)

@@ -464,29 +464,32 @@ public class IPAEngine {
             challenges.append(x)
         }
 
+        // Precompute all challenge inverses using C CIOS (much faster than Swift Fermat)
+        var challengeInvs = [Fr](repeating: .zero, count: logN)
+        for round in 0..<logN {
+            withUnsafeBytes(of: challenges[round]) { xBuf in
+                withUnsafeMutableBytes(of: &challengeInvs[round]) { rBuf in
+                    bn254_fr_inverse(
+                        xBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                }
+            }
+        }
+
         // Fold commitment: C' = C + sum(x_i^2 * L_i + x_i^(-2) * R_i)
-        // Use C point scalar mul for massive speedup over Swift
         var Cprime = C
         for round in 0..<logN {
             let x = challenges[round]
             let x2 = frMul(x, x)
-            let xInv = frInverse(x)
+            let xInv = challengeInvs[round]
             let xInv2 = frMul(xInv, xInv)
             let lTerm = cPointScalarMul(proof.L[round], x2)
             let rTerm = cPointScalarMul(proof.R[round], xInv2)
             Cprime = pointAdd(Cprime, pointAdd(lTerm, rTerm))
         }
 
-        // Fold generators: G_final = MSM(G, s) where s_i = product of x_j^(±1)
-        // Precompute challenges and inverses, then use C Fr operations
-        var challengeInvs = [Fr]()
-        challengeInvs.reserveCapacity(logN)
-        for round in 0..<logN {
-            challengeInvs.append(frInverse(challenges[round]))
-        }
-
-        // Compute s[] — use Swift frMul (C inner_product used for larger ops)
-        // This is n×logN muls, manageable even in Swift for typical IPA sizes
+        // Compute s[] — each s[i] = product of x_j^(±1) based on bit decomposition of i
+        // Use C Fr multiplication via flat buffer for speed
         var s = [Fr](repeating: Fr.one, count: n)
         for round in 0..<logN {
             let x = challenges[round]
@@ -501,9 +504,30 @@ public class IPAEngine {
             }
         }
 
-        // G_final = MSM(G, s) — use C Pippenger
-        let sLimbs = s.map { frToLimbs($0) }
-        let gFinal = cPippengerMSM(points: generators, scalars: sLimbs)
+        // G_final = MSM(G, s) — use C Pippenger with batch Fr-to-limbs
+        var sLimbs = [UInt32](repeating: 0, count: n * 8)
+        s.withUnsafeBytes { sBuf in
+            sLimbs.withUnsafeMutableBufferPointer { lBuf in
+                bn254_fr_batch_to_limbs(
+                    sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    lBuf.baseAddress!,
+                    Int32(n)
+                )
+            }
+        }
+        var gFinal = PointProjective(x: .one, y: .one, z: .zero)
+        generators.withUnsafeBytes { ptsBuf in
+            sLimbs.withUnsafeBufferPointer { scBuf in
+                withUnsafeMutableBytes(of: &gFinal) { resBuf in
+                    bn254_pippenger_msm(
+                        ptsBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        scBuf.baseAddress!,
+                        Int32(n),
+                        resBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    )
+                }
+            }
+        }
 
         // Fold b using C vector fold
         var bFolded = inputB

@@ -2,6 +2,7 @@
 #define NEON_FIELD_OPS_H
 
 #include <stdint.h>
+#include <stddef.h>
 
 /// Forward NTT on BabyBear field (p = 0x78000001) using ARM NEON intrinsics.
 /// Cooley-Tukey DIT radix-2. Data is modified in-place.
@@ -104,6 +105,24 @@ void bn254_fr_batch_to_limbs(const uint64_t *mont, uint32_t *limbs, int n);
 /// @param quotient Output n-1 elements (4 uint64_t each).
 void bn254_fr_synthetic_div(const uint64_t *coeffs, const uint64_t *z,
                              int n, uint64_t *quotient);
+
+/// Fr Horner polynomial evaluation: result = coeffs[0] + coeffs[1]*z + ... + coeffs[n-1]*z^(n-1).
+/// @param coeffs Polynomial coefficients (n elements, 4 uint64_t each, Montgomery form).
+/// @param n      Number of coefficients.
+/// @param z      Evaluation point (4 uint64_t, Montgomery form).
+/// @param result Output single Fr element (4 uint64_t, Montgomery form).
+void bn254_fr_horner_eval(const uint64_t *coeffs, int n, const uint64_t z[4],
+                           uint64_t result[4]);
+
+/// Fused polynomial evaluation + synthetic division in one pass.
+/// Computes eval_out = p(z) and quotient q(x) = (p(x) - p(z)) / (x - z) simultaneously.
+/// @param coeffs Polynomial coefficients (n elements, 4 uint64_t each, Montgomery form).
+/// @param n      Number of coefficients (must be >= 2 for quotient).
+/// @param z      Evaluation point (4 uint64_t, Montgomery form).
+/// @param eval_out Output p(z) (4 uint64_t, Montgomery form).
+/// @param quotient Output n-1 elements (4 uint64_t each, Montgomery form).
+void bn254_fr_eval_and_div(const uint64_t *coeffs, int n, const uint64_t z[4],
+                            uint64_t eval_out[4], uint64_t *quotient);
 
 /// secp256k1 point scalar multiplication using C CIOS field arithmetic.
 /// @param p       Projective point (12 uint64_t: x[4], y[4], z[4], Montgomery form).

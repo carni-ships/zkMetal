@@ -119,7 +119,8 @@ public class Groth16Prover {
 
     private func proofA(pk: Groth16ProvingKey, z: [Fr], r: Fr) throws -> PointProjective {
         let n = min(z.count, pk.a_query_affine.count)
-        let m = try doMSMAffine(aff: Array(pk.a_query_affine.prefix(n)), sc: Array(z.prefix(n)))
+        let (filtA, filtS) = filterNonZero(affine: pk.a_query_affine, proj: pk.a_query, scalars: z, count: n)
+        let m = try doMSMAffine(aff: filtA, sc: filtS)
         return pointAdd(pointAdd(pk.alpha_g1, m), pointScalarMul(pk.delta_g1, r))
     }
 
@@ -137,20 +138,38 @@ public class Groth16Prover {
 
     private func proofBG1(pk: Groth16ProvingKey, z: [Fr], s: Fr) throws -> PointProjective {
         let n = min(z.count, pk.b_g1_query_affine.count)
-        let m = try doMSMAffine(aff: Array(pk.b_g1_query_affine.prefix(n)), sc: Array(z.prefix(n)))
+        let (filtA, filtS) = filterNonZero(affine: pk.b_g1_query_affine, proj: pk.b_g1_query, scalars: z, count: n)
+        let m = try doMSMAffine(aff: filtA, sc: filtS)
         return pointAdd(pointAdd(pk.beta_g1, m), pointScalarMul(pk.delta_g1, s))
     }
 
     private func proofC(pk: Groth16ProvingKey, w: [Fr], h: [Fr],
                          a: PointProjective, bg1: PointProjective, r: Fr, s: Fr) throws -> PointProjective {
         let lN = min(w.count, pk.l_query_affine.count)
-        let lM = try doMSMAffine(aff: Array(pk.l_query_affine.prefix(lN)), sc: Array(w.prefix(lN)))
+        let (filtLA, filtLS) = filterNonZero(affine: pk.l_query_affine, proj: pk.l_query, scalars: w, count: lN)
+        let lM = try doMSMAffine(aff: filtLA, sc: filtLS)
         let hN = min(h.count, pk.h_query_affine.count)
-        let hM = hN > 0 ? try doMSMAffine(aff: Array(pk.h_query_affine.prefix(hN)), sc: Array(h.prefix(hN))) : pointIdentity()
+        let (filtHA, filtHS) = filterNonZero(affine: pk.h_query_affine, proj: pk.h_query, scalars: h, count: hN)
+        let hM = filtHA.count > 0 ? try doMSMAffine(aff: filtHA, sc: filtHS) : pointIdentity()
         var res = pointAdd(lM, hM)
         res = pointAdd(res, pointScalarMul(a, s))
         res = pointAdd(res, pointScalarMul(bg1, r))
         return pointAdd(res, pointNeg(pointScalarMul(pk.delta_g1, frMul(r, s))))
+    }
+
+    /// Filter out entries where the scalar is zero or the projective point is identity.
+    /// Identity points have invalid affine representations from batchToAffine, so they
+    /// must be excluded from MSM to avoid corrupting the result.
+    private func filterNonZero(affine: [PointAffine], proj: [PointProjective],
+                                scalars: [Fr], count: Int) -> ([PointAffine], [Fr]) {
+        var filtA = [PointAffine](); var filtS = [Fr]()
+        filtA.reserveCapacity(count); filtS.reserveCapacity(count)
+        for i in 0..<count {
+            if !scalars[i].isZero && !pointIsIdentity(proj[i]) {
+                filtA.append(affine[i]); filtS.append(scalars[i])
+            }
+        }
+        return (filtA, filtS)
     }
 
     /// MSM with pre-computed affine points (avoids batchToAffine per call)

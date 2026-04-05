@@ -110,18 +110,25 @@ public class VerkleEngine {
         let numLeaves = leaves.count
         precondition(numLeaves > 0 && numLeaves % width == 0, "Leaf count must be multiple of width")
 
-        // Level 0: commit each chunk of `width` leaves
+        // Level 0: commit each chunk of `width` leaves in parallel
         let numChunks = numLeaves / width
         var leafChunks = [[Fr]]()
         leafChunks.reserveCapacity(numChunks)
-        var currentLevel = [VerkleCommitment]()
-        currentLevel.reserveCapacity(numChunks)
-
         for i in 0..<numChunks {
-            let chunk = Array(leaves[i * width ..< (i + 1) * width])
-            leafChunks.append(chunk)
-            let c = try commit(chunk)
-            currentLevel.append(c)
+            leafChunks.append(Array(leaves[i * width ..< (i + 1) * width]))
+        }
+
+        var currentLevel = [VerkleCommitment](repeating: PointProjective(x: .one, y: .one, z: .zero), count: numChunks)
+        if numChunks >= 4 {
+            // Parallel commits for leaf level
+            let eng = self
+            DispatchQueue.concurrentPerform(iterations: numChunks) { i in
+                currentLevel[i] = try! eng.commit(leafChunks[i])
+            }
+        } else {
+            for i in 0..<numChunks {
+                currentLevel[i] = try commit(leafChunks[i])
+            }
         }
 
         var levels = [currentLevel]
@@ -129,24 +136,28 @@ public class VerkleEngine {
         // Build upper levels until we have a single root
         while currentLevel.count > 1 {
             let numNodes = currentLevel.count
-            // Pad to multiple of width if needed
             let padded = numNodes % width == 0 ? numNodes : numNodes + (width - numNodes % width)
             var childValues = [Fr](repeating: Fr.zero, count: padded)
 
-            // Convert commitments to field elements (use x-coordinate)
+            // Batch convert all commitments to affine at once (single inversion chain)
+            let affineAll = cBatchToAffine(currentLevel)
             for i in 0..<numNodes {
-                let aff = batchToAffine([currentLevel[i]])[0]
-                childValues[i] = commitmentToFr(aff)
+                childValues[i] = commitmentToFr(affineAll[i])
             }
 
-            var nextLevel = [VerkleCommitment]()
             let nextCount = padded / width
-            nextLevel.reserveCapacity(nextCount)
-
-            for i in 0..<nextCount {
-                let chunk = Array(childValues[i * width ..< (i + 1) * width])
-                let c = try commit(chunk)
-                nextLevel.append(c)
+            var nextLevel = [VerkleCommitment](repeating: PointProjective(x: .one, y: .one, z: .zero), count: nextCount)
+            if nextCount >= 4 {
+                let eng = self
+                DispatchQueue.concurrentPerform(iterations: nextCount) { i in
+                    let chunk = Array(childValues[i * eng.width ..< (i + 1) * eng.width])
+                    nextLevel[i] = try! eng.commit(chunk)
+                }
+            } else {
+                for i in 0..<nextCount {
+                    let chunk = Array(childValues[i * width ..< (i + 1) * width])
+                    nextLevel[i] = try commit(chunk)
+                }
             }
 
             levels.append(nextLevel)
@@ -160,7 +171,11 @@ public class VerkleEngine {
     /// Returns opening proofs from leaf level up to root.
     public func createPathProof(leaves: [Fr], leafIndex: Int) throws -> VerklePathProof {
         let (levels, leafChunks) = try buildTree(leaves: leaves)
+        return try createPathProof(levels: levels, leafChunks: leafChunks, leafIndex: leafIndex)
+    }
 
+    /// Create a path proof using a pre-built tree (avoids redundant tree rebuild).
+    public func createPathProof(levels: [[VerkleCommitment]], leafChunks: [[Fr]], leafIndex: Int) throws -> VerklePathProof {
         var openings = [VerkleOpeningProof]()
         var nodeIndex = leafIndex / width  // which chunk contains this leaf
         var childIndex = leafIndex % width // position within chunk
@@ -175,9 +190,10 @@ public class VerkleEngine {
             let padded = numNodes % width == 0 ? numNodes : numNodes + (width - numNodes % width)
             var childValues = [Fr](repeating: Fr.zero, count: padded)
 
+            // Batch convert all commitments to affine at once
+            let affineAll = cBatchToAffine(levels[level])
             for i in 0..<numNodes {
-                let aff = batchToAffine([levels[level][i]])[0]
-                childValues[i] = commitmentToFr(aff)
+                childValues[i] = commitmentToFr(affineAll[i])
             }
 
             childIndex = nodeIndex % width

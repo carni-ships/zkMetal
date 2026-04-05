@@ -303,68 +303,43 @@ public class BasefoldEngine {
                 layerTrees.append([])
             }
         }
-        // Build all Merkle trees in a single CB using interleaved level-by-level hashing.
-        // At each hash level, dispatch work for ALL trees that have elements at that level.
-        // This maximizes GPU utilization: one barrier per level instead of per-tree.
-        // A single CB eliminates ~120ms of per-CB overhead (17 trees x ~7ms each).
-        let gpuTreeIdxs = treeSizesArr.enumerated().compactMap { $0.element > 0 ? $0.offset : nil }
-        if !gpuTreeIdxs.isEmpty {
-            let p2 = merkleEngine.p2Engine
-            guard let merkleCB = commandQueue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
-            let mEnc = merkleCB.makeComputeCommandEncoder()!
-
-            // Track state per tree: current level start offset and current level size
-            struct TreeState {
-                var idx: Int       // index into treeBufs/treeSizesArr
-                var levelStart: Int  // offset in elements from start of tree buffer
-                var levelSize: Int   // number of elements at current level
+        // Build Merkle trees with overlapped GPU command buffers.
+        // Batch small trees into one CB, separate overlapped CBs for large trees.
+        var smallIdxs: [Int] = []
+        var largeIdxs: [Int] = []
+        for (idx, sz) in treeSizesArr.enumerated() {
+            guard sz > 0 else { continue }
+            if sz < 8192 { smallIdxs.append(idx) } else { largeIdxs.append(idx) }
+        }
+        var allCBs: [(Int, MTLCommandBuffer)] = []
+        if !smallIdxs.isEmpty {
+            guard let cb = commandQueue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
+            let e = cb.makeComputeCommandEncoder()!
+            for (j, idx) in smallIdxs.enumerated() {
+                if j > 0 { e.memoryBarrier(scope: .buffers) }
+                merkleEngine.encodeMerkleRoot(encoder: e, treeBuf: treeBufs[idx]!, treeOffset: 0, n: treeSizesArr[idx])
             }
-            var states = gpuTreeIdxs.map { idx in
-                TreeState(idx: idx, levelStart: 0, levelSize: treeSizesArr[idx])
-            }
-
-            var level = 0
-            while !states.isEmpty {
-                // Dispatch hash-pairs for all active trees at this level
-                for st in states {
-                    let parentCount = st.levelSize / 2
-                    let inputOffset = st.levelStart * stride
-                    let outputOffset = (st.levelStart + st.levelSize) * stride
-                    p2.encodeHashPairs(encoder: mEnc,
-                                        buffer: treeBufs[st.idx]!,
-                                        inputOffset: inputOffset,
-                                        outputOffset: outputOffset,
-                                        count: parentCount)
-                }
-
-                // Advance all trees to next level
-                states = states.compactMap { st in
-                    let parentCount = st.levelSize / 2
-                    let newStart = st.levelStart + st.levelSize
-                    let newSize = parentCount
-                    if newSize <= 1 { return nil }  // tree done
-                    return TreeState(idx: st.idx, levelStart: newStart, levelSize: newSize)
-                }
-
-                if !states.isEmpty {
-                    mEnc.memoryBarrier(scope: .buffers)
-                }
-                level += 1
-            }
-
-            mEnc.endEncoding()
-            merkleCB.commit()
-            merkleCB.waitUntilCompleted()
-            if let err = merkleCB.error {
-                throw MSMError.gpuError("Merkle: \(err.localizedDescription)")
-            }
-
-            // Read back trees
-            for idx in gpuTreeIdxs {
-                let tsz = treeNodeCounts[idx]
-                let ptr = treeBufs[idx]!.contents().bindMemory(to: Fr.self, capacity: tsz)
-                layerTrees[idx] = Array(UnsafeBufferPointer(start: ptr, count: tsz))
-                roots[idx] = layerTrees[idx].last!
+            e.endEncoding()
+            cb.commit()
+            allCBs.append((-1, cb))
+        }
+        for idx in largeIdxs {
+            guard let cb = commandQueue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
+            let e = cb.makeComputeCommandEncoder()!
+            merkleEngine.encodeMerkleRoot(encoder: e, treeBuf: treeBufs[idx]!, treeOffset: 0, n: treeSizesArr[idx])
+            e.endEncoding()
+            cb.commit()
+            allCBs.append((idx, cb))
+        }
+        for (idx, cb) in allCBs {
+            cb.waitUntilCompleted()
+            if let err = cb.error { throw MSMError.gpuError("Merkle[\(idx)]: \(err.localizedDescription)") }
+            let readIdxs = idx == -1 ? smallIdxs : [idx]
+            for ri in readIdxs {
+                let tsz = treeNodeCounts[ri]
+                let ptr = treeBufs[ri]!.contents().bindMemory(to: Fr.self, capacity: tsz)
+                layerTrees[ri] = Array(UnsafeBufferPointer(start: ptr, count: tsz))
+                roots[ri] = layerTrees[ri].last!
             }
         }
 
@@ -374,12 +349,12 @@ public class BasefoldEngine {
         // Generate query proofs using deterministic indices derived from roots
         var rng: UInt64 = 0
         for r in roots {
-            let limbs = frToInt(r)
-            rng ^= limbs[0]
+            rng ^= frToUInt64(r)
         }
-        rng ^= frToInt(commitment.root)[0]
+        rng ^= frToUInt64(commitment.root)
 
         var queryProofs: [BasefoldQueryProof] = []
+        queryProofs.reserveCapacity(numQueries)
         for _ in 0..<numQueries {
             rng = rng &* 6364136223846793005 &+ 1442695040888963407
             let queryIdx = Int(rng >> 32) % (n / 2)

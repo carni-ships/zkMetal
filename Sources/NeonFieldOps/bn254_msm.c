@@ -1166,6 +1166,44 @@ void bn254_fr_synthetic_div(const uint64_t *coeffs, const uint64_t z[4],
     }
 }
 
+// Horner evaluation: result = coeffs[0] + coeffs[1]*z + coeffs[2]*z^2 + ...
+// coeffs: n elements in Montgomery form (4 uint64 each)
+// z: evaluation point (Montgomery form)
+// result: single Fr output (Montgomery form)
+void bn254_fr_horner_eval(const uint64_t *coeffs, int n, const uint64_t z[4],
+                           uint64_t result[4]) {
+    if (n == 0) { memset(result, 0, 32); return; }
+    // Start from highest degree: result = coeffs[n-1]
+    memcpy(result, coeffs + (n - 1) * 4, 32);
+    // result = result * z + coeffs[i] for i = n-2..0
+    for (int i = n - 2; i >= 0; i--) {
+        uint64_t tmp[4];
+        fr_mul(result, z, tmp);
+        fr_add(tmp, coeffs + i * 4, result);
+    }
+}
+
+// Fused evaluation + synthetic division: computes both p(z) and q(x) = (p(x)-p(z))/(x-z)
+// in a single pass. The synthetic division already computes q, and p(z) = coeffs[0] + z*q[0].
+// coeffs: n elements (Montgomery form), z: evaluation point
+// eval_out: p(z), quotient: n-1 elements
+void bn254_fr_eval_and_div(const uint64_t *coeffs, int n, const uint64_t z[4],
+                            uint64_t eval_out[4], uint64_t *quotient) {
+    if (n == 0) { memset(eval_out, 0, 32); return; }
+    if (n == 1) { memcpy(eval_out, coeffs, 32); return; }
+    // Synthetic division: q[n-2] = coeffs[n-1], q[i] = coeffs[i+1] + z*q[i+1]
+    memcpy(quotient + (n - 2) * 4, coeffs + (n - 1) * 4, 32);
+    for (int i = n - 3; i >= 0; i--) {
+        uint64_t tmp[4];
+        fr_mul(z, quotient + (i + 1) * 4, tmp);
+        fr_add(coeffs + (i + 1) * 4, tmp, quotient + i * 4);
+    }
+    // p(z) = coeffs[0] + z * q[0]
+    uint64_t tmp[4];
+    fr_mul(z, quotient, tmp);
+    fr_add(coeffs, tmp, eval_out);
+}
+
 // Batch inverse using Montgomery's trick: O(3n) muls + 1 inversion.
 // out[i] = a[i]^(-1) for i=0..n-1.
 void bn254_fr_batch_inverse(const uint64_t *a, int n, uint64_t *out) {
