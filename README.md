@@ -402,16 +402,16 @@ C CIOS Montgomery acceleration: pre-computed wiring topology, cached buffers, eq
 | Spartan prove 2^14 | 121ms prove, 8ms verify | C CIOS sumcheck + sparse matvec: **8.6x** (1051→122ms) |
 | Lasso 2^18 | 30ms prove, 31ms verify | C-accelerated: prove **16x** (481→30ms), verify **52x** (1.6s→31ms) |
 | LogUp 2^12 | 15ms prove, 16ms verify | Optimal for small-medium tables |
-| cq | Correctness passes | Crashes at larger benchmark sizes |
+| cq 2^16 | 8ms prove, 2ms verify | O(N log N) independent of table size |
 | Binius FFT 2^16 | 21ms (CPU) | Binary tower GF(2^32) GPU batch: 0.67ms mul at 2^18 |
 | BLS12-381 | Sign 26ms, Verify 82ms, **Pairing 2.4ms** | C tower (Fp→Fp12) + Frobenius endomorphism + Granger-Scott cyclotomic sqr: **33×** (78→2.4ms) |
 | BN254 GPU Pairing (n=16) | 51ms (vs 239ms CPU = **4.7x**) | Projective Miller loop, batched final exp |
-| BN254 C Pairing | C-accelerated | CIOS Fp2/Fp6/Fp12 tower + Miller loop + final exp |
+| BN254 C Pairing (n=1) | 2.6ms (vs 78ms vanilla = **30x**) | CIOS Fp2/Fp6/Fp12 tower + Miller loop + final exp |
 | Schnorr BIP 340 | Sign 0.30ms, Batch verify 0.20ms/sig | x-only pubkeys, SHA-256 tagged hashing |
 | Stark252 NTT 2^20 | 238M elem/s (GPU) | StarkNet/Cairo native field |
 | Poseidon2 BabyBear (width-16) | 104M hash/s (GPU) | SP1/Plonky3 exact config |
-| Pasta curves | Pallas/Vesta cycle | C CIOS field+curve ops, Jacobian projective, windowed scalar mul |
-| Data-Parallel GKR | O(|C| + N log N) | Repeated sub-circuit prover with cached wiring MLEs |
+| Pasta MSM 2^18 | Pallas 125ms, Vesta 128ms | C CIOS field+curve ops, Jacobian projective, windowed scalar mul |
+| Data-Parallel GKR (N=16) | 2.3ms prove, 0.5ms verify | O(|C| + N log N), repeated sub-circuit prover with cached wiring MLEs |
 | Incremental Merkle batch 256 | 13ms (vs 124ms full = **9.2x**) | Known regression on large sequential builds |
 
 ### Application Primitives

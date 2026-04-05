@@ -110,7 +110,7 @@ public func runPolyBench() {
             print("  [" + (match ? "pass" : "FAIL") + "] Chunked eval (deg 1024 at x=1)")
         }
 
-        // Benchmark: multi-point evaluation
+        // Benchmark: multi-point evaluation (Vanilla CPU vs GPU Horner)
         print("\n--- Multi-point Evaluation (Horner) ---")
         for logN in [10, 12, 14] {
             let deg = 1 << logN
@@ -126,6 +126,19 @@ public func runPolyBench() {
                 pts[i] = frFromInt(rng >> 32)
             }
 
+            // Vanilla CPU baseline: sequential Horner at each point
+            let cpuT0 = CFAbsoluteTimeGetCurrent()
+            var cpuResults = [Fr](repeating: Fr.zero, count: numPts)
+            for p in 0..<numPts {
+                var acc = coeffs[deg - 1]
+                for i in stride(from: deg - 2, through: 0, by: -1) {
+                    acc = frAdd(frMul(acc, pts[p]), coeffs[i])
+                }
+                cpuResults[p] = acc
+            }
+            let cpuTime = (CFAbsoluteTimeGetCurrent() - cpuT0) * 1000
+
+            // GPU (warmup + timed)
             let _ = try engine.evaluate(coeffs, at: pts)
 
             var times = [Double]()
@@ -135,7 +148,18 @@ public func runPolyBench() {
                 times.append((CFAbsoluteTimeGetCurrent() - t0) * 1000)
             }
             times.sort()
-            print(String(format: "  deg 2^%-2d, %d points: %7.2f ms (Horner)", logN, numPts, times[2]))
+            let gpuTime = times[2]
+
+            // Verify GPU matches CPU
+            let gpuResults = try engine.evaluate(coeffs, at: pts)
+            var correct = true
+            for i in 0..<numPts {
+                if frToInt(gpuResults[i]) != frToInt(cpuResults[i]) { correct = false; break }
+            }
+            let speedup = cpuTime / gpuTime
+            let tag = correct ? "" : " [MISMATCH]"
+            print(String(format: "  deg 2^%-2d, %d pts | Vanilla CPU: %8.1fms | GPU: %7.2fms | GPU vs Vanilla: **%.0fx**%@",
+                        logN, numPts, cpuTime, gpuTime, speedup, tag))
         }
 
         // Benchmark: subproduct tree evaluation

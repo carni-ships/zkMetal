@@ -130,6 +130,13 @@ public enum Versions {
     public static let gpuParallelReduce = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let fflonk            = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let goldilocksSTARK   = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let polyIdentity      = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let recursiveSNARK    = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let proofTranscript   = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuFFT            = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let sparsePolyCommit  = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuMultiPointEval = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let stark252STARK     = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
 
     /// Print all primitive versions
     public static func printAll() {
