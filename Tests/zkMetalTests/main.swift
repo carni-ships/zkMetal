@@ -39,6 +39,7 @@ runDASTests()
 runUniversalProofFormatTests()
 runPlonkPermutationTests()
 runRISCVDecoderTests()
+runVerkleProofTests()
 
 let elapsed = CFAbsoluteTimeGetCurrent() - t0
 print(String(format: "\nCompleted in %.1fs", elapsed))
