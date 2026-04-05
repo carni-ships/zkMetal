@@ -26,6 +26,14 @@ func runGroth16ProverTests() {
         let g1neg = pointNegateAffine(g1a)
         let g1bilin = bn254PairingCheck([(twoG1a, g2a), (g1neg, g2a), (g1neg, g2a)])
         expect(g1bilin, "G1 bilinearity e(2G1,G2)*e(-G1,G2)^2=1")
+
+        // --- C pairing bilinearity: e(kG1, G2) * e(-G1, kG2) = 1 ---
+        let cCheck = cBN254PairingCheck([(kG1a, g2a), (pointNegateAffine(g1a), kG2a)])
+        expect(cCheck, "C pairing bilinearity e(kG1,G2)*e(-G1,kG2)=1")
+
+        // C pairing: e(2G1, G2) * e(-G1, G2)^2 = 1
+        let cG1bilin = cBN254PairingCheck([(twoG1a, g2a), (g1neg, g2a), (g1neg, g2a)])
+        expect(cG1bilin, "C pairing bilinearity e(2G1,G2)*e(-G1,G2)^2=1")
     }
 
     // --- Test 1: Classic circuit y = x^2 + x + 5 ---

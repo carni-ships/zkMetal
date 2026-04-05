@@ -2,7 +2,7 @@
 // C-accelerated implementation using __uint128_t CIOS for Fp base field
 //
 // Tower: Fp2 = Fp[u]/(u^2+1), Fp6 = Fp2[v]/(v^3 - xi) where xi=9+u, Fp12 = Fp6[w]/(w^2 - v)
-// Pairing: optimal ate, loop parameter = 6x+2, x = 4965661367071055936
+// Pairing: optimal ate, loop parameter = 6x+2, x = 4965661367192848881 (0x44E992B44A6909F1)
 //
 // Memory layout:
 //   Fp   = 4 x uint64_t (Montgomery form, 256-bit)
@@ -374,49 +374,49 @@ static inline void fp12_one(uint64_t r[FP12]) { fp6_one(r); fp6_zero(r+24); }
 // gamma_{1,1} = xi^((p-1)/6)
 static const uint64_t GAMMA_1_1[8] = {
     // c0
-    0x3bf938e377b802a8ULL, 0x020b1b273633535dULL,
-    0x26b7edf049755260ULL, 0x2514c6324384a86dULL,
+    0xaf9ba69633144907ULL, 0xca6b1d7387afb78aULL,
+    0x11bded5ef08a2087ULL, 0x02f34d751a1f3a7cULL,
     // c1
-    0x38e7ecccd1dcff67ULL, 0x65f0b37d93ce0d3eULL,
-    0xd749cb3920b906eeULL, 0x1c4042e1025615c5ULL
+    0xa222ae234c492d72ULL, 0xd00f02a4565de15bULL,
+    0xdc2ff3a253dfc926ULL, 0x10a75716b3899551ULL
 };
 
 // gamma_{1,2} = xi^((p-1)/3)
 static const uint64_t GAMMA_1_2[8] = {
     // c0
-    0x42f8a1b1933a930fULL, 0xc9e6b005abc8f1d6ULL,
-    0xc53c42c661bbd82cULL, 0x23a1c3b40ecf47b0ULL,
+    0xb5773b104563ab30ULL, 0x347f91c8a9aa6454ULL,
+    0x7a007127242e0991ULL, 0x1956bcd8118214ecULL,
     // c1
-    0xd2fa8cc9fc0c7a1fULL, 0x7ef5e98c39e2bee6ULL,
-    0x1e0b7a19c378bd59ULL, 0x14b6f265e90de0ecULL
+    0x6e849f1ea0aa4757ULL, 0xaa1c7b6d89f89141ULL,
+    0xb6e713cdfae0ca3aULL, 0x26694fbb4e82ebc3ULL
 };
 
 // gamma_{1,3} = xi^((p-1)/2)
 static const uint64_t GAMMA_1_3[8] = {
     // c0
-    0x00a4d9e8f42d1a71ULL, 0x04cfdd7101ff5fdaULL,
-    0x26cb8a2b2ceab9eaULL, 0x00e0ac78b3c91af4ULL,
+    0xe4bbdd0c2936b629ULL, 0xbb30f162e133bacbULL,
+    0x31a9d1b6f9645366ULL, 0x253570bea500f8ddULL,
     // c1
-    0xb6f00fe35c2d8d8eULL, 0x86c6a34d2f6ee9f7ULL,
-    0x3a6e60b0be24caf8ULL, 0x0cf4cbf7e3ad0e4fULL
+    0xa1d77ce45ffe77c7ULL, 0x07affd117826d1dbULL,
+    0x6d16bd27bb7edc6bULL, 0x2c87200285defeccULL
 };
 
 // gamma_{2,1} = xi^((p^2-1)/6) -- in Fp (c1=0)
 static const uint64_t GAMMA_2_1[4] = {
-    0x5763473177fffffcULL, 0xd4f263f1acdb5c4fULL,
-    0x59e26bcea0d48baaULL, 0x0000000000000000ULL
+    0xca8d800500fa1bf2ULL, 0xf0c5d61468b39769ULL,
+    0x0e201271ad0d4418ULL, 0x04290f65bad856e6ULL
 };
 
 // gamma_{2,2} = xi^((p^2-1)/3)
 static const uint64_t GAMMA_2_2[4] = {
-    0x5763473177fffffbULL, 0xd4f263f1acdb5c4fULL,
-    0x59e26bcea0d48baaULL, 0x0000000000000000ULL
+    0x3350c88e13e80b9cULL, 0x7dce557cdb5e56b9ULL,
+    0x6001b4b8b615564aULL, 0x2682e617020217e0ULL
 };
 
 // gamma_{2,3} = xi^((p^2-1)/2)
 static const uint64_t GAMMA_2_3[4] = {
-    0x100000000000000aULL, 0x5d0f6fc5d20f0689ULL,
-    0xf6422449e4502ad8ULL, 0x30644e72e131a029ULL
+    0x68c3488912edefaaULL, 0x8d087f6872aabf4fULL,
+    0x51e1a24709081231ULL, 0x2259d6b14729c0faULL
 };
 
 // ============================================================
@@ -547,7 +547,7 @@ static void line_eval(const uint64_t lambda[FP2], const uint64_t xT[FP2], const 
 
 // ============================================================
 // Miller Loop
-// NAF of 6x+2, x = 4965661367071055936 = 0x44E992B44A6909F1
+// NAF of 6x+2, x = 4965661367192848881 = 0x44E992B44A6909F1
 // ============================================================
 
 // NAF representation of 6x+2 (MSB first, 66 entries)
@@ -643,12 +643,12 @@ static void miller_loop(const uint64_t p_aff[8], const uint64_t q_aff[16], uint6
 // f^((p^12 - 1) / r) = easy part * hard part
 // ============================================================
 
-// f^x, x = 4965661367071055936 = 0x44E992B44A6909F1
+// f^x, x = 4965661367192848881 = 0x44E992B44A6909F1
 static void fp12_pow_by_x(const uint64_t a[FP12], uint64_t r[FP12]) {
     const uint64_t x = 0x44E992B44A6909F1ULL;
-    fp12_copy(r, a);  // start with a (handles leading 1)
+    fp12_copy(r, a);  // start with a (handles leading 1 bit at position 62)
     uint64_t tmp[48];
-    for (int i = 62; i >= 0; i--) {
+    for (int i = 61; i >= 0; i--) {  // start at 61, one below the leading 1
         fp12_sqr(r, tmp);
         fp12_copy(r, tmp);
         if ((x >> i) & 1) {
