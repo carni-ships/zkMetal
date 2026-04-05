@@ -3,6 +3,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 public class Ed25519MSM {
     public static let version = Versions.msmEd25519
@@ -215,22 +216,43 @@ public class Ed25519MSM {
         cpuPositionsPtr?.deallocate()
     }
 
-    /// CPU-only Pippenger for small inputs
+    /// CPU-only Pippenger for small inputs — calls optimized C implementation
     private func cpuPippenger(points: [Ed25519PointAffine], scalars: [[UInt32]]) -> Ed25519PointExtended {
         let n = points.count
         if n == 0 { return ed25519PointIdentity() }
 
-        var result = ed25519PointIdentity()
+        // Flatten affine points to contiguous uint64 array: n × 8 uint64_t (x[4], y[4])
+        var flatPoints = [UInt64](repeating: 0, count: n * 8)
         for i in 0..<n {
-            var limbs: [UInt64] = [0, 0, 0, 0]
-            for j in 0..<4 {
-                limbs[j] = UInt64(scalars[i][j * 2]) | (UInt64(scalars[i][j * 2 + 1]) << 32)
-            }
-            let p = ed25519PointFromAffine(points[i])
-            let sp = ed25519PointMulScalar(p, limbs)
-            result = ed25519PointAdd(result, sp)
+            let pt = points[i]
+            flatPoints[i * 8 + 0] = pt.x.v.0
+            flatPoints[i * 8 + 1] = pt.x.v.1
+            flatPoints[i * 8 + 2] = pt.x.v.2
+            flatPoints[i * 8 + 3] = pt.x.v.3
+            flatPoints[i * 8 + 4] = pt.y.v.0
+            flatPoints[i * 8 + 5] = pt.y.v.1
+            flatPoints[i * 8 + 6] = pt.y.v.2
+            flatPoints[i * 8 + 7] = pt.y.v.3
         }
-        return result
+
+        // Flatten scalars to contiguous uint32 array: n × 8 uint32_t
+        var flatScalars = [UInt32](repeating: 0, count: n * 8)
+        for i in 0..<n {
+            for j in 0..<8 {
+                flatScalars[i * 8 + j] = scalars[i][j]
+            }
+        }
+
+        // Call C Pippenger
+        var resultBuf = [UInt64](repeating: 0, count: 16)
+        ed25519_pippenger_msm(flatPoints, flatScalars, Int32(n), &resultBuf)
+
+        return Ed25519PointExtended(
+            x: Ed25519Fp(v: (resultBuf[0], resultBuf[1], resultBuf[2], resultBuf[3])),
+            y: Ed25519Fp(v: (resultBuf[4], resultBuf[5], resultBuf[6], resultBuf[7])),
+            z: Ed25519Fp(v: (resultBuf[8], resultBuf[9], resultBuf[10], resultBuf[11])),
+            t: Ed25519Fp(v: (resultBuf[12], resultBuf[13], resultBuf[14], resultBuf[15]))
+        )
     }
 
     public func msm(points: [Ed25519PointAffine], scalars: [[UInt32]]) throws -> Ed25519PointExtended {

@@ -717,6 +717,8 @@ void ed25519_point_double_c(const uint64_t p[16], uint64_t r[16]);
 void ed25519_point_to_affine(const uint64_t p[16], uint64_t aff[8]);
 void ed25519_mont_to_direct(const uint64_t mont[4], uint64_t direct[4]);
 void ed25519_direct_to_mont(const uint64_t direct[4], uint64_t mont[4]);
+void ed25519_pippenger_msm(const uint64_t *points, const uint32_t *scalars,
+                            int n, uint64_t *result);
 
 // ============================================================
 // Pallas curve (y^2 = x^3 + 5 over Fp)

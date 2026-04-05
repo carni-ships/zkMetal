@@ -15,6 +15,7 @@
 
 #include "NeonFieldOps.h"
 #include <string.h>
+#include <stdlib.h>
 #include <pthread.h>
 
 typedef unsigned __int128 uint128_t;
@@ -597,4 +598,382 @@ void ed25519_direct_to_mont(const uint64_t direct[4], uint64_t mont[4]) {
     static const uint64_t R_VAL[4] = {38, 0, 0, 0};
     // Use Solinas mul: result = direct * 38 mod p
     ed25519_fp_mul(direct, R_VAL, mont);
+}
+
+// ============================================================
+// Ed25519 Pippenger MSM (multi-scalar multiplication)
+//
+// Twisted Edwards Pippenger with:
+//   - Extended coordinates (X, Y, Z, T)
+//   - Solinas field ops (NOT Montgomery)
+//   - Mixed addition (extended + affine, saves 1D = mul by d)
+//   - Batch-to-affine via Montgomery's trick (1 inversion per window)
+//   - Multi-threaded windows via pthreads
+//   - Signed-digit scalar recoding
+//   - Adaptive window sizing
+// ============================================================
+
+// Helper: check if extended point is identity
+// Identity: (0, c, c, 0) — normalized identity is (0, 1, 1, 0)
+// We check X == 0 (sufficient since T == 0 implies X == 0 or Y == 0,
+// and for valid curve points X == 0 <=> point is identity).
+static inline int ed_pt_is_id(const uint64_t p[16]) {
+    return (p[0] | p[1] | p[2] | p[3]) == 0;
+}
+
+// Helper: set point to identity (0, 1, 1, 0)
+static inline void ed_pt_set_id(uint64_t p[16]) {
+    memset(p, 0, 128);
+    p[4] = 1;  // Y = 1
+    p[8] = 1;  // Z = 1
+}
+
+// Helper: check if affine point is identity (represented as x=0, y=0)
+static inline int ed_aff_is_id(const uint64_t q[8]) {
+    return (q[0] | q[1] | q[2] | q[3] | q[4] | q[5] | q[6] | q[7]) == 0;
+}
+
+// Mixed addition: extended P + affine Q (where Q has Z=1)
+// Uses the fact that Z_Q = 1 to save one multiplication.
+// For twisted Edwards a=-1:
+//   A = X1 * X2
+//   B = Y1 * Y2
+//   C = d * T1 * T2  (T2 = X2*Y2 for affine point)
+//   D = Z1  (since Z2 = 1)
+//   E = (X1+Y1)*(X2+Y2) - A - B
+//   F = D - C
+//   G = D + C
+//   H = B + A  (a = -1, so H = B - aA = B + A)
+//   X3 = E*F, Y3 = G*H, Z3 = F*G, T3 = E*H
+//
+// Affine format: q_aff = [x[4], y[4]] (8 uint64_t)
+static void ed_pt_add_mixed(const uint64_t p[16], const uint64_t q_aff[8], uint64_t out[16]) {
+    if (ed_aff_is_id(q_aff)) {
+        memcpy(out, p, 128);
+        return;
+    }
+    if (ed_pt_is_id(p)) {
+        // Convert affine to extended: X=x, Y=y, Z=1, T=x*y
+        memcpy(out, q_aff, 64);         // X, Y
+        out[8] = 1; out[9] = 0; out[10] = 0; out[11] = 0;  // Z = 1
+        ed25519_fp_mul(q_aff, q_aff + 4, out + 12);         // T = x*y
+        return;
+    }
+
+    const uint64_t *X1 = p, *Y1 = p+4, *Z1 = p+8, *T1 = p+12;
+    const uint64_t *X2 = q_aff, *Y2 = q_aff + 4;
+    uint64_t *X3 = out, *Y3 = out+4, *Z3 = out+8, *T3 = out+12;
+
+    uint64_t A[4], B[4], C[4], E[4], F[4], G[4], H[4];
+    uint64_t tmp1[4], tmp2[4], T2[4];
+
+    // A = X1 * X2
+    ed25519_fp_mul(X1, X2, A);
+    // B = Y1 * Y2
+    ed25519_fp_mul(Y1, Y2, B);
+    // T2 = X2 * Y2 (affine T coordinate)
+    ed25519_fp_mul(X2, Y2, T2);
+    // C = d * T1 * T2
+    ed25519_fp_mul(T1, T2, tmp1);
+    ed25519_fp_mul(tmp1, ED_D, C);
+    // D = Z1 (since Z2 = 1, D = Z1 * Z2 = Z1)
+    // E = (X1+Y1)*(X2+Y2) - A - B
+    ed25519_fp_add(X1, Y1, tmp1);
+    ed25519_fp_add(X2, Y2, tmp2);
+    ed25519_fp_mul(tmp1, tmp2, E);
+    ed25519_fp_sub(E, A, E);
+    ed25519_fp_sub(E, B, E);
+    // F = D - C = Z1 - C
+    ed25519_fp_sub(Z1, C, F);
+    // G = D + C = Z1 + C
+    ed25519_fp_add(Z1, C, G);
+    // H = B + A (since a = -1)
+    ed25519_fp_add(B, A, H);
+
+    // X3 = E * F
+    ed25519_fp_mul(E, F, X3);
+    // Y3 = G * H
+    ed25519_fp_mul(G, H, Y3);
+    // Z3 = F * G
+    ed25519_fp_mul(F, G, Z3);
+    // T3 = E * H
+    ed25519_fp_mul(E, H, T3);
+}
+
+// Negate an affine point: for twisted Edwards, neg(x,y) = (-x, y)
+static inline void ed_aff_negate(const uint64_t q[8], uint64_t out[8]) {
+    ed25519_fp_neg(q, out);          // out.x = -q.x
+    memcpy(out + 4, q + 4, 32);     // out.y = q.y
+}
+
+// Batch projective-to-affine (Montgomery's trick) for extended coords.
+// Converts n extended points to affine (x, y) = (X/Z, Y/Z).
+// Output: n×8 uint64_t (x[4], y[4] per point).
+// Identity points get (0,0) in affine output.
+static void ed_batch_to_affine(const uint64_t *ext, uint64_t *aff, int n) {
+    if (n == 0) return;
+
+    // Compute cumulative products of Z values
+    uint64_t *prods = (uint64_t *)malloc((size_t)n * 32);
+    int first_valid = -1;
+
+    for (int i = 0; i < n; i++) {
+        const uint64_t *Z = ext + i * 16 + 8;
+        int is_id = ed_pt_is_id(ext + i * 16);
+        if (is_id) {
+            if (i == 0) {
+                prods[0] = 1; prods[1] = 0; prods[2] = 0; prods[3] = 0;
+            } else {
+                memcpy(prods + i * 4, prods + (i-1) * 4, 32);
+            }
+        } else {
+            if (first_valid < 0) {
+                first_valid = i;
+                memcpy(prods + i * 4, Z, 32);
+            } else {
+                ed25519_fp_mul(prods + (i-1) * 4, Z, prods + i * 4);
+            }
+        }
+    }
+
+    if (first_valid < 0) {
+        memset(aff, 0, (size_t)n * 64);
+        free(prods);
+        return;
+    }
+
+    // Invert the product
+    uint64_t inv[4];
+    ed25519_fp_inverse(prods + (n-1) * 4, inv);
+
+    // Back-propagate
+    for (int i = n - 1; i >= 0; i--) {
+        if (ed_pt_is_id(ext + i * 16)) {
+            memset(aff + i * 8, 0, 64);
+            continue;
+        }
+
+        uint64_t zinv[4];
+        if (i > first_valid) {
+            ed25519_fp_mul(inv, prods + (i-1) * 4, zinv);
+            ed25519_fp_mul(inv, ext + i * 16 + 8, inv);  // inv *= Z_i
+        } else {
+            memcpy(zinv, inv, 32);
+        }
+
+        // For twisted Edwards: x = X/Z, y = Y/Z (only need Z^{-1}, not Z^{-2}/Z^{-3})
+        ed25519_fp_mul(ext + i * 16, zinv, aff + i * 8);       // x = X * Z^{-1}
+        ed25519_fp_mul(ext + i * 16 + 4, zinv, aff + i * 8 + 4); // y = Y * Z^{-1}
+    }
+
+    free(prods);
+}
+
+// Scalar window extraction (from uint32_t limbs)
+static inline uint32_t ed_extract_window(const uint32_t *scalar, int window_idx, int window_bits) {
+    int bit_offset = window_idx * window_bits;
+    int word_idx = bit_offset / 32;
+    int bit_in_word = bit_offset % 32;
+
+    uint64_t word = scalar[word_idx];
+    if (word_idx + 1 < 8)
+        word |= ((uint64_t)scalar[word_idx + 1]) << 32;
+
+    return (uint32_t)((word >> bit_in_word) & ((1u << window_bits) - 1));
+}
+
+// Adaptive window sizing for Ed25519
+static int ed_optimal_window_bits(int n) {
+    if (n <= 4)     return 3;
+    if (n <= 32)    return 5;
+    if (n <= 256)   return 8;
+    if (n <= 2048)  return 10;
+    if (n <= 8192)  return 11;
+    if (n <= 32768) return 13;
+    if (n <= 131072) return 14;
+    if (n <= 524288) return 15;
+    return 16;
+}
+
+// Per-window worker with pre-extracted signed digits
+typedef struct {
+    const uint64_t *points;     // n affine points (8 uint64_t each)
+    const uint32_t *digits;     // n signed digits for this window (high bit = negate)
+    int n;
+    int window_bits;
+    int num_buckets;            // halfBuckets
+    uint64_t result[16];        // output extended point
+} EdSignedWindowTask;
+
+static void *ed_signed_window_worker(void *arg) {
+    EdSignedWindowTask *task = (EdSignedWindowTask *)arg;
+    int nb = task->num_buckets;
+    int nn = task->n;
+
+    // Allocate extended projective buckets (identity-initialized)
+    uint64_t *buckets = (uint64_t *)malloc((size_t)(nb + 1) * 128);
+    for (int b = 0; b <= nb; b++)
+        ed_pt_set_id(buckets + b * 16);
+
+    // Phase 1: Bucket accumulation with signed digits
+    for (int i = 0; i < nn; i++) {
+        uint32_t raw = task->digits[i];
+        uint32_t digit = raw & 0x7FFFFFFF;
+        if (digit == 0) continue;
+
+        if (raw & 0x80000000) {
+            // Negate the affine point, then add
+            uint64_t neg_pt[8];
+            ed_aff_negate(task->points + i * 8, neg_pt);
+            uint64_t tmp[16];
+            ed_pt_add_mixed(buckets + digit * 16, neg_pt, tmp);
+            memcpy(buckets + digit * 16, tmp, 128);
+        } else {
+            uint64_t tmp[16];
+            ed_pt_add_mixed(buckets + digit * 16, task->points + i * 8, tmp);
+            memcpy(buckets + digit * 16, tmp, 128);
+        }
+    }
+
+    // Phase 2: Batch convert buckets to affine
+    uint64_t *bucket_aff = (uint64_t *)malloc((size_t)nb * 64);
+    ed_batch_to_affine(buckets + 16, bucket_aff, nb);
+
+    // Phase 3: Running-sum reduction
+    uint64_t running[16], window_sum[16];
+    ed_pt_set_id(running);
+    ed_pt_set_id(window_sum);
+
+    for (int j = nb - 1; j >= 0; j--) {
+        if (!ed_aff_is_id(bucket_aff + j * 8)) {
+            uint64_t tmp[16];
+            ed_pt_add_mixed(running, bucket_aff + j * 8, tmp);
+            memcpy(running, tmp, 128);
+        }
+        uint64_t tmp[16];
+        ed_point_add(window_sum, running, tmp);
+        memcpy(window_sum, tmp, 128);
+    }
+
+    memcpy(task->result, window_sum, 128);
+    free(buckets);
+    free(bucket_aff);
+    return NULL;
+}
+
+// ============================================================
+// Main entry point: ed25519_pippenger_msm
+//
+// points:  n affine points as n×8 uint64_t (x[4], y[4] per point)
+// scalars: n scalars as n×8 uint32_t (little-endian limbs, ~253-bit)
+// n:       number of points
+// result:  output extended point: 16 uint64_t (X[4], Y[4], Z[4], T[4])
+// ============================================================
+
+void ed25519_pippenger_msm(
+    const uint64_t *points,
+    const uint32_t *scalars,
+    int n,
+    uint64_t *result)
+{
+    if (n == 0) { ed_pt_set_id(result); return; }
+
+    // For very small inputs, use direct scalar-mul accumulation
+    if (n <= 2) {
+        ed_pt_set_id(result);
+        for (int i = 0; i < n; i++) {
+            // Convert affine to extended
+            uint64_t ext[16];
+            memcpy(ext, points + i * 8, 32);       // X = x
+            memcpy(ext + 4, points + i * 8 + 4, 32); // Y = y
+            ext[8] = 1; ext[9] = 0; ext[10] = 0; ext[11] = 0; // Z = 1
+            ed25519_fp_mul(points + i * 8, points + i * 8 + 4, ext + 12); // T = x*y
+
+            // Convert scalar from 8×uint32 to 4×uint64
+            uint64_t scalar64[4];
+            for (int j = 0; j < 4; j++)
+                scalar64[j] = (uint64_t)scalars[i * 8 + j * 2] |
+                              ((uint64_t)scalars[i * 8 + j * 2 + 1] << 32);
+
+            uint64_t sp[16];
+            ed25519_scalar_mul(ext, scalar64, sp);
+
+            uint64_t tmp[16];
+            ed_point_add(result, sp, tmp);
+            memcpy(result, tmp, 128);
+        }
+        return;
+    }
+
+    int wb = ed_optimal_window_bits(n);
+    int scalar_bits = 253;  // Ed25519 scalar field is ~253 bits
+    int num_windows = (scalar_bits + wb - 1) / wb;
+    int full_buckets = 1 << wb;
+    int half_buckets = full_buckets >> 1;
+
+    // Use signed-digit recoding for better bucket distribution
+    // Precompute all signed digits (requires sequential per-scalar processing)
+    uint32_t *all_digits = (uint32_t *)malloc((size_t)num_windows * (size_t)n * sizeof(uint32_t));
+    uint32_t mask = (uint32_t)((1u << wb) - 1);
+
+    for (int i = 0; i < n; i++) {
+        uint32_t carry = 0;
+        const uint32_t *s = scalars + i * 8;
+        for (int w = 0; w < num_windows; w++) {
+            int bit_offset = w * wb;
+            int word_idx = bit_offset / 32;
+            int bit_in_word = bit_offset % 32;
+
+            uint64_t word = s[word_idx];
+            if (word_idx + 1 < 8)
+                word |= ((uint64_t)s[word_idx + 1]) << 32;
+
+            uint32_t digit = (uint32_t)((word >> bit_in_word) & mask) + carry;
+            carry = 0;
+
+            if ((int)digit > half_buckets) {
+                digit = full_buckets - digit;
+                carry = 1;
+                all_digits[w * n + i] = digit | 0x80000000;  // high bit = negate
+            } else {
+                all_digits[w * n + i] = digit;
+            }
+        }
+    }
+
+    // Launch one thread per window
+    EdSignedWindowTask *tasks = (EdSignedWindowTask *)malloc(
+        (size_t)num_windows * sizeof(EdSignedWindowTask));
+    pthread_t *threads = (pthread_t *)malloc(
+        (size_t)num_windows * sizeof(pthread_t));
+
+    for (int w = 0; w < num_windows; w++) {
+        tasks[w].points = points;
+        tasks[w].digits = all_digits + w * n;
+        tasks[w].n = n;
+        tasks[w].window_bits = wb;
+        tasks[w].num_buckets = half_buckets;
+    }
+
+    for (int w = 0; w < num_windows; w++)
+        pthread_create(&threads[w], NULL, ed_signed_window_worker, &tasks[w]);
+
+    for (int w = 0; w < num_windows; w++)
+        pthread_join(threads[w], NULL);
+
+    // Horner combination: result = Sum windowResults[w] * 2^(w * wb)
+    memcpy(result, tasks[num_windows - 1].result, 128);
+    for (int w = num_windows - 2; w >= 0; w--) {
+        uint64_t tmp[16];
+        for (int s = 0; s < wb; s++) {
+            ed_point_double(result, tmp);
+            memcpy(result, tmp, 128);
+        }
+        ed_point_add(result, tasks[w].result, tmp);
+        memcpy(result, tmp, 128);
+    }
+
+    free(all_digits);
+    free(tasks);
+    free(threads);
 }
