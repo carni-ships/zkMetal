@@ -155,4 +155,91 @@ public func runFoldingBench() {
     fputs("\n  Folding advantage: fold N steps into 1 instance.\n", stderr)
     fputs("  Final instance size is O(1) regardless of N.\n", stderr)
     fputs("  A single SNARK proof on the final instance proves all N steps.\n", stderr)
+
+    // --- HyperNovaProver / HyperNovaVerifier API ---
+    fputs("\n--- HyperNova Prover/Verifier API ---\n", stderr)
+
+    // Test Prover + Verifier with CommittedCCSInstance
+    let prover = HyperNovaProver(ccs: ccs)
+    let verifier = HyperNovaVerifier(engine: prover.engine)
+
+    // Initialize
+    let (running0, runWit0) = prover.initialize(witness: wit, publicInput: pub)
+    let decided0 = prover.decide(instance: running0, witness: runWit0)
+    fputs("  Prover init decide: \(decided0)\n", stderr)
+
+    // 2-fold via Prover API
+    let newInst1 = prover.commitWitness(wit1, publicInput: pub1)
+    let (folded2, foldedWit2, proof2) = prover.fold(
+        running: running0, runningWitness: runWit0,
+        new: newInst1, newWitness: wit1)
+    let vOk2 = verifier.verifyFold(running: running0, new: newInst1,
+                                    folded: folded2, proof: proof2)
+    fputs("  2-fold verify: \(vOk2)\n", stderr)
+    let decided2 = prover.decide(instance: folded2, witness: foldedWit2)
+    fputs("  2-fold decide: \(decided2)\n", stderr)
+
+    // Multi-fold: fold 4 instances at once
+    fputs("\n  Multi-fold (4 instances):\n", stderr)
+    let a2 = frFromInt(2), b2 = frFromInt(3)
+    let a3 = frFromInt(3), b3 = frFromInt(5)
+    let (pub2, wit2) = fibonacciWitness(a: a2, b: b2)
+    let (pub3, wit3) = fibonacciWitness(a: a3, b: b3)
+    let inst2 = prover.commitWitness(wit2, publicInput: pub2)
+    let inst3 = prover.commitWitness(wit3, publicInput: pub3)
+
+    let (foldedMulti, foldedMultiWit, multiProof) = prover.multiFold(
+        instances: [folded2, inst2, newInst1, inst3],
+        witnesses: [foldedWit2, wit2, wit1, wit3])
+
+    let vOkMulti = verifier.verifyMultiFold(
+        instances: [folded2, inst2, newInst1, inst3],
+        folded: foldedMulti, proof: multiProof)
+    fputs("    multi-fold verify: \(vOkMulti)\n", stderr)
+    let decidedMulti = prover.decide(instance: foldedMulti, witness: foldedMultiWit)
+    fputs("    multi-fold decide: \(decidedMulti)\n", stderr)
+
+    // IVC chain benchmark
+    fputs("\n  IVC chain (10 Fibonacci steps):\n", stderr)
+    var ivcSteps = [(publicInput: [Fr], witness: [Fr])]()
+    var ivcA = frFromInt(1), ivcB = frFromInt(1)
+    for _ in 0..<10 {
+        let (p, w) = fibonacciWitness(a: ivcA, b: ivcB)
+        ivcSteps.append((publicInput: p, witness: w))
+        let nextA = ivcB
+        ivcB = frAdd(ivcA, ivcB)
+        ivcA = nextA
+    }
+    let tIVC = CFAbsoluteTimeGetCurrent()
+    let (ivcResult, ivcWit) = prover.ivcChain(steps: ivcSteps)
+    let ivcMs = (CFAbsoluteTimeGetCurrent() - tIVC) * 1000
+    let ivcDecided = prover.decide(instance: ivcResult, witness: ivcWit)
+    fputs(String(format: "    IVC chain: %.1f ms, decide: %@\n", ivcMs, ivcDecided ? "true" : "false"), stderr)
+
+    // Multi-fold timing
+    fputs("\n  Multi-fold timing (N=2,4,8):\n", stderr)
+    for batchN in [2, 4, 8] {
+        // Build N instances: first is running, rest are fresh
+        let proverN = HyperNovaProver(ccs: ccs)
+        let (runN, runWitN) = proverN.initialize(witness: wit, publicInput: pub)
+        var instArr = [runN]
+        var witArr = [runWitN]
+        var fA = frFromInt(1), fB = frFromInt(2)
+        for _ in 1..<batchN {
+            let (p, w) = fibonacciWitness(a: fA, b: fB)
+            instArr.append(proverN.commitWitness(w, publicInput: p))
+            witArr.append(w)
+            let nA = fB; fB = frAdd(fA, fB); fA = nA
+        }
+        // Warmup
+        let _ = proverN.multiFold(instances: instArr, witnesses: witArr)
+        // Timed
+        let tMF = CFAbsoluteTimeGetCurrent()
+        let iters = 100
+        for _ in 0..<iters {
+            let _ = proverN.multiFold(instances: instArr, witnesses: witArr)
+        }
+        let mfUs = (CFAbsoluteTimeGetCurrent() - tMF) / Double(iters) * 1_000_000
+        fputs(String(format: "    N=%d: %.1f us/fold\n", batchN, mfUs), stderr)
+    }
 }

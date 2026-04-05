@@ -130,7 +130,8 @@ public class HyperNovaEngine {
     /// - Returns: (folded LCCCS, folded witness, folding proof)
     public func fold(running: LCCCS, runningWitness: [Fr],
                      new: CCCS, newWitness: [Fr]) -> (LCCCS, [Fr], FoldingProof) {
-        let z1 = buildZ(publicInput: running.publicInput, witness: runningWitness)
+        // Running instance uses relaxed z = [u, x, w]; new uses z = [1, x, w]
+        let z1 = buildRelaxedZ(u: running.u, publicInput: running.publicInput, witness: runningWitness)
         let z2 = buildZ(publicInput: new.publicInput, witness: newWitness)
 
         let t = ccs.t
@@ -369,6 +370,17 @@ public class HyperNovaEngine {
         var z = [Fr]()
         z.reserveCapacity(1 + publicInput.count + witness.count)
         z.append(Fr.one)
+        z.append(contentsOf: publicInput)
+        z.append(contentsOf: witness)
+        return z
+    }
+
+    /// Build relaxed z = [u, publicInput, witness] for running instances.
+    @inline(__always)
+    func buildRelaxedZ(u: Fr, publicInput: [Fr], witness: [Fr]) -> [Fr] {
+        var z = [Fr]()
+        z.reserveCapacity(1 + publicInput.count + witness.count)
+        z.append(u)
         z.append(contentsOf: publicInput)
         z.append(contentsOf: witness)
         return z
