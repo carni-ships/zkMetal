@@ -711,4 +711,32 @@ void ed25519_point_to_affine(const uint64_t p[16], uint64_t aff[8]);
 void ed25519_mont_to_direct(const uint64_t mont[4], uint64_t direct[4]);
 void ed25519_direct_to_mont(const uint64_t direct[4], uint64_t mont[4]);
 
+// ============================================================
+// Pallas curve (y^2 = x^3 + 5 over Fp)
+// ============================================================
+
+void pallas_fp_mul(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]);
+void pallas_fp_sqr(const uint64_t a[4], uint64_t r[4]);
+void pallas_fp_add(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]);
+void pallas_fp_sub(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]);
+void pallas_fp_neg(const uint64_t a[4], uint64_t r[4]);
+void pallas_point_add(const uint64_t p[12], const uint64_t q[12], uint64_t r[12]);
+void pallas_point_double(const uint64_t p[12], uint64_t r[12]);
+void pallas_point_add_mixed(const uint64_t p[12], const uint64_t q_aff[8], uint64_t r[12]);
+void pallas_scalar_mul(const uint64_t p[12], const uint64_t scalar[4], uint64_t r[12]);
+
+// ============================================================
+// Vesta curve (y^2 = x^3 + 5 over Fp)
+// ============================================================
+
+void vesta_fp_mul(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]);
+void vesta_fp_sqr(const uint64_t a[4], uint64_t r[4]);
+void vesta_fp_add(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]);
+void vesta_fp_sub(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]);
+void vesta_fp_neg(const uint64_t a[4], uint64_t r[4]);
+void vesta_point_add(const uint64_t p[12], const uint64_t q[12], uint64_t r[12]);
+void vesta_point_double(const uint64_t p[12], uint64_t r[12]);
+void vesta_point_add_mixed(const uint64_t p[12], const uint64_t q_aff[8], uint64_t r[12]);
+void vesta_scalar_mul(const uint64_t p[12], const uint64_t scalar[4], uint64_t r[12]);
+
 #endif // NEON_FIELD_OPS_H

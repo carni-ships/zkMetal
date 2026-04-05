@@ -4,6 +4,7 @@
 // Field elements as 8x32-bit limbs in Montgomery form (little-endian).
 
 import Foundation
+import NeonFieldOps
 
 public struct VestaFp {
     public var v: (UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32)
@@ -88,54 +89,23 @@ public struct VestaFp {
 // MARK: - Field Operations
 
 public func vestaMul(_ a: VestaFp, _ b: VestaFp) -> VestaFp {
-    let al = a.to64(), bl = b.to64()
-    var t = [UInt64](repeating: 0, count: 5)
-
-    for i in 0..<4 {
-        var carry: UInt64 = 0
-        for j in 0..<4 {
-            let (hi, lo) = al[i].multipliedFullWidth(by: bl[j])
-            let (s1, c1) = t[j].addingReportingOverflow(lo)
-            let (s2, c2) = s1.addingReportingOverflow(carry)
-            t[j] = s2
-            carry = hi + (c1 ? 1 : 0) + (c2 ? 1 : 0)
-        }
-        t[4] = t[4] &+ carry
-
-        let m = t[0] &* VestaFp.INV
-        carry = 0
-        for j in 0..<4 {
-            let (hi, lo) = m.multipliedFullWidth(by: VestaFp.P[j])
-            let (s1, c1) = t[j].addingReportingOverflow(lo)
-            let (s2, c2) = s1.addingReportingOverflow(carry)
-            t[j] = s2
-            carry = hi + (c1 ? 1 : 0) + (c2 ? 1 : 0)
-        }
-        t[4] = t[4] &+ carry
-
-        t[0] = t[1]; t[1] = t[2]; t[2] = t[3]; t[3] = t[4]; t[4] = 0
-    }
-
-    var r = Array(t[0..<4])
-    if gte256(r, VestaFp.P) {
-        (r, _) = sub256(r, VestaFp.P)
-    }
+    var al = a.to64(), bl = b.to64()
+    var r = [UInt64](repeating: 0, count: 4)
+    vesta_fp_mul(&al, &bl, &r)
     return VestaFp.from64(r)
 }
 
 public func vestaAdd(_ a: VestaFp, _ b: VestaFp) -> VestaFp {
-    var (r, carry) = add256(a.to64(), b.to64())
-    if carry != 0 || gte256(r, VestaFp.P) {
-        (r, _) = sub256(r, VestaFp.P)
-    }
+    var al = a.to64(), bl = b.to64()
+    var r = [UInt64](repeating: 0, count: 4)
+    vesta_fp_add(&al, &bl, &r)
     return VestaFp.from64(r)
 }
 
 public func vestaSub(_ a: VestaFp, _ b: VestaFp) -> VestaFp {
-    var (r, borrow) = sub256(a.to64(), b.to64())
-    if borrow {
-        (r, _) = add256(r, VestaFp.P)
-    }
+    var al = a.to64(), bl = b.to64()
+    var r = [UInt64](repeating: 0, count: 4)
+    vesta_fp_sub(&al, &bl, &r)
     return VestaFp.from64(r)
 }
 
@@ -154,8 +124,9 @@ public func vestaToInt(_ a: VestaFp) -> [UInt64] {
 }
 
 public func vestaNeg(_ a: VestaFp) -> VestaFp {
-    if a.isZero { return a }
-    let (r, _) = sub256(VestaFp.P, a.to64())
+    var al = a.to64()
+    var r = [UInt64](repeating: 0, count: 4)
+    vesta_fp_neg(&al, &r)
     return VestaFp.from64(r)
 }
 
