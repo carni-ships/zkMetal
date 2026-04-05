@@ -1,5 +1,6 @@
 // Merkle Tree Benchmark
 import zkMetal
+import NeonFieldOps
 import Foundation
 
 public func runMerkleBench() {
@@ -26,24 +27,41 @@ public func runMerkleBench() {
             times.sort()
             let gpuMedian = times[2]
 
-            // CPU Merkle tree
+            // CPU Merkle tree (C + GCD parallel)
             var cpuMs: Double = 0
             if logN <= 18 && !skipCPU {
-                let cpuT0 = CFAbsoluteTimeGetCurrent()
-                var level = leaves
-                while level.count > 1 {
-                    var next = [Fr]()
-                    next.reserveCapacity(level.count / 2)
-                    for i in stride(from: 0, to: level.count, by: 2) {
-                        next.append(poseidon2Hash(level[i], level[i+1]))
+                let treeSize = 2 * n - 1
+                var cpuTree = [Fr](repeating: Fr.zero, count: treeSize)
+                // Warmup
+                leaves.withUnsafeBytes { evPtr in
+                    cpuTree.withUnsafeMutableBytes { treePtr in
+                        poseidon2_merkle_tree_cpu(
+                            evPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n),
+                            treePtr.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                        )
                     }
-                    level = next
                 }
-                cpuMs = (CFAbsoluteTimeGetCurrent() - cpuT0) * 1000
+                var cpuTimes = [Double]()
+                for _ in 0..<5 {
+                    let cpuT0 = CFAbsoluteTimeGetCurrent()
+                    leaves.withUnsafeBytes { evPtr in
+                        cpuTree.withUnsafeMutableBytes { treePtr in
+                            poseidon2_merkle_tree_cpu(
+                                evPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                Int32(n),
+                                treePtr.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                            )
+                        }
+                    }
+                    cpuTimes.append((CFAbsoluteTimeGetCurrent() - cpuT0) * 1000)
+                }
+                cpuTimes.sort()
+                cpuMs = cpuTimes[2]
             }
 
             if cpuMs > 0 {
-                print(String(format: "  Poseidon2 Merkle 2^%-2d = %6d leaves: GPU %7.2f ms | CPU %7.0f ms | %.0fx",
+                print(String(format: "  Poseidon2 Merkle 2^%-2d = %6d leaves: GPU %7.2f ms | CPU %7.2f ms | %.1fx",
                             logN, n, gpuMedian, cpuMs, cpuMs / gpuMedian))
             } else {
                 print(String(format: "  Poseidon2 Merkle 2^%-2d = %6d leaves: GPU %7.2f ms",

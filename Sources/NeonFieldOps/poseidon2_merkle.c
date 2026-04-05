@@ -4,7 +4,7 @@
 
 #include "NeonFieldOps.h"
 #include <string.h>
-#include <pthread.h>
+#include <dispatch/dispatch.h>
 
 typedef unsigned __int128 uint128_t;
 
@@ -393,24 +393,7 @@ static void p2_hash(const uint64_t a[4], const uint64_t b[4], uint64_t out[4]) {
     memcpy(out, s0, 32);
 }
 
-// Thread task for parallel Merkle level building
-typedef struct {
-    uint64_t *tree;
-    int start;
-    int end;
-    int levelStart;
-    int parentStart;
-} p2_merkle_task_t;
-
-static void *p2_merkle_thread(void *arg) {
-    p2_merkle_task_t *t = (p2_merkle_task_t *)arg;
-    for (int i = t->start; i < t->end; i++) {
-        p2_hash(t->tree + (t->levelStart + 2*i) * 4,
-                t->tree + (t->levelStart + 2*i + 1) * 4,
-                t->tree + (t->parentStart + i) * 4);
-    }
-    return NULL;
-}
+// (Thread pool tasks removed — now using GCD dispatch_apply)
 
 // Full Poseidon2 permutation on state[3] (each 4 x uint64_t, Montgomery form).
 // result[0..11] = permuted state.
@@ -459,37 +442,22 @@ void poseidon2_hash_cpu(const uint64_t a[4], const uint64_t b[4], uint64_t out[4
 }
 
 // Batch hash pairs: input[2*i], input[2*i+1] -> output[i] for i in 0..count-1.
-// Multi-threaded for count >= 256.
-typedef struct {
-    const uint64_t *input;
-    uint64_t *output;
-    int start;
-    int end;
-} p2_batch_task_t;
-
-static void *p2_batch_thread(void *arg) {
-    p2_batch_task_t *t = (p2_batch_task_t *)arg;
-    for (int i = t->start; i < t->end; i++) {
-        p2_hash(t->input + i * 8, t->input + i * 8 + 4, t->output + i * 4);
-    }
-    return NULL;
-}
+// Uses GCD dispatch_apply for automatic thread pool scaling (no thread create overhead).
 
 void poseidon2_hash_batch_cpu(const uint64_t *input, int count, uint64_t *output) {
-    if (count >= 256) {
-        int numThreads = 4;
-        if (count < 1024) numThreads = 2;
-        pthread_t threads[8];
-        p2_batch_task_t tasks[8];
-        int chunk = count / numThreads;
-        for (int i = 0; i < numThreads; i++) {
-            tasks[i].input = input;
-            tasks[i].output = output;
-            tasks[i].start = i * chunk;
-            tasks[i].end = (i == numThreads - 1) ? count : (i + 1) * chunk;
-            pthread_create(&threads[i], NULL, p2_batch_thread, &tasks[i]);
-        }
-        for (int i = 0; i < numThreads; i++) pthread_join(threads[i], NULL);
+    if (count >= 64) {
+        // Use GCD blocks of 16 hashes for good granularity vs overhead
+        int blockSize = 16;
+        int nBlocks = (count + blockSize - 1) / blockSize;
+        dispatch_apply(nBlocks, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+            ^(size_t blockIdx) {
+                int start = (int)blockIdx * blockSize;
+                int end = start + blockSize;
+                if (end > count) end = count;
+                for (int i = start; i < end; i++) {
+                    p2_hash(input + i * 8, input + i * 8 + 4, output + i * 4);
+                }
+            });
     } else {
         for (int i = 0; i < count; i++) {
             p2_hash(input + i * 8, input + i * 8 + 4, output + i * 4);
@@ -500,6 +468,9 @@ void poseidon2_hash_batch_cpu(const uint64_t *input, int count, uint64_t *output
 // Build Poseidon2 Merkle tree on CPU.
 // Layout: tree[0..n-1] = leaves, tree[n..2n-2] = internal, tree[2n-2] = root.
 // Each element is 4 x uint64_t (32 bytes, Montgomery form).
+//
+// Uses GCD dispatch_apply for parallelism: no thread creation overhead per level,
+// automatic scaling to available cores, and lower parallelism threshold.
 void poseidon2_merkle_tree_cpu(const uint64_t *leaves, int n, uint64_t *tree) {
     // Copy leaves
     memcpy(tree, leaves, (size_t)n * 32);
@@ -507,27 +478,32 @@ void poseidon2_merkle_tree_cpu(const uint64_t *leaves, int n, uint64_t *tree) {
     // Build levels bottom-up
     int levelStart = 0;
     int levelSize = n;
+    dispatch_queue_t queue = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
+
     while (levelSize > 1) {
         int parentCount = levelSize / 2;
         int parentStart = levelStart + levelSize;
 
-        // Multi-thread for large levels
-        if (parentCount >= 256) {
-            int numThreads = 4;
-            if (parentCount < 1024) numThreads = 2;
-            pthread_t threads[8];
-            p2_merkle_task_t tasks[8];
-            int chunk = parentCount / numThreads;
-
-            for (int i = 0; i < numThreads; i++) {
-                tasks[i].tree = tree;
-                tasks[i].start = i * chunk;
-                tasks[i].end = (i == numThreads-1) ? parentCount : (i+1)*chunk;
-                tasks[i].levelStart = levelStart;
-                tasks[i].parentStart = parentStart;
-                pthread_create(&threads[i], NULL, p2_merkle_thread, &tasks[i]);
-            }
-            for (int i = 0; i < numThreads; i++) pthread_join(threads[i], NULL);
+        // GCD parallel for levels with >= 32 nodes (low threshold since
+        // dispatch_apply reuses thread pool with near-zero overhead)
+        if (parentCount >= 32) {
+            // Block size of 8 hashes balances granularity vs dispatch overhead
+            int blockSize = 8;
+            int nBlocks = (parentCount + blockSize - 1) / blockSize;
+            int ls = levelStart;
+            int ps = parentStart;
+            int pc = parentCount;
+            dispatch_apply(nBlocks, queue,
+                ^(size_t blockIdx) {
+                    int start = (int)blockIdx * blockSize;
+                    int end = start + blockSize;
+                    if (end > pc) end = pc;
+                    for (int i = start; i < end; i++) {
+                        p2_hash(tree + (ls + 2*i) * 4,
+                                tree + (ls + 2*i + 1) * 4,
+                                tree + (ps + i) * 4);
+                    }
+                });
         } else {
             for (int i = 0; i < parentCount; i++) {
                 p2_hash(tree + (levelStart + 2*i) * 4,

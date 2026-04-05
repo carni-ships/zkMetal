@@ -39,7 +39,9 @@ public class WHIRProver {
 
     /// CPU Merkle threshold: use CPU Poseidon2 for small trees to avoid
     /// GPU command buffer overhead (~5-9ms per dispatch).
-    private static let cpuMerkleThreshold = 1024
+    /// GCD dispatch_apply gives near-zero threading overhead, so CPU is
+    /// competitive up to ~4096 leaves on Apple Silicon.
+    private static let cpuMerkleThreshold = 4096
 
     /// Initialize WHIR prover.
     /// - Parameters:
