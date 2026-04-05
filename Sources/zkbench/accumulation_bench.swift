@@ -225,5 +225,67 @@ public func runAccumulationBench() {
         }
     }
 
+    // --- IPAClaim + AccumulationVerifier + AccumulationDecider ---
+    fputs("\n--- IPAClaim / Verifier / Decider ---\n", stderr)
+    do {
+        let n = 4
+        let (gens, qPoint) = PallasAccumulationEngine.generateTestGenerators(count: n)
+        let engine = PallasAccumulationEngine(generators: gens, Q: qPoint)
+
+        // Create two claims
+        var claims = [PallasIPAClaim]()
+        var accumulators = [IPAAccumulator]()
+        for p in 0..<3 {
+            var a = [VestaFp]()
+            var b = [VestaFp]()
+            for i in 0..<n {
+                a.append(vestaFromInt(UInt64(p * n + i + 1)))
+                b.append(vestaFromInt(UInt64(i + 1)))
+            }
+            let proof = engine.createProof(a: a, b: b)
+            let claim = engine.extractClaim(witness: a, evaluationVector: b, proof: proof)
+            claims.append(claim)
+            accumulators.append(engine.accumulateClaim(claim))
+        }
+
+        // Test IPAClaim -> accumulate -> decide
+        let claimDecideOk = engine.decide(accumulators[0])
+        fputs("  IPAClaim -> accumulate -> decide: \(claimDecideOk ? "PASS" : "FAIL")\n", stderr)
+        allPass = allPass && claimDecideOk
+
+        // Test fold two accumulators + verify the fold step
+        let (folded, foldProof) = engine.foldAccumulators(accumulators[0], accumulators[1])
+        let foldVerifyOk = AccumulationVerifier.verifyStep(
+            accPrev: accumulators[0],
+            accNew: accumulators[1],
+            accOut: folded,
+            proof: foldProof
+        )
+        fputs("  Fold + verify step: \(foldVerifyOk ? "PASS" : "FAIL")\n", stderr)
+        allPass = allPass && foldVerifyOk
+
+        // Test chain verification: fold 3 accumulators sequentially
+        var chain = [(newAcc: IPAAccumulator, proof: AccumulationProof, resultAcc: IPAAccumulator)]()
+        var running = accumulators[0]
+        for i in 1..<accumulators.count {
+            let (result, proof) = engine.foldAccumulators(running, accumulators[i])
+            chain.append((newAcc: accumulators[i], proof: proof, resultAcc: result))
+            running = result
+        }
+        let chainOk = AccumulationVerifier.verifyChain(initialAcc: accumulators[0], steps: chain)
+        fputs("  Chain verify (3 folds): \(chainOk ? "PASS" : "FAIL")\n", stderr)
+        allPass = allPass && chainOk
+
+        // Test AccumulationDecider.batchDecide
+        let batchDecideOk = AccumulationDecider.batchDecide(accumulators, engine: engine)
+        fputs("  AccumulationDecider.batchDecide: \(batchDecideOk ? "PASS" : "FAIL")\n", stderr)
+        allPass = allPass && batchDecideOk
+
+        // Test AccumulationDecider.accumulateAndDecide
+        let (_, fullPipelineOk) = AccumulationDecider.accumulateAndDecide(claims: claims, engine: engine)
+        fputs("  Full pipeline (accumulateAndDecide): \(fullPipelineOk ? "PASS" : "FAIL")\n", stderr)
+        allPass = allPass && fullPipelineOk
+    }
+
     fputs("\n  Accumulation tests: \(allPass ? "ALL PASS" : "SOME FAILED")\n", stderr)
 }
