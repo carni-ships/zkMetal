@@ -223,6 +223,8 @@ if cmd == "calibrate" {
     runTranscriptBench()
 } else if cmd == "serial" || cmd == "serialize" {
     runSerializationBench()
+} else if cmd == "pcs" || cmd == "pcs-compare" || cmd == "pcs-comparison" {
+    runPCSComparisonBench()
 } else if cmd == "basefold" || cmd == "bf-pcs" {
     runBasefoldBench()
 } else if cmd == "zeromorph" || cmd == "zm" {
