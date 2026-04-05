@@ -25,7 +25,9 @@ public func runGroth16Bench() {
         let valid = verifier.verify(proof: proof, vk: vk, publicInputs: pub)
         fputs("  Verify: \(String(format: "%.1f", (CFAbsoluteTimeGetCurrent()-vt)*1000))ms -- \(valid ? "VALID" : "INVALID")\n", stderr)
     } catch { fputs("  Error: \(error)\n", stderr) }
-    fputs("\n[2] Bench circuits\n", stderr)
+
+    // [2] Bench circuits: small (original) + large (production scale)
+    fputs("\n[2] Bench circuits (small)\n", stderr)
     for sz in [8, 64, 256] {
         let (br, bp, bw) = buildBenchCircuit(numConstraints: sz)
         var bz = [Fr](repeating: .zero, count: br.numVars)
@@ -44,28 +46,69 @@ public func runGroth16Bench() {
             let vt = CFAbsoluteTimeGetCurrent()
             let valid = verifier.verify(proof: proof, vk: bVk, publicInputs: bp)
             let vT = (CFAbsoluteTimeGetCurrent()-vt)*1000
-            fputs(String(format: "  n=%4d: setup %7.1fms | prove %7.1fms | verify %7.1fms | %@\n",
+            fputs(String(format: "  n=%5d: setup %8.1fms | prove %8.1fms | verify %7.1fms | %@\n",
                         sz, sT, pT, vT, valid ? "VALID" : "INVALID"), stderr)
         } catch { fputs("  n=\(sz): \(error)\n", stderr) }
     }
-    // Multi-iteration benchmark for n=256
-    fputs("\n[2b] n=256 timing (10 iterations after warmup)\n", stderr)
-    do {
-        let (br256, bp256, bw256) = buildBenchCircuit(numConstraints: 256)
-        let (bPk256, _) = setup.setup(r1cs: br256)
-        let prover256 = try Groth16Prover()
-        // Warmup (3 iterations)
-        for _ in 0..<3 { _ = try prover256.prove(pk: bPk256, r1cs: br256, publicInputs: bp256, witness: bw256) }
-        var times = [Double]()
-        for _ in 0..<10 {
-            let t = CFAbsoluteTimeGetCurrent()
-            _ = try prover256.prove(pk: bPk256, r1cs: br256, publicInputs: bp256, witness: bw256)
-            times.append((CFAbsoluteTimeGetCurrent() - t) * 1000)
-        }
-        times.sort()
-        fputs(String(format: "  n=256: median %.1fms, min %.1fms, max %.1fms\n",
-                     times[5], times[0], times[9]), stderr)
-    } catch { fputs("  Error: \(error)\n", stderr) }
+
+    // [2b] Large circuit benchmarks (production scale)
+    fputs("\n[2b] Bench circuits (large -- production scale)\n", stderr)
+    for sz in [1024, 4096, 16384] {
+        let (br, bp, bw) = buildBenchCircuit(numConstraints: sz)
+        let st = CFAbsoluteTimeGetCurrent(); let (bPk, bVk) = setup.setup(r1cs: br)
+        let sT = (CFAbsoluteTimeGetCurrent()-st)*1000
+        do {
+            let prover = try Groth16Prover()
+            prover.profileGroth16 = (sz >= 4096)
+            let pt = CFAbsoluteTimeGetCurrent()
+            let proof = try prover.prove(pk: bPk, r1cs: br, publicInputs: bp, witness: bw)
+            let pT = (CFAbsoluteTimeGetCurrent()-pt)*1000
+            let verifier = Groth16Verifier()
+            let vt = CFAbsoluteTimeGetCurrent()
+            let valid = verifier.verify(proof: proof, vk: bVk, publicInputs: bp)
+            let vT = (CFAbsoluteTimeGetCurrent()-vt)*1000
+            fputs(String(format: "  n=%5d: setup %8.1fms | prove %8.1fms | verify %7.1fms | %@\n",
+                        sz, sT, pT, vT, valid ? "VALID" : "INVALID"), stderr)
+        } catch { fputs("  n=\(sz): \(error)\n", stderr) }
+    }
+
+    // [2c] Witness generation benchmark
+    fputs("\n[2c] GPU Witness Generation\n", stderr)
+    for sz in [256, 1024, 4096, 16384] {
+        let (br, bp, _) = buildBenchCircuit(numConstraints: sz)
+        do {
+            let prover = try Groth16Prover()
+            // Warmup
+            _ = prover.generateWitness(r1cs: br, publicInputs: bp)
+            let wt = CFAbsoluteTimeGetCurrent()
+            let genZ = prover.generateWitness(r1cs: br, publicInputs: bp)
+            let wT = (CFAbsoluteTimeGetCurrent()-wt)*1000
+            let satisfied = br.isSatisfied(z: genZ)
+            fputs(String(format: "  n=%5d: witness gen %7.2fms | satisfied: %@\n",
+                        sz, wT, satisfied ? "YES" : "NO"), stderr)
+        } catch { fputs("  n=\(sz): \(error)\n", stderr) }
+    }
+
+    // [2d] Multi-iteration timing
+    for benchN in [256, 1024] {
+        fputs("\n[2d] n=\(benchN) timing (10 iterations after warmup)\n", stderr)
+        do {
+            let (br, bp, bw) = buildBenchCircuit(numConstraints: benchN)
+            let (bPk, _) = setup.setup(r1cs: br)
+            let prover = try Groth16Prover()
+            // Warmup (3 iterations)
+            for _ in 0..<3 { _ = try prover.prove(pk: bPk, r1cs: br, publicInputs: bp, witness: bw) }
+            var times = [Double]()
+            for _ in 0..<10 {
+                let t = CFAbsoluteTimeGetCurrent()
+                _ = try prover.prove(pk: bPk, r1cs: br, publicInputs: bp, witness: bw)
+                times.append((CFAbsoluteTimeGetCurrent() - t) * 1000)
+            }
+            times.sort()
+            fputs(String(format: "  n=%d: median %.1fms, min %.1fms, max %.1fms\n",
+                         benchN, times[5], times[0], times[9]), stderr)
+        } catch { fputs("  Error: \(error)\n", stderr) }
+    }
 
     fputs("\n[3] BN254 Pairing Checks\n", stderr)
     let g1gen = bn254G1Generator()

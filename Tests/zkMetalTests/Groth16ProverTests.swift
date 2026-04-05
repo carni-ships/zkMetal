@@ -151,4 +151,66 @@ func runGroth16ProverTests() {
     } catch {
         expect(false, "Groth16 bench circuit error: \(error)")
     }
+
+    // --- Test 4: GPU witness generation ---
+    do {
+        let (r1cs, pubInputs, expectedWitness) = buildBenchCircuit(numConstraints: 8)
+        let prover = try Groth16Prover()
+
+        // Generate witness from just public inputs
+        let genZ = prover.generateWitness(r1cs: r1cs, publicInputs: pubInputs)
+        expect(r1cs.isSatisfied(z: genZ), "GPU witness gen R1CS satisfied (n=8)")
+
+        // Check the generated witness matches expected
+        let nP = r1cs.numPublic
+        var match = true
+        for i in 0..<expectedWitness.count {
+            if !frEq(genZ[1 + nP + i], expectedWitness[i]) { match = false; break }
+        }
+        expect(match, "GPU witness gen matches expected witness (n=8)")
+
+    } catch {
+        expect(false, "GPU witness gen error: \(error)")
+    }
+
+    // --- Test 5: Witness generation for larger circuits ---
+    for testN in [16, 64, 256] {
+        do {
+            let (r1cs, pubInputs, expectedWitness) = buildBenchCircuit(numConstraints: testN)
+            let prover = try Groth16Prover()
+            let genZ = prover.generateWitness(r1cs: r1cs, publicInputs: pubInputs)
+            let satisfied = r1cs.isSatisfied(z: genZ)
+            expect(satisfied, "Witness gen R1CS satisfied (n=\(testN))")
+
+            // Verify witness values match
+            let nP = r1cs.numPublic
+            var match = true
+            for i in 0..<expectedWitness.count {
+                if !frEq(genZ[1 + nP + i], expectedWitness[i]) { match = false; break }
+            }
+            expect(match, "Witness gen values match (n=\(testN))")
+        } catch {
+            expect(false, "Witness gen n=\(testN) error: \(error)")
+        }
+    }
+
+    // --- Test 6: proveWithWitnessGen round-trip ---
+    do {
+        let (r1cs, pubInputs, _) = buildBenchCircuit(numConstraints: 8)
+        let setup = Groth16Setup()
+        let (pk, vk) = setup.setup(r1cs: r1cs)
+        let prover = try Groth16Prover()
+        let proof = try prover.proveWithWitnessGen(pk: pk, r1cs: r1cs, publicInputs: pubInputs)
+
+        // Proof elements should be non-identity
+        expect(!pointIsIdentity(proof.a), "proveWithWitnessGen piA non-identity")
+        expect(!pointIsIdentity(proof.c), "proveWithWitnessGen piC non-identity")
+
+        // Verify (note: may fail due to pre-existing C pairing issues)
+        let verifier = Groth16Verifier()
+        let valid = verifier.verify(proof: proof, vk: vk, publicInputs: pubInputs)
+        expect(valid, "proveWithWitnessGen verify (n=8)")
+    } catch {
+        expect(false, "proveWithWitnessGen error: \(error)")
+    }
 }
