@@ -3,6 +3,7 @@
 // Used for NTT and scalar operations.
 
 import Foundation
+import NeonFieldOps
 
 public struct Fr377 {
     public var v: (UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32)
@@ -80,75 +81,38 @@ public struct Fr377 {
 // MARK: - Fr377 Field Operations
 
 public func fr377Mul(_ a: Fr377, _ b: Fr377) -> Fr377 {
-    let al = a.to64(), bl = b.to64()
-    var t = [UInt64](repeating: 0, count: 5)
-
-    for i in 0..<4 {
-        var carry: UInt64 = 0
-        for j in 0..<4 {
-            let (hi, lo) = al[i].multipliedFullWidth(by: bl[j])
-            let (s1, c1) = t[j].addingReportingOverflow(lo)
-            let (s2, c2) = s1.addingReportingOverflow(carry)
-            t[j] = s2
-            carry = hi + (c1 ? 1 : 0) + (c2 ? 1 : 0)
-        }
-        t[4] = t[4] &+ carry
-
-        let m = t[0] &* Fr377.INV
-        carry = 0
-        for j in 0..<4 {
-            let (hi, lo) = m.multipliedFullWidth(by: Fr377.P[j])
-            let (s1, c1) = t[j].addingReportingOverflow(lo)
-            let (s2, c2) = s1.addingReportingOverflow(carry)
-            t[j] = s2
-            carry = hi + (c1 ? 1 : 0) + (c2 ? 1 : 0)
-        }
-        t[4] = t[4] &+ carry
-
-        t[0] = t[1]; t[1] = t[2]; t[2] = t[3]; t[3] = t[4]; t[4] = 0
-    }
-
-    var r = Array(t[0..<4])
-    if gte256(r, Fr377.P) {
-        (r, _) = sub256(r, Fr377.P)
-    }
+    var al = a.to64(), bl = b.to64()
+    var r = [UInt64](repeating: 0, count: 4)
+    bls12_377_fr_mul(&al, &bl, &r)
     return Fr377.from64(r)
 }
 
 public func fr377Add(_ a: Fr377, _ b: Fr377) -> Fr377 {
-    var (r, carry) = add256(a.to64(), b.to64())
-    if carry != 0 || gte256(r, Fr377.P) {
-        (r, _) = sub256(r, Fr377.P)
-    }
+    var al = a.to64(), bl = b.to64()
+    var r = [UInt64](repeating: 0, count: 4)
+    bls12_377_fr_add(&al, &bl, &r)
     return Fr377.from64(r)
 }
 
 public func fr377Sub(_ a: Fr377, _ b: Fr377) -> Fr377 {
-    var (r, borrow) = sub256(a.to64(), b.to64())
-    if borrow {
-        (r, _) = add256(r, Fr377.P)
-    }
+    var al = a.to64(), bl = b.to64()
+    var r = [UInt64](repeating: 0, count: 4)
+    bls12_377_fr_sub(&al, &bl, &r)
     return Fr377.from64(r)
 }
 
-public func fr377Sqr(_ a: Fr377) -> Fr377 { fr377Mul(a, a) }
+public func fr377Sqr(_ a: Fr377) -> Fr377 {
+    var al = a.to64()
+    var r = [UInt64](repeating: 0, count: 4)
+    bls12_377_fr_sqr(&al, &r)
+    return Fr377.from64(r)
+}
 
 public func fr377Neg(_ a: Fr377) -> Fr377 {
-    if a.isZero { return a }
-    let (r, _) = sub256Fr(Fr377.P.map { $0 }, a.to64())
-    return Fr377.from64(r)
-}
-
-private func sub256Fr(_ a: [UInt64], _ b: [UInt64]) -> ([UInt64], Bool) {
+    var al = a.to64()
     var r = [UInt64](repeating: 0, count: 4)
-    var borrow: Bool = false
-    for i in 0..<4 {
-        let (s1, b1) = a[i].subtractingReportingOverflow(b[i])
-        let (s2, b2) = s1.subtractingReportingOverflow(borrow ? 1 : 0)
-        r[i] = s2
-        borrow = b1 || b2
-    }
-    return (r, borrow)
+    bls12_377_fr_neg(&al, &r)
+    return Fr377.from64(r)
 }
 
 public func fr377FromInt(_ val: UInt64) -> Fr377 {

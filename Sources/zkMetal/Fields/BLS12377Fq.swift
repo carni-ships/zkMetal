@@ -3,6 +3,7 @@
 // 377-bit prime, field elements as 12x32-bit limbs in Montgomery form (little-endian).
 
 import Foundation
+import NeonFieldOps
 
 public struct Fq377 {
     public var v: (UInt32, UInt32, UInt32, UInt32, UInt32, UInt32,
@@ -115,60 +116,34 @@ public func gte384(_ a: [UInt64], _ b: [UInt64]) -> Bool {
 
 // MARK: - Field Operations
 
-// Montgomery multiplication: (a * b * R^-1) mod q
+// Montgomery multiplication: (a * b * R^-1) mod q — C CIOS
 public func fq377Mul(_ a: Fq377, _ b: Fq377) -> Fq377 {
-    let al = a.to64(), bl = b.to64()
-    var t = [UInt64](repeating: 0, count: 7)
-
-    for i in 0..<6 {
-        var carry: UInt64 = 0
-        for j in 0..<6 {
-            let (hi, lo) = al[i].multipliedFullWidth(by: bl[j])
-            let (s1, c1) = t[j].addingReportingOverflow(lo)
-            let (s2, c2) = s1.addingReportingOverflow(carry)
-            t[j] = s2
-            carry = hi + (c1 ? 1 : 0) + (c2 ? 1 : 0)
-        }
-        t[6] = t[6] &+ carry
-
-        let m = t[0] &* Fq377.INV
-        carry = 0
-        for j in 0..<6 {
-            let (hi, lo) = m.multipliedFullWidth(by: Fq377.P[j])
-            let (s1, c1) = t[j].addingReportingOverflow(lo)
-            let (s2, c2) = s1.addingReportingOverflow(carry)
-            t[j] = s2
-            carry = hi + (c1 ? 1 : 0) + (c2 ? 1 : 0)
-        }
-        t[6] = t[6] &+ carry
-
-        t[0] = t[1]; t[1] = t[2]; t[2] = t[3]; t[3] = t[4]; t[4] = t[5]; t[5] = t[6]; t[6] = 0
-    }
-
-    var r = Array(t[0..<6])
-    if gte384(r, Fq377.P) {
-        (r, _) = sub384(r, Fq377.P)
-    }
+    var al = a.to64(), bl = b.to64()
+    var r = [UInt64](repeating: 0, count: 6)
+    bls12_377_fq_mul(&al, &bl, &r)
     return Fq377.from64(r)
 }
 
 public func fq377Add(_ a: Fq377, _ b: Fq377) -> Fq377 {
-    var (r, carry) = add384(a.to64(), b.to64())
-    if carry != 0 || gte384(r, Fq377.P) {
-        (r, _) = sub384(r, Fq377.P)
-    }
+    var al = a.to64(), bl = b.to64()
+    var r = [UInt64](repeating: 0, count: 6)
+    bls12_377_fq_add(&al, &bl, &r)
     return Fq377.from64(r)
 }
 
 public func fq377Sub(_ a: Fq377, _ b: Fq377) -> Fq377 {
-    var (r, borrow) = sub384(a.to64(), b.to64())
-    if borrow {
-        (r, _) = add384(r, Fq377.P)
-    }
+    var al = a.to64(), bl = b.to64()
+    var r = [UInt64](repeating: 0, count: 6)
+    bls12_377_fq_sub(&al, &bl, &r)
     return Fq377.from64(r)
 }
 
-public func fq377Sqr(_ a: Fq377) -> Fq377 { fq377Mul(a, a) }
+public func fq377Sqr(_ a: Fq377) -> Fq377 {
+    var al = a.to64()
+    var r = [UInt64](repeating: 0, count: 6)
+    bls12_377_fq_sqr(&al, &r)
+    return Fq377.from64(r)
+}
 public func fq377Double(_ a: Fq377) -> Fq377 { fq377Add(a, a) }
 
 // Convert integer to Montgomery form
@@ -186,8 +161,9 @@ public func fq377ToInt(_ a: Fq377) -> [UInt64] {
 
 // Field negation
 public func fq377Neg(_ a: Fq377) -> Fq377 {
-    if a.isZero { return a }
-    let (r, _) = sub384(Fq377.P, a.to64())
+    var al = a.to64()
+    var r = [UInt64](repeating: 0, count: 6)
+    bls12_377_fq_neg(&al, &r)
     return Fq377.from64(r)
 }
 
