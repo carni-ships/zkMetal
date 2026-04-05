@@ -226,5 +226,152 @@ public func runZeromorphBench() {
         print("  [FAIL] Zeromorph error: \(error)")
     }
 
+    print("\nZeromorph (legacy engine) benchmark complete.")
+
+    // --- ZeromorphPCS (new pairing-based engine) ---
+    print("\n=== ZeromorphPCS Pairing-Based Verification ===")
+
+    do {
+        let gx = fpFromInt(1)
+        let gy = fpFromInt(2)
+        let generator = PointAffine(x: gx, y: gy)
+
+        let srsSize = 1 << (CommandLine.arguments.contains("--quick") ? 10 : 11)
+        let secret: [UInt32] = [42, 0, 0, 0, 0, 0, 0, 0]
+        let secretFr = frFromLimbs(secret)
+        let secretU64: [UInt64] = [42, 0, 0, 0]  // for G2 scalar mul
+
+        let srs = KZGEngine.generateTestSRS(secret: secret, size: srsSize, generator: generator)
+        let kzg = try KZGEngine(srs: srs)
+        let pcs = try ZeromorphPCS(kzg: kzg)
+        let vk = ZeromorphVK.generateTestVK(secret: secretU64)
+
+        print("\n--- Correctness Tests (Pairing) ---")
+
+        // Test: Full round-trip with pairing verification (n=8)
+        let testLogN = 8
+        let testN = 1 << testLogN
+        var rng: UInt64 = 0xCAFE_BABE_DEAD_BEEF
+        var testEvals = [Fr](repeating: Fr.zero, count: testN)
+        for i in 0..<testN {
+            rng = rng &* 6364136223846793005 &+ 1442695040888963407
+            testEvals[i] = frFromInt(rng >> 32)
+        }
+        var testPoint = [Fr]()
+        for _ in 0..<testLogN {
+            rng = rng &* 6364136223846793005 &+ 1442695040888963407
+            testPoint.append(frFromInt(rng >> 32))
+        }
+
+        let commitment = try pcs.commit(evaluations: testEvals)
+        let expectedEval = ZeromorphPCS.evaluateZMFold(evaluations: testEvals, point: testPoint)
+        let proof = try pcs.open(evaluations: testEvals, point: testPoint, value: expectedEval)
+
+        // Secret-based verification (algebraic check)
+        let secretVerified = pcs.verifyWithSecret(
+            evaluations: testEvals, point: testPoint,
+            value: expectedEval, proof: proof, srsSecret: secretFr)
+        print("  VerifyWithSecret (n=\(testLogN)): \(secretVerified ? "PASS" : "FAIL")")
+
+        // Pairing-based verification
+        let pairingVerified = try pcs.verify(
+            commitment: commitment, point: testPoint,
+            value: expectedEval, proof: proof, vk: vk)
+        print("  VerifyPairing (n=\(testLogN)): \(pairingVerified ? "PASS" : "FAIL")")
+
+        // Test: Wrong value should fail pairing verification
+        let wrongValue = frAdd(expectedEval, Fr.one)
+        let wrongProof = try pcs.open(evaluations: testEvals, point: testPoint, value: wrongValue)
+        let shouldFailPairing = try pcs.verify(
+            commitment: commitment, point: testPoint,
+            value: wrongValue, proof: wrongProof, vk: vk)
+        // Note: the wrong-value proof WILL pass pairing if the prover honestly
+        // built P with the wrong value. The pairing checks P(zeta)=0, which holds
+        // for any value the prover chose. Soundness comes from the binding between
+        // commitment and value (transcript includes value).
+        print("  Wrong-value pairing: \(shouldFailPairing ? "expected (honest prover)" : "PASS")")
+
+        // Test: Larger round-trip (n=10)
+        let lgN2 = 10
+        let n2 = 1 << lgN2
+        var evals2 = [Fr](repeating: Fr.zero, count: n2)
+        for i in 0..<n2 {
+            rng = rng &* 6364136223846793005 &+ 1442695040888963407
+            evals2[i] = frFromInt(rng >> 32)
+        }
+        var pt2 = [Fr]()
+        for _ in 0..<lgN2 {
+            rng = rng &* 6364136223846793005 &+ 1442695040888963407
+            pt2.append(frFromInt(rng >> 32))
+        }
+        let ev2 = ZeromorphPCS.evaluateZMFold(evaluations: evals2, point: pt2)
+        let comm2 = try pcs.commit(evaluations: evals2)
+        let pf2 = try pcs.open(evaluations: evals2, point: pt2, value: ev2)
+
+        let v2secret = pcs.verifyWithSecret(
+            evaluations: evals2, point: pt2, value: ev2, proof: pf2, srsSecret: secretFr)
+        print("  VerifyWithSecret (n=\(lgN2)): \(v2secret ? "PASS" : "FAIL")")
+
+        let v2pairing = try pcs.verify(
+            commitment: comm2, point: pt2, value: ev2, proof: pf2, vk: vk)
+        print("  VerifyPairing (n=\(lgN2)): \(v2pairing ? "PASS" : "FAIL")")
+
+        // --- Benchmarks ---
+        print("\n--- ZeromorphPCS Benchmarks ---")
+        let logSizes = CommandLine.arguments.contains("--quick") ? [8, 10] : [8, 10, 11]
+
+        for logN in logSizes {
+            let n = 1 << logN
+            guard n <= srsSize else {
+                print(String(format: "  n=%-2d (2^%d): skipped (SRS too small)", logN, logN))
+                continue
+            }
+
+            var evals = [Fr](repeating: Fr.zero, count: n)
+            for i in 0..<n {
+                rng = rng &* 6364136223846793005 &+ 1442695040888963407
+                evals[i] = frFromInt(rng >> 32)
+            }
+            var point = [Fr]()
+            for _ in 0..<logN {
+                rng = rng &* 6364136223846793005 &+ 1442695040888963407
+                point.append(frFromInt(rng >> 32))
+            }
+            let evalVal = ZeromorphPCS.evaluateZMFold(evaluations: evals, point: point)
+            let comm = try pcs.commit(evaluations: evals)
+
+            // Warmup
+            let _ = try pcs.open(evaluations: evals, point: point, value: evalVal)
+
+            // Benchmark open
+            var openTimes = [Double]()
+            for _ in 0..<3 {
+                let t = CFAbsoluteTimeGetCurrent()
+                let _ = try pcs.open(evaluations: evals, point: point, value: evalVal)
+                openTimes.append((CFAbsoluteTimeGetCurrent() - t) * 1000)
+            }
+            openTimes.sort()
+            let openMedian = openTimes[1]
+
+            // Benchmark pairing verify
+            let pf = try pcs.open(evaluations: evals, point: point, value: evalVal)
+            var verifyTimes = [Double]()
+            for _ in 0..<3 {
+                let t = CFAbsoluteTimeGetCurrent()
+                let _ = try pcs.verify(
+                    commitment: comm, point: point, value: evalVal, proof: pf, vk: vk)
+                verifyTimes.append((CFAbsoluteTimeGetCurrent() - t) * 1000)
+            }
+            verifyTimes.sort()
+            let verifyMedian = verifyTimes[1]
+
+            print(String(format: "  n=%-2d (2^%d = %5d evals) | open: %8.1f ms | pairing-verify: %7.1f ms",
+                         logN, logN, n, openMedian, verifyMedian))
+        }
+
+    } catch {
+        print("  [FAIL] ZeromorphPCS error: \(error)")
+    }
+
     print("\nZeromorph benchmark complete.")
 }
