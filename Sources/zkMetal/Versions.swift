@@ -139,6 +139,11 @@ public enum Versions {
     public static let stark252STARK     = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let verkleProofEngine = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let plonkishArith     = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuCosetLDE       = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let plonky2Verifier   = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let pedersenHashBN254 = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let airCompiler       = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let novaIVC           = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
 
     /// Print all primitive versions
     public static func printAll() {
