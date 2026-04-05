@@ -352,7 +352,7 @@ C CIOS Montgomery acceleration: pre-computed wiring topology, cached buffers, eq
 | IPA Accumulation (Pallas) | 7.3ms accumulate (n=4) | Halo-style, batch decide 2.7x |
 | Tensor compress 2^18 | 8.9ms compress, 2.1ms verify | **460.7x** compression ratio, Keccak transcript: **26x** compress, **19x** verify |
 | WHIR 2^14 | 30ms prove, 4.8ms verify | C CIOS fold + CPU P2 Merkle: prove **1.9x**, verify **3.6x** |
-| Marlin verify | 2.7ms | Batch KZG + C CIOS: **25x** faster than Groth16 verify (70ms) |
+| Marlin prove+verify | 2.7ms verify | Batch KZG openings (19 MSMs→2) + C CIOS: **25x** faster verify |
 | Spartan prove 2^14 | 121ms prove, 8ms verify | C CIOS sumcheck + sparse matvec: **8.6x** (1051→122ms) |
 | Lasso 2^18 | 30ms prove, 31ms verify | C-accelerated: prove **16x** (481→30ms), verify **52x** (1.6s→31ms) |
 | LogUp 2^12 | 15ms prove, 16ms verify | Optimal for small-medium tables |
@@ -363,7 +363,7 @@ C CIOS Montgomery acceleration: pre-computed wiring topology, cached buffers, eq
 | Schnorr BIP 340 | Sign 0.30ms, Batch verify 0.20ms/sig | x-only pubkeys, SHA-256 tagged hashing |
 | Stark252 NTT 2^20 | 238M elem/s (GPU) | StarkNet/Cairo native field |
 | Poseidon2 BabyBear (width-16) | 104M hash/s (GPU) | SP1/Plonky3 exact config |
-| Pasta curves | Pallas/Vesta cycle | Field+curve ops, recursive composition ready |
+| Pasta curves | Pallas/Vesta cycle | C CIOS field+curve ops, Jacobian projective, windowed scalar mul |
 | Data-Parallel GKR | Experimental | Multi-instance correctness tests failing |
 | Incremental Merkle batch 256 | 13ms (vs 124ms full = **9.2x**) | Known regression on large sequential builds |
 
