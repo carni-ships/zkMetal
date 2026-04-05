@@ -118,6 +118,7 @@ public enum Versions {
     public static let parallelReduce    = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let batchField        = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let prefixScan        = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let riscvExecutor     = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
 
     /// Print all primitive versions
     public static func printAll() {
