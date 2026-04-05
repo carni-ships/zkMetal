@@ -33,8 +33,8 @@ public func runJoltBench() {
         let bitwiseValid = engine.verify(proof: bitwiseProof, program: bitwiseProg)
         fputs("  Mixed bitwise (4 instrs): \(bitwiseValid ? "PASS" : "FAIL")\n", stderr)
 
-        // Test 3: Lasso-verified ops (LT, SHR, SHL, SUB) + algebraic fallback (MUL, EQ)
-        let mixedProg: [JoltInstruction] = [
+        // Test 3: Non-decomposable ops verified algebraically (MUL, EQ, LT, SHR, SHL, SUB)
+        let algebraicProg: [JoltInstruction] = [
             JoltInstruction(op: .mul, rs1: 0, rs2: 1, rd: 2),
             JoltInstruction(op: .eq,  rs1: 0, rs2: 0, rd: 3),
             JoltInstruction(op: .lt,  rs1: 0, rs2: 1, rd: 4),
@@ -42,10 +42,10 @@ public func runJoltBench() {
             JoltInstruction(op: .shl, rs1: 0, rs2: 1, rd: 6),
             JoltInstruction(op: .sub, rs1: 0, rs2: 1, rd: 7),
         ]
-        let mixedTrace = joltExecute(program: mixedProg)
-        let mixedProof = try engine.prove(trace: mixedTrace)
-        let mixedValid = engine.verify(proof: mixedProof, program: mixedProg)
-        fputs("  Lasso+algebraic ops (6 instrs): \(mixedValid ? "PASS" : "FAIL")\n", stderr)
+        let algebraicTrace = joltExecute(program: algebraicProg)
+        let algebraicProof = try engine.prove(trace: algebraicTrace)
+        let algebraicValid = engine.verify(proof: algebraicProof, program: algebraicProg)
+        fputs("  Algebraic ops MUL/EQ/LT/SH/SUB (6 instrs): \(algebraicValid ? "PASS" : "FAIL")\n", stderr)
 
         // Test 4: Random mixed program
         let randomProg = joltRandomProgram(count: 16, numRegisters: 8, seed: 42)
@@ -116,7 +116,7 @@ public func runJoltBench() {
                 opCounts[instr.op, default: 0] += 1
             }
             var lassoCount = 0
-            for lop: JoltOp in [.add, .sub, .and_, .or_, .xor_, .shl, .shr, .lt] {
+            for lop: JoltOp in [.and_, .or_, .xor_] {
                 lassoCount += opCounts[lop] ?? 0
             }
             let algebraicCount = n - lassoCount

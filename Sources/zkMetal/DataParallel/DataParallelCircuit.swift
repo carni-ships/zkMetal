@@ -220,4 +220,59 @@ public struct DataParallelCircuit {
     public func outputVarsForLayer(_ layerIdx: Int) -> Int {
         template.outputVars(layer: layerIdx)
     }
+
+    // MARK: - Combined Circuit Construction
+
+    /// Build a combined LayeredCircuit where instance i's gates are at offset i * paddedLayerSize.
+    /// Each instance's gates reference only inputs from that instance.
+    /// The combined circuit is a standard LayeredCircuit suitable for GKREngine.
+    public func buildCombinedCircuit() -> LayeredCircuit {
+        let padN = paddedInstances
+
+        var combinedLayers = [CircuitLayer]()
+        for layerIdx in 0..<template.depth {
+            let subLayer = template.layers[layerIdx]
+            let subSize = subLayer.paddedSize
+
+            let inputPadSize: Int
+            if layerIdx == 0 {
+                let inVars = inputVarsForLayer(0)
+                inputPadSize = max(1, 1 << inVars)
+            } else {
+                inputPadSize = template.layers[layerIdx - 1].paddedSize
+            }
+
+            var gates = [Gate]()
+            gates.reserveCapacity(padN * subSize)
+            for inst in 0..<padN {
+                let inputOffset = inst * inputPadSize
+                for g in subLayer.gates {
+                    gates.append(Gate(type: g.type,
+                                     leftInput: inputOffset + g.leftInput,
+                                     rightInput: inputOffset + g.rightInput))
+                }
+                // Pad to subSize with dummy gates (add 0+0)
+                for _ in subLayer.gates.count..<subSize {
+                    gates.append(Gate(type: .add, leftInput: inputOffset, rightInput: inputOffset))
+                }
+            }
+            combinedLayers.append(CircuitLayer(gates: gates))
+        }
+        return LayeredCircuit(layers: combinedLayers)
+    }
+
+    /// Build combined inputs: concatenate all instance inputs, padded per instance.
+    public func buildCombinedInputs() -> [Fr] {
+        let padN = paddedInstances
+        let inVars = inputVarsForLayer(0)
+        let inputPadSize = max(1, 1 << inVars)
+
+        var combined = [Fr](repeating: Fr.zero, count: padN * inputPadSize)
+        for (inst, inp) in instanceInputs.enumerated() {
+            for (j, v) in inp.enumerated() {
+                combined[inst * inputPadSize + j] = v
+            }
+        }
+        return combined
+    }
 }

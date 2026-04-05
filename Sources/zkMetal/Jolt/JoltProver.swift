@@ -1,30 +1,29 @@
 // Jolt Prover — Prove correct VM execution via Lasso structured lookups
 //
 // Jolt-style proof strategy (Arun et al. 2024):
-//   1. For each instruction step: verify instruction(a, b) = result via Lasso lookup
-//      into a decomposed instruction table. Each 32-bit operation is decomposed into
-//      4 byte-level subtable lookups, checked via sumcheck.
-//   2. Lasso range-check proof: all operand values (a, b, result) are in [0, 2^32).
-//   3. Operand commitments: (a, b, result) encoded as Fr for each step.
-//
-// The key Jolt insight: instead of arithmetic circuits per instruction, each instruction
-// execution is a single lookup into a precomputed table. Lasso's tensor structure
-// means only small (256 or 65536 entry) subtables are needed.
+//   1. For byte-decomposable ops (AND, OR, XOR): verify each instruction execution
+//      as a Lasso lookup into decomposed 8-bit subtables. 4 subtables of 65536 entries
+//      replace one table of 2^64 entries.
+//   2. For non-decomposable ops (ADD, SUB, MUL, shifts, comparisons): algebraic
+//      witness binding (a, b, result) tuples with semantic re-execution check.
+//   3. Lasso range-check proof: all operand values (a, b, result) are in [0, 2^32).
+//   4. Operand commitments: (a, b, result) encoded as Fr for each step.
 
 import Foundation
 
 // MARK: - Proof Types
 
-/// Proof for a group of instructions sharing the same opcode, verified via Lasso lookup.
+/// Proof for a group of instructions sharing the same opcode.
+/// Either verified via Lasso lookup (bitwise ops) or algebraic witness (others).
 public struct OpcodeProof {
     public let op: JoltOp
     /// Lasso proof for instruction lookup verification (or range-check)
     public let lassoProof: LassoProof?
-    /// Algebraic witness: (a, b, result) tuples as Fr (fallback for ops without Lasso tables)
+    /// Algebraic witness: (a, b, result) tuples as Fr (for non-Lasso-verified ops)
     public let algebraicWitness: [(Fr, Fr, Fr)]?
     /// Number of entries in this proof
     public let count: Int
-    /// Whether this is an instruction lookup proof (vs range-check or algebraic fallback)
+    /// Whether this is a Lasso instruction lookup proof (vs range-check or algebraic)
     public let isInstructionLookup: Bool
 
     public init(op: JoltOp, lassoProof: LassoProof?,
@@ -42,7 +41,7 @@ public struct OpcodeProof {
 public struct JoltProof {
     /// Total number of instructions proved
     public let numInstructions: Int
-    /// Per-opcode proofs: instruction lookups + range-check
+    /// Per-opcode proofs: Lasso instruction lookups + algebraic witnesses + range-check
     public let opcodeProofs: [OpcodeProof]
     /// Operand commitments: (a, b, result) encoded as Fr for each step
     public let operandCommitments: [(Fr, Fr, Fr)]
@@ -60,11 +59,9 @@ public struct JoltProof {
 public class JoltEngine {
     public static let version = Versions.joltVM
     public let lassoEngine: LassoEngine
-    public let instructionRegistry: InstructionTableRegistry
 
     public init() throws {
         self.lassoEngine = try LassoEngine()
-        self.instructionRegistry = InstructionTableRegistry()
     }
 
     // MARK: - Prove
@@ -72,10 +69,10 @@ public class JoltEngine {
     /// Prove correct execution of a Jolt trace.
     ///
     /// For each opcode group:
-    ///   - If the opcode has a Lasso instruction table: encode all (a, b) pairs as
-    ///     lookup values, prove via Lasso that each lookup yields the claimed result.
-    ///   - Otherwise: fall back to algebraic witness (a, b, result) tuples.
-    /// Additionally, a Lasso range-check proof ensures all values are valid 32-bit.
+    ///   - Byte-decomposable ops (AND, OR, XOR): Lasso instruction lookup proof.
+    ///     Each 32-bit operation decomposes into 4 byte-level subtable lookups.
+    ///   - All other ops: algebraic witness (a, b, result) binding.
+    /// Plus: Lasso range-check on all operand values.
     public func prove(trace: JoltTrace) throws -> JoltProof {
         let n = trace.steps.count
         precondition(n > 0, "Empty trace")
@@ -103,13 +100,12 @@ public class JoltEngine {
         for op in JoltOp.allCases {
             guard let steps = stepsByOp[op], !steps.isEmpty else { continue }
 
-            if let instrTable = instructionRegistry.table(for: op) {
+            if InstructionSubtable.isLassoVerified(op) {
                 // Jolt-style: prove via Lasso instruction lookup
-                let proof = try proveInstructionLookup(
-                    op: op, steps: steps, table: instrTable)
+                let proof = try proveInstructionLookup(op: op, steps: steps)
                 opcodeProofs.append(proof)
             } else {
-                // Fallback: algebraic witness for unsupported ops (MUL, EQ)
+                // Algebraic witness for non-decomposable ops
                 let witness = steps.map { step -> (Fr, Fr, Fr) in
                     (frFromInt(UInt64(step.a)),
                      frFromInt(UInt64(step.b)),
@@ -132,33 +128,13 @@ public class JoltEngine {
 
     // MARK: - Instruction Lookup Proof
 
-    /// Prove a batch of instruction executions via Lasso lookup.
-    /// Each (a, b, result) is encoded into a lookup value and proved against
-    /// the instruction's decomposed subtable.
+    /// Prove a batch of bitwise instruction executions via Lasso lookup.
+    /// Each (a, b) -> result is verified by decomposing into byte-level subtable lookups.
     private func proveInstructionLookup(
-        op: JoltOp, steps: [JoltStep],
-        table: any JoltInstructionTable
+        op: JoltOp, steps: [JoltStep]
     ) throws -> OpcodeProof {
-        let lassoTable = table.buildLassoTable()
-
-        // Encode each step as a lookup value
-        var lookups = [Fr]()
-        lookups.reserveCapacity(steps.count)
-        for step in steps {
-            let encoded = table.encodeLookups(a: step.a, b: step.b, result: step.result)
-            lookups.append(contentsOf: encoded)
-        }
-
-        // Pad to power of 2 (Lasso requirement)
-        var paddedCount = 1
-        while paddedCount < lookups.count { paddedCount <<= 1 }
-        // Pad with valid lookups (zero op zero = zero for all supported ops)
-        let zeroLookup = table.encodeLookups(a: 0, b: 0, result: 0)
-        while lookups.count < paddedCount {
-            lookups.append(contentsOf: zeroLookup)
-        }
-
-        let lassoProof = try lassoEngine.prove(lookups: lookups, table: lassoTable)
+        let (table, lookups) = InstructionSubtable.buildTable(op: op, steps: steps)
+        let lassoProof = try lassoEngine.prove(lookups: lookups, table: table)
 
         return OpcodeProof(
             op: op, lassoProof: lassoProof,
@@ -169,6 +145,7 @@ public class JoltEngine {
     // MARK: - Range Check Proof
 
     /// Prove all operand values are in [0, 2^32) via Lasso structured lookup.
+    /// Each 32-bit value is decomposed into 4 byte subtables (256 entries each).
     private func proveRangeCheck(trace: JoltTrace) throws -> OpcodeProof {
         var values = [Fr]()
         values.reserveCapacity(trace.steps.count * 3)
