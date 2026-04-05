@@ -3,6 +3,7 @@
 // Satisfying witness z: sum_j c_j * (prod_{i in S_j} M_i * z) = 0
 
 import Foundation
+import NeonFieldOps
 
 // MARK: - Sparse Matrix (CSR format)
 
@@ -26,16 +27,33 @@ public struct SparseMatrix {
         self.values = values
     }
 
-    /// Matrix-vector multiply: result = M * z
+    /// Matrix-vector multiply: result = M * z (C CIOS accelerated)
     public func mulVec(_ z: [Fr]) -> [Fr] {
         precondition(z.count == cols, "Vector length \(z.count) != matrix cols \(cols)")
         var result = [Fr](repeating: .zero, count: rows)
-        for i in 0..<rows {
-            var acc = Fr.zero
-            for k in rowPtr[i]..<rowPtr[i + 1] {
-                acc = frAdd(acc, frMul(values[k], z[colIdx[k]]))
+        let nRows = Int32(rows)
+        // Convert rowPtr/colIdx to Int32 for C interop
+        let rowPtr32 = rowPtr.map { Int32($0) }
+        let colIdx32 = colIdx.map { Int32($0) }
+        rowPtr32.withUnsafeBufferPointer { rpBuf in
+            colIdx32.withUnsafeBufferPointer { ciBuf in
+                values.withUnsafeBufferPointer { valBuf in
+                    z.withUnsafeBufferPointer { zBuf in
+                        result.withUnsafeMutableBufferPointer { resBuf in
+                            valBuf.baseAddress!.withMemoryRebound(to: UInt64.self, capacity: values.count * 4) { vPtr in
+                                zBuf.baseAddress!.withMemoryRebound(to: UInt64.self, capacity: z.count * 4) { zPtr in
+                                    resBuf.baseAddress!.withMemoryRebound(to: UInt64.self, capacity: rows * 4) { rPtr in
+                                        ccs_sparse_matvec(rPtr,
+                                                          rpBuf.baseAddress!, ciBuf.baseAddress!,
+                                                          vPtr, zPtr,
+                                                          nRows)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
-            result[i] = acc
         }
         return result
     }
@@ -138,44 +156,104 @@ public struct CCSInstance {
         self.numPublicInputs = numPublicInputs
     }
 
-    /// Check whether z satisfies the CCS constraints.
+    /// Check whether z satisfies the CCS constraints (C CIOS accelerated).
     /// z = [1, x_1, ..., x_l, w_1, ..., w_{n-l-1}]
     public func isSatisfied(z: [Fr]) -> Bool {
         precondition(z.count == n, "z length \(z.count) != n \(n)")
 
-        // Accumulator: sum of c_j * hadamard(M_{S_j} * z)
+        // Pre-compute all unique M_i * z
+        var matVecs = [[Fr]]()
+        matVecs.reserveCapacity(t)
+        for i in 0..<t {
+            matVecs.append(matrices[i].mulVec(z))
+        }
+
+        let maxDegree = d
         var acc = [Fr](repeating: .zero, count: m)
 
-        for j in 0..<q {
-            let sj = multisets[j]
-            // Compute hadamard product of M_i * z for i in S_j
-            var hadamard = [Fr](repeating: Fr.one, count: m)
-            for matIdx in sj {
-                let mv = matrices[matIdx].mulVec(z)
-                for i in 0..<m {
-                    hadamard[i] = frMul(hadamard[i], mv[i])
+        // Build flat pointer array and degree array for C
+        var nMatPerTerm = [Int32]()
+        nMatPerTerm.reserveCapacity(q)
+        // We need pointers into matVecs; collect them per term
+        var flatPtrs = [UnsafePointer<UInt64>?](repeating: nil, count: q * maxDegree)
+
+        // Pin matVecs so pointers stay valid
+        matVecs.withUnsafeMutableBufferPointer { mvBuf in
+            for j in 0..<q {
+                let sj = multisets[j]
+                nMatPerTerm.append(Int32(sj.count))
+                for (k, matIdx) in sj.enumerated() {
+                    mvBuf[matIdx].withUnsafeBufferPointer { buf in
+                        buf.baseAddress!.withMemoryRebound(to: UInt64.self, capacity: m * 4) { ptr in
+                            flatPtrs[j * maxDegree + k] = UnsafePointer(ptr)
+                        }
+                    }
                 }
             }
-            // acc += c_j * hadamard
-            for i in 0..<m {
-                acc[i] = frAdd(acc[i], frMul(coefficients[j], hadamard[i]))
+
+            flatPtrs.withUnsafeBufferPointer { fpBuf in
+                nMatPerTerm.withUnsafeBufferPointer { nmBuf in
+                    coefficients.withUnsafeBufferPointer { cBuf in
+                        acc.withUnsafeMutableBufferPointer { aBuf in
+                            // Cast pointers for C interop
+                            let ptrPtr = UnsafeRawPointer(fpBuf.baseAddress!)
+                                .assumingMemoryBound(to: UnsafePointer<UInt64>?.self)
+                            aBuf.baseAddress!.withMemoryRebound(to: UInt64.self, capacity: m * 4) { aPtr in
+                                cBuf.baseAddress!.withMemoryRebound(to: UInt64.self, capacity: q * 4) { cPtr in
+                                    ccs_hadamard_accumulate(aPtr, ptrPtr,
+                                                           nmBuf.baseAddress!,
+                                                           cPtr,
+                                                           Int32(q), Int32(maxDegree), Int32(m))
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 
         return acc.allSatisfy(\.isZero)
     }
 
-    /// Compute the j-th CCS term: c_j * hadamard(M_{S_j} * z)
+    /// Compute the j-th CCS term: c_j * hadamard(M_{S_j} * z) (C CIOS accelerated)
     public func computeTerm(j: Int, z: [Fr]) -> [Fr] {
         let sj = multisets[j]
-        var hadamard = [Fr](repeating: Fr.one, count: m)
+        // Pre-compute M_i * z for each matrix in the multiset
+        var matVecs = [[Fr]]()
+        matVecs.reserveCapacity(sj.count)
         for matIdx in sj {
-            let mv = matrices[matIdx].mulVec(z)
-            for i in 0..<m {
-                hadamard[i] = frMul(hadamard[i], mv[i])
+            matVecs.append(matrices[matIdx].mulVec(z))
+        }
+
+        var result = [Fr](repeating: .zero, count: m)
+        let nMats = Int32(sj.count)
+
+        matVecs.withUnsafeMutableBufferPointer { mvBuf in
+            var ptrs = [UnsafePointer<UInt64>?](repeating: nil, count: sj.count)
+            for k in 0..<sj.count {
+                mvBuf[k].withUnsafeBufferPointer { buf in
+                    buf.baseAddress!.withMemoryRebound(to: UInt64.self, capacity: m * 4) { ptr in
+                        ptrs[k] = UnsafePointer(ptr)
+                    }
+                }
+            }
+            ptrs.withUnsafeBufferPointer { pBuf in
+                coefficients.withUnsafeBufferPointer { cBuf in
+                    result.withUnsafeMutableBufferPointer { rBuf in
+                        let ptrPtr = UnsafeRawPointer(pBuf.baseAddress!)
+                            .assumingMemoryBound(to: UnsafePointer<UInt64>?.self)
+                        rBuf.baseAddress!.withMemoryRebound(to: UInt64.self, capacity: m * 4) { rPtr in
+                            cBuf.baseAddress!.withMemoryRebound(to: UInt64.self, capacity: q * 4) { cPtr in
+                                ccs_compute_term(rPtr, ptrPtr, nMats,
+                                                 cPtr + j * 4, Int32(m))
+                            }
+                        }
+                    }
+                }
             }
         }
-        return hadamard.map { frMul(coefficients[j], $0) }
+
+        return result
     }
 }
 

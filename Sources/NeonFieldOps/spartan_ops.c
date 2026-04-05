@@ -5,6 +5,7 @@
 #include "NeonFieldOps.h"
 #include <string.h>
 #include <stdlib.h>
+#include <pthread.h>
 
 typedef unsigned __int128 uint128_t;
 
@@ -290,4 +291,224 @@ void spartan_mle_eval(const uint64_t *evals, int numVars,
     }
     memcpy(result, buf, 32);
     free(buf);
+}
+
+// ============================================================
+// Tensor Proof Compression: C-accelerated operations
+// ============================================================
+
+// Thread argument for parallel mat-vec
+typedef struct {
+    const uint64_t *M;
+    const uint64_t *vec;
+    int cols;
+    int rowStart;
+    int rowEnd;
+    uint64_t *result;
+} TensorMVArg;
+
+static void *tensor_mv_worker(void *arg) {
+    TensorMVArg *a = (TensorMVArg *)arg;
+    for (int i = a->rowStart; i < a->rowEnd; i++) {
+        uint64_t acc[4] = {0,0,0,0};
+        const uint64_t *row = a->M + (size_t)i * a->cols * 4;
+        for (int j = 0; j < a->cols; j++) {
+            uint64_t prod[4];
+            sp_fr_mul(row + j * 4, a->vec + j * 4, prod);
+            sp_fr_add(acc, prod, acc);
+        }
+        memcpy(a->result + i * 4, acc, 32);
+    }
+    return NULL;
+}
+
+// Matrix-vector multiply: result[i] = sum_j M[i*cols+j] * vec[j].
+// Multi-threaded for large matrices.
+void tensor_mat_vec_mul(const uint64_t *M, const uint64_t *vec,
+                        int rows, int cols, uint64_t *result) {
+    int totalOps = rows * cols;
+    if (totalOps < 4096) {
+        // Single-threaded for small sizes
+        TensorMVArg arg = {M, vec, cols, 0, rows, result};
+        tensor_mv_worker(&arg);
+        return;
+    }
+    int nT = 8;
+    if (rows < nT) nT = rows;
+    int perT = (rows + nT - 1) / nT;
+    pthread_t threads[8];
+    TensorMVArg args[8];
+    for (int t = 0; t < nT; t++) {
+        args[t].M = M;
+        args[t].vec = vec;
+        args[t].cols = cols;
+        args[t].rowStart = t * perT;
+        args[t].rowEnd = (t + 1) * perT;
+        if (args[t].rowEnd > rows) args[t].rowEnd = rows;
+        args[t].result = result;
+        pthread_create(&threads[t], NULL, tensor_mv_worker, &args[t]);
+    }
+    for (int t = 0; t < nT; t++) pthread_join(threads[t], NULL);
+}
+
+// Full inner-product sumcheck: prove sum_i a[i]*b[i] = claimed.
+// Pre-derived challenges[numVars] determine each round's folding.
+// Output: rounds[numVars * 12] = 3 Fr per round (s0, s1, s2).
+//         finalEval[4] = final evaluation a[0]*b[0] after all folds.
+void tensor_inner_product_sumcheck(
+    const uint64_t *evalsA, const uint64_t *evalsB,
+    int numVars, const uint64_t *challenges,
+    uint64_t *rounds, uint64_t *finalEval)
+{
+    int n = 1 << numVars;
+    uint64_t *bufA = (uint64_t *)malloc((size_t)n * 32);
+    uint64_t *bufB = (uint64_t *)malloc((size_t)n * 32);
+    memcpy(bufA, evalsA, (size_t)n * 32);
+    memcpy(bufB, evalsB, (size_t)n * 32);
+
+    for (int round = 0; round < numVars; round++) {
+        int halfN = n / 2;
+        uint64_t *rout = rounds + round * 12;
+
+        uint64_t s0[4] = {0,0,0,0};
+        uint64_t s1[4] = {0,0,0,0};
+        uint64_t s2[4] = {0,0,0,0};
+
+        for (int i = 0; i < halfN; i++) {
+            const uint64_t *aLo = bufA + i * 4;
+            const uint64_t *aHi = bufA + (i + halfN) * 4;
+            const uint64_t *bLo = bufB + i * 4;
+            const uint64_t *bHi = bufB + (i + halfN) * 4;
+
+            // s0 += aLo * bLo
+            uint64_t prod[4];
+            sp_fr_mul(aLo, bLo, prod);
+            sp_fr_add(s0, prod, s0);
+
+            // s1 += aHi * bHi
+            sp_fr_mul(aHi, bHi, prod);
+            sp_fr_add(s1, prod, s1);
+
+            // s2 += (2*aHi - aLo) * (2*bHi - bLo)
+            uint64_t a2[4], b2[4];
+            sp_fr_add(aHi, aHi, a2);
+            sp_fr_sub(a2, aLo, a2);
+            sp_fr_add(bHi, bHi, b2);
+            sp_fr_sub(b2, bLo, b2);
+            sp_fr_mul(a2, b2, prod);
+            sp_fr_add(s2, prod, s2);
+        }
+
+        memcpy(rout, s0, 32);
+        memcpy(rout + 4, s1, 32);
+        memcpy(rout + 8, s2, 32);
+
+        // Fold: buf[i] = buf[i] + challenge * (buf[halfN+i] - buf[i])
+        const uint64_t *ch = challenges + round * 4;
+        for (int i = 0; i < halfN; i++) {
+            uint64_t diffA[4], prodA[4], resA[4];
+            sp_fr_sub(bufA + (i + halfN) * 4, bufA + i * 4, diffA);
+            sp_fr_mul(ch, diffA, prodA);
+            sp_fr_add(bufA + i * 4, prodA, resA);
+            memcpy(bufA + i * 4, resA, 32);
+
+            uint64_t diffB[4], prodB[4], resB[4];
+            sp_fr_sub(bufB + (i + halfN) * 4, bufB + i * 4, diffB);
+            sp_fr_mul(ch, diffB, prodB);
+            sp_fr_add(bufB + i * 4, prodB, resB);
+            memcpy(bufB + i * 4, resB, 32);
+        }
+        n = halfN;
+    }
+
+    sp_fr_mul(bufA, bufB, finalEval);
+    free(bufA);
+    free(bufB);
+}
+
+// Thread argument for parallel eq-weighted-row
+typedef struct {
+    const uint64_t *M;
+    const uint64_t *eq;
+    int cols;
+    int rowStart;
+    int rowEnd;
+    uint64_t *partialResult; // per-thread private buffer (cols Fr elements)
+} TensorEWRArg;
+
+static void *tensor_ewr_worker(void *arg) {
+    TensorEWRArg *a = (TensorEWRArg *)arg;
+    memset(a->partialResult, 0, (size_t)a->cols * 32);
+    for (int i = a->rowStart; i < a->rowEnd; i++) {
+        const uint64_t *weight = a->eq + i * 4;
+        if (weight[0] == 0 && weight[1] == 0 && weight[2] == 0 && weight[3] == 0)
+            continue;
+        const uint64_t *row = a->M + (size_t)i * a->cols * 4;
+        for (int j = 0; j < a->cols; j++) {
+            uint64_t prod[4];
+            sp_fr_mul(weight, row + j * 4, prod);
+            sp_fr_add(a->partialResult + j * 4, prod, a->partialResult + j * 4);
+        }
+    }
+    return NULL;
+}
+
+// Fused eq polynomial + weighted matrix row evaluation.
+// Multi-threaded for large matrices.
+void tensor_eq_weighted_row(const uint64_t *M, const uint64_t *rowPoint,
+                            int rows, int cols, uint64_t *result) {
+    uint64_t *eq = (uint64_t *)malloc((size_t)rows * 32);
+    int logRows = 0;
+    { int tmp = rows; while (tmp > 1) { logRows++; tmp >>= 1; } }
+    spartan_eq_poly(rowPoint, logRows, eq);
+
+    int totalOps = rows * cols;
+    if (totalOps < 4096) {
+        // Single-threaded
+        memset(result, 0, (size_t)cols * 32);
+        for (int i = 0; i < rows; i++) {
+            const uint64_t *weight = eq + i * 4;
+            if (weight[0] == 0 && weight[1] == 0 && weight[2] == 0 && weight[3] == 0)
+                continue;
+            const uint64_t *row = M + (size_t)i * cols * 4;
+            for (int j = 0; j < cols; j++) {
+                uint64_t prod[4];
+                sp_fr_mul(weight, row + j * 4, prod);
+                sp_fr_add(result + j * 4, prod, result + j * 4);
+            }
+        }
+        free(eq);
+        return;
+    }
+
+    int nT = 8;
+    if (rows < nT) nT = rows;
+    int perT = (rows + nT - 1) / nT;
+    pthread_t threads[8];
+    TensorEWRArg args[8];
+    uint64_t *partials = (uint64_t *)malloc((size_t)nT * cols * 32);
+
+    for (int t = 0; t < nT; t++) {
+        args[t].M = M;
+        args[t].eq = eq;
+        args[t].cols = cols;
+        args[t].rowStart = t * perT;
+        args[t].rowEnd = (t + 1) * perT;
+        if (args[t].rowEnd > rows) args[t].rowEnd = rows;
+        args[t].partialResult = partials + (size_t)t * cols * 4;
+        pthread_create(&threads[t], NULL, tensor_ewr_worker, &args[t]);
+    }
+    for (int t = 0; t < nT; t++) pthread_join(threads[t], NULL);
+
+    // Reduce partial results
+    memcpy(result, partials, (size_t)cols * 32);
+    for (int t = 1; t < nT; t++) {
+        const uint64_t *pr = partials + (size_t)t * cols * 4;
+        for (int j = 0; j < cols; j++) {
+            sp_fr_add(result + j * 4, pr + j * 4, result + j * 4);
+        }
+    }
+
+    free(partials);
+    free(eq);
 }

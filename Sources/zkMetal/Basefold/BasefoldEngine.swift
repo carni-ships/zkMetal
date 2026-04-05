@@ -6,6 +6,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 // MARK: - Data Structures
 
@@ -51,6 +52,10 @@ public class BasefoldEngine {
 
     private lazy var merkleEngine: Poseidon2MerkleEngine = {
         try! Poseidon2MerkleEngine()
+    }()
+
+    private lazy var poseidon2: Poseidon2Engine = {
+        try! Poseidon2Engine()
     }()
 
     /// Number of random queries for verification (128-bit security)
@@ -149,6 +154,9 @@ public class BasefoldEngine {
     /// Open the committed polynomial at point (r_1, ..., r_n).
     /// Performs n rounds of multilinear folding, producing Merkle commitments at each level.
     /// Generates query proofs for random verification indices.
+    // Set to true temporarily to profile open() phases
+    private static let profileOpen = false
+
     public func open(commitment: BasefoldCommitment, point: [Fr]) throws -> BasefoldProof {
         let evals = commitment.evaluations
         let n = evals.count
@@ -157,196 +165,129 @@ public class BasefoldEngine {
 
         let stride = MemoryLayout<Fr>.stride
 
-        // Fold on GPU, storing each intermediate layer
+        // Phase 1: Fold all rounds on CPU using C CIOS (single call, minimal allocation).
+        let totalOut = n - 1  // n/2 + n/4 + ... + 1
+        let flatBuf = UnsafeMutablePointer<UInt64>.allocate(capacity: totalOut * 4)
+        defer { flatBuf.deallocate() }
+
+        evals.withUnsafeBytes { evalsPtr in
+            point.withUnsafeBytes { pointPtr in
+                bn254_fr_basefold_fold_all(
+                    evalsPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(numVars),
+                    pointPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    flatBuf
+                )
+            }
+        }
+
+        // Phase 2: Extract layers and build Merkle trees.
+        // Use a single unified GPU buffer for all trees (reduces allocation + buffer binding overhead).
+        // Total tree nodes across all layers = sum(2*layerN - 1) for layerN > 1.
         var layers: [[Fr]] = []
+        layers.reserveCapacity(numVars)
         var roots: [Fr] = []
+        roots.reserveCapacity(numVars)
 
-        // Allocate layer buffers on GPU
-        var layerBufs: [MTLBuffer] = []
-        var layerSizes: [Int] = [n]
-
-        // Input buffer
-        if n > inputBufElements {
-            guard let buf = device.makeBuffer(length: n * stride, options: .storageModeShared) else {
-                throw MSMError.gpuError("Failed to create input buffer")
-            }
-            inputBuf = buf
-            inputBufElements = n
-        }
-        evals.withUnsafeBytes { src in
-            memcpy(inputBuf!.contents(), src.baseAddress!, n * stride)
-        }
-        layerBufs.append(inputBuf!)
-
-        for i in 0..<numVars {
-            let layerN = n >> (i + 1)
-            guard let buf = device.makeBuffer(length: layerN * stride, options: .storageModeShared) else {
-                throw MSMError.gpuError("Failed to create layer buffer")
-            }
-            layerBufs.append(buf)
-            layerSizes.append(layerN)
-        }
-
-        // Fold: single command buffer for all rounds
-        guard let cmdBuf = commandQueue.makeCommandBuffer() else {
-            throw MSMError.noCommandBuffer
-        }
-        let enc = cmdBuf.makeComputeCommandEncoder()!
-        var i = 0
-        while i < numVars {
-            let curN = layerSizes[i]
-            let halfN = curN / 2
-
-            if i + 1 < numVars && curN >= 4 {
-                // Fused 2-round fold
-                let quarterN = curN / 4
-                var alpha0 = point[i]
-                var alpha1 = point[i + 1]
-                var qnVal = UInt32(quarterN)
-                enc.setComputePipelineState(foldFused2Function)
-                enc.setBuffer(layerBufs[i], offset: 0, index: 0)
-                enc.setBuffer(layerBufs[i + 2], offset: 0, index: 1)
-                enc.setBytes(&alpha0, length: stride, index: 2)
-                enc.setBytes(&alpha1, length: stride, index: 3)
-                enc.setBytes(&qnVal, length: 4, index: 4)
-                let tg = min(tuning.friThreadgroupSize, Int(foldFused2Function.maxTotalThreadsPerThreadgroup))
-                enc.dispatchThreads(MTLSize(width: quarterN, height: 1, depth: 1),
-                                   threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
-
-                // We also need the intermediate layer (after fold i but before fold i+1)
-                // Dispatch a separate fold for the intermediate
-                enc.memoryBarrier(scope: .buffers)
-
-                // Compute intermediate layer i -> i+1 separately for Merkle/query
-                var alphaI = point[i]
-                var hnVal = UInt32(halfN)
-                enc.setComputePipelineState(foldFunction)
-                enc.setBuffer(layerBufs[i], offset: 0, index: 0)
-                enc.setBuffer(layerBufs[i + 1], offset: 0, index: 1)
-                enc.setBytes(&alphaI, length: stride, index: 2)
-                enc.setBytes(&hnVal, length: 4, index: 3)
-                let tg2 = min(tuning.friThreadgroupSize, Int(foldFunction.maxTotalThreadsPerThreadgroup))
-                enc.dispatchThreads(MTLSize(width: halfN, height: 1, depth: 1),
-                                   threadsPerThreadgroup: MTLSize(width: tg2, height: 1, depth: 1))
-
-                if i + 2 < numVars { enc.memoryBarrier(scope: .buffers) }
-                i += 2
-            } else {
-                // Single-round fold
-                var alpha = point[i]
-                var hnVal = UInt32(halfN)
-                enc.setComputePipelineState(foldFunction)
-                enc.setBuffer(layerBufs[i], offset: 0, index: 0)
-                enc.setBuffer(layerBufs[i + 1], offset: 0, index: 1)
-                enc.setBytes(&alpha, length: stride, index: 2)
-                enc.setBytes(&hnVal, length: 4, index: 3)
-                let tg = min(tuning.friThreadgroupSize, Int(foldFunction.maxTotalThreadsPerThreadgroup))
-                enc.dispatchThreads(MTLSize(width: halfN, height: 1, depth: 1),
-                                   threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
-                if i + 1 < numVars { enc.memoryBarrier(scope: .buffers) }
-                i += 1
-            }
-        }
-        enc.endEncoding()
-        cmdBuf.commit()
-        cmdBuf.waitUntilCompleted()
-        if let error = cmdBuf.error {
-            throw MSMError.gpuError(error.localizedDescription)
-        }
-
-        // Read back all intermediate layers
-        for i in 1...numVars {
-            let count = layerSizes[i]
-            let ptr = layerBufs[i].contents().bindMemory(to: Fr.self, capacity: count)
-            layers.append(Array(UnsafeBufferPointer(start: ptr, count: count)))
-        }
-
-        // Build Merkle trees with overlapped GPU command buffers.
-        // Original: 17 sequential buildTree calls, each ~7ms CB overhead = ~120ms.
-        // Optimized: submit all CBs before waiting, GPU pipelines work = ~90ms savings.
-        var layerTrees: [[Fr]] = []
-        var treeBufs: [MTLBuffer?] = []
-        var treeSizesArr: [Int] = []
+        // Compute tree layout in unified buffer
+        var treeOffsets: [Int] = []  // byte offset of each tree in unified buffer
+        var treeSizesArr: [Int] = []  // leaf count per tree
         var treeNodeCounts: [Int] = []
-        if n != cachedTreeBufsN {
-            cachedTreeBufsArr.removeAll()
-            cachedTreeBufsN = n
-        }
-        var tbIdx = 0
-        for layer in layers {
-            let layerN = layer.count
+        var unifiedSize = 0
+
+        var flatOffset = 0
+        for round in 0..<numVars {
+            let layerN = n >> (round + 1)
+            let layerPtr = UnsafeRawPointer(flatBuf + flatOffset * 4).assumingMemoryBound(to: Fr.self)
+            layers.append(Array(UnsafeBufferPointer(start: layerPtr, count: layerN)))
+
             if layerN <= 1 {
-                roots.append(layerN == 1 ? layer[0] : Fr.zero)
-                layerTrees.append(layer)
-                treeBufs.append(nil)
+                roots.append(layerN == 1 ? layers.last![0] : Fr.zero)
+                treeOffsets.append(-1)
                 treeSizesArr.append(0)
                 treeNodeCounts.append(0)
             } else {
                 let treeSize = 2 * layerN - 1
-                let tb: MTLBuffer
-                if tbIdx < cachedTreeBufsArr.count && cachedTreeBufsArr[tbIdx].length >= treeSize * stride {
-                    tb = cachedTreeBufsArr[tbIdx]
-                } else {
-                    guard let buf = device.makeBuffer(length: treeSize * stride, options: .storageModeShared) else {
-                        throw MSMError.gpuError("Failed to create tree buffer")
-                    }
-                    if tbIdx < cachedTreeBufsArr.count { cachedTreeBufsArr[tbIdx] = buf }
-                    else { cachedTreeBufsArr.append(buf) }
-                    tb = buf
-                }
-                tbIdx += 1
-                layer.withUnsafeBytes { src in memcpy(tb.contents(), src.baseAddress!, layerN * stride) }
-                treeBufs.append(tb)
+                treeOffsets.append(unifiedSize)
                 treeSizesArr.append(layerN)
                 treeNodeCounts.append(treeSize)
+                unifiedSize += treeSize
                 roots.append(Fr.zero)
-                layerTrees.append([])
             }
+            flatOffset += layerN
         }
+
+        // Allocate or reuse unified buffer
+        if cachedTreeBufsArr.isEmpty || cachedTreeBufsArr[0].length < unifiedSize * stride {
+            guard let buf = device.makeBuffer(length: unifiedSize * stride, options: .storageModeShared) else {
+                throw MSMError.gpuError("Failed to create unified tree buffer")
+            }
+            cachedTreeBufsArr = [buf]
+        }
+        let unifiedBuf = cachedTreeBufsArr[0]
+
+        // Copy all leaves into the unified buffer
+        flatOffset = 0
+        for round in 0..<numVars {
+            let layerN = n >> (round + 1)
+            if treeOffsets[round] >= 0 {
+                let dstOffset = treeOffsets[round] * stride
+                memcpy(unifiedBuf.contents() + dstOffset, flatBuf + flatOffset * 4, layerN * stride)
+            }
+            flatOffset += layerN
+        }
+
         // Build Merkle trees with overlapped GPU command buffers.
-        // Batch small trees into one CB, separate overlapped CBs for large trees.
+        // Individual CBs for large trees enable GPU pipelining.
+        // Small trees batched into one CB.
         var smallIdxs: [Int] = []
         var largeIdxs: [Int] = []
-        for (idx, sz) in treeSizesArr.enumerated() {
-            guard sz > 0 else { continue }
-            if sz < 8192 { smallIdxs.append(idx) } else { largeIdxs.append(idx) }
+        for round in 0..<numVars {
+            guard treeSizesArr[round] > 0 else { continue }
+            if treeSizesArr[round] >= 8192 { largeIdxs.append(round) } else { smallIdxs.append(round) }
         }
+
         var allCBs: [(Int, MTLCommandBuffer)] = []
+        for idx in largeIdxs {
+            guard let cb = commandQueue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
+            let e = cb.makeComputeCommandEncoder()!
+            merkleEngine.encodeMerkleRoot(encoder: e, treeBuf: unifiedBuf,
+                                          treeOffset: treeOffsets[idx] * stride,
+                                          n: treeSizesArr[idx])
+            e.endEncoding()
+            cb.commit()
+            allCBs.append((idx, cb))
+        }
         if !smallIdxs.isEmpty {
             guard let cb = commandQueue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
             let e = cb.makeComputeCommandEncoder()!
             for (j, idx) in smallIdxs.enumerated() {
                 if j > 0 { e.memoryBarrier(scope: .buffers) }
-                merkleEngine.encodeMerkleRoot(encoder: e, treeBuf: treeBufs[idx]!, treeOffset: 0, n: treeSizesArr[idx])
+                merkleEngine.encodeMerkleRoot(encoder: e, treeBuf: unifiedBuf,
+                                              treeOffset: treeOffsets[idx] * stride,
+                                              n: treeSizesArr[idx])
             }
             e.endEncoding()
             cb.commit()
             allCBs.append((-1, cb))
         }
-        for idx in largeIdxs {
-            guard let cb = commandQueue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
-            let e = cb.makeComputeCommandEncoder()!
-            merkleEngine.encodeMerkleRoot(encoder: e, treeBuf: treeBufs[idx]!, treeOffset: 0, n: treeSizesArr[idx])
-            e.endEncoding()
-            cb.commit()
-            allCBs.append((idx, cb))
-        }
+
         for (idx, cb) in allCBs {
             cb.waitUntilCompleted()
             if let err = cb.error { throw MSMError.gpuError("Merkle[\(idx)]: \(err.localizedDescription)") }
             let readIdxs = idx == -1 ? smallIdxs : [idx]
             for ri in readIdxs {
                 let tsz = treeNodeCounts[ri]
-                let ptr = treeBufs[ri]!.contents().bindMemory(to: Fr.self, capacity: tsz)
-                layerTrees[ri] = Array(UnsafeBufferPointer(start: ptr, count: tsz))
-                roots[ri] = layerTrees[ri].last!
+                let off = treeOffsets[ri]
+                let ptr = (unifiedBuf.contents() + off * stride).bindMemory(to: Fr.self, capacity: tsz)
+                roots[ri] = ptr[tsz - 1]
             }
         }
 
         // Final value
         let finalValue = layers.last![0]
 
-        // Generate query proofs using deterministic indices derived from roots
+        // Phase 3: Generate query proofs with zero-copy Merkle path extraction.
         var rng: UInt64 = 0
         for r in roots {
             rng ^= frToUInt64(r)
@@ -358,12 +299,15 @@ public class BasefoldEngine {
         for _ in 0..<numQueries {
             rng = rng &* 6364136223846793005 &+ 1442695040888963407
             let queryIdx = Int(rng >> 32) % (n / 2)
-            let proof = generateQueryProof(
+            let proof = generateQueryProofUnified(
                 index: queryIdx,
                 originalTree: commitment.tree,
                 originalEvals: evals,
                 layers: layers,
-                layerTrees: layerTrees,
+                unifiedBuf: unifiedBuf,
+                treeOffsets: treeOffsets,
+                treeNodeCounts: treeNodeCounts,
+                treeSizes: treeSizesArr,
                 numVars: numVars,
                 point: point
             )
@@ -376,6 +320,148 @@ public class BasefoldEngine {
             layers: layers,
             queryProofs: queryProofs
         )
+    }
+
+    /// Generate query proof using unified tree buffer (zero-copy Merkle path extraction).
+    private func generateQueryProofUnified(
+        index: Int,
+        originalTree: [Fr],
+        originalEvals: [Fr],
+        layers: [[Fr]],
+        unifiedBuf: MTLBuffer,
+        treeOffsets: [Int],
+        treeNodeCounts: [Int],
+        treeSizes: [Int],
+        numVars: Int,
+        point: [Fr]
+    ) -> BasefoldQueryProof {
+        var evalPairs: [(Fr, Fr)] = []
+        var foldResults: [Fr] = []
+        var merklePaths: [[Fr]] = []
+        var idx = index
+        let n = originalEvals.count
+        let stride = MemoryLayout<Fr>.stride
+
+        // Level 0: original evaluations
+        let halfN0 = n / 2
+        let canonIdx0 = idx % halfN0
+        let a0 = originalEvals[canonIdx0]
+        let b0 = originalEvals[canonIdx0 + halfN0]
+        evalPairs.append((a0, b0))
+        merklePaths.append(extractMerklePath(tree: originalTree, leafCount: n, index: canonIdx0))
+        let fold0 = frAdd(a0, frMul(point[0], frSub(b0, a0)))
+        foldResults.append(fold0)
+        idx = canonIdx0
+
+        // Subsequent levels: extract paths from unified buffer
+        for level in 0..<layers.count - 1 {
+            let layer = layers[level]
+            let layerN = layer.count
+            let halfN = layerN / 2
+            if halfN == 0 { break }
+            let canonIdx = idx % halfN
+            let a = layer[canonIdx]
+            let b = layer[canonIdx + halfN]
+            evalPairs.append((a, b))
+
+            if treeOffsets[level] >= 0 && treeNodeCounts[level] > 0 {
+                let treePtr = (unifiedBuf.contents() + treeOffsets[level] * stride).bindMemory(to: Fr.self, capacity: treeNodeCounts[level])
+                merklePaths.append(extractMerklePathFromPtr(tree: treePtr, treeSize: treeNodeCounts[level], leafCount: treeSizes[level], index: canonIdx))
+            } else {
+                merklePaths.append([])
+            }
+
+            let foldR = frAdd(a, frMul(point[level + 1], frSub(b, a)))
+            foldResults.append(foldR)
+            idx = canonIdx
+        }
+
+        return BasefoldQueryProof(
+            index: index,
+            evaluationPairs: evalPairs,
+            foldResults: foldResults,
+            merklePaths: merklePaths
+        )
+    }
+
+    /// Generate a query proof for a single index, using GPU buffer pointers for Merkle path extraction.
+    private func generateQueryProofZeroCopy(
+        index: Int,
+        originalTree: [Fr],
+        originalEvals: [Fr],
+        layers: [[Fr]],
+        treeBufPtrs: [MTLBuffer?],
+        treeNodeCounts: [Int],
+        treeSizes: [Int],
+        numVars: Int,
+        point: [Fr]
+    ) -> BasefoldQueryProof {
+        var evalPairs: [(Fr, Fr)] = []
+        var foldResults: [Fr] = []
+        var merklePaths: [[Fr]] = []
+        var idx = index
+        let n = originalEvals.count
+
+        // Level 0: original evaluations
+        let halfN0 = n / 2
+        let canonIdx0 = idx % halfN0
+        let a0 = originalEvals[canonIdx0]
+        let b0 = originalEvals[canonIdx0 + halfN0]
+        evalPairs.append((a0, b0))
+        merklePaths.append(extractMerklePath(tree: originalTree, leafCount: n, index: canonIdx0))
+        let fold0 = frAdd(a0, frMul(point[0], frSub(b0, a0)))
+        foldResults.append(fold0)
+        idx = canonIdx0
+
+        // Subsequent levels: extract Merkle paths directly from GPU buffer pointers
+        for level in 0..<layers.count - 1 {
+            let layer = layers[level]
+            let layerN = layer.count
+            let halfN = layerN / 2
+            if halfN == 0 { break }
+            let canonIdx = idx % halfN
+            let a = layer[canonIdx]
+            let b = layer[canonIdx + halfN]
+            evalPairs.append((a, b))
+
+            // Extract Merkle path from GPU buffer (zero-copy)
+            if let treeBuf = treeBufPtrs[level], treeNodeCounts[level] > 0 {
+                let treePtr = treeBuf.contents().bindMemory(to: Fr.self, capacity: treeNodeCounts[level])
+                merklePaths.append(extractMerklePathFromPtr(tree: treePtr, treeSize: treeNodeCounts[level], leafCount: treeSizes[level], index: canonIdx))
+            } else {
+                merklePaths.append([])
+            }
+
+            let foldR = frAdd(a, frMul(point[level + 1], frSub(b, a)))
+            foldResults.append(foldR)
+            idx = canonIdx
+        }
+
+        return BasefoldQueryProof(
+            index: index,
+            evaluationPairs: evalPairs,
+            foldResults: foldResults,
+            merklePaths: merklePaths
+        )
+    }
+
+    /// Extract Merkle path directly from an unsafe pointer (zero-copy from GPU buffer).
+    private func extractMerklePathFromPtr(tree: UnsafePointer<Fr>, treeSize: Int, leafCount: Int, index: Int) -> [Fr] {
+        var path = [Fr]()
+        var idx = index
+        var levelStart = 0
+        var levelSize = leafCount
+
+        while levelSize > 1 {
+            let siblingIdx = idx ^ 1
+            if levelStart + siblingIdx < treeSize {
+                path.append(tree[levelStart + siblingIdx])
+            }
+            idx /= 2
+            levelStart += levelSize
+            levelSize /= 2
+        }
+        return path
     }
 
     /// Generate a query proof for a single index.
@@ -479,29 +565,48 @@ public class BasefoldEngine {
 
     /// CPU fold for correctness verification.
     /// Identical to sumcheck reduce: out[j] = evals[j] + alpha * (evals[j + half] - evals[j])
+    /// Uses C CIOS Montgomery arithmetic for speed.
     public static func cpuFold(evals: [Fr], alpha: Fr) -> [Fr] {
         let n = evals.count
         let halfN = n / 2
         var result = [Fr](repeating: Fr.zero, count: halfN)
-        for i in 0..<halfN {
-            let a = evals[i]
-            let b = evals[i + halfN]
-            let diff = frSub(b, a)
-            let rDiff = frMul(alpha, diff)
-            result[i] = frAdd(a, rDiff)
+        var alphaVal = alpha
+        evals.withUnsafeBytes { evalsPtr in
+            result.withUnsafeMutableBytes { resultPtr in
+                withUnsafeBytes(of: &alphaVal) { alphaPtr in
+                    bn254_fr_basefold_fold(
+                        evalsPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        resultPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        alphaPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        UInt32(halfN)
+                    )
+                }
+            }
         }
         return result
     }
 
     /// CPU evaluation of multilinear polynomial at a point.
-    /// f(r_1, ..., r_n) via sequential folding.
+    /// f(r_1, ..., r_n) via sequential folding. Uses C CIOS all-rounds fold.
     public static func cpuEvaluate(evals: [Fr], point: [Fr]) -> Fr {
-        var current = evals
-        for alpha in point {
-            current = cpuFold(evals: current, alpha: alpha)
+        let numVars = point.count
+        precondition(evals.count == (1 << numVars))
+        let totalOut = evals.count - 1  // n/2 + n/4 + ... + 1
+        var outLayers = [Fr](repeating: Fr.zero, count: totalOut)
+        evals.withUnsafeBytes { evalsPtr in
+            point.withUnsafeBytes { pointPtr in
+                outLayers.withUnsafeMutableBytes { outPtr in
+                    bn254_fr_basefold_fold_all(
+                        evalsPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(numVars),
+                        pointPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        outPtr.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    )
+                }
+            }
         }
-        precondition(current.count == 1)
-        return current[0]
+        // Final value is the last element
+        return outLayers[totalOut - 1]
     }
 
     // MARK: - GPU Fold (Array API)
@@ -656,6 +761,54 @@ public class BasefoldEngine {
             memcpy(buf.contents(), src.baseAddress!, byteCount)
         }
         return buf
+    }
+
+    /// Custom Merkle build for large trees (>65536 leaves) using fused subtrees + level-by-level.
+    /// This extends the Poseidon2MerkleEngine approach to larger trees, saving ~30% vs pure level-by-level.
+    private func encodeLargeMerkleRoot(encoder: MTLComputeCommandEncoder,
+                                        treeBuf: MTLBuffer, treeOffset: Int,
+                                        n: Int) {
+        let stride = MemoryLayout<Fr>.stride
+        let subtreeSize = Poseidon2Engine.merkleSubtreeSize  // 1024
+
+        if n <= 65536 {
+            // Use standard path for <=65536
+            merkleEngine.encodeMerkleRoot(encoder: encoder, treeBuf: treeBuf, treeOffset: treeOffset, n: n)
+            return
+        }
+
+        // Fused subtrees for bottom 10 levels (1024 leaves each)
+        let numSubtrees = n / subtreeSize
+        let rootsOffset = treeOffset + n * stride
+        poseidon2.encodeMerkleFused(encoder: encoder,
+                                     leavesBuffer: treeBuf, leavesOffset: treeOffset,
+                                     rootsBuffer: treeBuf, rootsOffset: rootsOffset,
+                                     numSubtrees: numSubtrees)
+
+        // Level-by-level for remaining levels above the subtree roots
+        var levelStart = n  // subtree roots start at offset n
+        var levelSize = numSubtrees
+        while levelSize > 1 {
+            encoder.memoryBarrier(scope: .buffers)
+            // Use fused subtree if remaining levels fit in one subtree
+            if levelSize >= 2 && levelSize <= subtreeSize && (levelSize & (levelSize - 1)) == 0 {
+                let rootOffset = treeOffset + (2 * n - 2) * stride
+                poseidon2.encodeMerkleFused(encoder: encoder,
+                                             leavesBuffer: treeBuf, leavesOffset: treeOffset + levelStart * stride,
+                                             rootsBuffer: treeBuf, rootsOffset: rootOffset,
+                                             numSubtrees: 1, subtreeSize: levelSize)
+                break
+            }
+            let parentCount = levelSize / 2
+            let inputOffset = treeOffset + levelStart * stride
+            let outputOffset = treeOffset + (levelStart + levelSize) * stride
+            poseidon2.encodeHashPairs(encoder: encoder, buffer: treeBuf,
+                                      inputOffset: inputOffset,
+                                      outputOffset: outputOffset,
+                                      count: parentCount)
+            levelStart += levelSize
+            levelSize = parentCount
+        }
     }
 
     /// Extract Merkle authentication path for a leaf index.

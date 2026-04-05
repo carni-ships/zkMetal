@@ -50,6 +50,17 @@ public func runMarlinBench() {
         let verifyMs = (CFAbsoluteTimeGetCurrent() - t2) * 1000
         fputs(String(format: "  Verify: %.1fms -- %@\n", verifyMs, valid ? "VALID" : "INVALID"), stderr)
 
+        // Run verify 10 times to get stable median
+        var verifyTimes = [Double]()
+        for _ in 0..<10 {
+            let vt = CFAbsoluteTimeGetCurrent()
+            _ = engine.verify(vk: vk, publicInput: pub, proof: proof)
+            verifyTimes.append((CFAbsoluteTimeGetCurrent() - vt) * 1000)
+        }
+        verifyTimes.sort()
+        let median = verifyTimes[5]
+        fputs(String(format: "  Verify median(10): %.2fms\n", median), stderr)
+
         // Reference: MarlinTestProver
         fputs("\n  MarlinTestProver (reference):\n", stderr)
         let testProver = MarlinTestProver(kzg: kzg)

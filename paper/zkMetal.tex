@@ -1,0 +1,471 @@
+% USENIX Security format
+\documentclass[letterpaper,twocolumn,10pt]{article}
+\usepackage{usenix-2020-09}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{amsmath,amssymb}
+\usepackage{hyperref}
+\usepackage{xspace}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{balance}
+
+\newcommand{\sys}{zkMetal\xspace}
+\newcommand{\ie}{\textit{i.e.}\xspace}
+\newcommand{\eg}{\textit{e.g.}\xspace}
+
+\begin{document}
+
+\title{\sys: Exploiting Unified Memory and 32-bit ALUs for\\Zero-Knowledge Cryptography on Apple Silicon GPUs}
+
+\author{
+{\rm Anonymous}\\
+Under Submission
+}
+
+\maketitle
+
+% ============================================================================
+% ABSTRACT
+% ============================================================================
+\begin{abstract}
+Apple Silicon's unified memory architecture and 32-bit GPU ALU create a
+fundamentally different optimization landscape for zero-knowledge
+cryptography than discrete GPUs with native 64-bit integer units. We present
+\sys, the first comprehensive ZK cryptography library for Metal GPUs,
+covering 60+ primitives across 18 fields and 10 elliptic curves. We report
+three categories of findings: (1)~a previously undocumented M-series GPU
+scheduling pathology where specific threadgroup counts cause 10--30$\times$
+performance cliffs, requiring workload-aware configuration tables; (2)~a
+systematic methodology for field-hardware co-design, showing that 32-bit ALU
+limitations become advantages for small fields (BabyBear 8.5B~elem/s NTT,
+Mersenne31 fused kernels) while requiring CIOS Montgomery with explicit
+carry management for 256-bit fields; (3)~a C/NEON acceleration layer that
+achieves 10--134$\times$ over baseline Swift across all CPU primitives.
+Against ICICLE-Metal (the only other Metal ZK library), \sys is
+30--500$\times$ faster on NTT and 6--40$\times$ faster on MSM. We
+characterize performance relative to hardware theoretical floors, finding
+primitives ranging from 1.2$\times$ (BabyBear NTT) to 9$\times$ (BN254 MSM)
+of limits, and catalog 30+ dead-end optimizations as negative results.
+\end{abstract}
+
+% ============================================================================
+% SECTION 1: INTRODUCTION
+% ============================================================================
+\section{Introduction}
+\label{sec:intro}
+
+Zero-knowledge proof systems have transitioned from theoretical curiosities
+to deployed infrastructure. ZK rollups secure billions of dollars in
+on-chain assets~\cite{zksync,starknet}, client-side proving enables
+privacy-preserving identity~\cite{semaphore,anon-aadhaar}, and verifiable
+computation is becoming a standard component of distributed
+systems~\cite{risc0,sp1}. As these applications mature, the computational
+cost of proof generation---dominated by multi-scalar multiplication (MSM),
+number-theoretic transforms (NTT), and cryptographic hashing---becomes the
+primary bottleneck.
+
+The ZK acceleration landscape has focused almost exclusively on NVIDIA GPUs.
+Libraries such as ICICLE~\cite{icicle}, cuZK~\cite{cuzk}, and ZPrize
+submissions~\cite{zprize2022,zprize2023} target CUDA, exploiting native
+64-bit integer multiply, high memory bandwidth (900+~GB/s on A100), and a
+mature compiler toolchain. This focus is understandable: discrete GPUs offer
+raw throughput that integrated GPUs cannot match. However, it leaves a
+significant gap.
+
+Apple Silicon now powers over 50\% of the premium laptop and tablet
+market~\cite{apple-market-share}. MacBooks, iPads, and iPhones increasingly
+serve as targets for client-side ZK proving---mobile wallets, browser-based
+provers, and edge verification nodes. These devices expose GPU compute only
+through Apple's Metal API. No mature, high-performance ZK library exists for
+this platform. The sole alternative, ICICLE-Metal~\cite{icicle}, is a
+port of a CUDA-first design and exhibits fundamental performance
+problems: approximately 85~ms of per-call overhead (attributable to license
+server communication) and limited primitive coverage.
+
+Apple Silicon's GPU architecture differs from discrete GPUs in three ways
+that materially affect ZK workloads. First, \textbf{unified memory}
+eliminates PCIe transfer overhead entirely---CPU and GPU share physical
+DRAM, enabling zero-copy buffer sharing. Second, the GPU provides only
+\textbf{32-bit integer ALUs}: the \texttt{mulhi(ulong,ulong)} intrinsic
+decomposes internally into four 32-bit multiply-add (MAD) instructions,
+making 256-bit field arithmetic approximately $4\times$ more expensive per
+limb operation than on CUDA hardware with native 64-bit integer multiply.
+Third, the \textbf{tile-based deferred rendering} GPU architecture imposes
+scheduling constraints with no public documentation, leading to performance
+pathologies we characterize in Section~\ref{sec:pathology}.
+
+These architectural differences are not merely quantitative---they create a
+qualitatively different optimization landscape. Techniques that are
+effective on CUDA (\eg 64-bit limb representations, aggressive kernel
+fusion, reliance on high memory bandwidth to hide latency) may be
+counterproductive or irrelevant on Metal. Conversely, Apple Silicon's
+unified memory and 32-bit ALU create opportunities that CUDA-centric
+designs miss: zero-copy buffer sharing eliminates an entire class of data
+movement, and 31-bit fields such as BabyBear~\cite{plonky3} and
+Mersenne31~\cite{circle-stark} map directly to single-word native
+arithmetic, yielding throughput that is \emph{super-linear} relative to the
+field size reduction.
+
+\paragraph{Contributions.} We present \sys, the first comprehensive
+ZK cryptography library for Apple Silicon Metal GPUs. Our contributions are:
+
+\begin{enumerate}
+\item \textbf{GPU scheduling pathology.} We document a previously unknown
+  M-series GPU scheduling phenomenon where specific threadgroup counts
+  (\eg powers of two and their neighbors) cause 10--30$\times$
+  performance cliffs in MSM bucket accumulation. This affects all M-series
+  generations and is not described in Apple's documentation
+  (Section~\ref{sec:pathology}).
+
+\item \textbf{Field-hardware co-design.} We develop a systematic
+  methodology for mapping ZK field arithmetic to Metal's 32-bit ALU,
+  showing that 256-bit fields require CIOS Montgomery with explicit carry
+  management while 31-bit fields achieve near-hardware-floor throughput.
+  BabyBear NTT at $2^{24}$ elements runs in 2.0~ms (8.5B~elem/s), within
+  1.2$\times$ of the memory bandwidth limit
+  (Section~\ref{sec:architecture}).
+
+\item \textbf{Comprehensive library and evaluation.} \sys implements 60+
+  primitives across 18 fields and 10 elliptic curves, including complete
+  proof systems (Circle STARK, Plonk, Groth16, GKR, HyperNova, Spartan),
+  post-quantum schemes (Kyber, Dilithium), and application primitives
+  (ECDSA, BLS, EdDSA). Against ICICLE-Metal, \sys is 33$\times$ faster on
+  MSM and 30--500$\times$ faster on NTT
+  (Section~\ref{sec:optimization}--\ref{sec:evaluation}).
+
+\item \textbf{Negative result catalog.} We document 30+ optimization
+  attempts that failed, organized by failure mode (hardware mismatch,
+  algorithmic dead end, compiler issue), providing guidance for future Metal
+  GPU optimization efforts (Section~\ref{sec:negative}).
+\end{enumerate}
+
+Table~\ref{tab:headline} summarizes headline comparisons.
+Figure~\ref{fig:overview} provides a visual comparison across the primary
+primitives.
+
+\begin{table}[t]
+\centering
+\small
+\caption{Headline performance comparison (BN254, M3 Pro).}
+\label{tab:headline}
+\begin{tabular}{lrrr}
+\toprule
+\textbf{Primitive} & \textbf{\sys} & \textbf{ICICLE-Metal} & \textbf{Arkworks CPU} \\
+\midrule
+MSM $2^{18}$       & 45\,ms   & 1{,}475\,ms & 266\,ms \\
+NTT $2^{20}$       & 6.1\,ms  & 194\,ms     & 7{,}300\,ms\textsuperscript{*} \\
+NTT BB $2^{24}$    & 2.0\,ms  & 709\,ms     & --- \\
+\bottomrule
+\multicolumn{4}{l}{\footnotesize \textsuperscript{*}Vanilla Swift CPU baseline (no Arkworks NTT available).}
+\end{tabular}
+\end{table}
+
+\begin{figure}[t]
+\centering
+% Placeholder: bar chart of zkMetal vs ICICLE-Metal vs Arkworks
+% across MSM, NTT (BN254), NTT (BabyBear), Keccak Merkle, Poseidon2
+\fbox{\parbox{0.9\columnwidth}{\centering\vspace{2cm}
+\textbf{Figure 1:} \sys vs ICICLE-Metal vs Arkworks CPU across MSM, NTT,
+and hashing primitives (log scale). \sys achieves 6--500$\times$ speedups
+over ICICLE-Metal and 5--1000$\times$ over CPU baselines.
+\vspace{2cm}}}
+\caption{Performance comparison across core ZK primitives.}
+\label{fig:overview}
+\end{figure}
+
+% ============================================================================
+% SECTION 2: BACKGROUND
+% ============================================================================
+\section{Background}
+\label{sec:background}
+
+\subsection{Apple Silicon GPU Architecture}
+\label{sec:apple-gpu}
+
+Apple's M-series system-on-chip integrates CPU and GPU cores with a
+\emph{unified memory} architecture: both processors share the same physical
+DRAM, eliminating the PCIe bus that separates host and device memory on
+discrete GPU systems. On the M3~Pro used for our evaluation, the shared
+memory subsystem provides approximately 150~GB/s of bandwidth to both CPU
+and GPU.
+
+The M-series GPU is a tile-based deferred rendering (TBDR) architecture
+originally designed for graphics workloads. For compute shaders---the
+execution model used by \sys---the relevant characteristics are:
+
+\begin{itemize}
+\item \textbf{32-bit integer ALU.} The GPU provides no native 64-bit
+  integer multiply. The Metal Shading Language (MSL) intrinsic
+  \texttt{mulhi(ulong,ulong)} decomposes internally into four 32-bit
+  multiply-add instructions. A single 256-bit Montgomery multiplication
+  (CIOS~\cite{cios}) using 8$\times$32-bit limbs therefore requires
+  approximately 64 MAD instructions.
+
+\item \textbf{SIMD width 32.} Threads execute in groups of 32 (analogous
+  to NVIDIA warps). SIMD shuffle operations enable intra-group
+  communication but are designed for small types (4--8 bytes); shuffling
+  96-byte elliptic curve points incurs substantial overhead.
+
+\item \textbf{Threadgroup shared memory: 32\,KB.} Shared memory per
+  threadgroup is limited to 32\,KB, constraining in-place NTT butterfly
+  computations and requiring multi-pass algorithms for large transforms.
+
+\item \textbf{Dispatch model.} Work is submitted through \emph{command
+  buffers} containing one or more \emph{command encoders}, each encoding
+  \emph{compute pipeline} dispatches. Each command buffer commit incurs
+  approximately 0.5~ms of overhead, making fine-grained dispatch batching
+  critical for small workloads.
+\end{itemize}
+
+\noindent
+For comparison, an NVIDIA A100 provides native 64-bit integer multiply,
+80\,GB of dedicated HBM2e at 2\,TB/s bandwidth, 164\,KB shared memory per
+SM, and a compiler toolchain (NVCC/PTX) that exposes low-level scheduling
+control. The RTX~3090~Ti, a consumer-grade comparison point, provides
+approximately 900~GB/s memory bandwidth and achieves MSM~$2^{16}$ in
+${\sim}$9\,ms~\cite{icicle}---roughly $3\times$ faster than \sys's
+27\,ms, consistent with the $6\times$ memory bandwidth ratio modulated by
+the native 64-bit multiply advantage.
+
+\subsection{ZK Cryptographic Primitives}
+\label{sec:zk-primitives}
+
+Zero-knowledge proof systems are built from a small set of computationally
+intensive primitives. We briefly describe those most relevant to our
+optimization effort.
+
+\paragraph{Multi-scalar multiplication (MSM).} Given $n$ elliptic curve
+points $\{P_i\}$ and scalars $\{s_i\}$, compute $\sum_i s_i \cdot P_i$.
+The Pippenger algorithm~\cite{pippenger} decomposes each scalar into
+$w$-bit windows, sorts points into $2^w$ buckets per window, accumulates
+each bucket, and combines via a Horner-like evaluation. MSM dominates
+KZG~\cite{kzg} commitment schemes, Groth16~\cite{groth16} proving, and
+IPA~\cite{bulletproofs} computations.
+
+\paragraph{Number-theoretic transform (NTT).} The NTT is the
+finite-field analogue of the FFT, computing polynomial evaluation at
+roots of unity in $O(n \log n)$ field operations. NTT dominates polynomial
+multiplication in STARK~\cite{stark} and Plonk~\cite{plonk} provers, FRI
+commitment phases, and lattice-based cryptography.
+
+\paragraph{Cryptographic hashing.} Algebraic hashes such as
+Poseidon2~\cite{poseidon2} operate natively over finite fields, enabling
+efficient Merkle tree construction within proof systems. Binary hashes
+(Keccak-256~\cite{keccak}, Blake3~\cite{blake3}, SHA-256) are used for
+Fiat-Shamir transcripts and data availability.
+
+\paragraph{FRI and Sumcheck.} The FRI protocol~\cite{fri} provides
+proximity testing for Reed-Solomon codes, forming the core of STARK proof
+systems. The sumcheck protocol~\cite{sumcheck} reduces multivariate
+polynomial evaluation claims to a sequence of univariate checks, and is
+central to GKR~\cite{gkr}, Spartan~\cite{spartan}, and
+HyperNova~\cite{hypernova}.
+
+\paragraph{Montgomery arithmetic.} All field operations use Montgomery
+representation~\cite{montgomery} with the CIOS (Coarsely Integrated
+Operand Scanning) algorithm~\cite{cios} for modular multiplication. For a
+256-bit prime, CIOS with 8$\times$32-bit limbs requires 64 multiply-add
+operations with explicit carry propagation. For 31-bit primes (BabyBear,
+Mersenne31), a single 32-bit MAD suffices.
+
+\subsection{Related Work}
+\label{sec:related}
+
+\paragraph{CUDA-based ZK acceleration.} ICICLE~\cite{icicle} is the most
+widely used GPU ZK library, supporting MSM, NTT, and Poseidon hashing on
+NVIDIA GPUs. cuZK~\cite{cuzk} optimizes MSM via an elliptic curve-specific
+bucket sorting approach. ZPrize~\cite{zprize2022,zprize2023} competitions
+have driven MSM optimization on both FPGA and GPU targets. These systems
+target CUDA and exploit native 64-bit integer arithmetic, high memory
+bandwidth, and mature profiling tools (Nsight, PTX inspection).
+
+\paragraph{Metal-based ZK.} ICICLE-Metal~\cite{icicle} ports the ICICLE
+library to Apple's Metal API. In our measurements (v3.8.0), ICICLE-Metal
+exhibits approximately 85~ms per-call overhead (attributable to license
+server initialization) and covers only MSM and NTT. At BN254 MSM~$2^{18}$,
+ICICLE-Metal achieves 1{,}475~ms versus \sys's 45\,ms---a 33$\times$ gap.
+MoPro~v2~\cite{mopro} reports MSM benchmarks on M3~Air (678~ms at
+$2^{18}$), using a different methodology.
+
+\paragraph{CPU-based libraries.} Arkworks~\cite{arkworks} is the standard
+Rust-based CPU ZK library, achieving 266~ms for BN254 MSM at $2^{18}$ and
+69~ms at $2^{16}$ on M3-class hardware. gnark~\cite{gnark} (Go) and
+Plonky3~\cite{plonky3} (Rust, BabyBear-focused) provide additional CPU
+baselines. Our C~CIOS CPU path achieves 68~ms for BN254 MSM at $2^{16}$,
+matching Arkworks' 69~ms at the same size, demonstrating that systematic
+field arithmetic optimization alone closes the gap with state-of-the-art
+CPU implementations.
+
+\paragraph{Gap.} No prior work systematically characterizes the Apple
+Silicon GPU for ZK workloads, documents its scheduling pathologies, or
+develops a field-hardware co-design methodology for its 32-bit ALU. \sys
+fills this gap with the most comprehensive Metal ZK implementation by an
+order of magnitude (60+ primitives versus ICICLE-Metal's 2).
+
+% ============================================================================
+% SECTION 3: ARCHITECTURE
+% ============================================================================
+\section{System Architecture}
+\label{sec:architecture}
+
+\sys is organized as a three-tier execution model that routes computation to
+the most efficient execution unit based on workload size and characteristics.
+Figure~\ref{fig:architecture} illustrates the architecture and data flow.
+
+\begin{figure}[t]
+\centering
+% Placeholder: architecture diagram showing three tiers
+% Tier 1 (Metal GPU), Tier 2 (C/NEON CPU), Tier 3 (Swift orchestration)
+% Annotate unified memory zero-copy paths between tiers
+\fbox{\parbox{0.9\columnwidth}{\centering\vspace{2.5cm}
+\textbf{Figure 2:} Three-tier execution model. Metal GPU shaders (Tier~1)
+handle compute-intensive parallel workloads. C/NEON kernels (Tier~2)
+provide optimized CPU paths. Swift orchestration (Tier~3) manages pipeline
+selection and buffer lifecycle. Unified memory enables zero-copy data sharing
+between all tiers.
+\vspace{2.5cm}}}
+\caption{Three-tier \sys architecture with unified memory data flow.}
+\label{fig:architecture}
+\end{figure}
+
+\subsection{Three-Tier Execution Model}
+\label{sec:tiers}
+
+\paragraph{Tier 1: Metal GPU shaders.} Compute-intensive parallel
+kernels---MSM bucket accumulation, NTT butterfly operations, hash batch
+evaluation, polynomial operations---are implemented as Metal compute
+shaders written in Metal Shading Language (a C++14 dialect). Each
+\emph{engine} class (\eg \texttt{MetalMSM}, \texttt{NTTEngine},
+\texttt{Keccak256Engine}) encapsulates pipeline state objects, manages
+buffer allocation, and encodes dispatches into command buffers.
+
+Buffer management follows a \emph{grow-only caching} pattern: each engine
+maintains a cache of Metal buffers indexed by role. On first invocation, the
+engine allocates buffers sized to the workload. On subsequent invocations,
+buffers are reused if they are large enough, or reallocated at the new
+(larger) size. Buffers are never shrunk. This eliminates repeated allocation
+overhead---a significant cost on Metal, where buffer creation involves
+kernel-level page mapping. Caching alone improves FRI engine throughput by
+2.4$\times$ and Keccak engine throughput by 28\%.
+
+Command buffer batching is equally critical. Each Metal command buffer
+commit incurs approximately 0.5~ms of fixed overhead. For multi-pass
+algorithms (\eg NTT with $\log_2 n$ butterfly stages, FRI with multiple
+fold rounds), encoding all dispatches into a single command buffer via a
+single compute command encoder amortizes this overhead. For BN254 NTT at
+$2^{16}$, the single-encoder pattern yields a $2\times$ improvement over
+per-pass command buffer submission.
+
+\paragraph{Tier 2: C/NEON CPU kernels.} When GPU dispatch overhead
+exceeds the compute savings---typically for inputs smaller than
+$2^{12}$--$2^{14}$ elements---\sys routes computation to optimized C
+functions linked via Swift Package Manager C targets. These functions use
+\texttt{\_\_uint128\_t} for 64-bit CIOS Montgomery multiplication on ARM64
+(exploiting the processor's native \texttt{MUL}/\texttt{UMULH} instruction
+pair) and NEON SIMD for small-field operations (4-wide \texttt{uint32}
+Montgomery butterfly for BabyBear).
+
+The C~CIOS layer delivers 10--134$\times$ speedup over equivalent Swift
+implementations across all CPU primitives. The gap is not primarily due to
+Swift's optimizer quality for field arithmetic---Swift achieves 80--90\% of
+C performance for isolated 256-bit multiply---but rather to Swift's
+function call overhead in tight inner loops (Pippenger bucket accumulation,
+NTT butterfly iteration), where the overhead per scalar operation dominates
+the actual computation.
+
+\paragraph{Tier 3: Swift orchestration.} The top-level engine layer,
+written in Swift, manages execution path selection (GPU vs.\ CPU based on
+input size), auto-tuning of GPU parameters (threadgroup sizes, MSM window
+widths, NTT split thresholds), buffer lifecycle, and command buffer
+construction. Auto-tuning results are persisted to disk and reused across
+invocations, re-triggering calibration only when the GPU hardware changes.
+
+\subsection{Field Arithmetic on 32-bit ALU}
+\label{sec:field-arith}
+
+The Metal GPU's lack of native 64-bit integer multiply creates a
+field-size-dependent performance landscape that fundamentally shapes our
+optimization strategy.
+
+\paragraph{256-bit fields (BN254, BLS12-381).} Field elements are
+represented as 8$\times$32-bit limbs in Montgomery form. Each
+\texttt{fp\_mul} invocation executes the CIOS algorithm with explicit carry
+chains: approximately 64 MAD instructions, with carries propagated after
+each inner-loop iteration to prevent overflow of the 32-bit accumulators.
+Sum-of-Squares (SOS) squaring optimization exploits the symmetry of
+$a \times a$ to reduce the multiply count by approximately 25\%, saving
+24~ms in proof-level benchmarks (101$\to$77~ms in the Barretenberg
+UltraHonk context).
+
+\paragraph{64-bit fields (Goldilocks).} The Goldilocks prime
+$p = 2^{64} - 2^{32} + 1$ admits a special reduction: overflow beyond
+$2^{64}$ can be handled by a single-word correction, avoiding the full
+CIOS carry chain. On Metal's 32-bit ALU, this still requires two 32-bit
+limbs, but the reduction step is substantially cheaper than for general
+256-bit primes.
+
+\paragraph{31-bit fields (BabyBear, Mersenne31).} These fields fit in a
+single 32-bit word. Montgomery multiplication reduces to a single MAD
+instruction---natively supported by the Metal ALU at full throughput. This
+is where Metal's 32-bit ALU transforms from a limitation into an
+\emph{advantage}: a 64-bit CUDA GPU wastes half its ALU width on
+single-word multiplies, while Metal utilizes its full datapath. The
+density advantage is super-linear: BabyBear NTT at $2^{24}$ achieves
+8.5B~elem/s versus BN254's 144M~elem/s---a 59$\times$ throughput ratio
+for an 8$\times$ element size reduction, reflecting both the reduced
+per-element compute and improved memory access patterns (4-byte elements
+versus 32-byte elements per cache line).
+
+\paragraph{Binary tower fields (Binius).} Addition in binary extension
+fields is XOR, which is essentially free on GPU hardware. Multiplication
+uses lookup tables. Metal's 32-bit ALU is well suited to these
+table-driven operations, and the binary tower
+$\text{GF}(2^8) \to \text{GF}(2^{128})$ maps naturally to
+packed 32-bit word operations.
+
+\subsection{Unified Memory Exploitation}
+\label{sec:unified-mem}
+
+Apple Silicon's unified memory is the single most consequential
+architectural difference from discrete GPU platforms. CPU and GPU access the
+same physical DRAM pages without any explicit transfer. \sys exploits this
+in three ways.
+
+\paragraph{Zero-copy buffer sharing.} When the CPU prepares MSM scalars
+and elliptic curve points, the GPU reads them directly from the same memory
+without a copy or DMA transfer. This eliminates the PCIe transfer overhead
+that dominates small-batch GPU workloads on discrete platforms. For MSM at
+$2^{14}$ points, where the input data is approximately 4\,MB, a PCIe~4.0
+transfer would add ${\sim}$0.2~ms---comparable to the compute time itself.
+On \sys, this cost is zero.
+
+\paragraph{Grow-only buffer caching.} As described in
+Section~\ref{sec:tiers}, all engines cache Metal buffers across invocations.
+Because unified memory means buffer contents are visible to both CPU and
+GPU without marshaling, the caching strategy is simpler than on discrete
+platforms: no coherence management, no pinned memory allocation, no
+staging buffers. The measured impact is substantial: FRI engine throughput
+improves by 2.4$\times$ and Keccak engine throughput by 28\% from caching
+alone.
+
+\paragraph{Single command buffer batching.} Multi-pass GPU algorithms
+(\eg NTT butterfly stages, FRI fold rounds, MSM multi-window accumulation)
+encode all dispatches into a single command buffer. This amortizes the
+${\sim}$0.5~ms per-command-buffer overhead that would otherwise dominate
+multi-pass algorithms with small per-pass compute. For NTT at $2^{16}$ with
+16 butterfly stages, this overhead would otherwise constitute 8~ms of
+pure scheduling cost---exceeding the 0.47~ms total compute time by
+$17\times$.
+
+The combination of zero-copy sharing, buffer caching, and command buffer
+batching eliminates three classes of overhead (transfer, allocation,
+scheduling) that are inherent costs on discrete GPU platforms. This
+partially compensates for Apple Silicon's lower raw compute throughput
+(3.6~TFLOPS versus 40+~TFLOPS on an A100) and lower memory bandwidth
+(150~GB/s versus 2~TB/s). For workloads where these overheads dominate
+(\eg small-to-medium MSM, iterative protocols with many round-trips), \sys
+can be competitive with or faster than discrete GPU implementations
+despite the raw hardware gap.
+
+\end{document}

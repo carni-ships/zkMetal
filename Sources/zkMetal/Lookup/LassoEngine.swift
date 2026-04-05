@@ -310,12 +310,10 @@ public class LassoEngine {
         var _tPhase = profileLasso ? CFAbsoluteTimeGetCurrent() : 0
 
         // indices32Flat: contiguous Int32 array [numChunks * m], indices32Flat[k*m+i]
-        // Avoids per-chunk Int->Int32 conversion in hot loop.
-        let indices: [[Int]]
+        // The [[Int]] reshape is deferred to proof construction to avoid O(numChunks*m) copy.
         let indices32Flat: [Int32]
-        if let batchDec = table.batchDecompose {
+        if table.batchDecompose != nil {
             // Fast C path: Montgomery reduction + bit extraction in one pass
-            // Get the flat Int32 directly from C, then reshape for [[Int]]
             var flat = [Int32](repeating: 0, count: table.numChunks * m)
             lookups.withUnsafeBytes { rawPtr in
                 flat.withUnsafeMutableBufferPointer { idxPtr in
@@ -327,32 +325,16 @@ public class LassoEngine {
                 }
             }
             indices32Flat = flat
-            // Reshape for proof (needed for [[Int]] in LassoProof)
-            var idx = [[Int]](repeating: [Int](repeating: 0, count: m), count: table.numChunks)
-            for k in 0..<table.numChunks {
-                let offset = k * m
-                for i in 0..<m {
-                    idx[k][i] = Int(flat[offset + i])
-                }
-            }
-            indices = idx
         } else {
             // Fallback: per-element closure decomposition
-            var idx = [[Int]](repeating: [Int](repeating: 0, count: m), count: table.numChunks)
+            var flat = [Int32](repeating: 0, count: table.numChunks * m)
             for i in 0..<m {
                 let decomposed = table.decompose(lookups[i])
                 precondition(decomposed.count == table.numChunks,
                              "Decomposition must produce \(table.numChunks) indices")
                 for k in 0..<table.numChunks {
-                    idx[k][i] = decomposed[k]
+                    flat[k * m + i] = Int32(decomposed[k])
                 }
-            }
-            indices = idx
-            // Build flat Int32 array
-            var flat = [Int32](repeating: 0, count: table.numChunks * m)
-            for k in 0..<table.numChunks {
-                let offset = k * m
-                for i in 0..<m { flat[offset + i] = Int32(idx[k][i]) }
             }
             indices32Flat = flat
         }
@@ -369,13 +351,11 @@ public class LassoEngine {
         let logM = Int(log2(Double(m)))
         let frStride = MemoryLayout<Fr>.stride
 
-        // Two-phase approach for pipelining:
-        // Phase A: sequential transcript operations + C inverse evals (no GPU blocking)
-        // Phase B: batch all GPU sumchecks in one command buffer
+        // Two-phase approach: Phase A computes inverse evals + transcript, Phase B runs GPU sumchecks.
         var subtableProofs = [SubtableProof]()
         subtableProofs.reserveCapacity(table.numChunks)
 
-        // Ensure reusable buffers
+        // Per-chunk reusable C buffers for inverse evals
         let firstS = table.subtables[0].count
         if hReadBufCount < m {
             hReadBuf?.deallocate()
@@ -388,7 +368,7 @@ public class LassoEngine {
             hTableBufCount = firstS
         }
 
-        // Per-chunk data collected in Phase A
+        // Per-chunk pre-computed data for Phase B
         struct ChunkData {
             var readCounts: [Fr]
             var beta: Fr
@@ -414,8 +394,7 @@ public class LassoEngine {
             let chunkBase = k * m
             indices32Flat.withUnsafeBufferPointer { flatPtr in
                 for i in 0..<m {
-                    let idx = Int(flatPtr[chunkBase + i])
-                    countRaw[idx] &+= 1
+                    countRaw[Int(flatPtr[chunkBase + i])] &+= 1
                 }
             }
             let readCounts: [Fr] = countRaw.map { frFromInt($0) }
@@ -460,7 +439,7 @@ public class LassoEngine {
                 }
             }
 
-            // Copy results to Swift arrays
+            // Copy results to Swift arrays (needed for GPU sumcheck input)
             let hRead = [Fr](unsafeUninitializedCapacity: m) { buf, count in
                 memcpy(buf.baseAddress!, hReadPtr, m * frStride)
                 count = m
@@ -535,9 +514,9 @@ public class LassoEngine {
 
         if profileLasso { let _t = CFAbsoluteTimeGetCurrent(); fputs(String(format: "  [lasso] phase A total: %.2f ms\n", (_t - _tTotal) * 1000), stderr); _tPhase = _t }
 
-        // Phase B: Run deferred GPU sumchecks for chunks that pre-derived challenges
+        // Phase B: Run sumchecks for chunks that pre-derived challenges.
+        // GPU for large read-side (m = 2^18), C CPU for small table-side (S = 256).
         for k in 0..<table.numChunks {
-            // Skip chunks already handled via CPU path in Phase A
             if subtableProofs.count > k { continue }
 
             if profileLasso { _tPhase = CFAbsoluteTimeGetCurrent() }
@@ -545,10 +524,47 @@ public class LassoEngine {
             let S = table.subtables[k].count
             let logS = Int(log2(Double(S)))
 
+            // Read-side: GPU sumcheck (2^18 elements)
             let (readRounds, readFinalEval) = try sumcheckEngine.fullSumcheck(
                 evals: cd.hRead, challenges: cd.readChallenges)
-            let (tableRounds, tableFinalEval) = try sumcheckEngine.fullSumcheck(
-                evals: cd.hTable, challenges: cd.tableChallenges)
+
+            // Table-side: C CPU sumcheck (256 elements — GPU dispatch overhead not worthwhile)
+            let tableRounds: [(Fr, Fr, Fr)]
+            let tableFinalEval: Fr
+            if S <= 1024 {
+                // C path: faster for small inputs, avoids GPU command buffer overhead
+                let tRoundsCount = logS * 12  // logS rounds, 3 Fr per round, 4 uint64 per Fr
+                var tRoundsRaw = [UInt64](repeating: 0, count: tRoundsCount)
+                var tFinalRaw = [UInt64](repeating: 0, count: 4)
+                cd.hTable.withUnsafeBytes { evPtr in
+                    cd.tableChallenges.withUnsafeBytes { chPtr in
+                        bn254_fr_full_sumcheck(
+                            evPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(logS),
+                            chPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            &tRoundsRaw,
+                            &tFinalRaw
+                        )
+                    }
+                }
+                var rounds = [(Fr, Fr, Fr)]()
+                rounds.reserveCapacity(logS)
+                for r in 0..<logS {
+                    let b = r * 12
+                    rounds.append((
+                        Fr.from64([tRoundsRaw[b], tRoundsRaw[b+1], tRoundsRaw[b+2], tRoundsRaw[b+3]]),
+                        Fr.from64([tRoundsRaw[b+4], tRoundsRaw[b+5], tRoundsRaw[b+6], tRoundsRaw[b+7]]),
+                        Fr.from64([tRoundsRaw[b+8], tRoundsRaw[b+9], tRoundsRaw[b+10], tRoundsRaw[b+11]])
+                    ))
+                }
+                tableRounds = rounds
+                tableFinalEval = Fr.from64(tFinalRaw)
+            } else {
+                let (tr, tf) = try sumcheckEngine.fullSumcheck(
+                    evals: cd.hTable, challenges: cd.tableChallenges)
+                tableRounds = tr
+                tableFinalEval = tf
+            }
 
             if profileLasso { let _t = CFAbsoluteTimeGetCurrent(); fputs(String(format: "  [lasso] chunk %d sumchecks (2^%d+2^%d): %.2f ms\n", k, logM, logS, (_t - _tPhase) * 1000), stderr); _tPhase = _t }
 
@@ -565,6 +581,12 @@ public class LassoEngine {
         }
 
         if profileLasso { fputs(String(format: "  [lasso] total prove: %.2f ms\n", (CFAbsoluteTimeGetCurrent() - _tTotal) * 1000), stderr) }
+
+        // Build [[Int]] indices for proof (deferred from decomposition to avoid hot-path copy)
+        let indices: [[Int]] = (0..<table.numChunks).map { k in
+            let offset = k * m
+            return (0..<m).map { i in Int(indices32Flat[offset + i]) }
+        }
 
         return LassoProof(numChunks: table.numChunks,
                           subtableProofs: subtableProofs,
@@ -751,18 +773,6 @@ public class LassoEngine {
             }
             allReadChallenges.append(rc)
 
-            // Check sumcheck read rounds
-            let (rs0, rs1, _) = sp.readSumcheckRounds[0]
-            if !frEqual(frAdd(rs0, rs1), sp.claimedSum) { return false }
-            for round in 1..<logM {
-                let (s0, s1, _) = sp.readSumcheckRounds[round]
-                let prevEval = evaluateQuadraticFast(sp.readSumcheckRounds[round - 1], at: rc[round - 1], inv2: inv2, negOne: negOne)
-                if !frEqual(frAdd(s0, s1), prevEval) { return false }
-            }
-            let lastReadEval = evaluateQuadraticFast(
-                sp.readSumcheckRounds[logM - 1], at: rc[logM - 1], inv2: inv2, negOne: negOne)
-            if !frEqual(lastReadEval, sp.readFinalEval) { return false }
-
             // Derive table-side challenges
             let useGPUTable = S >= 256
             var tc = [Fr]()
@@ -785,6 +795,18 @@ public class LassoEngine {
                 }
             }
             allTableChallenges.append(tc)
+
+            // Check sumcheck read rounds
+            let (rs0, rs1, _) = sp.readSumcheckRounds[0]
+            if !frEqual(frAdd(rs0, rs1), sp.claimedSum) { return false }
+            for round in 1..<logM {
+                let (s0, s1, _) = sp.readSumcheckRounds[round]
+                let prevEval = evaluateQuadraticFast(sp.readSumcheckRounds[round - 1], at: rc[round - 1], inv2: inv2, negOne: negOne)
+                if !frEqual(frAdd(s0, s1), prevEval) { return false }
+            }
+            let lastReadEval = evaluateQuadraticFast(
+                sp.readSumcheckRounds[logM - 1], at: rc[logM - 1], inv2: inv2, negOne: negOne)
+            if !frEqual(lastReadEval, sp.readFinalEval) { return false }
 
             // Check sumcheck table rounds
             let (ts0, ts1, _) = sp.tableSumcheckRounds[0]
@@ -1002,31 +1024,35 @@ public class LassoEngine {
     // MARK: - Fiat-Shamir
 
     private func appendFr(_ transcript: inout [UInt8], _ v: Fr) {
-        let vInt = frToInt(v)
-        for limb in vInt {
-            for byte in 0..<8 {
-                transcript.append(UInt8((limb >> (byte * 8)) & 0xFF))
-            }
+        // Direct memcpy of Montgomery representation — faster than frToInt + byte loop.
+        // Both prover and verifier use the same representation, so this is safe.
+        withUnsafeBytes(of: v) { raw in
+            transcript.append(contentsOf: UnsafeBufferPointer(
+                start: raw.baseAddress!.assumingMemoryBound(to: UInt8.self),
+                count: MemoryLayout<Fr>.size
+            ))
         }
     }
 
     private func appendUInt64(_ transcript: inout [UInt8], _ v: UInt64) {
         var val = v
-        for _ in 0..<8 {
-            transcript.append(UInt8(val & 0xFF))
-            val >>= 8
+        withUnsafeBytes(of: &val) { raw in
+            transcript.append(contentsOf: UnsafeBufferPointer(
+                start: raw.baseAddress!.assumingMemoryBound(to: UInt8.self),
+                count: 8
+            ))
         }
     }
 
     private func deriveChallenge(_ transcript: [UInt8]) -> Fr {
-        let hash = blake3(transcript)
-        var limbs = [UInt64](repeating: 0, count: 4)
-        for i in 0..<4 {
-            for j in 0..<8 {
-                limbs[i] |= UInt64(hash[i * 8 + j]) << (j * 8)
-            }
+        var hash = [UInt8](repeating: 0, count: 32)
+        transcript.withUnsafeBufferPointer { ptr in
+            blake3_hash_neon(ptr.baseAddress!, ptr.count, &hash)
         }
+        var limbs = [UInt64](repeating: 0, count: 4)
+        memcpy(&limbs, &hash, 32)
         let raw = Fr.from64(limbs)
         return frMul(raw, Fr.from64(Fr.R2_MOD_R))
     }
+
 }

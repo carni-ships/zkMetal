@@ -6,6 +6,7 @@
 // Prover sends v = M * t_R (sqrt(N) values) and proves correctness via two sumcheck instances.
 
 import Foundation
+import NeonFieldOps
 
 // MARK: - Data Structures
 
@@ -38,23 +39,18 @@ public class TensorCompressor {
     public static let version = Versions.tensorCompressor
 
     /// Compute the tensor product: (1-r[0], r[0]) tensor (1-r[1], r[1]) tensor ...
-    /// Result has 2^k entries.
+    /// Result has 2^k entries. Same as eq polynomial.
     public static func tensorProduct(_ challenges: [Fr]) -> [Fr] {
         let k = challenges.count
         let size = 1 << k
         var result = [Fr](repeating: Fr.zero, count: size)
-        result[0] = Fr.one
-
-        for i in 0..<k {
-            let half = 1 << i
-            let ri = challenges[i]
-            let oneMinusRi = frSub(Fr.one, ri)
-            var j = half - 1
-            while j >= 0 {
-                let val = result[j]
-                result[2 * j + 1] = frMul(val, ri)
-                result[2 * j] = frMul(val, oneMinusRi)
-                j -= 1
+        challenges.withUnsafeBytes { ptBuf in
+            result.withUnsafeMutableBytes { rBuf in
+                spartan_eq_poly(
+                    ptBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(k),
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                )
             }
         }
         return result
@@ -65,13 +61,17 @@ public class TensorCompressor {
         precondition(evaluations.count == rows * cols)
         precondition(vec.count == cols)
         var result = [Fr](repeating: Fr.zero, count: rows)
-        for i in 0..<rows {
-            var acc = Fr.zero
-            let base = i * cols
-            for j in 0..<cols {
-                acc = frAdd(acc, frMul(evaluations[base + j], vec[j]))
+        evaluations.withUnsafeBytes { mBuf in
+            vec.withUnsafeBytes { vBuf in
+                result.withUnsafeMutableBytes { rBuf in
+                    tensor_mat_vec_mul(
+                        mBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        vBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(rows), Int32(cols),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    )
+                }
             }
-            result[i] = acc
         }
         return result
     }
@@ -79,11 +79,20 @@ public class TensorCompressor {
     /// Vector dot product: sum_i a[i] * b[i].
     public static func dotProduct(_ a: [Fr], _ b: [Fr]) -> Fr {
         precondition(a.count == b.count)
-        var acc = Fr.zero
-        for i in 0..<a.count {
-            acc = frAdd(acc, frMul(a[i], b[i]))
+        var result = Fr.zero
+        a.withUnsafeBytes { aBuf in
+            b.withUnsafeBytes { bBuf in
+                withUnsafeMutableBytes(of: &result) { rBuf in
+                    bn254_fr_inner_product(
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(a.count),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    )
+                }
+            }
         }
-        return acc
+        return result
     }
 
     /// Compress: given evaluations of a multilinear polynomial f on n variables,
@@ -107,7 +116,7 @@ public class TensorCompressor {
         let halfVars = numVars / 2
         let sqrtN = 1 << halfVars
 
-        let ts = transcript ?? Transcript(label: "tensor-compress")
+        let ts = transcript ?? Transcript(label: "tensor-compress", backend: .keccak256)
 
         let pointLeft = Array(point[0..<halfVars])
         let pointRight = Array(point[halfVars..<numVars])
@@ -182,7 +191,7 @@ public class TensorCompressor {
         guard proof.sumcheckRounds1.count == halfVars else { return false }
         guard proof.sumcheckRounds2.count == halfVars else { return false }
 
-        let ts = transcript ?? Transcript(label: "tensor-compress")
+        let ts = transcript ?? Transcript(label: "tensor-compress", backend: .keccak256)
 
         let pointLeft = Array(point[0..<halfVars])
         let pointRight = Array(point[halfVars..<numVars])
@@ -254,47 +263,33 @@ public class TensorCompressor {
         precondition(evalsA.count == (1 << numVars))
         precondition(evalsB.count == (1 << numVars))
 
-        var currentA = evalsA
-        var currentB = evalsB
-        var rounds: [(Fr, Fr, Fr)] = []
+        // C output: numVars rounds * 3 Fr (12 uint64 per round) + 1 Fr final
+        var roundsBuf = [Fr](repeating: Fr.zero, count: numVars * 3)
+        var finalEval = Fr.zero
 
-        for round in 0..<numVars {
-            let n = currentA.count
-            let halfN = n / 2
-
-            var s0 = Fr.zero, s1 = Fr.zero, s2 = Fr.zero
-            for i in 0..<halfN {
-                let aLo = currentA[i]
-                let aHi = currentA[i + halfN]
-                let bLo = currentB[i]
-                let bHi = currentB[i + halfN]
-
-                // X=0
-                s0 = frAdd(s0, frMul(aLo, bLo))
-                // X=1
-                s1 = frAdd(s1, frMul(aHi, bHi))
-                // X=2: a(2) = 2*aHi - aLo, b(2) = 2*bHi - bLo
-                let a2 = frSub(frAdd(aHi, aHi), aLo)
-                let b2 = frSub(frAdd(bHi, bHi), bLo)
-                s2 = frAdd(s2, frMul(a2, b2))
+        evalsA.withUnsafeBytes { aBuf in
+            evalsB.withUnsafeBytes { bBuf in
+                challenges.withUnsafeBytes { chBuf in
+                    roundsBuf.withUnsafeMutableBytes { rBuf in
+                        withUnsafeMutableBytes(of: &finalEval) { fBuf in
+                            tensor_inner_product_sumcheck(
+                                aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                Int32(numVars),
+                                chBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                fBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                            )
+                        }
+                    }
+                }
             }
-            rounds.append((s0, s1, s2))
-
-            let r = challenges[round]
-            var newA = [Fr](repeating: Fr.zero, count: halfN)
-            var newB = [Fr](repeating: Fr.zero, count: halfN)
-            for i in 0..<halfN {
-                let diffA = frSub(currentA[i + halfN], currentA[i])
-                newA[i] = frAdd(currentA[i], frMul(r, diffA))
-                let diffB = frSub(currentB[i + halfN], currentB[i])
-                newB[i] = frAdd(currentB[i], frMul(r, diffB))
-            }
-            currentA = newA
-            currentB = newB
         }
 
-        precondition(currentA.count == 1 && currentB.count == 1)
-        let finalEval = frMul(currentA[0], currentB[0])
+        var rounds: [(Fr, Fr, Fr)] = []
+        for i in 0..<numVars {
+            rounds.append((roundsBuf[i * 3], roundsBuf[i * 3 + 1], roundsBuf[i * 3 + 2]))
+        }
         return (rounds, finalEval)
     }
 
@@ -307,15 +302,17 @@ public class TensorCompressor {
         rows: Int,
         cols: Int
     ) -> [Fr] {
-        let eq = eqPolynomial(rowPoint)
-        precondition(eq.count == rows)
-
         var result = [Fr](repeating: Fr.zero, count: cols)
-        for i in 0..<rows {
-            let weight = eq[i]
-            let base = i * cols
-            for j in 0..<cols {
-                result[j] = frAdd(result[j], frMul(weight, evaluations[base + j]))
+        evaluations.withUnsafeBytes { mBuf in
+            rowPoint.withUnsafeBytes { ptBuf in
+                result.withUnsafeMutableBytes { rBuf in
+                    tensor_eq_weighted_row(
+                        mBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        ptBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(rows), Int32(cols),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    )
+                }
             }
         }
         return result
@@ -323,24 +320,7 @@ public class TensorCompressor {
 
     /// Compute the eq polynomial evaluated over {0,1}^k.
     public static func eqPolynomial(_ point: [Fr]) -> [Fr] {
-        let k = point.count
-        let size = 1 << k
-        var eq = [Fr](repeating: Fr.zero, count: size)
-        eq[0] = Fr.one
-
-        for i in 0..<k {
-            let half = 1 << i
-            let ri = point[i]
-            let oneMinusRi = frSub(Fr.one, ri)
-            var j = half - 1
-            while j >= 0 {
-                let val = eq[j]
-                eq[2 * j + 1] = frMul(val, ri)
-                eq[2 * j] = frMul(val, oneMinusRi)
-                j -= 1
-            }
-        }
-        return eq
+        return tensorProduct(point)
     }
 
     /// Evaluate degree-2 polynomial from values at 0, 1, 2 using Lagrange interpolation.
@@ -363,18 +343,20 @@ public class TensorCompressor {
 
     /// Evaluate a multilinear polynomial at a point by sequential folding.
     public static func multilinearEval(evals: [Fr], point: [Fr]) -> Fr {
-        var current = evals
-        for r in point {
-            let halfN = current.count / 2
-            var next = [Fr](repeating: Fr.zero, count: halfN)
-            for i in 0..<halfN {
-                let diff = frSub(current[i + halfN], current[i])
-                next[i] = frAdd(current[i], frMul(r, diff))
+        var result = Fr.zero
+        evals.withUnsafeBytes { eBuf in
+            point.withUnsafeBytes { pBuf in
+                withUnsafeMutableBytes(of: &result) { rBuf in
+                    spartan_mle_eval(
+                        eBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(point.count),
+                        pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    )
+                }
             }
-            current = next
         }
-        precondition(current.count == 1)
-        return current[0]
+        return result
     }
 
     // MARK: - Proof Size Analysis

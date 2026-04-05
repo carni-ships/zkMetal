@@ -1,0 +1,443 @@
+% Sections 4 and 5 of zkMetal paper
+% USENIX Security format (2-column, 10pt)
+
+\section{GPU Scheduling Pathology}
+\label{sec:scheduling}
+
+We report a previously undocumented performance pathology on Apple M-series GPUs
+where specific threadgroup grid dimensions cause 10--30$\times$ latency
+regressions in compute dispatches. This phenomenon was discovered independently
+across three elliptic curves during MSM optimization and is not documented in
+Apple's Metal Best Practices Guide~\cite{apple-metal-best-practices} or any
+prior literature we are aware of.
+
+\subsection{Phenomenon}
+
+MSM bucket accumulation dispatches one GPU thread per bucket, where the bucket
+count is determined by the Pippenger window width parameter $w$:
+$\mathit{nBuckets} = 2^{w-1}$ (with signed-digit decomposition) or $2^w - 1$
+(unsigned). We observed that specific $(w, \text{curve})$ combinations produce
+catastrophic slowdowns far exceeding what register pressure or occupancy models
+predict.
+
+\paragraph{BN254 ($w{=}14$).}
+At window width 14 with unsigned decomposition, $\mathit{nBuckets} = 16{,}384 =
+2^{14}$. MSM latency jumps to 7{,}000\,ms---a 140$\times$ regression over the
+expected ${\sim}50$\,ms based on extrapolation from adjacent window sizes. This
+was the first observed instance and initially attributed to a correctness bug
+before being confirmed as a pure performance anomaly.
+
+\paragraph{secp256k1 ($w{=}12$).}
+With signed-digit decomposition, $w{=}12$ yields $\mathit{nBuckets} = 2{,}049$.
+MSM at $2^{14}$ points takes 78\,ms versus 21\,ms at $w{=}13$ ($\mathit{nBuckets} =
+4{,}097$), a 3.7$\times$ regression. Similarly, $w{=}11$ ($\mathit{nBuckets} = 1{,}025$)
+and $w{=}15$ ($\mathit{nBuckets} = 16{,}385$) are both pathological (131\,ms and
+244\,ms respectively at $2^{14}$).
+
+\paragraph{BLS12-377 ($w{=}14$).}
+This curve uses a 377-bit base field requiring 12$\times$32-bit limbs per field
+element, so each GPU thread consumes substantially more registers. At $w{=}14$,
+MSM on $2^{17}$ points takes 17{,}000\,ms versus 569\,ms at $w{=}15$---a
+30$\times$ regression.
+
+\paragraph{GLV interaction.}
+The GLV endomorphism~\cite{gallant-lambert-vanstone} doubles the effective point
+count, which can push the bucket count into a pathological band. On secp256k1
+with GLV enabled, the effective $2^{18}$ points at $w{=}16$ yield 32{,}768
+buckets, causing 13{,}569\,ms versus 1{,}133\,ms without GLV---a 12$\times$
+regression that entirely negates GLV's theoretical 22\% benefit. This forced us
+to disable GLV on secp256k1 by default.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lrrrl}
+\toprule
+\textbf{Curve} & $w$ & \textbf{Buckets} & \textbf{Regression} & \textbf{Trigger} \\
+\midrule
+BN254     & 14 & 16{,}384  & 140$\times$ & $2^{14}$ \\
+secp256k1 & 11 & 1{,}025   & 6.2$\times$ & $\approx 2^{10}{+}1$ \\
+secp256k1 & 12 & 2{,}049   & 3.7$\times$ & $\approx 2^{11}{+}1$ \\
+secp256k1 & 15 & 16{,}385  & 11.6$\times$ & $\approx 2^{14}{+}1$ \\
+secp256k1+GLV & 16 & 32{,}768 & 12$\times$ & $2^{15}$ \\
+BLS12-377 & 14 & 16{,}384  & 30$\times$  & $2^{14}$ \\
+\bottomrule
+\end{tabular}
+\caption{Pathological (windowBits, curve) combinations on M3~Pro.
+  Regression factor is the ratio of observed latency to the best adjacent
+  window size at the same point count. Trigger column shows the approximate
+  bucket count at which the pathology occurs.}
+\label{tab:pathological}
+\end{table}
+
+\subsection{Root Cause Hypothesis}
+
+The pathological bucket counts cluster near powers of two and their immediate
+neighbors ($2^{10}{+}1$, $2^{11}{+}1$, $2^{14}$, $2^{14}{+}1$, $2^{15}$). We
+hypothesize that the M-series tile-based GPU scheduler exhibits occupancy cliffs
+when the threadgroup grid size aligns with boundaries of the GPU's internal
+execution unit geometry.
+
+Apple's M-series GPU is a tile-based deferred renderer~\cite{apple-gpu-arch}
+with a compute dispatch model that maps threadgroups to execution units via an
+internal scheduler whose behavior is not publicly documented. Unlike NVIDIA's
+warp scheduler, which provides occupancy calculators and exposes register file
+limits per SM~\cite{cuda-occupancy}, Metal provides no equivalent tooling or
+documentation for compute workloads.
+
+Register pressure amplifies the effect. BLS12-377's 12-limb field arithmetic
+requires ${\sim}14$ temporary 32-bit values per Montgomery multiply, consuming
+substantially more of the GPU register file per thread than BN254's 8-limb
+arithmetic. This explains why BLS12-377 exhibits the most severe regression
+(30$\times$) at the same bucket count where BN254 shows 140$\times$ but from a
+higher baseline---fewer threads fit per execution unit, so the scheduling cliff
+has a larger absolute impact.
+
+We confirmed that this phenomenon is \emph{not} reproducible on NVIDIA GPUs.
+ICICLE-CUDA~\cite{icicle} running on an RTX~3090~Ti shows smooth performance
+scaling across the same bucket count range, consistent with CUDA's well-characterized
+warp scheduler behavior.
+
+\subsection{Mitigation}
+
+We employ three mitigation strategies:
+
+\paragraph{Per-curve window selection tables.}
+Each curve maintains an empirically derived lookup table mapping point count
+ranges to safe window widths that avoid pathological bucket counts. For example,
+BN254 uses $w{=}16$ for all sizes above $2^{15}$; secp256k1 uses $w{=}13$ for
+$\leq 2^{16}$ points and $w{=}16$ for larger inputs; BLS12-377 avoids $w{=}14$
+entirely.
+
+\paragraph{Signed-digit decomposition.}
+Converting scalar digits to a signed representation $[{-}(2^{w-1}{-}1),\;
+2^{w-1}]$ via a carry chain halves the effective bucket count, sidestepping some
+pathological bands. This optimization was originally motivated by reducing
+computation (42\% MSM speedup, \S\ref{sec:msm-opt}) but has the secondary
+benefit of shifting the bucket count away from power-of-two boundaries.
+
+\paragraph{Selective GLV disabling.}
+GLV is only enabled when the resulting bucket count falls in a safe range. On
+BN254, GLV's $2\times$ point increase with $w{=}16$ yields 32{,}768 signed
+buckets, which is safe. On secp256k1, the same doubling hits pathological bands,
+so GLV is disabled by default.
+
+% Figure 3 placeholder
+\begin{figure}[t]
+\centering
+\fbox{\parbox{0.95\columnwidth}{\centering\vspace{2em}%
+\textbf{Figure 3:} Heatmap of MSM latency (log scale) as a function of
+\texttt{windowBits} ($x$-axis) and point count ($y$-axis) for BN254,
+secp256k1, and BLS12-377. Pathological bands appear as bright horizontal
+stripes at specific bucket counts near powers of two. Safe operating regions
+(dark) surround the cliffs.%
+\vspace{2em}}}
+\caption{MSM latency heatmap across window widths and point counts.
+  Pathological scheduling bands are visible as 10--140$\times$ latency spikes
+  at bucket counts near powers of two.}
+\label{fig:heatmap}
+\end{figure}
+
+\paragraph{Recommendation.}
+Apple should expose threadgroup scheduling hints or document the compute
+occupancy model for M-series GPUs, as NVIDIA does for
+CUDA~\cite{cuda-occupancy}. Absent this, developers of GPU-accelerated
+cryptographic workloads must resort to exhaustive empirical sweeps to avoid
+performance cliffs that are invisible to static analysis.
+
+%% --------------------------------------------------------------------------
+\section{Optimization Methodology}
+\label{sec:optimization}
+
+We present detailed case studies of three optimization efforts that together
+account for the majority of zkMetal's performance gains. Each follows a
+measure-first methodology: profile the hot path, form a hypothesis, implement
+the optimization, and measure the result---discarding changes that do not
+produce statistically significant improvement.
+
+\subsection{MSM Optimization}
+\label{sec:msm-opt}
+
+Multi-scalar multiplication (MSM) is the dominant cost in KZG commitment
+schemes, Groth16 proving, and IPA-based protocols. We optimized BN254~G1 MSM
+from a 270\,ms baseline (naive GPU Pippenger at $2^{18}$ points on M3~Pro) to
+45\,ms---a 6$\times$ improvement. Table~\ref{tab:msm-waterfall} and
+Figure~\ref{fig:msm-waterfall} show the cumulative progression.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lrrr}
+\toprule
+\textbf{Optimization} & \textbf{Time} & \textbf{$\Delta$} & \textbf{Cum.\ Red.} \\
+\midrule
+Baseline (naive GPU Pippenger)  & 270\,ms &       & --- \\
+Single command buffer           & 235\,ms & $-$13\% & 13\% \\
+\texttt{fp\_sqr} removal        & 200\,ms & $-$15\% & 26\% \\
+Segment tuning (512$\to$256)    & 173\,ms & $-$14\% & 36\% \\
+Signed-digit decomposition      & 100\,ms & $-$42\% & 63\% \\
+GLV endomorphism                &  78\,ms & $-$22\% & 71\% \\
+CIOS \texttt{fp\_sqr} + Z=1 mixed add & 55\,ms & $-$30\% & 80\% \\
+Register reuse + simplified ops &  45\,ms & $-$18\% & 83\% \\
+Buffer caching                  &  45\,ms & $-$5\%  & 83\% \\
+\bottomrule
+\end{tabular}
+\caption{MSM optimization waterfall for BN254 G1 at $2^{18}$ points (M3~Pro).
+  Percentages are relative to the immediately preceding step. Cumulative
+  reduction is relative to the 270\,ms baseline.}
+\label{tab:msm-waterfall}
+\end{table}
+
+% Figure 4 placeholder
+\begin{figure}[t]
+\centering
+\fbox{\parbox{0.95\columnwidth}{\centering\vspace{2em}%
+\textbf{Figure 4:} Waterfall chart of MSM optimization progression from
+270\,ms to 45\,ms with each optimization's contribution shown as a
+cascading bar. Signed-digit decomposition and CIOS field arithmetic
+contribute the two largest single improvements.%
+\vspace{2em}}}
+\caption{MSM optimization waterfall from 270\,ms to 45\,ms (BN254 G1,
+  $2^{18}$ points, M3~Pro).}
+\label{fig:msm-waterfall}
+\end{figure}
+
+\paragraph{Signed-digit decomposition.}
+The standard Pippenger algorithm encodes each scalar as unsigned $w$-bit digits,
+yielding $2^w - 1$ buckets per window. Signed-digit recoding converts each digit
+to the range $[{-}(2^{w-1}{-}1),\; 2^{w-1}]$ via a carry chain, halving the
+bucket count to $2^{w-1}$. The sign bit is encoded in bit~31 of the sorted
+bucket index; the GPU reduce kernel checks this bit and negates the point's
+$y$-coordinate via \texttt{fp\_neg} when set. This single optimization reduces
+MSM latency by 42\% because the bucket accumulation phase---which is
+memory-bandwidth-bound due to random-access scatter writes---processes half as
+many buckets.
+
+\paragraph{GLV endomorphism.}
+BN254's efficiently computable endomorphism $\phi: (x, y) \mapsto (\beta x, y)$
+with $\phi(P) = \lambda P$ allows decomposing a 256-bit scalar multiplication
+into two 128-bit half-width multiplications~\cite{gallant-lambert-vanstone}. The
+CPU decomposes each scalar via Babai rounding; a GPU kernel applies $\phi$ to
+each point. This doubles the effective point count but halves the number of
+windows from 16 to 8, yielding a net 22\% improvement. Critically, GLV is only
+beneficial when point addition cost is low relative to the scalar width
+reduction---it \emph{regresses} on BLS12-377 (1{,}155\,ms vs.\ 911\,ms at
+$2^{18}$) because 12-limb point additions are so expensive that doubling the
+point count costs more than halving the scalar width saves.
+
+\paragraph{CIOS Montgomery and curve arithmetic.}
+The original implementation used a Sum-of-Squares (SOS) squaring specialization
+for \texttt{fp\_sqr}. While SOS saves ${\sim}25\%$ multiply operations for
+squaring on CPUs, on the M3~GPU it requires 17 temporary registers versus CIOS's
+10, degrading occupancy. Replacing \texttt{fp\_sqr} with standard CIOS
+multiplication (\texttt{fp\_mul(a,a)}) improved MSM by 15\%. Additionally, we
+introduced a specialized \texttt{point\_add\_mixed\_z1} routine that exploits
+the fact that the first point added to each bucket has $Z = 1$ (affine),
+saving one squaring and three multiplications per bucket (${\sim}262$K buckets at
+$w{=}16$). Register reuse across point operation temporaries and a simplified
+\texttt{fp\_neg} (single conditional subtraction instead of three) contributed
+further gains.
+
+\paragraph{Metal compiler \texttt{noinline} requirement.}
+Functions returning large structs (\texttt{PointProjective} contains
+three \texttt{Fp} fields totaling 96~bytes) are silently miscompiled when the
+Metal shader compiler inlines them. We discovered this when 5 of 9 MSM
+correctness tests failed after removing \texttt{\_\_attribute\_\_((noinline))}
+annotations. The \texttt{noinline} attribute is mandatory on
+\texttt{point\_double}, \texttt{point\_add\_mixed}, and \texttt{point\_add}
+across all curves. This appears to be a genuine Metal compiler bug---the
+generated code produces numerically incorrect results, not merely suboptimal
+performance.
+
+\paragraph{Timing breakdown at 45\,ms.}
+The final timing breakdown for $2^{18}$ BN254 points is: GLV decomposition
+2\,ms, precomputation 1.6\,ms, radix sort 2.4\,ms, GPU reduce (bucket
+accumulation) 15.5\,ms, bucket sum + window combine 8.8\,ms, Horner evaluation
+0.5\,ms. The GPU reduce phase consumes 50\% of total latency and is
+fundamentally bottlenecked by random-access memory writes during the scatter
+phase of bucket accumulation. This is consistent with the $9\times$ theoretical
+headroom (\S\ref{sec:theoretical-floor}): the floor is set by memory bandwidth
+for scatter writes, not compute.
+
+\paragraph{Comparison.}
+At $2^{18}$, zkMetal achieves 45\,ms versus Arkworks~CPU at 266\,ms
+($5.9\times$), ICICLE-Metal at 1{,}475\,ms ($33\times$), and ICICLE~CPU at
+556\,ms ($12\times$). ICICLE-CUDA on an RTX~3090~Ti achieves ${\sim}9$\,ms at
+$2^{16}$~\cite{icicle}, a $3\times$ advantage attributable to native 64-bit
+integer multiply and $6\times$ higher memory bandwidth (900~GB/s vs.\
+150~GB/s).
+
+\subsection{NTT Optimization}
+\label{sec:ntt-opt}
+
+The Number Theoretic Transform (NTT) is the core operation in polynomial
+arithmetic for SNARKs and STARKs. We describe three GPU-level optimizations
+and quantify the impact of field element size on throughput.
+
+\paragraph{Four-step FFT.}
+For sizes $\geq 2^{20}$, a single-kernel NTT exceeds Metal's 32\,KB
+threadgroup shared memory limit. We adopt the four-step FFT
+algorithm~\cite{bailey-ffts}: split an $N$-point NTT into row NTTs of size
+$N_1$, a twiddle factor multiplication, and column NTTs of size $N_2$, where
+$N = N_1 \times N_2$. Each sub-NTT fits in shared memory. The split point is
+chosen so that $N_1 = N_2 = \sqrt{N}$ when possible, or the nearest power of
+two otherwise.
+
+\paragraph{Fused bitrev+butterfly.}
+The standard NTT pipeline consists of a bit-reversal permutation followed by
+$\log_2 N$ butterfly stages. We fuse the bit-reversal into the first butterfly
+stage: the kernel reads input elements at bit-reversed indices from an input
+buffer and writes butterfly results to a scratch buffer, eliminating one full
+array traversal. This requires separate input and output buffers (in-place
+fusion causes cross-threadgroup data races). The result is a 47\% improvement
+for BN254 NTT at $2^{16}$ (0.85\,ms $\to$ 0.45\,ms) and 32\% at $2^{18}$
+(2.44\,ms $\to$ 1.67\,ms). Gains diminish at larger sizes where global
+butterfly stages dominate.
+
+\paragraph{Twiddle fusion.}
+In the four-step algorithm, the twiddle factor multiplication between row and
+column NTTs is a separate dispatch over the full array. We fuse this
+multiplication into the row NTT kernel: twiddle factors are applied during the
+shared memory load phase (forward NTT) or during writeback (inverse NTT). This
+eliminates a full-array memory pass of 64--128\,MB at large sizes. The impact is
+dramatic at $2^{24}$: BabyBear NTT improves from 11.25\,ms to 2.32\,ms
+($4.8\times$), and Goldilocks from 13.73\,ms to 3.00\,ms ($4.6\times$). BN254
+benefits less because the row NTT kernel is already compute-bound at 32~bytes
+per element.
+
+\paragraph{Small-field throughput advantage.}
+BabyBear (31-bit prime, $p = 2^{31} - 2^{27} + 1$) achieves 8.5 billion
+elements per second at $2^{24}$, compared to 144~million for BN254---a
+$59\times$ throughput ratio for an $8\times$ element size ratio. This
+super-linear scaling arises because: (1) each BabyBear butterfly is a single
+32-bit multiply-accumulate (MAD) versus 64~MADs for BN254 CIOS Montgomery; (2)
+4-byte elements pack 8$\times$ more densely in cache lines, improving strided
+column access utilization from 25\% (BN254, 32~bytes / 128-byte cache line) to
+100\% (BabyBear, 4~bytes $\times$ 32 per line); and (3) BabyBear NTT at $2^{24}$
+is within 1.2$\times$ of the memory bandwidth floor, indicating that computation
+is no longer the bottleneck.
+
+% Figure 5 placeholder
+\begin{figure}[t]
+\centering
+\fbox{\parbox{0.95\columnwidth}{\centering\vspace{2em}%
+\textbf{Figure 5:} NTT throughput (elements/sec, log scale) versus field
+element size (bits) at $2^{24}$ elements. Points: BabyBear (31-bit,
+8.5\,B\,elem/s), Goldilocks (64-bit, 5.7\,B\,elem/s), BN254 Fr (256-bit,
+144\,M\,elem/s). The relationship is super-linear due to cache-line packing
+and single-instruction arithmetic for small fields.%
+\vspace{2em}}}
+\caption{NTT throughput versus field element size at $2^{24}$.
+  The 32-bit ALU is an \emph{advantage} for small fields.}
+\label{fig:ntt-throughput}
+\end{figure}
+
+\paragraph{BN254 near-optimality at large sizes.}
+BN254 NTT at $2^{22}$ runs in 26\,ms, which we believe is near-optimal for
+32-byte elements on this hardware. The four-step algorithm's column NTTs access
+memory at stride $N_1 \times 32$~bytes, yielding only 25\% cache-line
+utilization. We tested three alternative approaches to improve coalescing:
+transpose-before-column NTT (4 transposes + 4 blits cost ${\sim}50$\,ms,
+exceeding the benefit), swapped row/column split dimensions, and individual
+phase profiling. All three failed to improve over the baseline
+(\S\ref{sec:dead-ends}).
+
+\subsection{C CIOS CPU Acceleration}
+\label{sec:ccios}
+
+While GPU acceleration dominates for large inputs, many ZK primitives contain
+CPU-side hot loops for small inputs, proof composition, or sequential operations
+(Fiat-Shamir transcripts, scalar decomposition, polynomial evaluation). We
+developed a systematic methodology for accelerating these paths.
+
+\paragraph{Methodology.}
+We profile each primitive to identify functions where $> 50\%$ of CPU time is
+spent in field arithmetic. These functions are reimplemented in C using
+\texttt{\_\_uint128\_t} for 64-bit CIOS Montgomery multiplication on ARM64.
+The C compiler (\texttt{clang -O3}) maps \texttt{\_\_uint128\_t} multiplications
+directly to ARM64 \texttt{MUL}+\texttt{UMULH} instruction pairs with optimal
+register allocation and pipeline scheduling. For BN254's 256-bit field, each
+Montgomery multiplication uses four 64-bit limbs with fully unrolled CIOS inner
+loops, versus Swift's \texttt{multipliedFullWidth} + \texttt{addingReportingOverflow}
+pattern which generates substantially more instructions due to overflow-reporting
+semantics.
+
+\paragraph{Key insight.}
+Swift's optimizer handles 256-bit field arithmetic at 80--90\% of C performance
+for \emph{isolated} multiplications. However, it is catastrophically slower (up
+to $38\times$) for \emph{inner-loop} scalar operations where function call
+overhead, overflow checking, and branch misprediction compound across millions of
+iterations. The worst cases are tight loops: Pippenger bucket accumulation, NTT
+butterfly inner loops, and GKR sumcheck rounds.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lrrr}
+\toprule
+\textbf{Primitive} & \textbf{Before} & \textbf{After} & \textbf{Speedup} \\
+\midrule
+BN254 NTT $2^{20}$  (CPU)    & 7.5\,s    & 247\,ms   & 30$\times$ \\
+BN254 NTT $2^{14}$  (CPU)    & 103\,ms   & 2.7\,ms   & 38$\times$ \\
+GKR $2^{10}$ d=4             & 241\,ms   & 7.7\,ms   & 31$\times$ \\
+Verkle proof 256             & 670\,ms   & 5\,ms     & 134$\times$ \\
+ECDSA batch 64 (CPU)         & 97\,ms    & 1.7\,ms   & 57$\times$ \\
+HyperNova fold               & 3.6\,ms   & 0.09\,ms  & 40$\times$ \\
+Spartan prove $2^{14}$       & 1{,}051\,ms & 121\,ms & 8.6$\times$ \\
+Lasso prove $2^{18}$         & 481\,ms   & 56\,ms    & 8.2$\times$ \\
+Lasso verify $2^{18}$        & 1.6\,s    & 31\,ms    & 52$\times$ \\
+Groth16 prove 256            & 1.5\,s    & 14\,ms    & 107$\times$ \\
+\midrule
+BabyBear NTT $2^{22}$ (NEON) & 192\,ms   & 33\,ms    & 5.8$\times$ \\
+Goldilocks NTT $2^{20}$ (C)  & 53\,ms    & 25\,ms    & 2.1$\times$ \\
+\bottomrule
+\end{tabular}
+\caption{C CIOS acceleration results across zkMetal primitives. Top section:
+  \texttt{\_\_uint128\_t} CIOS Montgomery for 256-bit fields. Bottom section:
+  field-specific C optimizations (NEON SIMD for BabyBear, \texttt{\_\_uint128\_t}
+  pipelining for Goldilocks). ``Before'' times use vanilla Swift field
+  arithmetic.}
+\label{tab:ccios}
+\end{table}
+
+\paragraph{Results.}
+Table~\ref{tab:ccios} summarizes the impact across all primitives where C~CIOS
+was applied. Speedups range from 2.1$\times$ (Goldilocks, where Swift's 64-bit
+arithmetic is already efficient) to 134$\times$ (Verkle trees, where IPA's
+iterated scalar multiplications compound the per-operation advantage across
+$\log_2(n)$ rounds). The geometric mean speedup across all 256-bit primitives
+is $32\times$.
+
+Notably, C~Pippenger MSM on CPU achieves 68\,ms at $2^{16}$ BN254 points,
+matching Arkworks~\cite{arkworks} (69\,ms) on identical hardware. This
+demonstrates that the C~CIOS methodology alone---without any GPU
+involvement---achieves state-of-the-art CPU performance for 256-bit field
+arithmetic on ARM64.
+
+\paragraph{NEON BabyBear NTT.}
+For the 31-bit BabyBear field, we adapt the Plonky3 Montgomery
+technique~\cite{plonky3} to ARM64 NEON: a 4-wide \texttt{uint32x4\_t}
+Montgomery butterfly processes four field elements per instruction. The key
+implementation subtlety is that the Montgomery constant must be the
+\emph{positive} inverse $p^{-1} \bmod 2^{32}$ (not $-p^{-1}$), because the
+NEON subtraction variant uses \texttt{vhsubq\_s32} which requires the
+$(a \cdot b - q \cdot p)/2^{32}$ formulation. An initially incorrect sign on
+\texttt{P\_INV} produced silently wrong results. The corrected NEON NTT achieves
+5.8$\times$ over Swift, reducing $2^{22}$ BabyBear NTT from 192\,ms to 33\,ms.
+
+\paragraph{Diminishing returns for 64-bit fields.}
+Goldilocks ($p = 2^{64} - 2^{32} + 1$) gains only 2.1$\times$ from C
+optimization because Swift already handles single-\texttt{UInt64} arithmetic
+efficiently, and Goldilocks' special reduction (exploiting the sparse prime
+structure) avoids the multi-limb carry chains where Swift's overhead is worst.
+This confirms that C~CIOS acceleration is most impactful for 256-bit fields
+where the 4-limb$\times$4-limb CIOS inner loop is the dominant cost.
+
+\paragraph{Integration.}
+All C code is compiled as a Swift Package Manager C target
+(\texttt{NeonFieldOps}) with \texttt{-O3} and linked at build time. No
+runtime JIT or assembly is involved. We verified that hand-written AArch64
+assembly for Montgomery multiplication is 23\% \emph{slower} than
+\texttt{clang~-O3} on \texttt{\_\_uint128\_t} code---the compiler already emits
+optimal \texttt{MUL}+\texttt{UMULH} pairs. Developers should not hand-optimize
+ARM64 Montgomery arithmetic.

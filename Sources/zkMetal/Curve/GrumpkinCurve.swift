@@ -5,6 +5,7 @@
 // Jacobian projective coordinates: (X, Y, Z) represents affine (X/Z^2, Y/Z^3)
 
 import Foundation
+import NeonFieldOps
 
 public struct GrumpkinPointAffine {
     public var x: Fr
@@ -51,58 +52,36 @@ public func grumpkinPointToAffine(_ p: GrumpkinPointProjective) -> GrumpkinPoint
 }
 
 // Point doubling (a=0 for Grumpkin: y^2 = x^3 - 17)
+// Uses C CIOS Montgomery field ops.
 public func grumpkinPointDouble(_ p: GrumpkinPointProjective) -> GrumpkinPointProjective {
-    if grumpkinPointIsIdentity(p) { return p }
-
-    let a = frSqr(p.x)
-    let b = frSqr(p.y)
-    let c = frSqr(b)
-
-    let xpb = frAdd(p.x, b)
-    let d = frDouble(frSub(frSqr(xpb), frAdd(a, c)))
-
-    let e = frAdd(frDouble(a), a) // 3*X^2
-    let f = frSqr(e)
-
-    let rx = frSub(f, frDouble(d))
-    let ry = frSub(frMul(e, frSub(d, rx)),
-                   frDouble(frDouble(frDouble(c))))
-    let yz = frAdd(p.y, p.z)
-    let rz = frSub(frSqr(yz), frAdd(b, frSqr(p.z)))
-
-    return GrumpkinPointProjective(x: rx, y: ry, z: rz)
+    var result = grumpkinPointIdentity()
+    withUnsafeBytes(of: p) { pBuf in
+        withUnsafeMutableBytes(of: &result) { resBuf in
+            grumpkin_point_double(
+                pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                resBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+            )
+        }
+    }
+    return result
 }
 
 // Full addition: projective + projective
+// Uses C CIOS Montgomery field ops.
 public func grumpkinPointAdd(_ p: GrumpkinPointProjective, _ q: GrumpkinPointProjective) -> GrumpkinPointProjective {
-    if grumpkinPointIsIdentity(p) { return q }
-    if grumpkinPointIsIdentity(q) { return p }
-
-    let z1z1 = frSqr(p.z)
-    let z2z2 = frSqr(q.z)
-    let u1 = frMul(p.x, z2z2)
-    let u2 = frMul(q.x, z1z1)
-    let s1 = frMul(p.y, frMul(q.z, z2z2))
-    let s2 = frMul(q.y, frMul(p.z, z1z1))
-
-    let h = frSub(u2, u1)
-    let rr = frDouble(frSub(s2, s1))
-
-    if h.isZero {
-        if rr.isZero { return grumpkinPointDouble(p) }
-        return grumpkinPointIdentity()
+    var result = grumpkinPointIdentity()
+    withUnsafeBytes(of: p) { pBuf in
+        withUnsafeBytes(of: q) { qBuf in
+            withUnsafeMutableBytes(of: &result) { resBuf in
+                grumpkin_point_add(
+                    pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    qBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    resBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                )
+            }
+        }
     }
-
-    let rz = frMul(frDouble(frMul(p.z, q.z)), h)
-    let dh = frDouble(h)
-    let i = frSqr(dh)
-    let v = frMul(u1, i)
-    let j = frMul(h, i)
-
-    let rx = frSub(frSub(frSqr(rr), j), frDouble(v))
-    let ry = frSub(frMul(rr, frSub(v, rx)), frDouble(frMul(s1, j)))
-
-    return GrumpkinPointProjective(x: rx, y: ry, z: rz)
+    return result
 }
 
 // Negate affine point
@@ -115,36 +94,41 @@ public func grumpkinPointNegate(_ p: GrumpkinPointProjective) -> GrumpkinPointPr
     GrumpkinPointProjective(x: p.x, y: frNeg(p.y), z: p.z)
 }
 
-// Scalar multiplication (double-and-add)
+// Scalar multiplication (double-and-add) with integer scalar
+// Uses C CIOS Montgomery field ops via grumpkin_scalar_mul.
 public func grumpkinPointMulInt(_ p: GrumpkinPointProjective, _ n: Int) -> GrumpkinPointProjective {
     if n == 0 { return grumpkinPointIdentity() }
+    var scalarLimbs: [UInt64] = [UInt64(bitPattern: Int64(n)), 0, 0, 0]
     var result = grumpkinPointIdentity()
-    var base = p
-    var scalar = n
-    while scalar > 0 {
-        if scalar & 1 == 1 {
-            result = grumpkinPointAdd(result, base)
+    withUnsafeBytes(of: p) { pBuf in
+        scalarLimbs.withUnsafeBufferPointer { scBuf in
+            withUnsafeMutableBytes(of: &result) { resBuf in
+                grumpkin_scalar_mul(
+                    pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    scBuf.baseAddress!,
+                    resBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                )
+            }
         }
-        base = grumpkinPointDouble(base)
-        scalar >>= 1
     }
     return result
 }
 
 // Scalar multiplication with 256-bit scalar (as Fp / BN254 Fq)
+// Uses C CIOS Montgomery field ops for ~5-10x speedup over Swift.
 public func grumpkinPointScalarMul(_ p: GrumpkinPointProjective, _ scalar: Fp) -> GrumpkinPointProjective {
-    // Convert from Montgomery form to get raw limbs
-    let limbs = fpToInt(scalar)
+    // Convert scalar from Montgomery form to integer limbs
+    var scalarLimbs = fpToInt(scalar)
     var result = grumpkinPointIdentity()
-    var base = p
-    for i in 0..<4 {
-        var word = limbs[i]
-        for _ in 0..<64 {
-            if word & 1 == 1 {
-                result = grumpkinPointAdd(result, base)
+    withUnsafeBytes(of: p) { pBuf in
+        scalarLimbs.withUnsafeBufferPointer { scBuf in
+            withUnsafeMutableBytes(of: &result) { resBuf in
+                grumpkin_scalar_mul(
+                    pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    scBuf.baseAddress!,
+                    resBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                )
             }
-            base = grumpkinPointDouble(base)
-            word >>= 1
         }
     }
     return result

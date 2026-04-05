@@ -117,7 +117,6 @@ public class PlonkProver {
         // where id_j(omega^i) = omega^i * {1, k1, k2} (identity permutation)
 
         var zEvals = [Fr](repeating: Fr.zero, count: n)
-        zEvals[0] = Fr.one
 
         let domain = setup.domain
         let k1 = setup.k1
@@ -126,38 +125,45 @@ public class PlonkProver {
         let sigma2Evals = setup.permutationEvals[1]
         let sigma3Evals = setup.permutationEvals[2]
 
-        // Precompute all numerators and denominators, then batch-invert denominators
-        // to replace n-1 individual frInverse calls with a single inversion.
-        var nums = [Fr](repeating: Fr.zero, count: n - 1)
-        var dens = [Fr](repeating: Fr.zero, count: n - 1)
-
-        for i in 0..<(n - 1) {
-            let betaDomain = frMul(beta, domain[i])
-            let num1 = frAdd(frAdd(aEvals[i], betaDomain), gamma)
-            let num2 = frAdd(frAdd(bEvals[i], frMul(k1, betaDomain)), gamma)
-            let num3 = frAdd(frAdd(cEvals[i], frMul(k2, betaDomain)), gamma)
-            nums[i] = frMul(frMul(num1, num2), num3)
-
-            let den1 = frAdd(frAdd(aEvals[i], frMul(beta, sigma1Evals[i])), gamma)
-            let den2 = frAdd(frAdd(bEvals[i], frMul(beta, sigma2Evals[i])), gamma)
-            let den3 = frAdd(frAdd(cEvals[i], frMul(beta, sigma3Evals[i])), gamma)
-            dens[i] = frMul(frMul(den1, den2), den3)
-        }
-
-        // Montgomery batch inversion: compute all 1/den[i] with a single frInverse (C path)
-        var denInvs = [Fr](repeating: Fr.zero, count: n - 1)
-        dens.withUnsafeBytes { dBuf in
-            denInvs.withUnsafeMutableBytes { rBuf in
-                bn254_fr_batch_inverse(
-                    dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                    Int32(n - 1),
-                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
-                )
+        // Fused C path: numerator/denominator loop + batch inverse + running product
+        aEvals.withUnsafeBytes { aBuf in
+            bEvals.withUnsafeBytes { bBuf in
+                cEvals.withUnsafeBytes { cBuf in
+                    sigma1Evals.withUnsafeBytes { s1Buf in
+                        sigma2Evals.withUnsafeBytes { s2Buf in
+                            sigma3Evals.withUnsafeBytes { s3Buf in
+                                domain.withUnsafeBytes { dBuf in
+                                    withUnsafeBytes(of: beta) { betaBuf in
+                                        withUnsafeBytes(of: gamma) { gammaBuf in
+                                            withUnsafeBytes(of: k1) { k1Buf in
+                                                withUnsafeBytes(of: k2) { k2Buf in
+                                                    zEvals.withUnsafeMutableBytes { zBuf in
+                                                        plonk_compute_z_accumulator(
+                                                            aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                                            bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                                            cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                                            s1Buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                                            s2Buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                                            s3Buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                                            dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                                            betaBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                                            gammaBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                                            k1Buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                                            k2Buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                                            Int32(n),
+                                                            zBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
-        }
-
-        for i in 0..<(n - 1) {
-            zEvals[i + 1] = frMul(zEvals[i], frMul(nums[i], denInvs[i]))
         }
 
         let zCoeffs = n <= kCPU_NTT_THRESHOLD ? cINTT_Fr(zEvals, logN: logN) : try ntt.intt(zEvals)

@@ -1,0 +1,17 @@
+// zkMetal Test Suite — run with: swift build && .build/debug/zkMetalTests
+// Or: swift build -c release && .build/release/zkMetalTests
+
+import Foundation
+
+let t0 = CFAbsoluteTimeGetCurrent()
+
+runFieldTests()
+runNTTTests()
+runHashTests()
+runMSMTests()
+runPolynomialTests()
+runProofSystemTests()
+
+let elapsed = CFAbsoluteTimeGetCurrent() - t0
+print(String(format: "\nCompleted in %.1fs", elapsed))
+printSummary()

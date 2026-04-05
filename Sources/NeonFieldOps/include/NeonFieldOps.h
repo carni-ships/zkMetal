@@ -392,6 +392,40 @@ void bn254_dual_msm_projective(
 /// Uses C CIOS Montgomery mul (~100x faster than Swift frInverse).
 void bn254_fr_inverse(const uint64_t a[4], uint64_t r[4]);
 
+/// Fr CIOS Montgomery multiplication: r = a * b * R^{-1} mod p.
+void bn254_fr_mul(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]);
+
+/// Fr modular addition: r = (a + b) mod p.
+void bn254_fr_add(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]);
+
+/// Fr modular subtraction: r = (a - b) mod p.
+void bn254_fr_sub(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]);
+
+/// Fr modular negation: r = (-a) mod p.
+void bn254_fr_neg(const uint64_t a[4], uint64_t r[4]);
+
+/// Fr power: r = a^exp mod p (exp is 64-bit).
+void bn254_fr_pow(const uint64_t a[4], uint64_t exp, uint64_t r[4]);
+
+/// Fr equality check: returns 1 if a == b, 0 otherwise.
+int bn254_fr_eq(const uint64_t a[4], const uint64_t b[4]);
+
+/// Batch KZG verification for Marlin.
+/// Verifies n tuples via random linear combination using C field ops.
+/// @param srsG1        First SRS point (affine, 8 uint64_t: x[4], y[4]).
+/// @param srsSecret    SRS secret scalar (4 uint64_t, Montgomery form).
+/// @param commitments  n projective points (12 uint64_t each).
+/// @param points       n Fr evaluation points (4 uint64_t each).
+/// @param evaluations  n Fr claimed evaluations (4 uint64_t each).
+/// @param witnesses    n projective points (12 uint64_t each).
+/// @param batchChallenge Fr element for random linear combination.
+/// @param n            Number of tuples.
+/// @return 1 if verification passes, 0 otherwise.
+int bn254_batch_kzg_verify(const uint64_t *srsG1, const uint64_t *srsSecret,
+                           const uint64_t *commitments, const uint64_t *points,
+                           const uint64_t *evaluations, const uint64_t *witnesses,
+                           const uint64_t *batchChallenge, int n);
+
 /// Fused sparse matvec + MLE eval: MLE(M*z)(point) in one C call.
 /// Avoids Swift intermediate array allocation for M*z.
 /// CSR: rowPtr[rows+1], colIdx[nnz], values[nnz*4 uint64 Fr].
@@ -461,5 +495,134 @@ void spartan_eq_poly(const uint64_t *point, int n, uint64_t *eq);
 /// MLE evaluation via successive halving for Spartan.
 void spartan_mle_eval(const uint64_t *evals, int numVars,
                       const uint64_t *point, uint64_t result[4]);
+
+/// Basefold single-round fold on CPU with CIOS Montgomery arithmetic.
+/// result[i] = evals[i] + alpha * (evals[i + halfN] - evals[i])
+/// Multi-threaded via GCD for halfN >= 4096.
+/// @param evals  Input array: 2*halfN Fr elements (4 uint64_t each, Montgomery form).
+/// @param result Output array: halfN Fr elements (4 uint64_t each).
+/// @param alpha  Folding challenge (4 uint64_t, Montgomery form).
+/// @param halfN  Half the input size.
+void bn254_fr_basefold_fold(const uint64_t *evals, uint64_t *result,
+                             const uint64_t *alpha, uint32_t halfN);
+
+/// Basefold fold all rounds on CPU with CIOS Montgomery arithmetic.
+/// Folds evals (2^numVars elements) through numVars rounds using point[] as challenges.
+/// Stores each intermediate layer contiguously in out_layers:
+///   layer0 (n/2 elements), layer1 (n/4), ..., layerK (1 element).
+/// Total output = n-1 elements (each 4 uint64_t, Montgomery form).
+/// Multi-threaded via GCD for large rounds.
+void bn254_fr_basefold_fold_all(const uint64_t *evals, int numVars,
+                                 const uint64_t *point, uint64_t *out_layers);
+
+// ============================================================
+// Tensor Proof Compression operations
+// ============================================================
+
+/// Matrix-vector multiply: result[i] = sum_j M[i*cols+j] * vec[j].
+void tensor_mat_vec_mul(const uint64_t *M, const uint64_t *vec,
+                        int rows, int cols, uint64_t *result);
+
+/// Full inner-product sumcheck: prove sum_i a[i]*b[i].
+/// rounds: numVars * 3 Fr (s0,s1,s2 per round). finalEval: a_final*b_final.
+void tensor_inner_product_sumcheck(
+    const uint64_t *evalsA, const uint64_t *evalsB,
+    int numVars, const uint64_t *challenges,
+    uint64_t *rounds, uint64_t *finalEval);
+
+/// Fused eq polynomial + weighted matrix row evaluation.
+/// result[j] = sum_i eq(rowPoint)[i] * M[i*cols + j].
+void tensor_eq_weighted_row(const uint64_t *M, const uint64_t *rowPoint,
+                            int rows, int cols, uint64_t *result);
+
+// ============================================================
+// WHIR polynomial folding
+// ============================================================
+
+/// WHIR polynomial fold: result[j] = sum_{k=0}^{r-1} beta^k * evals[j*r + k]
+/// Uses Horner's method with CIOS Montgomery mul. Multi-threaded for n >= 2048.
+/// @param evals  n Fr elements (4 uint64_t each, Montgomery form).
+/// @param n      Number of input elements (must be divisible by reductionFactor).
+/// @param beta   Folding challenge (4 uint64_t, Montgomery form).
+/// @param reductionFactor  Fold factor (2, 4, 8, ...). Specialized fast path for 4.
+/// @param result Output n/reductionFactor Fr elements (4 uint64_t each).
+void bn254_fr_whir_fold(const uint64_t *evals, int n,
+                         const uint64_t beta[4],
+                         int reductionFactor,
+                         uint64_t *result);
+
+/// CPU Poseidon2 Merkle tree builder (avoids GPU command buffer overhead).
+/// Layout: tree[0..n-1] = leaves, tree[n..2n-2] = internal, tree[2n-2] = root.
+/// Each element is 4 x uint64_t (32 bytes, BN254 Fr Montgomery form).
+/// Multi-threaded for levels with >= 256 pairs.
+/// @param leaves  n Fr elements (4 uint64_t each).
+/// @param n       Number of leaves (must be power of 2).
+/// @param tree    Output buffer for 2n-1 Fr elements (4 uint64_t each).
+void poseidon2_merkle_tree_cpu(const uint64_t *leaves, int n, uint64_t *tree);
+
+// ============================================================
+// CCS (Customizable Constraint System) accelerated operations
+// ============================================================
+
+/// CSR sparse matrix-vector multiply: result = M * z.
+/// rowPtr: nRows+1 ints. colIdx/values: nnz entries. z: n Fr elements.
+/// result: nRows Fr elements (4 uint64_t each, Montgomery form).
+void ccs_sparse_matvec(uint64_t *result,
+                       const int *rowPtr, const int *colIdx,
+                       const uint64_t *values, const uint64_t *z,
+                       int nRows);
+
+/// Fused hadamard product + coefficient-weighted accumulation for CCS.
+/// acc[i] += sum_j coeff_j * product_k matResultPtrs[j*maxDegree+k][i].
+/// matResultPtrs: flat array of pointers to m-element Fr vectors.
+/// nMatricesPerTerm[j]: degree of term j. coefficients: q Fr elements.
+void ccs_hadamard_accumulate(uint64_t *acc,
+                             const uint64_t * const *matResultPtrs,
+                             const int *nMatricesPerTerm,
+                             const uint64_t *coefficients,
+                             int nTerms, int maxDegree, int m);
+
+/// Compute single CCS term: result[i] = coeff * product_k matVecResults[k][i].
+void ccs_compute_term(uint64_t *result,
+                      const uint64_t * const *matVecResults,
+                      int nMatrices,
+                      const uint64_t coeff[4],
+                      int m);
+
+// ============================================================
+// Plonk permutation Z accumulator
+// ============================================================
+
+/// Fused Plonk permutation Z accumulator computation.
+/// Computes zEvals[0..n-1] with batch inverse and running product.
+/// All arrays are BN254 Fr in Montgomery form (4 x uint64_t per element).
+void plonk_compute_z_accumulator(
+    const uint64_t *aEvals, const uint64_t *bEvals, const uint64_t *cEvals,
+    const uint64_t *sigma1, const uint64_t *sigma2, const uint64_t *sigma3,
+    const uint64_t *domain,
+    const uint64_t beta[4], const uint64_t gamma[4],
+    const uint64_t k1[4], const uint64_t k2[4],
+    int n, uint64_t *zEvals);
+
+// ============================================================
+// Grumpkin curve operations (y^2 = x^3 - 17 over BN254 Fr)
+// ============================================================
+
+/// Grumpkin point addition (Jacobian projective, BN254 Fr CIOS).
+/// @param p  First projective point (12 uint64_t: x[4], y[4], z[4], Montgomery form).
+/// @param q  Second projective point.
+/// @param r  Output projective point.
+void grumpkin_point_add(const uint64_t p[12], const uint64_t q[12], uint64_t r[12]);
+
+/// Grumpkin point doubling (a=0 curve, Jacobian projective).
+/// @param p  Input projective point (12 uint64_t).
+/// @param r  Output projective point.
+void grumpkin_point_double(const uint64_t p[12], uint64_t r[12]);
+
+/// Grumpkin scalar multiplication using windowed method (w=4).
+/// @param p       Projective point (12 uint64_t: x[4], y[4], z[4], BN254 Fr Montgomery form).
+/// @param scalar  4 x uint64_t scalar (non-Montgomery integer form, little-endian).
+/// @param r       Output projective point (12 uint64_t).
+void grumpkin_scalar_mul(const uint64_t p[12], const uint64_t scalar[4], uint64_t r[12]);
 
 #endif // NEON_FIELD_OPS_H

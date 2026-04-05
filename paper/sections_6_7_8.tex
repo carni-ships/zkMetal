@@ -1,0 +1,410 @@
+% =============================================================================
+% Sections 6, 7, 8 of zkMetal paper
+% Target: USENIX Security format (2-column, 10pt)
+% =============================================================================
+
+\section{Performance Characterization}
+\label{sec:perf}
+
+We evaluate zkMetal against four baselines: ICICLE-Metal~\cite{icicle} (the only other Metal ZK library), ICICLE CPU~\cite{icicle} (Ingonyama's CPU backend on the same hardware), Arkworks~\cite{arkworks} (Rust CPU reference), and ICICLE-CUDA~\cite{icicle} on an NVIDIA RTX~3090~Ti (representing the discrete GPU ceiling).
+All zkMetal benchmarks run on an Apple M3~Pro (6P+6E~cores, 150~GB/s memory bandwidth, $\sim$3.6~TFLOPS GPU compute).
+
+\subsection{Comparison with Baselines}
+\label{sec:baselines}
+
+\paragraph{MSM.}
+Table~\ref{tab:msm-comparison} compares MSM implementations across six systems.
+zkMetal achieves 27\,ms at $2^{16}$ points and 45\,ms at $2^{18}$, a 33$\times$ improvement over ICICLE-Metal (1475\,ms) and 5.9$\times$ over Arkworks CPU (266\,ms) at $2^{18}$.
+ICICLE-Metal v3.8 incurs $\sim$600\,ms constant overhead per call due to license-server communication, but even accounting for this, zkMetal's kernel execution is substantially faster.
+MoPro~v2~\cite{mopro}, measured on M3~Air by its developers, reports 678\,ms at $2^{18}$---15$\times$ slower than zkMetal on comparable hardware.
+
+\begin{table}[t]
+\centering
+\small
+\caption{BN254 G1 MSM comparison across implementations.}
+\label{tab:msm-comparison}
+\begin{tabular}{lrrrrrr}
+\toprule
+Points & \textbf{zkMetal} & ICICLE- & ICICLE & MoPro & Ark- & ICICLE \\
+       & (M3 Pro) & Metal$^1$ & CPU$^1$ & v2$^2$ & works$^2$ & CUDA$^3$ \\
+\midrule
+$2^{16}$ & \textbf{27\,ms} & 1083\,ms & 114\,ms & 253\,ms & 69\,ms & $\sim$9\,ms \\
+$2^{18}$ & \textbf{45\,ms} & 1475\,ms & 556\,ms & 678\,ms & 266\,ms & -- \\
+$2^{20}$ & \textbf{119\,ms} & 2590\,ms & 2349\,ms & 1702\,ms & 592\,ms & -- \\
+\bottomrule
+\end{tabular}
+\\[2pt]
+\raggedright\scriptsize
+$^1$Measured locally. ICICLE-Metal v3.8 has $\sim$600\,ms per-call overhead.\\
+$^2$Reported by MoPro blog~\cite{mopro}; M3~Air, different methodology.\\
+$^3$RTX~3090~Ti with native 64-bit integer multiply~\cite{icicle}.
+\end{table}
+
+The CUDA gap at $2^{16}$ ($\sim$9\,ms vs.\ 27\,ms, a 3$\times$ difference) reflects two hardware disadvantages: the M3~Pro's 150~GB/s memory bandwidth versus 1008~GB/s on the RTX~3090~Ti (6.7$\times$), and the lack of native 64-bit integer multiply (each \texttt{mulhi(ulong,ulong)} decomposes into 4$\times$32-bit MADs).
+This gap is \emph{narrower} than the raw bandwidth ratio suggests because unified memory eliminates PCIe transfer overhead and the Pippenger algorithm is latency-sensitive (random-access scatter), not purely bandwidth-limited.
+
+\paragraph{NTT.}
+Table~\ref{tab:ntt-comparison} shows NTT performance across fields and sizes.
+zkMetal is 30--90$\times$ faster than ICICLE-Metal on BN254 and 90--500$\times$ faster on BabyBear, with the gap widening at larger sizes.
+ICICLE-Metal's $\sim$85\,ms per-call overhead is a constant factor, but even subtracting it leaves zkMetal 5--30$\times$ faster on BN254 at $2^{22}$+.
+
+\begin{table}[t]
+\centering
+\small
+\caption{NTT comparison: zkMetal vs.\ ICICLE-Metal (M3~Pro).}
+\label{tab:ntt-comparison}
+\begin{tabular}{lrrrr}
+\toprule
+Size & zkMetal & ICICLE & zkMetal & ICICLE \\
+     & BN254   & BN254  & BabyBear & BabyBear \\
+\midrule
+$2^{16}$ & \textbf{0.76\,ms} & 89\,ms & \textbf{0.18\,ms} & 86\,ms \\
+$2^{18}$ & \textbf{1.6\,ms}  & 108\,ms & \textbf{0.26\,ms} & 92\,ms \\
+$2^{20}$ & \textbf{6.1\,ms}  & 194\,ms & \textbf{0.95\,ms} & 108\,ms \\
+$2^{22}$ & \textbf{26\,ms}   & 915\,ms & \textbf{2.8\,ms}  & 181\,ms \\
+$2^{24}$ & \textbf{116\,ms}  & 3892\,ms & \textbf{2.0\,ms} & 709\,ms \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+BabyBear at $2^{24}$ achieves 8.5\,B~elements/sec---a regime where Metal's 32-bit ALU is no longer a disadvantage, since each butterfly is a single 32-bit MAD versus the 64~MADs required for a BN254 butterfly.
+
+\paragraph{Proof systems.}
+Table~\ref{tab:proof-systems} presents end-to-end proof system benchmarks.
+Circle STARK proves at 21\,ms for a $2^{14}$ trace (full GPU pipeline: Circle NTT LDE 0.9\,ms, Keccak Merkle 6\,ms, constraint evaluation 2\,ms, CPU FRI fold 12\,ms).
+HyperNova achieves 0.09\,ms per fold, a 40$\times$ improvement from C~CIOS acceleration, Keccak transcript optimization, and pre-computed affine points.
+Groth16 proves at 14\,ms for 256~constraints, a 107$\times$ improvement over the unoptimized baseline.
+
+\begin{table}[t]
+\centering
+\small
+\caption{End-to-end proof system benchmarks.}
+\label{tab:proof-systems}
+\begin{tabular}{lrrr}
+\toprule
+System & Size & Prove & Verify \\
+\midrule
+Circle STARK & $2^{14}$ trace & 21\,ms & 28\,ms \\
+Plonk (KZG) & 1024 gates & 49\,ms & 2\,ms \\
+Groth16 & 256 constraints & 14\,ms & 73\,ms \\
+GKR & $2^{10}$ w, d=4 & 7.7\,ms & 8.4\,ms \\
+HyperNova & per fold & 0.09\,ms & -- \\
+Spartan & $2^{14}$ & 121\,ms & 8\,ms \\
+Lasso & $2^{18}$ & 56\,ms & 31\,ms \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Cross-curve MSM.}
+Table~\ref{tab:cross-curve-msm} characterizes MSM across seven curves at $2^{18}$.
+BN254 is fastest (45\,ms) due to combined GLV endomorphism and signed-digit optimization.
+BLS12-377 (205\,ms) pays a 4.6$\times$ penalty from wider limbs (12$\times$32-bit vs.\ 8$\times$32-bit for BN254).
+secp256k1 (113\,ms) cannot use GLV due to the scheduling pathology (\S\ref{sec:pathology}) and relies on signed-digit only.
+Pallas and Vesta, as a cycle pair, achieve nearly identical performance (66 and 65\,ms), validating their suitability for recursive proof composition.
+
+\begin{table}[t]
+\centering
+\small
+\caption{Cross-curve MSM at $2^{18}$ points (GPU).}
+\label{tab:cross-curve-msm}
+\begin{tabular}{lrrr}
+\toprule
+Curve & Limbs & $2^{16}$ & $2^{18}$ \\
+\midrule
+BN254 & 8$\times$32 & 27\,ms & 45\,ms \\
+Pallas & 8$\times$32 & 39\,ms & 66\,ms \\
+Vesta & 8$\times$32 & 39\,ms & 65\,ms \\
+secp256k1 & 8$\times$32 & 24\,ms & 113\,ms \\
+BLS12-377 & 12$\times$32 & 176\,ms & 205\,ms \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Theoretical Floor Analysis}
+\label{sec:floors}
+
+To characterize optimization maturity, we compute hardware-theoretical performance floors for 33~primitives and compare against measured performance.
+
+\paragraph{Methodology.}
+For each primitive, we compute three lower bounds:
+(1)~\emph{Compute-bound}: total arithmetic operations divided by the GPU's 3.6~TFLOPS peak (counting BN254 \texttt{fp\_mul} as $\sim$64 32-bit multiply-add operations);
+(2)~\emph{Memory-bound}: total bytes read and written divided by 150~GB/s peak bandwidth;
+(3)~\emph{Dispatch-bound}: number of Metal command buffer dispatches multiplied by the empirical $\sim$0.5\,ms per-dispatch overhead.
+The theoretical floor is $\max(\text{compute}, \text{memory}, \text{dispatch})$.
+For compound protocols (proof systems), we sum the component floors.
+This methodology deliberately provides \emph{optimistic} floors---real performance must also contend with cache miss penalties, register pressure, and occupancy limits.
+
+\paragraph{Results.}
+Table~\ref{tab:floors} presents the 33-primitive analysis ranked by headroom (ratio of measured to theoretical floor).
+We identify three regimes:
+
+\emph{Near-optimal ($<$2$\times$ headroom):}
+Seven primitives operate within 2$\times$ of their theoretical floors.
+BabyBear NTT at $2^{24}$ (1.2$\times$) is essentially memory-bandwidth-limited: 16.8\,M elements $\times$ 4~bytes at 150~GB/s yields a 1.7\,ms floor against the measured 2.0\,ms.
+HyperNova (1.3$\times$), Circle NTT (1.3$\times$), Groth16 (1.4$\times$), and KZG commit (1.4$\times$) are similarly mature.
+These primitives share a common trait: regular, predictable memory access patterns or small element sizes that pack efficiently into cache lines.
+
+\emph{Moderate headroom (2--5$\times$):}
+Thirteen primitives have 2--5$\times$ headroom.
+Radix sort (2$\times$), Circle STARK (2$\times$), and Lasso (2$\times$) are approaching practical limits.
+ECDSA (3$\times$) and Plonk (3$\times$) have room for improvement through further C~CIOS acceleration of hot loops.
+Poseidon2 batch (4.5$\times$) is limited by the 22 sequential rounds inherent to the hash construction, which cap parallelism.
+
+\emph{Significant headroom (5--10$\times$):}
+Five primitives have 5$\times$ or more headroom.
+MSM BN254 ($\sim$9$\times$) and NTT BN254 ($\sim$9$\times$) are the largest-headroom GPU primitives.
+The MSM gap is dominated by the random-access scatter pattern in bucket accumulation: each thread writes to a bucket determined by the scalar digit, causing cache-hostile access with no spatial locality.
+The NTT gap reflects strided column access in the four-step FFT: 32-byte elements at 128-byte cache line granularity yield only 25\% cache utilization during column passes.
+
+\begin{table}[t]
+\centering
+\small
+\caption{Theoretical floor analysis for 33 primitives (selected). Full table in Appendix~A.}
+\label{tab:floors}
+\begin{tabular}{llrrl}
+\toprule
+Primitive & Current & Floor & Head- & Bottleneck \\
+          &         &       & room  &            \\
+\midrule
+\multicolumn{5}{l}{\emph{Near-optimal ($<$2$\times$)}} \\
+BabyBear NTT $2^{24}$ & 2.0\,ms & 1.7\,ms & 1.2$\times$ & Bandwidth \\
+Circle NTT $2^{20}$ & 4.0\,ms & 3.0\,ms & 1.3$\times$ & Compute $\approx$ BW \\
+HyperNova fold & 0.09\,ms & 0.07\,ms & 1.3$\times$ & C CIOS floor \\
+KZG commit $2^{10}$ & 0.7\,ms & 0.5\,ms & 1.4$\times$ & Cached affine \\
+Groth16 prove 256 & 14\,ms & 10\,ms & 1.4$\times$ & MSM dominated \\
+GKR $2^{10}$ d=4 & 7.7\,ms & 5\,ms & 1.5$\times$ & C CIOS + topology \\
+\midrule
+\multicolumn{5}{l}{\emph{Moderate (2--5$\times$)}} \\
+Lasso $2^{18}$ & 56\,ms & 30\,ms & 2$\times$ & Fused GPU \\
+Circle STARK $2^{14}$ & 21\,ms & 10\,ms & 2$\times$ & Batched CBs \\
+Radix sort $2^{20}$ & 2.1\,ms & 1\,ms & 2$\times$ & Histogram \\
+ECDSA batch 64 & 1.7\,ms & 0.5\,ms & 3$\times$ & C CIOS Fr \\
+Plonk 1024 & 49\,ms & 15\,ms & 3$\times$ & Poly ops \\
+secp256k1 MSM $2^{18}$ & 113\,ms & 30\,ms & 4$\times$ & No GLV \\
+Poseidon2 $2^{16}$ & 8.1\,ms & 1.8\,ms & 4.5$\times$ & Sequential rounds \\
+\midrule
+\multicolumn{5}{l}{\emph{Significant ($>$5$\times$)}} \\
+BLS12-377 MSM $2^{18}$ & 205\,ms & 35\,ms & 6$\times$ & 12-limb Fq \\
+Basefold $2^{18}$ & 144\,ms & 20\,ms & 7$\times$ & 18 fold rounds \\
+FRI fold $2^{20}$ & 1.96\,ms & 0.3\,ms & 7$\times$ & Bandwidth \\
+NTT BN254 $2^{22}$ & 26\,ms & 2.9\,ms & 9$\times$ & Strided BW \\
+MSM BN254 $2^{18}$ & 45\,ms & 5\,ms & 9$\times$ & Scatter BW \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Discussion.}
+\figurename~\ref{fig:floor-scatter} plots measured performance against theoretical floors for all 33~primitives.
+The dominant factor separating near-optimal from high-headroom primitives is \emph{memory access pattern regularity}, not raw compute efficiency.
+BabyBear NTT (1.2$\times$) streams 4-byte elements sequentially; MSM BN254 (9$\times$) scatters 96-byte projective points randomly.
+Both are running the same GPU, but MSM's effective memory bandwidth is $\sim$11$\times$ lower due to cache-line waste.
+
+This analysis also explains why small-field primitives consistently achieve lower headroom: 4-byte BabyBear elements pack 32 per cache line versus 4 for 32-byte BN254 elements, yielding 8$\times$ better cache utilization for identical access patterns.
+The ``small-field thesis''---that modern proof systems migrating to smaller fields play to Apple Silicon's strengths---is thus doubly supported: smaller fields benefit from both the 32-bit ALU match \emph{and} superior cache behavior.
+
+\begin{figure}[t]
+\centering
+% Placeholder for Figure 7: scatter plot of current perf vs theoretical floor
+\fbox{\parbox{0.9\columnwidth}{\centering\vspace{2cm}
+\textbf{Figure~\ref{fig:floor-scatter}}: Measured performance vs.\ theoretical floor for 33~primitives. Diagonal line indicates 1$\times$ (optimal). Primitives above the line have optimization headroom; distance from diagonal indicates gap. Near-optimal cluster (BabyBear NTT, HyperNova, KZG) at bottom-left; high-headroom outliers (BN254 MSM, BN254 NTT) at top-right.
+\vspace{2cm}}}
+\caption{Current performance vs.\ hardware-theoretical floor.}
+\label{fig:floor-scatter}
+\end{figure}
+
+
+% =============================================================================
+
+\section{Negative Results and Dead Ends}
+\label{sec:dead-ends}
+
+We catalog 30+ optimization attempts that failed, organized by failure mode.
+Negative results are underreported in systems research despite their value in preventing duplicated effort and revealing hardware characteristics.
+Each entry describes what was attempted, the observed result, and the root cause.
+
+\subsection{Hardware Pathology}
+\label{sec:dead-hw}
+
+\paragraph{64-bit limb CIOS on Metal GPU.}
+Hypothesis: representing 256-bit field elements as 4$\times$64-bit limbs instead of 8$\times$32-bit should halve the number of multiply-accumulate operations.
+Result: 67\% \emph{slower}.
+Root cause: Metal GPUs have no native 64-bit integer multiply hardware.
+The instruction \texttt{mulhi(ulong, ulong)} decomposes internally into four 32-bit MAD operations~\cite{metal-spec}, yielding zero computational benefit while doubling register pressure (64-bit registers consume two 32-bit slots).
+The increased register pressure reduces occupancy, compounding the already-null benefit.
+\emph{Lesson:} Metal's 32-bit ALU is not merely a ``preferred'' width---it is the \emph{only} integer multiply width.
+Any algorithm that assumes 64-bit integer multiply is free (common in CUDA ZK libraries~\cite{cuzk, zprize2022}) must be redesigned for Metal.
+
+\paragraph{Cooperative SIMD reduce for MSM buckets (w=13).}
+Hypothesis: use Metal SIMD shuffle operations to cooperatively reduce adjacent buckets within a SIMD group, reducing global memory traffic.
+Result: 2.4$\times$ slower.
+Root cause: each projective elliptic curve point is 96~bytes (3$\times$Fp at 32~bytes each).
+Metal SIMD shuffles are designed for 4-byte scalar types; shuffling 96~bytes requires 24 separate shuffle operations per point exchange, with each shuffle consuming a full SIMD cycle.
+The shuffle overhead exceeds the memory traffic reduction.
+\emph{Lesson:} GPU SIMD cooperative patterns are effective only when the exchanged data fits within the register file's natural granularity.
+For large algebraic types (field elements, curve points), thread-private accumulation with global atomic-free scatter is preferable.
+
+\paragraph{Custom AArch64 assembly for Montgomery multiply.}
+Hypothesis: hand-tuned assembly using ARM64 \texttt{MUL}/\texttt{UMULH} dual-issue scheduling should outperform compiler-generated code.
+Result: 23\% slower than LLVM's output for the equivalent C with \texttt{\_\_uint128\_t}.
+Root cause: Clang already emits optimal \texttt{MUL}+\texttt{UMULH} pairs for 128-bit multiply and correctly schedules them for the M-series microarchitecture.
+This finding was independently confirmed by two other Apple Silicon ZK projects~\cite{lightningjolt, aztecfasttech}.
+\emph{Lesson:} on ARM64 with a modern compiler, hand-written Montgomery assembly is counterproductive.
+The compiler's register allocator and instruction scheduler have sufficient information to produce near-optimal code for \texttt{\_\_uint128\_t} CIOS patterns.
+
+\paragraph{Fused reduce+bucket\_sum MSM kernel.}
+Hypothesis: combining bucket accumulation and bucket summation into a single kernel dispatch saves one command buffer overhead ($\sim$0.5\,ms) and allows data to remain in registers.
+Result: correct but 21\% slower.
+Root cause: the fused kernel launches only 4096~threads (one per bucket at window width 12), leaving the GPU severely underutilized.
+Metal's scheduler cannot efficiently distribute work when the grid is small relative to the GPU's execution unit count, even when per-thread work is substantial.
+\emph{Lesson:} on Metal, maintaining high grid occupancy (many threads with moderate work) outperforms low grid occupancy (few threads with heavy work), unlike CUDA where persistent kernel patterns are effective.
+
+\subsection{Algorithmic Dead Ends}
+\label{sec:dead-algo}
+
+\paragraph{GLV endomorphism on non-BN254 curves.}
+The GLV endomorphism~\cite{glv} halves the scalar width by decomposing each scalar multiplication into two half-width multiplications using the curve's efficiently computable endomorphism.
+On BN254, this provides a reliable 22\% improvement because the curve's endomorphism maps cleanly to the 8-limb arithmetic, and the resulting bucket count avoids scheduling pathologies.
+On secp256k1, GLV \emph{regresses by 12$\times$} (13569\,ms vs.\ 1133\,ms at $2^{18}$).
+The mechanism: GLV doubles the effective number of points (each scalar becomes two half-width scalars), pushing the bucket count to $\sim$32K---directly into the GPU scheduling pathology band (\S\ref{sec:pathology}).
+On BLS12-377, GLV regresses by 1.27$\times$ (1155\,ms vs.\ 911\,ms) because the 12-limb Fq field makes each point addition expensive enough that the cost of processing twice as many points exceeds the savings from shorter scalars.
+\emph{Lesson:} GLV is profitable only when (a)~the resulting bucket count avoids hardware pathologies and (b)~point addition cost is low relative to the scalar width reduction.
+Both conditions are curve- and hardware-specific.
+
+\paragraph{Local-binning radix sort.}
+We tested five variants of local-binning optimizations for the GPU radix sort used in MSM: serial ranking, SIMD ranking, linear binary-search scatter, atomic-based scatter, and sequential SIMD claiming.
+All performed the same as or worse than the baseline global-histogram sort.
+Root cause: Apple Silicon's large unified L2 cache reduces actual write amplification to 6--9$\times$ (versus the 32$\times$ theoretical worst case for random scatter), making the coalescing optimization that motivates local binning on discrete GPUs unprofitable.
+The staging buffer overhead, local histogram loading, prefix sums, and per-element binary search collectively exceed the marginal coalescing benefit.
+\emph{Lesson:} unified memory with large caches changes the cost model for memory coalescing optimizations.
+Techniques developed for discrete GPUs with separate VRAM should be re-evaluated on unified architectures.
+
+\paragraph{Lazy field reduction in Poseidon2.}
+Hypothesis: defer modular reduction across multiple Poseidon2 rounds, batching reductions to amortize their cost.
+Result: infeasible.
+Root cause: after just two Poseidon2 rounds (S-box + MDS matrix), intermediate values exceed $2^{256}$, overflowing the 8-limb representation.
+The Poseidon2 MDS matrix has coefficients that amplify value ranges too aggressively for deferred reduction to be practical.
+\emph{Lesson:} lazy reduction is viable only when the algebraic structure guarantees bounded growth across the deferred interval.
+Hash functions with dense linear layers are poor candidates.
+
+\paragraph{Fused Merkle subtree kernels.}
+Two attempts: Poseidon2 and Blake3 backends.
+Poseidon2 fused subtree: the tree narrows at upper levels, leaving 80\% of threads idle after the first two levels.
+Blake3 fused subtree: regressed 2$\times$ because Blake3's parent compression is too lightweight for shared-memory barrier overhead to break even.
+In both cases, the level-by-level approach (one dispatch per tree level) outperforms the fused approach because each dispatch fully utilizes the GPU at its level.
+\emph{Lesson:} fused tree kernels are profitable only when the per-node computation is expensive enough to amortize synchronization barriers \emph{and} the tree is wide enough to maintain occupancy across levels.
+
+\paragraph{BN254 NTT coalescing at $2^{22}$.}
+Three approaches to improving the strided column access pattern in four-step FFT:
+(1)~Transpose-before-column: four transposes + four blits cost $\sim$50\,ms, exceeding any coalescing benefit for 32-byte elements (482\,ms vs.\ 351\,ms baseline).
+(2)~Swapped split ($N_1=10$, $N_2=12$ instead of $N_1=11$, $N_2=11$): 420\,ms with correctness failures---column cache waste is symmetric regardless of split direction.
+(3)~Separate command buffers for phase profiling: GPU hang due to buffer ownership conflicts across command buffers with shared scratch memory.
+The fundamental issue is that 32-byte elements at 128-byte cache lines yield 25\% utilization during column passes, and no rearrangement of the four-step algorithm can avoid this without introducing costs that exceed the benefit.
+\emph{Lesson:} for wide field elements, the NTT's strided access pattern is a fundamental hardware--algorithm mismatch, not an implementation deficiency.
+
+\paragraph{Circle STARK traceLDE readback elimination.}
+Hypothesis: keep trace LDE buffers on GPU (avoiding CPU readback) since they are consumed by subsequent GPU Merkle and constraint evaluation kernels.
+Result: 38$\times$ regression (21\,ms $\to$ 800\,ms).
+Root cause: the CPU FRI fold phase requires the LDE data on the CPU side, and without the readback, subsequent operations stall or consume incorrect data.
+The readback itself costs only $\sim$0.1\,ms---eliminating it saves negligible time while breaking the pipeline.
+\emph{Lesson:} in unified memory architectures, readback costs are already minimal; the optimization target should be the \emph{computation}, not the data movement.
+
+\subsection{Metal Compiler and Runtime Issues}
+\label{sec:dead-compiler}
+
+\paragraph{Inline miscompilation of large-struct functions.}
+Metal shader functions returning \texttt{PointProjective} (96~bytes: three Fp values of 32~bytes each) produce incorrect results when the compiler inlines them.
+Discovered when 5/9 MSM tests failed after removing \texttt{\_\_attribute\_\_((noinline))} from \texttt{point\_double}, \texttt{point\_add\_mixed}, and \texttt{point\_add}.
+The bug is deterministic and reproducible: the same inputs produce correct results with \texttt{noinline} and incorrect results without it.
+We attribute this to a register allocation defect in the Metal compiler's inliner for large aggregate return types.
+\emph{Workaround:} mandatory \texttt{\_\_attribute\_\_((noinline))} on all functions returning structs larger than $\sim$64~bytes.
+\emph{Status:} not reported to Apple (no public Metal compiler bug tracker); confirmed present in Xcode~15.x.
+
+\paragraph{Removing identity checks in bucket summation.}
+Hypothesis: eliminating the identity-point check in MSM bucket accumulation (``skip if bucket is empty'') removes a branch, improving GPU warp coherence.
+Result: 27\% \emph{worse}.
+Root cause: the majority of buckets are empty for typical scalar distributions; skipping empty adds saves more work than the branch divergence costs.
+The branch is \emph{well-predicted} by the GPU because empty buckets cluster spatially after sorting.
+\emph{Lesson:} on Metal GPUs, data-dependent early-exit branches can be profitable when the skip rate is high and spatially coherent, unlike the conventional CUDA wisdom of avoiding divergent branches.
+
+\paragraph{Uninitialized output buffers via \texttt{storageModePrivate}.}
+Hypothesis: allocating output buffers as GPU-private (skipping zero-initialization) saves $\sim$3\,ms.
+Result: not applicable---all buffers in a unified memory system require CPU access for result readback.
+Buffer caching (grow-only allocation, reuse across calls) already eliminates repeated zeroing, making the one-time initialization cost negligible.
+\emph{Lesson:} unified memory fundamentally constrains the buffer storage mode design space.
+Optimizations that exploit GPU-private memory on discrete architectures do not translate.
+
+\paragraph{MSM scalar recoding variants.}
+Three alternatives to the signed-digit decomposition were tested from the 23\,ms baseline:
+(a)~function inlining of the recoding loop,
+(b)~segment-based partial recoding,
+(c)~Horner-style evaluation of partial sums.
+All three regressed.
+Inlining increased register pressure beyond the compiler's ability to spill efficiently; segmentation added dispatch overhead that exceeded any per-segment savings; Horner evaluation introduced serial dependencies into what was previously a fully parallel reduction.
+\emph{Lesson:} at the 23\,ms level, the MSM pipeline is tightly balanced between compute, memory, and dispatch costs.
+Local improvements to any one dimension tend to regress another, consistent with Amdahl's law applied to a multi-bottleneck system.
+
+\paragraph{Summary.}
+Table~\ref{tab:dead-ends} provides a condensed catalog.
+The dead ends cluster into three patterns:
+(1)~\emph{Metal hardware assumptions}: 64-bit limbs, SIMD shuffles for large types, and low-occupancy kernels all fail because Metal's ALU width, shuffle granularity, and scheduler behavior differ from CUDA in ways that are undocumented;
+(2)~\emph{Unified memory cost model}: local binning, private buffers, and readback elimination are optimizations designed for discrete GPU memory hierarchies that do not apply when CPU and GPU share a cache;
+(3)~\emph{Algorithmic sensitivity to hardware}: GLV, lazy reduction, and fused kernels are sound algorithms whose profitability depends on hardware-specific constants (bucket count pathologies, value growth rates, barrier costs) that can only be determined empirically.
+
+\begin{table}[t]
+\centering
+\small
+\caption{Dead-end catalog (selected; 30+ total). $\Delta$: change from baseline; negative is regression.}
+\label{tab:dead-ends}
+\begin{tabular}{p{2.8cm}p{1.3cm}rp{2.2cm}}
+\toprule
+Optimization & Primitive & $\Delta$ & Root Cause \\
+\midrule
+64-bit limbs & MSM & $-$67\% & No native u64 mul \\
+SIMD cooperative & MSM & $-$140\% & 96B shuffle cost \\
+ARM64 asm Montgomery & CPU all & $-$23\% & LLVM already optimal \\
+Fused reduce+bucket & MSM & $-$21\% & Low occupancy \\
+GLV on secp256k1 & MSM & $-$12$\times$ & Scheduling pathology \\
+GLV on BLS12-377 & MSM & $-$27\% & 12-limb point cost \\
+Local-binning sort & Sort & $\pm$0\% & L2 cache reduces amplification \\
+Lazy P2 reduction & Hash & infeasible & Value overflow at 2 rounds \\
+Fused Blake3 Merkle & Hash & $-$100\% & Barrier $>$ compute \\
+Transpose NTT $2^{22}$ & NTT & $-$37\% & 4 blit cost $>$ coalesce benefit \\
+traceLDE no readback & STARK & $-$38$\times$ & CPU FRI needs data \\
+Inline miscompilation & MSM & incorrect & Metal compiler bug \\
+Remove identity check & MSM & $-$27\% & Empty-bucket skip is profitable \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+% =============================================================================
+
+\section{Conclusion}
+\label{sec:conclusion}
+
+We have presented zkMetal, the first comprehensive zero-knowledge cryptography library for Apple Silicon GPUs, spanning 60+~primitives across 18~fields and 10~elliptic curves.
+Our contributions are threefold.
+
+First, we identify and characterize a previously undocumented M-series GPU scheduling pathology where specific threadgroup counts cause 10--30$\times$ performance cliffs (\S\ref{sec:pathology}).
+This finding has immediate practical implications for any GPU compute workload on Apple Silicon and motivates the need for better scheduling documentation from Apple.
+
+Second, we develop a systematic methodology for field-hardware co-design on 32-bit ALU architectures (\S\ref{sec:arch}--\S\ref{sec:opt}).
+The key insight is that Metal's 32-bit limitation becomes an \emph{advantage} for small fields (BabyBear NTT at 8.5\,B~elem/s, within 1.2$\times$ of the hardware floor) while requiring careful CIOS Montgomery arithmetic with explicit carry management for 256-bit fields.
+The C/NEON acceleration layer achieves 10--134$\times$ over baseline Swift across all CPU primitives, demonstrating that the language-level abstraction penalty is the dominant bottleneck in CPU-side ZK computation.
+
+Third, we provide a rigorous performance characterization against hardware-theoretical floors for 33~primitives (\S\ref{sec:floors}) and a systematic catalog of 30+~failed optimizations (\S\ref{sec:dead-ends}).
+The floor analysis reveals that remaining headroom is dominated by memory access pattern irregularity (MSM scatter, NTT strided access), not compute inefficiency---a finding that redirects optimization effort toward data layout rather than arithmetic improvements.
+The negative result catalog prevents duplicated effort and reveals that many CUDA-derived optimization strategies do not transfer to unified memory architectures.
+
+Against existing implementations, zkMetal achieves 30--500$\times$ over ICICLE-Metal on NTT and 6--33$\times$ on MSM, while remaining within 3$\times$ of ICICLE-CUDA on an RTX~3090~Ti for large-field MSM---a gap explained entirely by the 6.7$\times$ memory bandwidth differential and the lack of native 64-bit integer multiply.
+
+\paragraph{Open problems.}
+The CUDA performance gap for 256-bit fields remains open: closing it likely requires either hardware changes (native 64-bit multiply in future Apple GPUs) or algorithmic innovations that restructure MSM to avoid random-access scatter entirely.
+Apple's Metal compiler opacity---no PTX-equivalent IR, no public occupancy calculator, no scheduling documentation---forces empirical optimization where analytical approaches should suffice.
+The inline miscompilation bug (\S\ref{sec:dead-compiler}) and scheduling pathology (\S\ref{sec:pathology}) would benefit from vendor engagement.
+
+\paragraph{Future work.}
+Three directions are most promising:
+(1)~\emph{Rust FFI for ecosystem integration}: exposing zkMetal's GPU kernels to SP1, Halo2, and Plonky3 via a C-compatible FFI layer would provide immediate speedups to the most widely deployed ZK frameworks without requiring those projects to adopt Metal directly.
+(2)~\emph{WebGPU port for browser proving}: Metal is the WebGPU backend on Apple devices; translating Metal shaders to WGSL would enable client-side ZK proving in web applications, addressing the growing demand for in-browser privacy-preserving computation.
+(3)~\emph{Constraint IR compilation}: the runtime constraint compilation pipeline (248\,M~constraints/s, \S\ref{sec:proof-systems}) suggests that a general-purpose STARK prover accepting arbitrary AIR constraints as input and compiling them to Metal compute kernels is feasible, eliminating the need for per-circuit shader development.

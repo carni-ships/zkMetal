@@ -1094,6 +1094,146 @@ void bn254_fr_inverse(const uint64_t a[4], uint64_t r[4]) {
     fr_inv(a, r);
 }
 
+void bn254_fr_mul(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]) {
+    fr_mul(a, b, r);
+}
+
+void bn254_fr_add(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]) {
+    fr_add(a, b, r);
+}
+
+void bn254_fr_sub(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]) {
+    fr_sub(a, b, r);
+}
+
+void bn254_fr_neg(const uint64_t a[4], uint64_t r[4]) {
+    uint64_t zero[4] = {0,0,0,0};
+    fr_sub(zero, a, r);
+}
+
+void bn254_fr_pow(const uint64_t a[4], uint64_t exp, uint64_t r[4]) {
+    memcpy(r, FR_ONE, 32);
+    uint64_t base[4]; memcpy(base, a, 32);
+    while (exp > 0) {
+        if (exp & 1) fr_mul(r, base, r);
+        fr_mul(base, base, base);
+        exp >>= 1;
+    }
+}
+
+int bn254_fr_eq(const uint64_t a[4], const uint64_t b[4]) {
+    return a[0]==b[0] && a[1]==b[1] && a[2]==b[2] && a[3]==b[3];
+}
+
+// Batch KZG verification using C field and point ops.
+// For each tuple: diff = (C - eval*G) - (s-z)*W, accumulate rho-weighted sum.
+int bn254_batch_kzg_verify(const uint64_t *srsG1, const uint64_t *srsSecret,
+                           const uint64_t *commitments, const uint64_t *points,
+                           const uint64_t *evaluations, const uint64_t *witnesses,
+                           const uint64_t *batchChallenge, int n) {
+    // srsG1 is affine (8 uint64), convert to projective
+    uint64_t g1[12];
+    memcpy(g1, srsG1, 64);  // x, y
+    memcpy(g1+8, FP_ONE, 32); // z = 1 (in Fp Montgomery form)
+    // The FP_ONE = R mod p. Let me use the existing point operations.
+
+    uint64_t accum[12]; memset(accum, 0, 96); // identity
+    uint64_t rho[4]; memcpy(rho, FR_ONE, 32); // rho = 1
+
+    for (int i = 0; i < n; i++) {
+        const uint64_t *commit = commitments + i * 12;
+        const uint64_t *pt = points + i * 4;
+        const uint64_t *eval_val = evaluations + i * 4;
+        const uint64_t *witness = witnesses + i * 12;
+
+        // neg_eval = -eval
+        uint64_t neg_eval[4];
+        bn254_fr_neg(eval_val, neg_eval);
+
+        // Convert neg_eval to scalar limbs (non-Montgomery) for point_scalar_mul
+        // Need Fr -> integer form: multiply by 1 (raw)
+        uint64_t raw_one[4] = {1, 0, 0, 0};
+        uint64_t neg_eval_int[4];
+        fr_mul(neg_eval, raw_one, neg_eval_int);
+
+        // neg_eval as uint32 scalar
+        uint32_t neg_eval_scalar[8];
+        for (int j = 0; j < 4; j++) {
+            neg_eval_scalar[j*2] = (uint32_t)(neg_eval_int[j]);
+            neg_eval_scalar[j*2+1] = (uint32_t)(neg_eval_int[j] >> 32);
+        }
+
+        // evalG = neg_eval * G1
+        uint64_t evalG[12];
+        bn254_point_scalar_mul(g1, neg_eval_scalar, evalG);
+
+        // cMinusYG = commit + evalG
+        uint64_t cMinusYG[12];
+        pt_add(commit, evalG, cMinusYG);
+
+        // sMinusZ = s - point
+        uint64_t sMinusZ[4];
+        fr_sub(srsSecret, pt, sMinusZ);
+
+        // Convert sMinusZ to scalar
+        uint64_t sMinusZ_int[4];
+        fr_mul(sMinusZ, raw_one, sMinusZ_int);
+        uint32_t sMinusZ_scalar[8];
+        for (int j = 0; j < 4; j++) {
+            sMinusZ_scalar[j*2] = (uint32_t)(sMinusZ_int[j]);
+            sMinusZ_scalar[j*2+1] = (uint32_t)(sMinusZ_int[j] >> 32);
+        }
+
+        // szW = sMinusZ * witness
+        uint64_t szW[12];
+        bn254_point_scalar_mul(witness, sMinusZ_scalar, szW);
+
+        // neg_one as scalar
+        uint64_t neg_one_fr[4];
+        bn254_fr_neg(FR_ONE, neg_one_fr);
+        uint64_t neg_one_int[4];
+        fr_mul(neg_one_fr, raw_one, neg_one_int);
+        uint32_t neg_one_scalar[8];
+        for (int j = 0; j < 4; j++) {
+            neg_one_scalar[j*2] = (uint32_t)(neg_one_int[j]);
+            neg_one_scalar[j*2+1] = (uint32_t)(neg_one_int[j] >> 32);
+        }
+
+        // neg_szW = -1 * szW
+        uint64_t neg_szW[12];
+        bn254_point_scalar_mul(szW, neg_one_scalar, neg_szW);
+
+        // diff = cMinusYG + neg_szW
+        uint64_t diff[12];
+        pt_add(cMinusYG, neg_szW, diff);
+
+        // rho_scaled_diff = rho * diff
+        uint64_t rho_int[4];
+        fr_mul(rho, raw_one, rho_int);
+        uint32_t rho_scalar[8];
+        for (int j = 0; j < 4; j++) {
+            rho_scalar[j*2] = (uint32_t)(rho_int[j]);
+            rho_scalar[j*2+1] = (uint32_t)(rho_int[j] >> 32);
+        }
+
+        uint64_t rhoDiff[12];
+        bn254_point_scalar_mul(diff, rho_scalar, rhoDiff);
+
+        // accum += rhoDiff
+        uint64_t newAccum[12];
+        pt_add(accum, rhoDiff, newAccum);
+        memcpy(accum, newAccum, 96);
+
+        // rho *= batchChallenge
+        uint64_t newRho[4];
+        fr_mul(rho, batchChallenge, newRho);
+        memcpy(rho, newRho, 32);
+    }
+
+    // Check if accum is identity (all zeros in projective means z == 0)
+    return (accum[8]==0 && accum[9]==0 && accum[10]==0 && accum[11]==0) ? 1 : 0;
+}
+
 void bn254_batch_to_affine(const uint64_t *proj, uint64_t *aff, int n) {
     batch_to_affine(proj, aff, n);
 }
@@ -1430,7 +1570,6 @@ void bn254_sparse_matvec_mle(
 
 // Fused: gather subtable values by index, add beta, batch inverse.
 // out[i] = 1/(beta + subtable[indices[i]])
-// Avoids separate gather step by combining with beta-add.
 // Single-chunk batch inverse on a contiguous range [base, base+chunk) of out[].
 // Assumes out[] already contains values to invert; writes inverses in-place.
 static void batch_inverse_chunk(uint64_t *out, int base, int chunk) {
@@ -1611,6 +1750,117 @@ void bn254_fr_inverse_mle_eval(const uint64_t beta[4], const uint64_t *subtable,
     free(eq);
     free(d);
     free(prefix);
+}
+
+// ============================================================
+// Basefold: single-round fold on CPU.
+// result[i] = evals[i] + alpha * (evals[i + halfN] - evals[i])
+// evals: 2*halfN Fr elements (4 uint64 each, Montgomery form).
+// result: halfN Fr elements output.
+// alpha: single Fr element (4 uint64, Montgomery form).
+// Multi-threaded via GCD for halfN >= 4096.
+// ============================================================
+#include <dispatch/dispatch.h>
+
+void bn254_fr_basefold_fold(const uint64_t *evals, uint64_t *result,
+                             const uint64_t *alpha, uint32_t halfN) {
+    if (halfN >= 4096) {
+        int nBlocks = 8;
+        if (halfN < 8192) nBlocks = 4;
+        int chunk = (int)halfN / nBlocks;
+        int hn = (int)halfN;
+        dispatch_apply(nBlocks, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+            ^(size_t t) {
+                int s = (int)t * chunk;
+                int e = ((int)t == nBlocks - 1) ? hn : s + chunk;
+                for (int j = s; j < e; j++) {
+                    const uint64_t *a = evals + j * 4;
+                    const uint64_t *b = evals + (j + hn) * 4;
+                    uint64_t diff[4], rd[4];
+                    fr_sub(b, a, diff);
+                    fr_mul(alpha, diff, rd);
+                    fr_add(a, rd, result + j * 4);
+                }
+            });
+    } else {
+        for (uint32_t j = 0; j < halfN; j++) {
+            const uint64_t *a = evals + j * 4;
+            const uint64_t *b = evals + (j + halfN) * 4;
+            uint64_t diff[4], rd[4];
+            fr_sub(b, a, diff);
+            fr_mul(alpha, diff, rd);
+            fr_add(a, rd, result + j * 4);
+        }
+    }
+}
+
+// ============================================================
+// Basefold: fold all rounds on CPU, storing each intermediate layer.
+// out_layers: flat buffer that will receive layer0 (n/2 elements),
+//   layer1 (n/4 elements), ..., layerK (1 element).
+// Total elements written = n/2 + n/4 + ... + 1 = n - 1.
+// evals: n Fr elements (4 uint64 each, Montgomery form).
+// point: numVars Fr elements (challenges).
+// numVars: log2(n).
+// Multi-threaded for large rounds via dispatch_apply.
+// ============================================================
+
+void bn254_fr_basefold_fold_all(const uint64_t *evals, int numVars,
+                                 const uint64_t *point, uint64_t *out_layers) {
+    int n = 1 << numVars;
+
+    // Working buffer: starts as copy of evals, folded in-place each round
+    uint64_t *buf = (uint64_t *)malloc(n * 32);
+    memcpy(buf, evals, n * 32);
+
+    uint64_t *outPtr = out_layers;
+
+    for (int v = 0; v < numVars; v++) {
+        int halfN = n >> 1;
+        const uint64_t *alpha = point + v * 4;
+
+        if (halfN >= 4096) {
+            // Multi-threaded fold via GCD
+            int nBlocks = 8;
+            if (halfN < 8192) nBlocks = 4;
+            int chunk = halfN / nBlocks;
+            uint64_t *srcBuf = buf;
+            uint64_t *dstBuf = outPtr;
+            int hn = halfN;
+            dispatch_apply(nBlocks, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+                ^(size_t t) {
+                    int s = (int)t * chunk;
+                    int e = ((int)t == nBlocks - 1) ? hn : s + chunk;
+                    for (int j = s; j < e; j++) {
+                        const uint64_t *a = srcBuf + j * 4;
+                        const uint64_t *b = srcBuf + (j + hn) * 4;
+                        uint64_t diff[4], rd[4], res[4];
+                        fr_sub(b, a, diff);
+                        fr_mul(alpha, diff, rd);
+                        fr_add(a, rd, res);
+                        memcpy(dstBuf + j * 4, res, 32);
+                    }
+                });
+        } else {
+            // Single-threaded fold
+            for (int j = 0; j < halfN; j++) {
+                const uint64_t *a = buf + j * 4;
+                const uint64_t *b = buf + (j + halfN) * 4;
+                uint64_t diff[4], rd[4], res[4];
+                fr_sub(b, a, diff);
+                fr_mul(alpha, diff, rd);
+                fr_add(a, rd, res);
+                memcpy(outPtr + j * 4, res, 32);
+            }
+        }
+
+        // Copy output back to buf for next round
+        memcpy(buf, outPtr, halfN * 32);
+        outPtr += halfN * 4;  // advance output pointer
+        n = halfN;
+    }
+
+    free(buf);
 }
 
 // ============================================================

@@ -15,6 +15,7 @@
 // fewer queries overall: O(log^2 n) vs FRI's O(lambda * log n).
 
 import Foundation
+import NeonFieldOps
 
 // MARK: - Data Structures
 
@@ -106,15 +107,39 @@ public class WHIREngine {
 
     // MARK: - Commit
 
+    /// Threshold: use CPU Poseidon2 Merkle for trees up to this many leaves.
+    /// CPU avoids GPU command buffer overhead (~5-9ms per dispatch).
+    /// Tested: CPU wins at <= 1024 leaves, GPU wins at >= 4096.
+    private static let cpuMerkleThreshold = 1024
+
     public func commit(evaluations: [Fr]) throws -> WHIRCommitment {
         let n = evaluations.count
         precondition(n > 0 && (n & (n - 1)) == 0)
-        let tree = try merkleEngine.buildTree(evaluations)
+        let tree: [Fr]
+        if n <= WHIREngine.cpuMerkleThreshold {
+            // CPU path: C CIOS Poseidon2 Merkle tree (avoids GPU CB overhead)
+            let treeSize = 2 * n - 1
+            var treeArr = [Fr](repeating: Fr.zero, count: treeSize)
+            evaluations.withUnsafeBytes { evPtr in
+                treeArr.withUnsafeMutableBytes { treePtr in
+                    poseidon2_merkle_tree_cpu(
+                        evPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n),
+                        treePtr.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    )
+                }
+            }
+            tree = treeArr
+        } else {
+            tree = try merkleEngine.buildTree(evaluations)
+        }
         let root = tree[2 * n - 2]
         return WHIRCommitment(root: root, tree: tree, evaluations: evaluations)
     }
 
     // MARK: - Prove
+
+    public var profileProve = false
 
     public func prove(evaluations: [Fr], transcript: Transcript? = nil) throws -> WHIRProof {
         let n = evaluations.count
@@ -126,6 +151,8 @@ public class WHIREngine {
 
         let ts = transcript ?? Transcript(label: "whir-v2")
 
+        var _commitTime = 0.0, _foldTime = 0.0, _transcriptTime = 0.0, _queryTime = 0.0
+
         // Phase 1: Build all layers (commit, derive beta, fold)
         var layers: [WHIRCommitment] = []
         var betas: [Fr] = []
@@ -135,27 +162,42 @@ public class WHIREngine {
             let currentN = currentEvals.count
             if currentN <= reductionFactor { break }
 
+            var _t0 = profileProve ? CFAbsoluteTimeGetCurrent() : 0
             let commitment = try commit(evaluations: currentEvals)
             layers.append(commitment)
+            if profileProve {
+                let dt = (CFAbsoluteTimeGetCurrent() - _t0) * 1000
+                fputs(String(format: "    round %d commit(%d): %.2fms\n", round, currentN, dt), stderr)
+                _commitTime += dt / 1000
+            }
 
             // Transcript: absorb root, label, squeeze beta
+            _t0 = profileProve ? CFAbsoluteTimeGetCurrent() : 0
             ts.absorb(commitment.root)
             ts.absorbLabel("whir-r\(round)")
             let beta = ts.squeeze()
             betas.append(beta)
+            if profileProve { _transcriptTime += CFAbsoluteTimeGetCurrent() - _t0 }
 
-            // Fold polynomial
+            // Fold polynomial using C CIOS arithmetic (Horner's method)
+            _t0 = profileProve ? CFAbsoluteTimeGetCurrent() : 0
             let newN = currentN / reductionFactor
             var folded = [Fr](repeating: Fr.zero, count: newN)
-            for j in 0..<newN {
-                var acc = Fr.zero
-                var power = Fr.one
-                for k in 0..<reductionFactor {
-                    acc = frAdd(acc, frMul(power, currentEvals[j * reductionFactor + k]))
-                    power = frMul(power, beta)
+            currentEvals.withUnsafeBytes { evalsPtr in
+                folded.withUnsafeMutableBytes { foldPtr in
+                    var betaLimbs = beta.to64()
+                    betaLimbs.withUnsafeBufferPointer { betaPtr in
+                        bn254_fr_whir_fold(
+                            evalsPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(currentN),
+                            betaPtr.baseAddress!,
+                            Int32(reductionFactor),
+                            foldPtr.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                        )
+                    }
                 }
-                folded[j] = acc
             }
+            if profileProve { _foldTime += CFAbsoluteTimeGetCurrent() - _t0 }
             currentEvals = folded
         }
 
@@ -167,6 +209,7 @@ public class WHIREngine {
         for v in finalPoly { ts.absorb(v) }
 
         // Phase 2: Query phase
+        let _qt0 = profileProve ? CFAbsoluteTimeGetCurrent() : 0
         var layerOpenings: [[(index: UInt32, values: [Fr], merklePaths: [[Fr]])]] = []
 
         for round in 0..<actualRounds {
@@ -180,7 +223,7 @@ public class WHIREngine {
             var used = Set<UInt32>()
             for _ in 0..<effectiveQ {
                 let c = ts.squeeze()
-                var idx = UInt32(frToInt(c)[0] % UInt64(foldedN))
+                var idx = UInt32(frToUInt64(c) % UInt64(foldedN))
                 while used.contains(idx) {
                     idx = (idx + 1) % UInt32(foldedN)
                 }
@@ -189,21 +232,32 @@ public class WHIREngine {
             }
 
             // Open reductionFactor positions per query in the current layer
+            let layerTree = layer.tree
+            let layerEvals = layer.evaluations
             var roundOpenings: [(index: UInt32, values: [Fr], merklePaths: [[Fr]])] = []
+            roundOpenings.reserveCapacity(effectiveQ)
             for qi in 0..<effectiveQ {
                 let foldedIdx = Int(queryIndices[qi])
                 var values = [Fr]()
+                values.reserveCapacity(reductionFactor)
                 var paths = [[Fr]]()
+                paths.reserveCapacity(reductionFactor)
                 for k in 0..<reductionFactor {
                     let origIdx = foldedIdx * reductionFactor + k
-                    values.append(layer.evaluations[origIdx])
-                    paths.append(extractMerklePath(tree: layer.tree,
+                    values.append(layerEvals[origIdx])
+                    paths.append(extractMerklePath(tree: layerTree,
                                                     leafCount: layerN,
                                                     index: origIdx))
                 }
                 roundOpenings.append((index: queryIndices[qi], values: values, merklePaths: paths))
             }
             layerOpenings.append(roundOpenings)
+        }
+
+        if profileProve {
+            _queryTime = CFAbsoluteTimeGetCurrent() - _qt0
+            fputs(String(format: "  [whir] commit=%.2fms fold=%.2fms transcript=%.2fms query=%.2fms\n",
+                         _commitTime * 1000, _foldTime * 1000, _transcriptTime * 1000, _queryTime * 1000), stderr)
         }
 
         return WHIRProof(
@@ -347,17 +401,22 @@ public class WHIREngine {
 
             if frToInt(beta) != frToInt(proof.betas[round]) { return false }
 
-            // Recompute fold
+            // Recompute fold using C CIOS arithmetic
             let newN = tempEvals.count / reductionFactor
             var folded = [Fr](repeating: Fr.zero, count: newN)
-            for j in 0..<newN {
-                var acc = Fr.zero
-                var power = Fr.one
-                for k in 0..<reductionFactor {
-                    acc = frAdd(acc, frMul(power, tempEvals[j * reductionFactor + k]))
-                    power = frMul(power, beta)
+            tempEvals.withUnsafeBytes { evalsPtr in
+                folded.withUnsafeMutableBytes { foldPtr in
+                    var betaLimbs = beta.to64()
+                    betaLimbs.withUnsafeBufferPointer { betaPtr in
+                        bn254_fr_whir_fold(
+                            evalsPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(tempEvals.count),
+                            betaPtr.baseAddress!,
+                            Int32(reductionFactor),
+                            foldPtr.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                        )
+                    }
                 }
-                folded[j] = acc
             }
             allFolded.append(folded)
             tempEvals = folded
@@ -468,14 +527,19 @@ public class WHIREngine {
         let n = evals.count
         let newN = n / reductionFactor
         var result = [Fr](repeating: Fr.zero, count: newN)
-        for j in 0..<newN {
-            var acc = Fr.zero
-            var power = Fr.one
-            for k in 0..<reductionFactor {
-                acc = frAdd(acc, frMul(power, evals[j * reductionFactor + k]))
-                power = frMul(power, challenge)
+        evals.withUnsafeBytes { evalsPtr in
+            result.withUnsafeMutableBytes { resPtr in
+                var betaLimbs = challenge.to64()
+                betaLimbs.withUnsafeBufferPointer { betaPtr in
+                    bn254_fr_whir_fold(
+                        evalsPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n),
+                        betaPtr.baseAddress!,
+                        Int32(reductionFactor),
+                        resPtr.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    )
+                }
             }
-            result[j] = acc
         }
         return result
     }
