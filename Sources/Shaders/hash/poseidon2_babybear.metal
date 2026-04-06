@@ -62,16 +62,44 @@ void p2bb_external_layer(thread Bb *s) {
 }
 
 // Internal linear layer: y_i = diag[i] * x_i + sum(x_j)
+// Specializes small-integer diagonals to additions instead of multiplies.
+// Diag = [-2, 1, 2, 1/2, 3, 4, -1/2, -3, -4, 1/256, 1/4, 1/8, 1/2^27, -1/256, -1/16, -1/2^27]
+// Indices 0,1,2,4,5,7,8 have small int diagonals → use adds/neg instead of bb_mul.
 void p2bb_internal_layer(thread Bb *s) {
-    Bb sum = bb_zero();
-    for (uint i = 0; i < 16; i++) {
-        sum = bb_add(sum, s[i]);
-    }
+    // Tree-reduce sum for lower latency (4 levels vs 15 serial adds)
+    Bb s03 = bb_add(bb_add(s[0], s[1]), bb_add(s[2], s[3]));
+    Bb s47 = bb_add(bb_add(s[4], s[5]), bb_add(s[6], s[7]));
+    Bb s8b = bb_add(bb_add(s[8], s[9]), bb_add(s[10], s[11]));
+    Bb scf = bb_add(bb_add(s[12], s[13]), bb_add(s[14], s[15]));
+    Bb sum = bb_add(bb_add(s03, s47), bb_add(s8b, scf));
 
-    for (uint i = 0; i < 16; i++) {
-        Bb prod = bb_mul(s[i], Bb{P2BB_INTERNAL_DIAG[i]});
-        s[i] = bb_add(prod, sum);
-    }
+    // [0] = -2: neg(2x) + sum
+    Bb d0 = bb_neg(bb_add(s[0], s[0]));
+    s[0] = bb_add(d0, sum);
+    // [1] = 1: x + sum (identity, no multiply)
+    s[1] = bb_add(s[1], sum);
+    // [2] = 2: 2x + sum
+    s[2] = bb_add(bb_add(s[2], s[2]), sum);
+    // [3] = 1/2: needs multiply
+    s[3] = bb_add(bb_mul(s[3], Bb{P2BB_INTERNAL_DIAG[3]}), sum);
+    // [4] = 3: 3x + sum
+    { Bb x2 = bb_add(s[4], s[4]); s[4] = bb_add(bb_add(x2, s[4]), sum); }
+    // [5] = 4: 4x + sum
+    { Bb x2 = bb_add(s[5], s[5]); s[5] = bb_add(bb_add(x2, x2), sum); }
+    // [6] = -1/2: needs multiply
+    s[6] = bb_add(bb_mul(s[6], Bb{P2BB_INTERNAL_DIAG[6]}), sum);
+    // [7] = -3: neg(3x) + sum
+    { Bb x2 = bb_add(s[7], s[7]); s[7] = bb_add(bb_neg(bb_add(x2, s[7])), sum); }
+    // [8] = -4: neg(4x) + sum
+    { Bb x2 = bb_add(s[8], s[8]); s[8] = bb_add(bb_neg(bb_add(x2, x2)), sum); }
+    // [9..15]: non-trivial constants, use multiply
+    s[9]  = bb_add(bb_mul(s[9],  Bb{P2BB_INTERNAL_DIAG[9]}),  sum);
+    s[10] = bb_add(bb_mul(s[10], Bb{P2BB_INTERNAL_DIAG[10]}), sum);
+    s[11] = bb_add(bb_mul(s[11], Bb{P2BB_INTERNAL_DIAG[11]}), sum);
+    s[12] = bb_add(bb_mul(s[12], Bb{P2BB_INTERNAL_DIAG[12]}), sum);
+    s[13] = bb_add(bb_mul(s[13], Bb{P2BB_INTERNAL_DIAG[13]}), sum);
+    s[14] = bb_add(bb_mul(s[14], Bb{P2BB_INTERNAL_DIAG[14]}), sum);
+    s[15] = bb_add(bb_mul(s[15], Bb{P2BB_INTERNAL_DIAG[15]}), sum);
 }
 
 // Full Poseidon2 permutation on 16 BabyBear elements
