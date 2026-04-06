@@ -264,6 +264,16 @@ public enum Versions {
     public static let gpuECDSABatchVerify = PrimitiveVersion(version: "1.0.0", updated: "2026-04-06")
     public static let gpuWitnessCommit = PrimitiveVersion(version: "1.0.0", updated: "2026-04-06")
 
+    // --- Wave 16 ---
+    public static let gpuMarlinPolyIOP = PrimitiveVersion(version: "1.0.0", updated: "2026-04-06")
+    public static let gpuLookupGrandProduct = PrimitiveVersion(version: "1.0.0", updated: "2026-04-06")
+    public static let gpuCircleSTARKProver = PrimitiveVersion(version: "1.0.0", updated: "2026-04-06")
+    public static let gpuBrakedownProver = PrimitiveVersion(version: "1.0.0", updated: "2026-04-06")
+    public static let gpuPlonkGrandProduct = PrimitiveVersion(version: "1.0.0", updated: "2026-04-06")
+    public static let gpuNovaRelaxation = PrimitiveVersion(version: "1.0.0", updated: "2026-04-06")
+    public static let gpuBLSSignature = PrimitiveVersion(version: "1.0.0", updated: "2026-04-06")
+    public static let gpuConstraintSat = PrimitiveVersion(version: "1.0.0", updated: "2026-04-06")
+
     /// Print all primitive versions
     public static func printAll() {
         let entries: [(String, PrimitiveVersion)] = [
@@ -441,6 +451,14 @@ public enum Versions {
             ("GPU Basefold",     gpuBasefoldProver),
             ("GPU ECDSA Batch",  gpuECDSABatchVerify),
             ("GPU Wit Commit",   gpuWitnessCommit),
+            ("GPU Marlin IOP",   gpuMarlinPolyIOP),
+            ("GPU Lookup GP",    gpuLookupGrandProduct),
+            ("GPU Circle STARK", gpuCircleSTARKProver),
+            ("GPU Brakedown",    gpuBrakedownProver),
+            ("GPU Plonk GP",     gpuPlonkGrandProduct),
+            ("GPU Nova Relax",   gpuNovaRelaxation),
+            ("GPU BLS Sig",      gpuBLSSignature),
+            ("GPU Constr Sat",   gpuConstraintSat),
         ]
         print("=== zkMetal Primitive Versions ===")
         for (name, v) in entries {
