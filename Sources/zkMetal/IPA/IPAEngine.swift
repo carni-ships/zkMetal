@@ -720,12 +720,17 @@ public class IPAEngine {
     }
 
     private func appendPoint(_ transcript: inout [UInt8], _ p: PointProjective) {
-        // Append projective coordinates directly (x, y, z) — avoids expensive
-        // Fp inversion for affine conversion. Both prover and verifier use this
-        // representation consistently.
-        withUnsafeBytes(of: p) { buf in
-            let ptr = buf.baseAddress!.assumingMemoryBound(to: UInt8.self)
-            transcript.append(contentsOf: UnsafeBufferPointer(start: ptr, count: 96))
+        // Convert to affine (x, y) before hashing to ensure identical transcript
+        // regardless of projective Z coordinate. Cost: one Fp inversion per point,
+        // but IPA only hashes O(log n) points total so overhead is negligible.
+        if let aff = pointToAffine(p) {
+            withUnsafeBytes(of: aff) { buf in
+                let ptr = buf.baseAddress!.assumingMemoryBound(to: UInt8.self)
+                transcript.append(contentsOf: UnsafeBufferPointer(start: ptr, count: 64))
+            }
+        } else {
+            // Identity point — append 64 zero bytes
+            transcript.append(contentsOf: [UInt8](repeating: 0, count: 64))
         }
     }
 

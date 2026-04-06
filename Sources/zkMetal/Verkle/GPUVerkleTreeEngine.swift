@@ -929,11 +929,9 @@ public final class GPUVerkleTreeEngine {
         var b = [Fr](repeating: Fr.zero, count: branchingFactor)
         b[index] = Fr.one
 
-        let vQ = cPointScalarMul(pointFromAffine(Q), value)
-        let Cbound = pointAdd(commitment, vQ)
-
+        // Pass raw commitment — engine.verify computes Cbound = C + v*Q internally
         return ipaEngine.verify(
-            commitment: Cbound,
+            commitment: commitment,
             b: b,
             innerProductValue: value,
             proof: IPAProof(L: L, R: R, a: finalA)

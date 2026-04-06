@@ -88,12 +88,9 @@ public class VerkleEngine {
         var b = [Fr](repeating: Fr.zero, count: width)
         b[proof.index] = Fr.one
 
-        // Reconstruct bound commitment: C_bound = C + v*Q
-        let vQ = cPointScalarMul(pointFromAffine(Q), proof.value)
-        let Cbound = pointAdd(proof.commitment, vQ)
-
+        // Pass raw commitment — engine.verify computes Cbound = C + v*Q internally
         return ipaEngine.verify(
-            commitment: Cbound,
+            commitment: proof.commitment,
             b: b,
             innerProductValue: proof.value,
             proof: proof.ipaProof

@@ -541,12 +541,9 @@ public final class GPUVerkleMultiproofEngine {
         // Verify aggregated value matches
         guard frEqual(aggValue, proof.aggregatedValue) else { return false }
 
-        // Step 4: Verify IPA proof
-        let vQ = cPointScalarMul(pointFromAffine(Q), aggValue)
-        let Cbound = pointAdd(aggCommitment, vQ)
-
+        // Step 4: Verify IPA proof (pass raw commitment — verify computes Cbound internally)
         return ipaEngine.verify(
-            commitment: Cbound,
+            commitment: aggCommitment,
             b: aggB,
             innerProductValue: aggValue,
             proof: IPAProof(L: proof.aggregatedL, R: proof.aggregatedR, a: proof.aggregatedFinalA)
