@@ -574,8 +574,10 @@ public class STARKVerifier {
         let omega = bbRootOfUnity(logN: logFinal)
 
         // Evaluate the polynomial at each domain point and verify consistency
+        var svX = Bb.one
         for i in 0..<finalLen {
-            let x = bbPow(omega, UInt32(i))
+            let x = svX
+            svX = bbMul(svX, omega)
             var eval = Bb.zero
             var xPow = Bb.one
             for coeff in proof.finalPoly {
@@ -666,15 +668,27 @@ extension BabyBearSTARKProver {
         let omega = bbRootOfUnity(logN: logLDE)
         let step = ldeLen / traceLen
 
-        var vanishingInv = [Bb](repeating: Bb.zero, count: ldeLen)
-        var cosetPow = Bb.one
+        // Chain-multiply x^N = cosetShift^N * (omega^N)^i, then batch-invert
+        let svCosetShiftN = bbPow(cosetShift, UInt32(traceLen))
+        let svOmegaN = bbPow(omega, UInt32(traceLen))
+        var svZhVals = [Bb](repeating: Bb.zero, count: ldeLen)
+        var svXN = svCosetShiftN
         for i in 0..<ldeLen {
-            let xToN = bbPow(bbMul(cosetShift, cosetPow), UInt32(traceLen))
-            let zh = bbSub(xToN, Bb.one)
-            if zh.v != 0 {
-                vanishingInv[i] = bbInverse(zh)
+            svZhVals[i] = bbSub(svXN, Bb.one)
+            svXN = bbMul(svXN, svOmegaN)
+        }
+        var svPrefix = [Bb](repeating: Bb.one, count: ldeLen)
+        for i in 1..<ldeLen {
+            svPrefix[i] = svZhVals[i - 1].v == 0 ? svPrefix[i - 1] : bbMul(svPrefix[i - 1], svZhVals[i - 1])
+        }
+        let svLast = svZhVals[ldeLen - 1].v == 0 ? svPrefix[ldeLen - 1] : bbMul(svPrefix[ldeLen - 1], svZhVals[ldeLen - 1])
+        var svInv = bbInverse(svLast)
+        var vanishingInv = [Bb](repeating: Bb.zero, count: ldeLen)
+        for i in stride(from: ldeLen - 1, through: 0, by: -1) {
+            if svZhVals[i].v != 0 {
+                vanishingInv[i] = bbMul(svInv, svPrefix[i])
+                svInv = bbMul(svInv, svZhVals[i])
             }
-            cosetPow = bbMul(cosetPow, omega)
         }
 
         var quotientEvals = [Bb](repeating: Bb.zero, count: ldeLen)
@@ -819,14 +833,34 @@ func starkFRIProve(
         rounds.append(BabyBearFRIRound(commitment: commitment, queryOpenings: queryOpenings))
 
         let omega = bbRootOfUnity(logN: currentLogN)
+        let bbInv2 = bbInverse(Bb(v: 2))
+        // Chain-multiply 2*omega^i and batch-invert
+        var svOddDenoms = [Bb](repeating: Bb.zero, count: half)
+        var svOmPow = Bb.one
+        for i in 0..<half {
+            svOddDenoms[i] = bbMul(Bb(v: 2), svOmPow)
+            svOmPow = bbMul(svOmPow, omega)
+        }
+        var svOdPfx = [Bb](repeating: Bb.one, count: half)
+        for i in 1..<half {
+            svOdPfx[i] = svOddDenoms[i - 1].v == 0 ? svOdPfx[i - 1] : bbMul(svOdPfx[i - 1], svOddDenoms[i - 1])
+        }
+        let svOdLast = svOddDenoms[half - 1].v == 0 ? svOdPfx[half - 1] : bbMul(svOdPfx[half - 1], svOddDenoms[half - 1])
+        var svOdInv = bbInverse(svOdLast)
+        var svOddInvs = [Bb](repeating: Bb.zero, count: half)
+        for i in stride(from: half - 1, through: 0, by: -1) {
+            if svOddDenoms[i].v != 0 {
+                svOddInvs[i] = bbMul(svOdInv, svOdPfx[i])
+                svOdInv = bbMul(svOdInv, svOddDenoms[i])
+            }
+        }
+
         var folded = [Bb](repeating: Bb.zero, count: half)
         for i in 0..<half {
             let f0 = currentEvals[i]
             let f1 = currentEvals[i + half]
-            let even = bbMul(bbAdd(f0, f1), bbInverse(Bb(v: 2)))
-            let omegaI = bbPow(omega, UInt32(i))
-            let oddDenom = bbMul(Bb(v: 2), omegaI)
-            let odd = bbMul(bbSub(f0, f1), bbInverse(oddDenom))
+            let even = bbMul(bbAdd(f0, f1), bbInv2)
+            let odd = bbMul(bbSub(f0, f1), svOddInvs[i])
             folded[i] = bbAdd(even, bbMul(beta, odd))
         }
 
