@@ -347,17 +347,24 @@ public class FflonkEngine {
 
         var result = [Fr](repeating: Fr.zero, count: n)
 
+        // Precompute all Lagrange denominators and batch-invert
+        var denoms = [Fr](repeating: Fr.one, count: n)
         for i in 0..<n {
-            // Compute Lagrange basis polynomial L_i(X) = prod_{j!=i} (X - x_j) / (x_i - x_j)
-            // First compute the denominator: prod_{j!=i} (x_i - x_j)
-            var denom = Fr.one
-            for j in 0..<n {
-                if j != i {
-                    denom = frMul(denom, frSub(points[i], points[j]))
-                }
+            for j in 0..<n where j != i {
+                denoms[i] = frMul(denoms[i], frSub(points[i], points[j]))
             }
-            let denomInv = frInverse(denom)
-            let coeff = frMul(values[i], denomInv)
+        }
+        var dPfx = [Fr](repeating: Fr.one, count: n)
+        for i in 1..<n { dPfx[i] = frMul(dPfx[i - 1], denoms[i - 1]) }
+        var dAcc = frInverse(frMul(dPfx[n - 1], denoms[n - 1]))
+        var denomInvs = [Fr](repeating: Fr.zero, count: n)
+        for i in Swift.stride(from: n - 1, through: 0, by: -1) {
+            denomInvs[i] = frMul(dAcc, dPfx[i])
+            dAcc = frMul(dAcc, denoms[i])
+        }
+
+        for i in 0..<n {
+            let coeff = frMul(values[i], denomInvs[i])
 
             // Build the numerator polynomial: prod_{j!=i} (X - x_j)
             // Start with [1] and multiply by (X - x_j) for each j != i
