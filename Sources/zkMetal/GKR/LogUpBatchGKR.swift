@@ -439,16 +439,20 @@ public class LogUpBatchGKRVerifier {
             for m in instProof.multiplicities { transcript.absorb(m) }
             transcript.absorbLabel("logup-batch-inst-mult")
 
-            // Recompute sums
+            // Recompute sums with batch-inverted denominators
+            var bWitDiffs = [Fr](repeating: Fr.zero, count: n)
+            for i in 0..<n { bWitDiffs[i] = frSub(gamma, combinedWitness[i]) }
+            let bWitInvs = batchVerifierInverse(bWitDiffs)
             var witnessSum = Fr.zero
-            for i in 0..<n {
-                witnessSum = frAdd(witnessSum, frInverse(frSub(gamma, combinedWitness[i])))
-            }
+            for i in 0..<n { witnessSum = frAdd(witnessSum, bWitInvs[i]) }
+
+            var bTblDiffs = [Fr](repeating: Fr.zero, count: N)
+            for j in 0..<N { bTblDiffs[j] = frSub(gamma, combinedTable[j]) }
+            let bTblInvs = batchVerifierInverse(bTblDiffs)
             var tableSum = Fr.zero
             for j in 0..<N {
                 if instProof.multiplicities[j].isZero { continue }
-                tableSum = frAdd(tableSum, frMul(instProof.multiplicities[j],
-                                                  frInverse(frSub(gamma, combinedTable[j]))))
+                tableSum = frAdd(tableSum, frMul(instProof.multiplicities[j], bTblInvs[j]))
             }
 
             guard batchFrEqual(instProof.claimedWitnessSum, witnessSum) else { return false }
@@ -509,6 +513,22 @@ public class LogUpBatchGKRVerifier {
             }
             result[i] = val
         }
+        return result
+    }
+
+    private func batchVerifierInverse(_ values: [Fr]) -> [Fr] {
+        let n = values.count
+        guard n > 0 else { return [] }
+        var prefix = [Fr](repeating: Fr.zero, count: n)
+        prefix[0] = values[0]
+        for i in 1..<n { prefix[i] = frMul(prefix[i - 1], values[i]) }
+        var inv = frInverse(prefix[n - 1])
+        var result = [Fr](repeating: Fr.zero, count: n)
+        for i in stride(from: n - 1, through: 1, by: -1) {
+            result[i] = frMul(inv, prefix[i - 1])
+            inv = frMul(inv, values[i])
+        }
+        result[0] = inv
         return result
     }
 

@@ -413,16 +413,20 @@ public class LogUpGKRVerifier {
         transcript.absorbLabel("logup-gkr-mult")
 
         // Recompute the inverse sums from the witness/table and check
+        // Batch-invert all (gamma - witness[i]) and (gamma - table[j])
+        var luWitDiffs = [Fr](repeating: Fr.zero, count: n)
+        for i in 0..<n { luWitDiffs[i] = frSub(gamma, combinedWitness[i]) }
+        let luWitInvs = batchInverse(luWitDiffs)
         var witnessSum = Fr.zero
-        for i in 0..<n {
-            let diff = frSub(gamma, combinedWitness[i])
-            witnessSum = frAdd(witnessSum, frInverse(diff))
-        }
+        for i in 0..<n { witnessSum = frAdd(witnessSum, luWitInvs[i]) }
+
+        var luTblDiffs = [Fr](repeating: Fr.zero, count: N)
+        for j in 0..<N { luTblDiffs[j] = frSub(gamma, combinedTable[j]) }
+        let luTblInvs = batchInverse(luTblDiffs)
         var tableSum = Fr.zero
         for j in 0..<N {
             if proof.multiplicities[j].isZero { continue }
-            let diff = frSub(gamma, combinedTable[j])
-            tableSum = frAdd(tableSum, frMul(proof.multiplicities[j], frInverse(diff)))
+            tableSum = frAdd(tableSum, frMul(proof.multiplicities[j], luTblInvs[j]))
         }
 
         guard logUpFrEqual(proof.claimedWitnessSum, witnessSum) else { return false }
