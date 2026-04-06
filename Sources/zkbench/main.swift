@@ -179,6 +179,8 @@ if cmd == "calibrate" {
     runSecp256k1MSMBench()
 } else if cmd == "ecdsa" {
     runECDSABench()
+} else if cmd == "batch-ecdsa" || cmd == "batchecdsa" {
+    runBatchECDSABench()
 } else if cmd == "schnorr" || cmd == "bip340" || cmd == "taproot" {
     runSchnorrBench()
 } else if cmd == "bls-sig" || cmd == "bls-signature" || cmd == "blssig" {
@@ -321,6 +323,7 @@ if cmd == "calibrate" {
     runHighDegSumcheckBench()
     runSortBench()
     runECDSABench()
+    runBatchECDSABench()
     runCircleBench()
     runCircleFRIBench()
     runTranscriptBench()

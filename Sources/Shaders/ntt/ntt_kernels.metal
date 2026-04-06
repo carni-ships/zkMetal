@@ -37,11 +37,16 @@ kernel void ntt_butterfly(
 
     Fr a = data[i];
     Fr b = data[j];
-    Fr w = twiddles[twiddle_idx];
-    Fr wb = fr_mul(w, b);
-
-    data[i] = fr_add(a, wb);
-    data[j] = fr_sub(a, wb);
+    if (twiddle_idx == 0) {
+        // twiddle = omega^0 = 1, skip Montgomery mul
+        data[i] = fr_add(a, b);
+        data[j] = fr_sub(a, b);
+    } else {
+        Fr w = twiddles[twiddle_idx];
+        Fr wb = fr_mul(w, b);
+        data[i] = fr_add(a, wb);
+        data[j] = fr_sub(a, wb);
+    }
 }
 
 // --- iNTT Butterfly Kernel (Gentleman-Sande DIF) ---
@@ -74,10 +79,13 @@ kernel void intt_butterfly(
 
     Fr sum = fr_add(a, b);
     Fr diff = fr_sub(a, b);
-    Fr w = twiddles_inv[twiddle_idx];
-
     data[i] = sum;
-    data[j] = fr_mul(diff, w);
+    if (twiddle_idx == 0) {
+        data[j] = diff;
+    } else {
+        Fr w = twiddles_inv[twiddle_idx];
+        data[j] = fr_mul(diff, w);
+    }
 }
 
 // Radix-4 DIT butterfly: processes 2 stages at once for BN254.
@@ -102,18 +110,30 @@ kernel void ntt_butterfly_radix4(
     Fr a2 = data[base + 2 * h];
     Fr a3 = data[base + 3 * h];
 
-    Fr ws = twiddles[local_idx * (n / (2 * h))];
-    Fr ws_a1 = fr_mul(ws, a1);
-    Fr ws_a3 = fr_mul(ws, a3);
-    Fr b0 = fr_add(a0, ws_a1);
-    Fr b1 = fr_sub(a0, ws_a1);
-    Fr b2 = fr_add(a2, ws_a3);
-    Fr b3 = fr_sub(a2, ws_a3);
+    // Stage s twiddle
+    uint tw_s = local_idx * (n / (2 * h));
+    Fr b0, b1, b2, b3;
+    if (tw_s == 0) {
+        b0 = fr_add(a0, a1);
+        b1 = fr_sub(a0, a1);
+        b2 = fr_add(a2, a3);
+        b3 = fr_sub(a2, a3);
+    } else {
+        Fr ws = twiddles[tw_s];
+        Fr ws_a1 = fr_mul(ws, a1);
+        Fr ws_a3 = fr_mul(ws, a3);
+        b0 = fr_add(a0, ws_a1);
+        b1 = fr_sub(a0, ws_a1);
+        b2 = fr_add(a2, ws_a3);
+        b3 = fr_sub(a2, ws_a3);
+    }
 
-    Fr w_lo = twiddles[local_idx * (n / block4)];
-    Fr w_hi = twiddles[(local_idx + h) * (n / block4)];
-    Fr wb2 = fr_mul(w_lo, b2);
-    Fr wb3 = fr_mul(w_hi, b3);
+    // Stage s+1 twiddles
+    uint tw_lo = local_idx * (n / block4);
+    uint tw_hi = (local_idx + h) * (n / block4);
+    Fr wb2, wb3;
+    if (tw_lo == 0) { wb2 = b2; } else { wb2 = fr_mul(twiddles[tw_lo], b2); }
+    if (tw_hi == 0) { wb3 = b3; } else { wb3 = fr_mul(twiddles[tw_hi], b3); }
 
     data[base]         = fr_add(b0, wb2);
     data[base + 2 * h] = fr_sub(b0, wb2);
@@ -144,18 +164,24 @@ kernel void intt_butterfly_radix4(
     Fr a2 = data[base + h_hi];
     Fr a3 = data[base + h_hi + h_lo];
 
-    Fr ws_lo = twiddles_inv[local_idx * (n / block4)];
-    Fr ws_hi = twiddles_inv[(local_idx + h_lo) * (n / block4)];
+    // Stage s (DIF): pairs (a0,a2) and (a1,a3)
+    uint tw_s_lo = local_idx * (n / block4);
+    uint tw_s_hi = (local_idx + h_lo) * (n / block4);
     Fr b0 = fr_add(a0, a2);
-    Fr b2 = fr_mul(fr_sub(a0, a2), ws_lo);
+    Fr diff02 = fr_sub(a0, a2);
+    Fr b2 = (tw_s_lo == 0) ? diff02 : fr_mul(diff02, twiddles_inv[tw_s_lo]);
     Fr b1 = fr_add(a1, a3);
-    Fr b3 = fr_mul(fr_sub(a1, a3), ws_hi);
+    Fr diff13 = fr_sub(a1, a3);
+    Fr b3 = (tw_s_hi == 0) ? diff13 : fr_mul(diff13, twiddles_inv[tw_s_hi]);
 
-    Fr w_s1 = twiddles_inv[local_idx * (n / (2 * h_lo))];
+    // Stage s-1 (DIF): pairs (b0,b1) and (b2,b3)
+    uint tw_s1 = local_idx * (n / (2 * h_lo));
+    Fr diff_b01 = fr_sub(b0, b1);
+    Fr diff_b23 = fr_sub(b2, b3);
     data[base]              = fr_add(b0, b1);
-    data[base + h_lo]       = fr_mul(fr_sub(b0, b1), w_s1);
+    data[base + h_lo]       = (tw_s1 == 0) ? diff_b01 : fr_mul(diff_b01, twiddles_inv[tw_s1]);
     data[base + h_hi]       = fr_add(b2, b3);
-    data[base + h_hi + h_lo] = fr_mul(fr_sub(b2, b3), w_s1);
+    data[base + h_hi + h_lo] = (tw_s1 == 0) ? diff_b23 : fr_mul(diff_b23, twiddles_inv[tw_s1]);
 }
 
 // --- Fused NTT kernel: process multiple DIT stages in threadgroup memory ---
@@ -204,11 +230,15 @@ kernel void ntt_butterfly_fused(
 
         Fr a = shared[i];
         Fr b = shared[j];
-        Fr w = twiddles[twiddle_idx];
-        Fr wb = fr_mul(w, b);
-
-        shared[i] = fr_add(a, wb);
-        shared[j] = fr_sub(a, wb);
+        if (twiddle_idx == 0) {
+            shared[i] = fr_add(a, b);
+            shared[j] = fr_sub(a, b);
+        } else {
+            Fr w = twiddles[twiddle_idx];
+            Fr wb = fr_mul(w, b);
+            shared[i] = fr_add(a, wb);
+            shared[j] = fr_sub(a, wb);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -268,11 +298,15 @@ kernel void ntt_butterfly_fused_bitrev(
 
         Fr a = shared[i];
         Fr b = shared[j];
-        Fr w = twiddles[twiddle_idx];
-        Fr wb = fr_mul(w, b);
-
-        shared[i] = fr_add(a, wb);
-        shared[j] = fr_sub(a, wb);
+        if (twiddle_idx == 0) {
+            shared[i] = fr_add(a, b);
+            shared[j] = fr_sub(a, b);
+        } else {
+            Fr w = twiddles[twiddle_idx];
+            Fr wb = fr_mul(w, b);
+            shared[i] = fr_add(a, wb);
+            shared[j] = fr_sub(a, wb);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -323,10 +357,13 @@ kernel void intt_butterfly_fused(
         Fr b = shared[j];
         Fr sum = fr_add(a, b);
         Fr diff = fr_sub(a, b);
-        Fr w = twiddles_inv[twiddle_idx];
-
         shared[i] = sum;
-        shared[j] = fr_mul(diff, w);
+        if (twiddle_idx == 0) {
+            shared[j] = diff;
+        } else {
+            Fr w = twiddles_inv[twiddle_idx];
+            shared[j] = fr_mul(diff, w);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -452,11 +489,15 @@ kernel void ntt_column_fused(
 
         Fr a = shared[i];
         Fr b = shared[j];
-        Fr w = twiddles[twiddle_idx];
-        Fr wb = fr_mul(w, b);
-
-        shared[i] = fr_add(a, wb);
-        shared[j] = fr_sub(a, wb);
+        if (twiddle_idx == 0) {
+            shared[i] = fr_add(a, b);
+            shared[j] = fr_sub(a, b);
+        } else {
+            Fr w = twiddles[twiddle_idx];
+            Fr wb = fr_mul(w, b);
+            shared[i] = fr_add(a, wb);
+            shared[j] = fr_sub(a, wb);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -509,11 +550,15 @@ kernel void ntt_row_fused(
 
         Fr a = shared[i];
         Fr b = shared[j];
-        Fr w = twiddles[twiddle_idx];
-        Fr wb = fr_mul(w, b);
-
-        shared[i] = fr_add(a, wb);
-        shared[j] = fr_sub(a, wb);
+        if (twiddle_idx == 0) {
+            shared[i] = fr_add(a, b);
+            shared[j] = fr_sub(a, b);
+        } else {
+            Fr w = twiddles[twiddle_idx];
+            Fr wb = fr_mul(w, b);
+            shared[i] = fr_add(a, wb);
+            shared[j] = fr_sub(a, wb);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -576,11 +621,15 @@ kernel void ntt_row_fused_twiddle(
 
         Fr a = shared[i];
         Fr b = shared[j];
-        Fr w = twiddles[twiddle_idx];
-        Fr wb = fr_mul(w, b);
-
-        shared[i] = fr_add(a, wb);
-        shared[j] = fr_sub(a, wb);
+        if (twiddle_idx == 0) {
+            shared[i] = fr_add(a, b);
+            shared[j] = fr_sub(a, b);
+        } else {
+            Fr w = twiddles[twiddle_idx];
+            Fr wb = fr_mul(w, b);
+            shared[i] = fr_add(a, wb);
+            shared[j] = fr_sub(a, wb);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -644,11 +693,15 @@ kernel void ntt_row_fused_twiddle_transpose(
 
         Fr a = shared[i];
         Fr b = shared[j];
-        Fr w = twiddles[twiddle_idx];
-        Fr wb = fr_mul(w, b);
-
-        shared[i] = fr_add(a, wb);
-        shared[j] = fr_sub(a, wb);
+        if (twiddle_idx == 0) {
+            shared[i] = fr_add(a, b);
+            shared[j] = fr_sub(a, b);
+        } else {
+            Fr w = twiddles[twiddle_idx];
+            Fr wb = fr_mul(w, b);
+            shared[i] = fr_add(a, wb);
+            shared[j] = fr_sub(a, wb);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -721,10 +774,13 @@ kernel void intt_column_fused(
         Fr b = shared[j];
         Fr sum = fr_add(a, b);
         Fr diff = fr_sub(a, b);
-        Fr w = twiddles_inv[twiddle_idx];
-
         shared[i] = sum;
-        shared[j] = fr_mul(diff, w);
+        if (twiddle_idx == 0) {
+            shared[j] = diff;
+        } else {
+            Fr w = twiddles_inv[twiddle_idx];
+            shared[j] = fr_mul(diff, w);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -791,10 +847,13 @@ kernel void intt_column_fused_twiddle(
         Fr b = shared[j];
         Fr sum = fr_add(a, b);
         Fr diff = fr_sub(a, b);
-        Fr w = twiddles_inv[twiddle_idx];
-
         shared[i] = sum;
-        shared[j] = fr_mul(diff, w);
+        if (twiddle_idx == 0) {
+            shared[j] = diff;
+        } else {
+            Fr w = twiddles_inv[twiddle_idx];
+            shared[j] = fr_mul(diff, w);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -846,10 +905,13 @@ kernel void intt_row_fused(
         Fr b = shared[j];
         Fr sum = fr_add(a, b);
         Fr diff = fr_sub(a, b);
-        Fr w = twiddles_inv[twiddle_idx];
-
         shared[i] = sum;
-        shared[j] = fr_mul(diff, w);
+        if (twiddle_idx == 0) {
+            shared[j] = diff;
+        } else {
+            Fr w = twiddles_inv[twiddle_idx];
+            shared[j] = fr_mul(diff, w);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -915,11 +977,15 @@ kernel void ntt_column_fused_subblock(
 
         Fr a = shared[i];
         Fr b = shared[j];
-        Fr w = twiddles[twiddle_idx];
-        Fr wb = fr_mul(w, b);
-
-        shared[i] = fr_add(a, wb);
-        shared[j] = fr_sub(a, wb);
+        if (twiddle_idx == 0) {
+            shared[i] = fr_add(a, b);
+            shared[j] = fr_sub(a, b);
+        } else {
+            Fr w = twiddles[twiddle_idx];
+            Fr wb = fr_mul(w, b);
+            shared[i] = fr_add(a, wb);
+            shared[j] = fr_sub(a, wb);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -963,11 +1029,15 @@ kernel void ntt_column_butterfly(
 
     Fr a = data[addr_i];
     Fr b = data[addr_j];
-    Fr w = twiddles[twiddle_idx];
-    Fr wb = fr_mul(w, b);
-
-    data[addr_i] = fr_add(a, wb);
-    data[addr_j] = fr_sub(a, wb);
+    if (twiddle_idx == 0) {
+        data[addr_i] = fr_add(a, b);
+        data[addr_j] = fr_sub(a, b);
+    } else {
+        Fr w = twiddles[twiddle_idx];
+        Fr wb = fr_mul(w, b);
+        data[addr_i] = fr_add(a, wb);
+        data[addr_j] = fr_sub(a, wb);
+    }
 }
 
 // Radix-4 DIT column butterfly: processes 2 stages at once (halves memory passes).
@@ -1003,19 +1073,23 @@ kernel void ntt_column_butterfly_radix4(
     Fr a3 = data[addr3];
 
     // Stage s twiddle: applied to pairs (a0,a1) and (a2,a3)
-    Fr ws = twiddles[local_idx * (n1 / (2 * h)) * n2];
-    Fr ws_a1 = fr_mul(ws, a1);
-    Fr ws_a3 = fr_mul(ws, a3);
-    Fr b0 = fr_add(a0, ws_a1);
-    Fr b1 = fr_sub(a0, ws_a1);
-    Fr b2 = fr_add(a2, ws_a3);
-    Fr b3 = fr_sub(a2, ws_a3);
+    uint tw_s = local_idx * (n1 / (2 * h)) * n2;
+    Fr b0, b1, b2, b3;
+    if (tw_s == 0) {
+        b0 = fr_add(a0, a1); b1 = fr_sub(a0, a1);
+        b2 = fr_add(a2, a3); b3 = fr_sub(a2, a3);
+    } else {
+        Fr ws = twiddles[tw_s];
+        Fr ws_a1 = fr_mul(ws, a1); Fr ws_a3 = fr_mul(ws, a3);
+        b0 = fr_add(a0, ws_a1); b1 = fr_sub(a0, ws_a1);
+        b2 = fr_add(a2, ws_a3); b3 = fr_sub(a2, ws_a3);
+    }
 
     // Stage s+1 twiddles: cross-combine
-    Fr w_lo = twiddles[local_idx * (n1 / block4) * n2];
-    Fr w_hi = twiddles[(local_idx + h) * (n1 / block4) * n2];
-    Fr wb2 = fr_mul(w_lo, b2);
-    Fr wb3 = fr_mul(w_hi, b3);
+    uint tw_lo = local_idx * (n1 / block4) * n2;
+    uint tw_hi = (local_idx + h) * (n1 / block4) * n2;
+    Fr wb2 = (tw_lo == 0) ? b2 : fr_mul(twiddles[tw_lo], b2);
+    Fr wb3 = (tw_hi == 0) ? b3 : fr_mul(twiddles[tw_hi], b3);
 
     data[addr0] = fr_add(b0, wb2);
     data[addr2] = fr_sub(b0, wb2);
@@ -1074,10 +1148,13 @@ kernel void intt_column_butterfly(
     Fr b = data[addr_j];
     Fr sum = fr_add(a, b);
     Fr diff = fr_sub(a, b);
-    Fr w = twiddles_inv[twiddle_idx];
-
     data[addr_i] = sum;
-    data[addr_j] = fr_mul(diff, w);
+    if (twiddle_idx == 0) {
+        data[addr_j] = diff;
+    } else {
+        Fr w = twiddles_inv[twiddle_idx];
+        data[addr_j] = fr_mul(diff, w);
+    }
 }
 
 // Radix-4 DIF column butterfly for iNTT: processes 2 stages at once.
@@ -1123,23 +1200,23 @@ kernel void intt_column_butterfly_radix4(
     Fr diff13 = fr_sub(a1, a3);
 
     // Twiddle for high stage
-    Fr w_hi = twiddles_inv[local_idx * (n1 / block4) * n2];
-    diff02 = fr_mul(diff02, w_hi);
-    Fr w_hi2 = twiddles_inv[(local_idx + h_lo) * (n1 / block4) * n2];
-    diff13 = fr_mul(diff13, w_hi2);
+    uint tw_hi_idx = local_idx * (n1 / block4) * n2;
+    uint tw_hi2_idx = (local_idx + h_lo) * (n1 / block4) * n2;
+    if (tw_hi_idx != 0) diff02 = fr_mul(diff02, twiddles_inv[tw_hi_idx]);
+    if (tw_hi2_idx != 0) diff13 = fr_mul(diff13, twiddles_inv[tw_hi2_idx]);
 
     // DIF low stage: butterflies (sum02,sum13) and (diff02,diff13)
-    Fr w_lo = twiddles_inv[local_idx * (n1 / (2 * h_lo)) * n2];
+    uint tw_lo_idx = local_idx * (n1 / (2 * h_lo)) * n2;
 
     Fr out0 = fr_add(sum02, sum13);
     Fr d1 = fr_sub(sum02, sum13);
     data[addr0] = out0;
-    data[addr1] = fr_mul(d1, w_lo);
+    data[addr1] = (tw_lo_idx == 0) ? d1 : fr_mul(d1, twiddles_inv[tw_lo_idx]);
 
     Fr out2 = fr_add(diff02, diff13);
     Fr d3 = fr_sub(diff02, diff13);
     data[addr2] = out2;
-    data[addr3] = fr_mul(d3, w_lo);
+    data[addr3] = (tw_lo_idx == 0) ? d3 : fr_mul(d3, twiddles_inv[tw_lo_idx]);
 }
 
 // DIF sub-block column iFFT with 1/N scale on store.
@@ -1191,10 +1268,13 @@ kernel void intt_column_fused_subblock(
         Fr b = shared[j];
         Fr sum = fr_add(a, b);
         Fr diff = fr_sub(a, b);
-        Fr w = twiddles_inv[twiddle_idx];
-
         shared[i] = sum;
-        shared[j] = fr_mul(diff, w);
+        if (twiddle_idx == 0) {
+            shared[j] = diff;
+        } else {
+            Fr w = twiddles_inv[twiddle_idx];
+            shared[j] = fr_mul(diff, w);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -1248,10 +1328,13 @@ kernel void intt_row_fused_twiddle(
         Fr b = shared[j];
         Fr sum = fr_add(a, b);
         Fr diff = fr_sub(a, b);
-        Fr w = twiddles_inv[twiddle_idx];
-
         shared[i] = sum;
-        shared[j] = fr_mul(diff, w);
+        if (twiddle_idx == 0) {
+            shared[j] = diff;
+        } else {
+            Fr w = twiddles_inv[twiddle_idx];
+            shared[j] = fr_mul(diff, w);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -1343,10 +1426,15 @@ kernel void ntt_row_subblock_fused(
         uint twiddle_idx = local_idx * (n1 / local_block_size) * n2;
         Fr a = shared[i];
         Fr b = shared[j];
-        Fr w = twiddles[twiddle_idx];
-        Fr wb = fr_mul(w, b);
-        shared[i] = fr_add(a, wb);
-        shared[j] = fr_sub(a, wb);
+        if (twiddle_idx == 0) {
+            shared[i] = fr_add(a, b);
+            shared[j] = fr_sub(a, b);
+        } else {
+            Fr w = twiddles[twiddle_idx];
+            Fr wb = fr_mul(w, b);
+            shared[i] = fr_add(a, wb);
+            shared[j] = fr_sub(a, wb);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -1383,10 +1471,15 @@ kernel void ntt_row_butterfly(
 
     Fr a = data[row_base + pos_i];
     Fr b = data[row_base + pos_j];
-    Fr w = twiddles[twiddle_idx];
-    Fr wb = fr_mul(w, b);
-    data[row_base + pos_i] = fr_add(a, wb);
-    data[row_base + pos_j] = fr_sub(a, wb);
+    if (twiddle_idx == 0) {
+        data[row_base + pos_i] = fr_add(a, b);
+        data[row_base + pos_j] = fr_sub(a, b);
+    } else {
+        Fr w = twiddles[twiddle_idx];
+        Fr wb = fr_mul(w, b);
+        data[row_base + pos_i] = fr_add(a, wb);
+        data[row_base + pos_j] = fr_sub(a, wb);
+    }
 }
 
 // Radix-4 DIT butterfly within rows (transposed layout).
@@ -1415,21 +1508,27 @@ kernel void ntt_row_butterfly_radix4(
     Fr a2 = data[row_base + base_pos + 2 * h];
     Fr a3 = data[row_base + base_pos + 3 * h];
 
-    Fr ws = twiddles[local_idx * (n1 / (2 * h)) * n2];
-    Fr ws_a1 = fr_mul(ws, a1);
-    Fr ws_a3 = fr_mul(ws, a3);
-    Fr b0 = fr_add(a0, ws_a1);
-    Fr b1 = fr_sub(a0, ws_a1);
-    Fr b2 = fr_add(a2, ws_a3);
-    Fr b3 = fr_sub(a2, ws_a3);
+    uint tw_s = local_idx * (n1 / (2 * h)) * n2;
+    Fr b0, b1, b2, b3;
+    if (tw_s == 0) {
+        b0 = fr_add(a0, a1); b1 = fr_sub(a0, a1);
+        b2 = fr_add(a2, a3); b3 = fr_sub(a2, a3);
+    } else {
+        Fr ws = twiddles[tw_s];
+        Fr ws_a1 = fr_mul(ws, a1); Fr ws_a3 = fr_mul(ws, a3);
+        b0 = fr_add(a0, ws_a1); b1 = fr_sub(a0, ws_a1);
+        b2 = fr_add(a2, ws_a3); b3 = fr_sub(a2, ws_a3);
+    }
 
-    Fr w_lo = twiddles[local_idx * (n1 / block4) * n2];
-    Fr w_hi = twiddles[(local_idx + h) * (n1 / block4) * n2];
+    uint tw_lo = local_idx * (n1 / block4) * n2;
+    uint tw_hi = (local_idx + h) * (n1 / block4) * n2;
+    Fr wb2 = (tw_lo == 0) ? b2 : fr_mul(twiddles[tw_lo], b2);
+    Fr wb3 = (tw_hi == 0) ? b3 : fr_mul(twiddles[tw_hi], b3);
 
-    data[row_base + base_pos] = fr_add(b0, fr_mul(w_lo, b2));
-    data[row_base + base_pos + 2 * h] = fr_sub(b0, fr_mul(w_lo, b2));
-    data[row_base + base_pos + h] = fr_add(b1, fr_mul(w_hi, b3));
-    data[row_base + base_pos + 3 * h] = fr_sub(b1, fr_mul(w_hi, b3));
+    data[row_base + base_pos] = fr_add(b0, wb2);
+    data[row_base + base_pos + 2 * h] = fr_sub(b0, wb2);
+    data[row_base + base_pos + h] = fr_add(b1, wb3);
+    data[row_base + base_pos + 3 * h] = fr_sub(b1, wb3);
 }
 
 // DIF global butterfly within rows (for iNTT transposed layout).
@@ -1461,9 +1560,13 @@ kernel void intt_row_butterfly(
     Fr b = data[row_base + pos_j];
     Fr sum = fr_add(a, b);
     Fr diff = fr_sub(a, b);
-    Fr w = twiddles_inv[twiddle_idx];
     data[row_base + pos_i] = sum;
-    data[row_base + pos_j] = fr_mul(diff, w);
+    if (twiddle_idx == 0) {
+        data[row_base + pos_j] = diff;
+    } else {
+        Fr w = twiddles_inv[twiddle_idx];
+        data[row_base + pos_j] = fr_mul(diff, w);
+    }
 }
 
 // Radix-4 DIF butterfly within rows (for iNTT transposed layout).
@@ -1499,17 +1602,19 @@ kernel void intt_row_butterfly_radix4(
     Fr sum13 = fr_add(a1, a3);
     Fr diff13 = fr_sub(a1, a3);
 
-    Fr w_hi = twiddles_inv[local_idx * (n1 / block4) * n2];
-    diff02 = fr_mul(diff02, w_hi);
-    Fr w_hi2 = twiddles_inv[(local_idx + h_lo) * (n1 / block4) * n2];
-    diff13 = fr_mul(diff13, w_hi2);
+    uint tw_hi_idx = local_idx * (n1 / block4) * n2;
+    uint tw_hi2_idx = (local_idx + h_lo) * (n1 / block4) * n2;
+    if (tw_hi_idx != 0) diff02 = fr_mul(diff02, twiddles_inv[tw_hi_idx]);
+    if (tw_hi2_idx != 0) diff13 = fr_mul(diff13, twiddles_inv[tw_hi2_idx]);
 
-    Fr w_lo = twiddles_inv[local_idx * (n1 / (2 * h_lo)) * n2];
+    uint tw_lo_idx = local_idx * (n1 / (2 * h_lo)) * n2;
+    Fr d_sum = fr_sub(sum02, sum13);
+    Fr d_diff = fr_sub(diff02, diff13);
 
     data[row_base + base_pos] = fr_add(sum02, sum13);
-    data[row_base + base_pos + h_lo] = fr_mul(fr_sub(sum02, sum13), w_lo);
+    data[row_base + base_pos + h_lo] = (tw_lo_idx == 0) ? d_sum : fr_mul(d_sum, twiddles_inv[tw_lo_idx]);
     data[row_base + base_pos + 2 * h_lo] = fr_add(diff02, diff13);
-    data[row_base + base_pos + 3 * h_lo] = fr_mul(fr_sub(diff02, diff13), w_lo);
+    data[row_base + base_pos + 3 * h_lo] = (tw_lo_idx == 0) ? d_diff : fr_mul(d_diff, twiddles_inv[tw_lo_idx]);
 }
 
 // DIF sub-block fused row iFFT with 1/N scale (transposed layout).
@@ -1554,9 +1659,13 @@ kernel void intt_row_subblock_fused(
         Fr b = shared[j];
         Fr sum = fr_add(a, b);
         Fr diff = fr_sub(a, b);
-        Fr w = twiddles_inv[twiddle_idx];
         shared[i] = sum;
-        shared[j] = fr_mul(diff, w);
+        if (twiddle_idx == 0) {
+            shared[j] = diff;
+        } else {
+            Fr w = twiddles_inv[twiddle_idx];
+            shared[j] = fr_mul(diff, w);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 

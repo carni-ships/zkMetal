@@ -1233,4 +1233,61 @@ void gl_poseidon2_permutation_neon(uint64_t state[12],
                                     int num_full_rounds,
                                     int num_partial_rounds);
 
+// ============================================================
+// Packed NEON small-field arithmetic (4 lanes, uint32x4_t)
+// ============================================================
+#ifdef __ARM_NEON
+#include <arm_neon.h>
+
+/// Packed BabyBear modular add/sub/mul: 4 parallel ops mod p=2013265921.
+/// Uses Plonky3-style Montgomery reduction (7 NEON instructions per 4 muls).
+uint32x4_t packed_bb_add(uint32x4_t a, uint32x4_t b);
+uint32x4_t packed_bb_sub(uint32x4_t a, uint32x4_t b);
+uint32x4_t packed_bb_mul(uint32x4_t a, uint32x4_t b);
+
+/// Barrett reduction of 4 products from 64-bit to 32-bit BabyBear.
+uint32x4_t packed_bb_reduce(uint64x2_t lo, uint64x2_t hi);
+
+/// Packed M31 modular add/sub/mul: 4 parallel ops mod p=2^31-1.
+/// Mul uses vmull_u32 widening + Mersenne bit-trick reduction.
+uint32x4_t packed_m31_add(uint32x4_t a, uint32x4_t b);
+uint32x4_t packed_m31_sub(uint32x4_t a, uint32x4_t b);
+uint32x4_t packed_m31_mul(uint32x4_t a, uint32x4_t b);
+
+/// BabyBear NTT butterfly (vectorized): a' = a + tw*b, b' = a - tw*b.
+void packed_bb_ntt_butterfly(uint32_t *a_arr, uint32_t *b_arr,
+                              const uint32_t *tw, int n);
+
+/// BabyBear batch dot product and vector add.
+void packed_bb_dot_product(const uint32_t *a, const uint32_t *b, int n, uint32_t *result);
+void packed_bb_vector_add(const uint32_t *a, const uint32_t *b, uint32_t *out, int n);
+
+/// M31 batch dot product.
+void packed_m31_dot_product(const uint32_t *a, const uint32_t *b, int n, uint32_t *result);
+
+/// BabyBear DIT butterfly: (u, v) -> (u + tw*v, u - tw*v).
+/// Data in Montgomery form. Twiddles has halfBlock entries.
+void packed_bb_butterfly_dit(uint32_t *data, int halfBlock, int nBlocks,
+                              const uint32_t *twiddles);
+
+/// BabyBear DIF butterfly: (a, b) -> (a+b, (a-b)*tw).
+void packed_bb_butterfly_dif(uint32_t *data, int halfBlock, int nBlocks,
+                              const uint32_t *twiddles);
+
+/// M31 DIT butterfly using packed NEON.
+void packed_m31_butterfly_dit(uint32_t *data, int halfBlock, int nBlocks,
+                              const uint32_t *twiddles);
+
+/// M31 DIF butterfly using packed NEON.
+void packed_m31_butterfly_dif(uint32_t *data, int halfBlock, int nBlocks,
+                              const uint32_t *twiddles);
+
+/// Packed BabyBear forward NTT (Cooley-Tukey DIT, in-place).
+/// Input/output: array of 2^logN uint32_t in [0, p).
+void packed_bb_ntt(uint32_t *data, int logN);
+
+/// Packed BabyBear inverse NTT (Gentleman-Sande DIF, in-place).
+void packed_bb_intt(uint32_t *data, int logN);
+#endif // __ARM_NEON
+
 #endif // NEON_FIELD_OPS_H

@@ -39,6 +39,7 @@ public enum Versions {
     public static let bjjEdDSA       = PrimitiveVersion(version: "1.0.0", updated: "2026-04-04")
     public static let blsSignature   = PrimitiveVersion(version: "1.0.0", updated: "2026-04-04")
     public static let schnorr        = PrimitiveVersion(version: "1.0.0", updated: "2026-04-04")
+    public static let batchECDSA     = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
 
     // --- BabyJubjub ---
     public static let babyJubjub     = PrimitiveVersion(version: "1.0.0", updated: "2026-04-04")
@@ -56,6 +57,7 @@ public enum Versions {
 
     // --- Polynomial / STARK ---
     public static let fri            = PrimitiveVersion(version: "1.3.0", updated: "2026-04-03")
+    public static let friFold        = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let stir            = PrimitiveVersion(version: "2.0.0", updated: "2026-04-05")
     public static let whir           = PrimitiveVersion(version: "2.0.0", updated: "2026-04-05")
     public static let sumcheck       = PrimitiveVersion(version: "1.1.0", updated: "2026-04-02")
@@ -89,6 +91,7 @@ public enum Versions {
     public static let cqLookup       = PrimitiveVersion(version: "2.0.0", updated: "2026-04-05")
     public static let unifiedLookup  = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let constraint     = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
+    public static let gpuConstraintEval = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let fusedNTTConstraint = PrimitiveVersion(version: "2.0.0", updated: "2026-04-05")
     public static let witness        = PrimitiveVersion(version: "2.0.0", updated: "2026-04-04")
     public static let transcript     = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
@@ -148,6 +151,8 @@ public enum Versions {
     public static let groth16GPUWitness = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let pcsComparison     = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let gpuInnerProduct   = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuMerkleTree     = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuHornerEval     = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
 
     /// Print all primitive versions
     public static func printAll() {
@@ -173,6 +178,7 @@ public enum Versions {
             ("EdDSA Ed25519",    eddsa),
             ("BLS Signature",    blsSignature),
             ("Schnorr BIP340",   schnorr),
+            ("Batch ECDSA",      batchECDSA),
             ("NTT BN254",         nttBN254),
             ("NTT Goldilocks",    nttGoldilocks),
             ("NTT BabyBear",      nttBabyBear),
@@ -182,6 +188,7 @@ public enum Versions {
             ("RNS NTT (HE)",    rnsNTT),
             ("Mersenne31",       mersenne31),
             ("FRI",               fri),
+            ("FRI Fold Engine",   friFold),
             ("STIR",              stir),
             ("Sumcheck",          sumcheck),
             ("Univ. Sumcheck",   univariateSumcheck),
@@ -197,6 +204,7 @@ public enum Versions {
             ("cq Lookup",         cqLookup),
             ("Unified Lookup",    unifiedLookup),
             ("Constraint IR",    constraint),
+            ("GPU Constr Eval",  gpuConstraintEval),
             ("Fused NTT+Constr", fusedNTTConstraint),
             ("Witness Trace",    witness),
             ("Transcript",       transcript),
@@ -219,6 +227,8 @@ public enum Versions {
             ("Marlin",           marlin),
             ("Varuna",           varuna),
             ("Unified Verify",   unifiedVerify),
+            ("GPU Merkle Tree",  gpuMerkleTree),
+            ("GPU Horner Eval",  gpuHornerEval),
         ]
         print("=== zkMetal Primitive Versions ===")
         for (name, v) in entries {

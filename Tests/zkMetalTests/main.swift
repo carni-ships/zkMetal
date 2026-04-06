@@ -105,6 +105,12 @@ runMultiScalarInnerProductTests()
 runGPUInnerProductTests()
 runGroth16GPUWitnessTests()
 runPCSComparisonTests()
+runGPUMerkleTreeTests()
+runGPUHornerEvalTests()
+runBatchECDSATests()
+runGPUFRIFoldTests()
+runGPUConstraintEvalTests()
+runPackedNEONTests()
 
 let elapsed = CFAbsoluteTimeGetCurrent() - t0
 print(String(format: "\nCompleted in %.1fs", elapsed))

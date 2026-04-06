@@ -1650,6 +1650,10 @@ void bn254_fr_full_sumcheck(const uint64_t *evals, int numVars,
     uint64_t *buf = (uint64_t *)malloc(n * 32);
     memcpy(buf, evals, n * 32);
 
+    // Pre-allocate thread chunks once, reused across all rounds
+    const int maxThreads = 8;
+    SumcheckFusedChunk *chunks = (SumcheckFusedChunk *)malloc(maxThreads * sizeof(SumcheckFusedChunk));
+
     for (int round = 0; round < numVars; round++) {
         int halfN = n / 2;
         uint64_t *rout = rounds + round * 12; // 3 Fr per round
@@ -1661,7 +1665,6 @@ void bn254_fr_full_sumcheck(const uint64_t *evals, int numVars,
             if (halfN / 1024 < nT) nT = halfN / 1024;
             if (nT < 1) nT = 1;
             int perT = (halfN + nT - 1) / nT;
-            SumcheckFusedChunk *chunks = (SumcheckFusedChunk *)malloc(nT * sizeof(SumcheckFusedChunk));
             for (int t = 0; t < nT; t++) {
                 chunks[t].buf = buf;
                 chunks[t].challenge = ch;
@@ -1684,7 +1687,6 @@ void bn254_fr_full_sumcheck(const uint64_t *evals, int numVars,
                 fr_add(rout + 4, chunks[t].s1, tmp); memcpy(rout + 4, tmp, 32);
                 fr_add(rout + 8, chunks[t].s2, tmp); memcpy(rout + 8, tmp, 32);
             }
-            free(chunks);
         } else {
             // Single-threaded fused round-poly + reduce
             uint64_t s0[4] = {0,0,0,0};
@@ -1712,6 +1714,7 @@ void bn254_fr_full_sumcheck(const uint64_t *evals, int numVars,
         n = halfN;
     }
     memcpy(finalEval, buf, 32);
+    free(chunks);
     free(buf);
 }
 

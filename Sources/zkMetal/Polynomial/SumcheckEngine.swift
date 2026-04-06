@@ -43,6 +43,18 @@ public class SumcheckEngine {
     // Cached input buffer for fullSumcheck
     private var scInputBuf: MTLBuffer?
     private var scInputBufElements: Int = 0
+    // Cached challenge buffer for fullSumcheck (grow-only, reused across rounds)
+    private var scChalBuf: MTLBuffer?
+    private var scChalBufSize: Int = 0
+    // Cached challenge buffer for reduce() calls (single Fr, grow-only)
+    private var reduceChalBuf: MTLBuffer?
+    private var reduceChalBufSize: Int = 0
+    // Cached partial buffer for computeRoundPoly (grow-only)
+    private var roundPolyPartialBuf: MTLBuffer?
+    private var roundPolyPartialBufSize: Int = 0
+    // Cached challenge buffer for proveHighDegree (grow-only)
+    private var hdChalBuf: MTLBuffer?
+    private var hdChalBufSize: Int = 0
     private let tuning: TuningConfig
 
     public init() throws {
@@ -152,8 +164,18 @@ public class SumcheckEngine {
     public func reduce(evals: MTLBuffer, output: MTLBuffer, challenge: Fr, n: Int) throws {
         let halfN = UInt32(n / 2)
 
-        guard let challengeBuf = createFrBuffer([challenge]),
-              let cmdBuf = commandQueue.makeCommandBuffer() else {
+        let chalBytes = MemoryLayout<Fr>.stride
+        if reduceChalBufSize < chalBytes {
+            guard let buf = device.makeBuffer(length: chalBytes, options: .storageModeShared) else {
+                throw MSMError.gpuError("Failed to allocate reduce challenge buffer")
+            }
+            reduceChalBuf = buf
+            reduceChalBufSize = chalBytes
+        }
+        var chalVal = challenge
+        memcpy(reduceChalBuf!.contents(), &chalVal, chalBytes)
+
+        guard let cmdBuf = commandQueue.makeCommandBuffer() else {
             throw MSMError.noCommandBuffer
         }
 
@@ -162,7 +184,7 @@ public class SumcheckEngine {
         enc.setComputePipelineState(reduceFunction)
         enc.setBuffer(evals, offset: 0, index: 0)
         enc.setBuffer(output, offset: 0, index: 1)
-        enc.setBuffer(challengeBuf, offset: 0, index: 2)
+        enc.setBuffer(reduceChalBuf, offset: 0, index: 2)
         enc.setBytes(&halfNVal, length: 4, index: 3)
         let tg = min(tuning.sumcheckPerRoundTGSize, Int(reduceFunction.maxTotalThreadsPerThreadgroup))
         enc.dispatchThreads(MTLSize(width: Int(halfN), height: 1, depth: 1),
@@ -183,9 +205,17 @@ public class SumcheckEngine {
         let tgSize = 256
         let numGroups = max(1, (halfN + tgSize - 1) / tgSize)
 
-        guard let partialBuf = device.makeBuffer(length: numGroups * 3 * MemoryLayout<Fr>.stride,
-                                                   options: .storageModeShared),
-              let cmdBuf = commandQueue.makeCommandBuffer() else {
+        let partialBytes = numGroups * 3 * MemoryLayout<Fr>.stride
+        if roundPolyPartialBufSize < partialBytes {
+            guard let buf = device.makeBuffer(length: partialBytes, options: .storageModeShared) else {
+                throw MSMError.gpuError("Failed to allocate round poly partial buffer")
+            }
+            roundPolyPartialBuf = buf
+            roundPolyPartialBufSize = partialBytes
+        }
+        let partialBuf = roundPolyPartialBuf!
+
+        guard let cmdBuf = commandQueue.makeCommandBuffer() else {
             throw MSMError.noCommandBuffer
         }
 
@@ -357,12 +387,18 @@ public class SumcheckEngine {
         while roundIdx < numVars {
             let halfN = currentN / 2
             let numGroups = max(1, (halfN + perRoundTGSize - 1) / perRoundTGSize)
-            guard let pBuf = device.makeBuffer(length: numGroups * 3 * stride,
-                                                options: .storageModeShared) else {
-                throw MSMError.gpuError("Failed to allocate per-round partial buffer")
+            // Reuse cached partial buffers, extending pool if needed
+            let bufIdx = dispatchInfos.count
+            if bufIdx >= scPartialBufs.count {
+                let neededBytes = numGroups * 3 * stride
+                guard let pBuf = device.makeBuffer(length: max(neededBytes, maxPartialBytes),
+                                                    options: .storageModeShared) else {
+                    throw MSMError.gpuError("Failed to allocate per-round partial buffer")
+                }
+                scPartialBufs.append(pBuf)
             }
             dispatchInfos.append(.single(round: roundIdx, halfN: halfN,
-                                          numGroups: numGroups, partialBuf: pBuf))
+                                          numGroups: numGroups, partialBuf: scPartialBufs[bufIdx]))
             currentN = halfN
             roundIdx += 1
         }
@@ -394,18 +430,15 @@ public class SumcheckEngine {
 
             switch info {
             case .fused2(let startRound, let quarterN, let numGroups, let partialBuf):
-                let chal0 = challenges[startRound]
-                let chal1 = challenges[startRound + 1]
-                let chalBuf = device.makeBuffer(length: 2 * stride, options: .storageModeShared)!
-                [chal0, chal1].withUnsafeBytes { src in
-                    memcpy(chalBuf.contents(), src.baseAddress!, 2 * stride)
-                }
+                // Use setBytes for challenge data — safe for multiple dispatches
+                // in a single command buffer (data is copied inline, not shared)
+                var chalPair = [challenges[startRound], challenges[startRound + 1]]
 
                 enc.setComputePipelineState(fused2StridedFunction)
                 enc.setBuffer(inputBuf, offset: 0, index: 0)
                 enc.setBuffer(outputBuf, offset: 0, index: 1)
                 enc.setBuffer(partialBuf, offset: 0, index: 2)
-                enc.setBuffer(chalBuf, offset: 0, index: 3)
+                enc.setBytes(&chalPair, length: 2 * stride, index: 3)
                 var qnVal = UInt32(quarterN)
                 enc.setBytes(&qnVal, length: 4, index: 4)
                 var ngVal = UInt32(numGroups)
@@ -439,9 +472,14 @@ public class SumcheckEngine {
             let outputBuf = useA ? scEvalBufA! : scEvalBufB!
 
             let batchChallenges = Array(challenges[batch.startRound..<batch.startRound + batch.numRounds])
-            let chalBuf = device.makeBuffer(length: batch.numRounds * stride, options: .storageModeShared)!
+            let chalBytes = batch.numRounds * stride
+            if scChalBufSize < chalBytes {
+                scChalBuf = device.makeBuffer(length: chalBytes, options: .storageModeShared)!
+                scChalBufSize = chalBytes
+            }
+            let chalBuf = scChalBuf!
             batchChallenges.withUnsafeBytes { src in
-                memcpy(chalBuf.contents(), src.baseAddress!, batch.numRounds * stride)
+                memcpy(chalBuf.contents(), src.baseAddress!, chalBytes)
             }
 
             enc.setComputePipelineState(fusedMultiroundFunction)
@@ -705,8 +743,20 @@ public class SumcheckEngine {
             let srcBuf = useFirst ? hdPolyBufs[0] : hdPolyBufs[1]
             let dstBuf = useFirst ? hdPolyBufs[1] : hdPolyBufs[0]
 
-            guard let chalBuf = createFrBuffer([challenges[round]]),
-                  let cmdBuf = commandQueue.makeCommandBuffer() else {
+            // Reuse cached challenge buffer (grow-only)
+            let chalBytes = stride
+            if hdChalBufSize < chalBytes {
+                guard let buf = device.makeBuffer(length: chalBytes, options: .storageModeShared) else {
+                    throw MSMError.gpuError("Failed to allocate high-degree challenge buffer")
+                }
+                hdChalBuf = buf
+                hdChalBufSize = chalBytes
+            }
+            var chalVal = challenges[round]
+            memcpy(hdChalBuf!.contents(), &chalVal, chalBytes)
+            let chalBuf = hdChalBuf!
+
+            guard let cmdBuf = commandQueue.makeCommandBuffer() else {
                 throw MSMError.noCommandBuffer
             }
 

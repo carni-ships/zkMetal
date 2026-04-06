@@ -53,11 +53,15 @@ kernel void fft_stockham_radix2(
 
     Fr a = src[src_even];
     Fr b = src[src_odd];
-    Fr w = twiddles[twiddle_idx];
-    Fr wb = fr_mul(w, b);
-
-    dst[dst_top] = fr_add(a, wb);
-    dst[dst_bot] = fr_sub(a, wb);
+    if (twiddle_idx == 0) {
+        dst[dst_top] = fr_add(a, b);
+        dst[dst_bot] = fr_sub(a, b);
+    } else {
+        Fr w = twiddles[twiddle_idx];
+        Fr wb = fr_mul(w, b);
+        dst[dst_top] = fr_add(a, wb);
+        dst[dst_bot] = fr_sub(a, wb);
+    }
 }
 
 // ============================================================================
@@ -97,24 +101,27 @@ kernel void fft_stockham_radix4(
 
     // Stage s twiddles
     uint tw_s = local_idx * (n / m1);
-    Fr ws1 = twiddles[tw_s];
-
-    // Stage s butterflies: (a0,a1) and (a2,a3)
-    Fr ws_a1 = fr_mul(ws1, a1);
-    Fr ws_a3 = fr_mul(ws1, a3);
-    Fr b0 = fr_add(a0, ws_a1);
-    Fr b1 = fr_sub(a0, ws_a1);
-    Fr b2 = fr_add(a2, ws_a3);
-    Fr b3 = fr_sub(a2, ws_a3);
+    Fr b0, b1, b2, b3;
+    if (tw_s == 0) {
+        b0 = fr_add(a0, a1);
+        b1 = fr_sub(a0, a1);
+        b2 = fr_add(a2, a3);
+        b3 = fr_sub(a2, a3);
+    } else {
+        Fr ws1 = twiddles[tw_s];
+        Fr ws_a1 = fr_mul(ws1, a1);
+        Fr ws_a3 = fr_mul(ws1, a3);
+        b0 = fr_add(a0, ws_a1);
+        b1 = fr_sub(a0, ws_a1);
+        b2 = fr_add(a2, ws_a3);
+        b3 = fr_sub(a2, ws_a3);
+    }
 
     // Stage s+1 twiddles
     uint tw_lo = local_idx * (n / m2);
     uint tw_hi = (local_idx + half_m1) * (n / m2);
-    Fr w_lo = twiddles[tw_lo];
-    Fr w_hi = twiddles[tw_hi];
-
-    Fr wb2 = fr_mul(w_lo, b2);
-    Fr wb3 = fr_mul(w_hi, b3);
+    Fr wb2 = (tw_lo == 0) ? b2 : fr_mul(twiddles[tw_lo], b2);
+    Fr wb3 = (tw_hi == 0) ? b3 : fr_mul(twiddles[tw_hi], b3);
 
     // Write to dst with Stockham permutation
     uint dst_base = group * m2 + local_idx;
@@ -160,20 +167,26 @@ kernel void fft_stockham_split_radix(
         Fr a3 = src[base_read + 3 * stride_val];
 
         uint tw_s = local_idx * (n / m1);
-        Fr ws1 = twiddles[tw_s];
-        Fr ws_a1 = fr_mul(ws1, a1);
-        Fr ws_a3 = fr_mul(ws1, a3);
-        Fr b0 = fr_add(a0, ws_a1);
-        Fr b1 = fr_sub(a0, ws_a1);
-        Fr b2 = fr_add(a2, ws_a3);
-        Fr b3 = fr_sub(a2, ws_a3);
+        Fr b0, b1, b2, b3;
+        if (tw_s == 0) {
+            b0 = fr_add(a0, a1);
+            b1 = fr_sub(a0, a1);
+            b2 = fr_add(a2, a3);
+            b3 = fr_sub(a2, a3);
+        } else {
+            Fr ws1 = twiddles[tw_s];
+            Fr ws_a1 = fr_mul(ws1, a1);
+            Fr ws_a3 = fr_mul(ws1, a3);
+            b0 = fr_add(a0, ws_a1);
+            b1 = fr_sub(a0, ws_a1);
+            b2 = fr_add(a2, ws_a3);
+            b3 = fr_sub(a2, ws_a3);
+        }
 
         uint tw_lo = local_idx * (n / m2);
         uint tw_hi = (local_idx + half_m1) * (n / m2);
-        Fr w_lo = twiddles[tw_lo];
-        Fr w_hi = twiddles[tw_hi];
-        Fr wb2 = fr_mul(w_lo, b2);
-        Fr wb3 = fr_mul(w_hi, b3);
+        Fr wb2 = (tw_lo == 0) ? b2 : fr_mul(twiddles[tw_lo], b2);
+        Fr wb3 = (tw_hi == 0) ? b3 : fr_mul(twiddles[tw_hi], b3);
 
         uint dst_base = group * m2 + local_idx;
         dst[dst_base]                     = fr_add(b0, wb2);
@@ -198,11 +211,15 @@ kernel void fft_stockham_split_radix(
 
         Fr a = src[src_even];
         Fr b = src[src_odd];
-        Fr w = twiddles[twiddle_idx];
-        Fr wb = fr_mul(w, b);
-
-        dst[dst_top] = fr_add(a, wb);
-        dst[dst_bot] = fr_sub(a, wb);
+        if (twiddle_idx == 0) {
+            dst[dst_top] = fr_add(a, b);
+            dst[dst_bot] = fr_sub(a, b);
+        } else {
+            Fr w = twiddles[twiddle_idx];
+            Fr wb = fr_mul(w, b);
+            dst[dst_top] = fr_add(a, wb);
+            dst[dst_bot] = fr_sub(a, wb);
+        }
     }
 }
 
@@ -262,11 +279,15 @@ kernel void fft_stockham_fused(
 
         Fr a = src_buf[i];
         Fr b = src_buf[j];
-        Fr w = twiddles[twiddle_idx];
-        Fr wb = fr_mul(w, b);
-
-        dst_buf[i] = fr_add(a, wb);
-        dst_buf[j] = fr_sub(a, wb);
+        if (twiddle_idx == 0) {
+            dst_buf[i] = fr_add(a, b);
+            dst_buf[j] = fr_sub(a, b);
+        } else {
+            Fr w = twiddles[twiddle_idx];
+            Fr wb = fr_mul(w, b);
+            dst_buf[i] = fr_add(a, wb);
+            dst_buf[j] = fr_sub(a, wb);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -308,14 +329,18 @@ kernel void fft_stockham_inv_radix2(
 
     Fr sum = fr_add(a, b);
     Fr diff = fr_sub(a, b);
-    Fr w = twiddles_inv[twiddle_idx];
 
     // Stockham write: output to contiguous halves
     uint dst_even = block_idx * half_block + local_idx;
     uint dst_odd = dst_even + half_n;
 
     dst[dst_even] = sum;
-    dst[dst_odd] = fr_mul(diff, w);
+    if (twiddle_idx == 0) {
+        dst[dst_odd] = diff;
+    } else {
+        Fr w = twiddles_inv[twiddle_idx];
+        dst[dst_odd] = fr_mul(diff, w);
+    }
 }
 
 // Fused inverse for shared-memory stages
@@ -362,10 +387,13 @@ kernel void fft_stockham_inv_fused(
 
         Fr sum = fr_add(a, b);
         Fr diff = fr_sub(a, b);
-        Fr w = twiddles_inv[twiddle_idx];
-
         dst_buf[i] = sum;
-        dst_buf[j] = fr_mul(diff, w);
+        if (twiddle_idx == 0) {
+            dst_buf[j] = diff;
+        } else {
+            Fr w = twiddles_inv[twiddle_idx];
+            dst_buf[j] = fr_mul(diff, w);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -404,11 +432,15 @@ kernel void fft_dit_butterfly(
 
     Fr a = data[i];
     Fr b = data[j];
-    Fr w = twiddles[twiddle_idx];
-    Fr wb = fr_mul(w, b);
-
-    data[i] = fr_add(a, wb);
-    data[j] = fr_sub(a, wb);
+    if (twiddle_idx == 0) {
+        data[i] = fr_add(a, b);
+        data[j] = fr_sub(a, b);
+    } else {
+        Fr w = twiddles[twiddle_idx];
+        Fr wb = fr_mul(w, b);
+        data[i] = fr_add(a, wb);
+        data[j] = fr_sub(a, wb);
+    }
 }
 
 // Inverse DIF: a' = a + b, b' = (a - b) * w_inv
@@ -436,10 +468,13 @@ kernel void fft_dif_butterfly(
 
     Fr sum = fr_add(a, b);
     Fr diff = fr_sub(a, b);
-    Fr w = twiddles_inv[twiddle_idx];
-
     data[i] = sum;
-    data[j] = fr_mul(diff, w);
+    if (twiddle_idx == 0) {
+        data[j] = diff;
+    } else {
+        Fr w = twiddles_inv[twiddle_idx];
+        data[j] = fr_mul(diff, w);
+    }
 }
 
 // ============================================================================

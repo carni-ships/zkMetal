@@ -11,7 +11,9 @@
 
 #include "NeonFieldOps.h"
 #include <arm_neon.h>
+#include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
 
 // ============================================================
 // BabyBear constants
@@ -363,5 +365,429 @@ void packed_bb_ntt_butterfly(uint32_t *a_arr, uint32_t *b_arr,
         uint32_t sum = old_a + tb;
         a_arr[i] = sum >= BB_P ? sum - BB_P : sum;
         b_arr[i] = old_a >= tb ? old_a - tb : old_a + BB_P - tb;
+    }
+}
+
+// ============================================================
+// BabyBear DIT butterfly: (u, v) -> (u + tw*v, u - tw*v)
+// Data in Montgomery form; twiddles has halfBlock entries.
+// ============================================================
+
+void packed_bb_butterfly_dit(uint32_t *data, int halfBlock, int nBlocks,
+                              const uint32_t *twiddles) {
+    int32x4_t p_inv = vdupq_n_s32(BB_P_INV_S);
+    int32x4_t p_vec = vdupq_n_s32(BB_P_S);
+
+    for (int bk = 0; bk < nBlocks; bk++) {
+        int base = bk * (halfBlock << 1);
+        int j = 0;
+        for (; j + 3 < halfBlock; j += 4) {
+            int32x4_t tw_vec = vld1q_s32((const int32_t *)&twiddles[j]);
+            int32x4_t u = vld1q_s32((const int32_t *)&data[base + j]);
+            int32x4_t v_raw = vld1q_s32((const int32_t *)&data[base + j + halfBlock]);
+
+            // tw * v (Montgomery)
+            int32x4_t prod_lo = vmulq_s32(tw_vec, v_raw);
+            int32x4_t q = vmulq_s32(prod_lo, p_inv);
+            int32x4_t ab_hi = vqdmulhq_s32(tw_vec, v_raw);
+            int32x4_t qp_hi = vqdmulhq_s32(q, p_vec);
+            int32x4_t v = vhsubq_s32(ab_hi, qp_hi);
+            int32x4_t mask = vshrq_n_s32(v, 31);
+            v = vaddq_s32(v, vandq_s32(mask, p_vec));
+
+            // u + v mod p
+            int32x4_t sum = vaddq_s32(u, v);
+            int32x4_t s_red = vsubq_s32(sum, p_vec);
+            int32x4_t s_mask = vshrq_n_s32(s_red, 31);
+            sum = vbslq_s32(vreinterpretq_u32_s32(s_mask), sum, s_red);
+
+            // u - v mod p
+            int32x4_t diff = vsubq_s32(u, v);
+            int32x4_t d_mask = vshrq_n_s32(diff, 31);
+            diff = vaddq_s32(diff, vandq_s32(d_mask, p_vec));
+
+            vst1q_s32((int32_t *)&data[base + j], sum);
+            vst1q_s32((int32_t *)&data[base + j + halfBlock], diff);
+        }
+        // Scalar tail
+        for (; j < halfBlock; j++) {
+            uint32_t u_s = data[base + j];
+            uint64_t prod = (uint64_t)twiddles[j] * data[base + j + halfBlock];
+            uint32_t lo = (uint32_t)prod;
+            uint32_t qq = lo * BB_P_INV;
+            int64_t t = (int64_t)prod - (int64_t)qq * (int64_t)BB_P;
+            int32_t rr = (int32_t)(t >> 32);
+            uint32_t v_s = rr < 0 ? (uint32_t)(rr + BB_P_S) : (uint32_t)rr;
+            uint32_t s = u_s + v_s;
+            data[base + j] = s >= BB_P ? s - BB_P : s;
+            data[base + j + halfBlock] = u_s >= v_s ? u_s - v_s : u_s + BB_P - v_s;
+        }
+    }
+}
+
+// ============================================================
+// BabyBear DIF butterfly: (a, b) -> (a + b, (a - b)*tw)
+// ============================================================
+
+void packed_bb_butterfly_dif(uint32_t *data, int halfBlock, int nBlocks,
+                              const uint32_t *twiddles) {
+    int32x4_t p_inv = vdupq_n_s32(BB_P_INV_S);
+    int32x4_t p_vec = vdupq_n_s32(BB_P_S);
+
+    for (int bk = 0; bk < nBlocks; bk++) {
+        int base = bk * (halfBlock << 1);
+        int j = 0;
+        for (; j + 3 < halfBlock; j += 4) {
+            int32x4_t a = vld1q_s32((const int32_t *)&data[base + j]);
+            int32x4_t b = vld1q_s32((const int32_t *)&data[base + j + halfBlock]);
+            int32x4_t tw_vec = vld1q_s32((const int32_t *)&twiddles[j]);
+
+            // sum = a + b mod p
+            int32x4_t sum = vaddq_s32(a, b);
+            int32x4_t s_red = vsubq_s32(sum, p_vec);
+            int32x4_t s_mask = vshrq_n_s32(s_red, 31);
+            sum = vbslq_s32(vreinterpretq_u32_s32(s_mask), sum, s_red);
+
+            // diff = a - b mod p
+            int32x4_t diff = vsubq_s32(a, b);
+            int32x4_t d_mask = vshrq_n_s32(diff, 31);
+            diff = vaddq_s32(diff, vandq_s32(d_mask, p_vec));
+
+            // diff * tw (Montgomery)
+            int32x4_t prod_lo = vmulq_s32(diff, tw_vec);
+            int32x4_t q = vmulq_s32(prod_lo, p_inv);
+            int32x4_t ab_hi = vqdmulhq_s32(diff, tw_vec);
+            int32x4_t qp_hi = vqdmulhq_s32(q, p_vec);
+            int32x4_t r = vhsubq_s32(ab_hi, qp_hi);
+            int32x4_t mask = vshrq_n_s32(r, 31);
+            r = vaddq_s32(r, vandq_s32(mask, p_vec));
+
+            vst1q_s32((int32_t *)&data[base + j], sum);
+            vst1q_s32((int32_t *)&data[base + j + halfBlock], r);
+        }
+        for (; j < halfBlock; j++) {
+            uint32_t av = data[base + j];
+            uint32_t bv = data[base + j + halfBlock];
+            uint32_t s = av + bv;
+            data[base + j] = s >= BB_P ? s - BB_P : s;
+            uint32_t d = av >= bv ? av - bv : av + BB_P - bv;
+            uint64_t prod = (uint64_t)d * twiddles[j];
+            uint32_t lo = (uint32_t)prod;
+            uint32_t qq = lo * BB_P_INV;
+            int64_t t = (int64_t)prod - (int64_t)qq * (int64_t)BB_P;
+            int32_t rr = (int32_t)(t >> 32);
+            data[base + j + halfBlock] = rr < 0 ? (uint32_t)(rr + BB_P_S) : (uint32_t)rr;
+        }
+    }
+}
+
+// ============================================================
+// M31 packed butterflies
+// ============================================================
+
+void packed_m31_butterfly_dit(uint32_t *data, int halfBlock, int nBlocks,
+                              const uint32_t *twiddles) {
+    for (int bk = 0; bk < nBlocks; bk++) {
+        int base = bk * (halfBlock << 1);
+        int j = 0;
+        for (; j + 3 < halfBlock; j += 4) {
+            uint32x4_t u = vld1q_u32(data + base + j);
+            uint32x4_t v = vld1q_u32(data + base + j + halfBlock);
+            uint32x4_t tw = vld1q_u32(twiddles + j);
+            uint32x4_t bw = packed_m31_mul(v, tw);
+            vst1q_u32(data + base + j, packed_m31_add(u, bw));
+            vst1q_u32(data + base + j + halfBlock, packed_m31_sub(u, bw));
+        }
+        for (; j < halfBlock; j++) {
+            uint32_t u = data[base + j];
+            uint64_t prod = (uint64_t)data[base + j + halfBlock] * twiddles[j];
+            uint32_t lo = (uint32_t)(prod & M31_P);
+            uint32_t hi = (uint32_t)(prod >> 31);
+            uint32_t r = lo + hi;
+            r = (r >> 31) + (r & M31_P);
+            if (r >= M31_P) r -= M31_P;
+            uint32_t s = u + r;
+            if (s >= M31_P) s -= M31_P;
+            data[base + j] = s;
+            data[base + j + halfBlock] = u >= r ? u - r : u + M31_P - r;
+        }
+    }
+}
+
+void packed_m31_butterfly_dif(uint32_t *data, int halfBlock, int nBlocks,
+                              const uint32_t *twiddles) {
+    for (int bk = 0; bk < nBlocks; bk++) {
+        int base = bk * (halfBlock << 1);
+        int j = 0;
+        for (; j + 3 < halfBlock; j += 4) {
+            uint32x4_t a = vld1q_u32(data + base + j);
+            uint32x4_t b = vld1q_u32(data + base + j + halfBlock);
+            uint32x4_t tw = vld1q_u32(twiddles + j);
+            vst1q_u32(data + base + j, packed_m31_add(a, b));
+            vst1q_u32(data + base + j + halfBlock, packed_m31_mul(packed_m31_sub(a, b), tw));
+        }
+        for (; j < halfBlock; j++) {
+            uint32_t a = data[base + j];
+            uint32_t b = data[base + j + halfBlock];
+            uint32_t s = a + b;
+            if (s >= M31_P) s -= M31_P;
+            data[base + j] = s;
+            uint32_t d = a >= b ? a - b : a + M31_P - b;
+            uint64_t prod = (uint64_t)d * twiddles[j];
+            uint32_t lo = (uint32_t)(prod & M31_P);
+            uint32_t hi = (uint32_t)(prod >> 31);
+            uint32_t r = lo + hi;
+            r = (r >> 31) + (r & M31_P);
+            if (r >= M31_P) r -= M31_P;
+            data[base + j + halfBlock] = r;
+        }
+    }
+}
+
+// ============================================================
+// BabyBear packed NTT — scalar helpers for twiddle generation
+// ============================================================
+
+#define BB_ROOT_2_27  440564289u    // primitive 2^27-th root of unity
+
+static inline uint32_t psf_plain_mul(uint32_t a, uint32_t b) {
+    return (uint32_t)((uint64_t)a * b % BB_P);
+}
+
+static inline uint32_t psf_plain_pow(uint32_t base, uint32_t exp) {
+    uint32_t r = 1, b = base;
+    while (exp > 0) {
+        if (exp & 1) r = psf_plain_mul(r, b);
+        b = psf_plain_mul(b, b);
+        exp >>= 1;
+    }
+    return r;
+}
+
+static inline uint32_t psf_monty_reduce64(uint64_t x) {
+    uint32_t lo = (uint32_t)x;
+    uint32_t q = lo * BB_P_INV;
+    int64_t t = (int64_t)x - (int64_t)q * (int64_t)BB_P;
+    int32_t r = (int32_t)(t >> 32);
+    return r < 0 ? (uint32_t)(r + BB_P_S) : (uint32_t)r;
+}
+
+static inline uint32_t psf_to_monty(uint32_t a) {
+    return psf_monty_reduce64((uint64_t)a * BB_R2_MOD_P);
+}
+
+static inline uint32_t psf_monty_mul(uint32_t a, uint32_t b) {
+    return psf_monty_reduce64((uint64_t)a * (uint64_t)b);
+}
+
+static inline uint32_t psf_monty_pow(uint32_t base, uint32_t exp) {
+    uint32_t result = psf_to_monty(1);
+    uint32_t b = base;
+    while (exp > 0) {
+        if (exp & 1) result = psf_monty_mul(result, b);
+        b = psf_monty_mul(b, b);
+        exp >>= 1;
+    }
+    return result;
+}
+
+// ============================================================
+// BabyBear packed NTT — twiddle cache + full NTT
+// ============================================================
+
+typedef struct {
+    uint32_t *fwd;
+    uint32_t *inv;
+    int logN;
+} PsfTwiddles;
+
+static PsfTwiddles psf_tw_cache[28] = {{0}};
+static pthread_mutex_t psf_tw_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void psf_ensure_twiddles(int logN) {
+    if (psf_tw_cache[logN].fwd) return;
+
+    pthread_mutex_lock(&psf_tw_lock);
+    if (psf_tw_cache[logN].fwd) { pthread_mutex_unlock(&psf_tw_lock); return; }
+
+    int n = 1 << logN;
+
+    uint32_t omega_plain = BB_ROOT_2_27;
+    for (int i = 0; i < 27 - logN; i++)
+        omega_plain = psf_plain_mul(omega_plain, omega_plain);
+    uint32_t omega_mont = psf_to_monty(omega_plain);
+
+    uint32_t omega_inv_plain = psf_plain_pow(omega_plain, BB_P - 2);
+    uint32_t omega_inv_mont = psf_to_monty(omega_inv_plain);
+
+    uint32_t *fwd = (uint32_t *)malloc((size_t)(n - 1) * sizeof(uint32_t));
+    uint32_t *inv = (uint32_t *)malloc((size_t)(n - 1) * sizeof(uint32_t));
+
+    uint32_t one_mont = psf_to_monty(1);
+
+    for (int s = 0; s < logN; s++) {
+        int halfBlock = 1 << s;
+        int offset = halfBlock - 1;
+        uint32_t w_m = psf_monty_pow(omega_mont, (uint32_t)(n >> (s + 1)));
+        uint32_t w_m_inv = psf_monty_pow(omega_inv_mont, (uint32_t)(n >> (s + 1)));
+        uint32_t w = one_mont, wi = one_mont;
+        for (int j = 0; j < halfBlock; j++) {
+            fwd[offset + j] = w;
+            inv[offset + j] = wi;
+            w = psf_monty_mul(w, w_m);
+            wi = psf_monty_mul(wi, w_m_inv);
+        }
+    }
+
+    psf_tw_cache[logN].fwd = fwd;
+    psf_tw_cache[logN].inv = inv;
+    psf_tw_cache[logN].logN = logN;
+    pthread_mutex_unlock(&psf_tw_lock);
+}
+
+static void psf_bit_reverse(uint32_t *data, int logN) {
+    int n = 1 << logN;
+    for (int i = 1, j = 0; i < n; i++) {
+        int bit = n >> 1;
+        for (; j & bit; bit >>= 1)
+            j ^= bit;
+        j ^= bit;
+        if (i < j) {
+            uint32_t tmp = data[i];
+            data[i] = data[j];
+            data[j] = tmp;
+        }
+    }
+}
+
+// Helper: NEON Montgomery multiply and store
+static inline void psf_neon_monty_mul_store(const int32_t *src, int32x4_t mul_vec,
+                                             int32x4_t p_inv, int32x4_t p_vec,
+                                             int32_t *dst) {
+    int32x4_t v = vld1q_s32(src);
+    int32x4_t prod_lo = vmulq_s32(v, mul_vec);
+    int32x4_t q = vmulq_s32(prod_lo, p_inv);
+    int32x4_t ab_hi = vqdmulhq_s32(v, mul_vec);
+    int32x4_t qp_hi = vqdmulhq_s32(q, p_vec);
+    int32x4_t r = vhsubq_s32(ab_hi, qp_hi);
+    int32x4_t mask = vshrq_n_s32(r, 31);
+    r = vaddq_s32(r, vandq_s32(mask, p_vec));
+    vst1q_s32(dst, r);
+}
+
+void packed_bb_ntt(uint32_t *data, int logN) {
+    if (logN <= 0) return;
+    int n = 1 << logN;
+
+    psf_ensure_twiddles(logN);
+    const uint32_t *tw = psf_tw_cache[logN].fwd;
+
+    // Convert to Montgomery form
+    {
+        int32x4_t r2_vec = vdupq_n_s32((int32_t)BB_R2_MOD_P);
+        int32x4_t p_inv = vdupq_n_s32(BB_P_INV_S);
+        int32x4_t p_vec = vdupq_n_s32(BB_P_S);
+        int i = 0;
+        for (; i + 3 < n; i += 4)
+            psf_neon_monty_mul_store((const int32_t *)&data[i], r2_vec, p_inv, p_vec, (int32_t *)&data[i]);
+        for (; i < n; i++)
+            data[i] = psf_monty_reduce64((uint64_t)data[i] * BB_R2_MOD_P);
+    }
+
+    psf_bit_reverse(data, logN);
+
+    // Butterfly stages (Cooley-Tukey DIT)
+    for (int s = 0; s < logN; s++) {
+        int halfBlock = 1 << s;
+        int blockSize = halfBlock << 1;
+        int nBlocks = n / blockSize;
+        int twOffset = halfBlock - 1;
+
+        if (halfBlock >= 4) {
+            packed_bb_butterfly_dit(data, halfBlock, nBlocks, tw + twOffset);
+        } else {
+            for (int bk = 0; bk < nBlocks; bk++) {
+                int base = bk * blockSize;
+                for (int j = 0; j < halfBlock; j++) {
+                    uint32_t u = data[base + j];
+                    uint32_t v = psf_monty_mul(tw[twOffset + j], data[base + j + halfBlock]);
+                    uint32_t sum = u + v;
+                    data[base + j] = sum >= BB_P ? sum - BB_P : sum;
+                    data[base + j + halfBlock] = u >= v ? u - v : u + BB_P - v;
+                }
+            }
+        }
+    }
+
+    // Convert from Montgomery form
+    {
+        int32x4_t ones = vdupq_n_s32(1);
+        int32x4_t p_inv = vdupq_n_s32(BB_P_INV_S);
+        int32x4_t p_vec = vdupq_n_s32(BB_P_S);
+        int i = 0;
+        for (; i + 3 < n; i += 4)
+            psf_neon_monty_mul_store((const int32_t *)&data[i], ones, p_inv, p_vec, (int32_t *)&data[i]);
+        for (; i < n; i++)
+            data[i] = psf_monty_reduce64((uint64_t)data[i]);
+    }
+}
+
+void packed_bb_intt(uint32_t *data, int logN) {
+    if (logN <= 0) return;
+    int n = 1 << logN;
+
+    psf_ensure_twiddles(logN);
+    const uint32_t *tw = psf_tw_cache[logN].inv;
+
+    // Convert to Montgomery form
+    {
+        int32x4_t r2_vec = vdupq_n_s32((int32_t)BB_R2_MOD_P);
+        int32x4_t p_inv = vdupq_n_s32(BB_P_INV_S);
+        int32x4_t p_vec = vdupq_n_s32(BB_P_S);
+        int i = 0;
+        for (; i + 3 < n; i += 4)
+            psf_neon_monty_mul_store((const int32_t *)&data[i], r2_vec, p_inv, p_vec, (int32_t *)&data[i]);
+        for (; i < n; i++)
+            data[i] = psf_monty_reduce64((uint64_t)data[i] * BB_R2_MOD_P);
+    }
+
+    // DIF stages (Gentleman-Sande, top-down)
+    for (int si = 0; si < logN; si++) {
+        int s = logN - 1 - si;
+        int halfBlock = 1 << s;
+        int blockSize = halfBlock << 1;
+        int nBlocks = n / blockSize;
+        int twOffset = halfBlock - 1;
+
+        if (halfBlock >= 4) {
+            packed_bb_butterfly_dif(data, halfBlock, nBlocks, tw + twOffset);
+        } else {
+            for (int bk = 0; bk < nBlocks; bk++) {
+                int base = bk * blockSize;
+                for (int j = 0; j < halfBlock; j++) {
+                    uint32_t a = data[base + j];
+                    uint32_t b = data[base + j + halfBlock];
+                    uint32_t sum = a + b;
+                    data[base + j] = sum >= BB_P ? sum - BB_P : sum;
+                    uint32_t d = a >= b ? a - b : a + BB_P - b;
+                    data[base + j + halfBlock] = psf_monty_mul(d, tw[twOffset + j]);
+                }
+            }
+        }
+    }
+
+    psf_bit_reverse(data, logN);
+
+    // Scale by 1/n and convert from Montgomery form
+    {
+        uint32_t n_inv_plain = psf_plain_pow((uint32_t)n, BB_P - 2);
+        int32x4_t n_inv_vec = vdupq_n_s32((int32_t)n_inv_plain);
+        int32x4_t p_inv = vdupq_n_s32(BB_P_INV_S);
+        int32x4_t p_vec = vdupq_n_s32(BB_P_S);
+        int i = 0;
+        for (; i + 3 < n; i += 4)
+            psf_neon_monty_mul_store((const int32_t *)&data[i], n_inv_vec, p_inv, p_vec, (int32_t *)&data[i]);
+        for (; i < n; i++)
+            data[i] = psf_monty_reduce64((uint64_t)data[i] * n_inv_plain);
     }
 }

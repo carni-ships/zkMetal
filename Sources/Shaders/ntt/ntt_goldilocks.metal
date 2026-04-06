@@ -23,11 +23,15 @@ kernel void gl_ntt_butterfly(
 
     Gl a = data[i];
     Gl b = data[j];
-    Gl w = twiddles[twiddle_idx];
-    Gl wb = gl_mul(w, b);
-
-    data[i] = gl_add(a, wb);
-    data[j] = gl_sub(a, wb);
+    if (twiddle_idx == 0) {
+        data[i] = gl_add(a, b);
+        data[j] = gl_sub(a, b);
+    } else {
+        Gl w = twiddles[twiddle_idx];
+        Gl wb = gl_mul(w, b);
+        data[i] = gl_add(a, wb);
+        data[j] = gl_sub(a, wb);
+    }
 }
 
 kernel void gl_intt_butterfly(
@@ -52,10 +56,13 @@ kernel void gl_intt_butterfly(
     Gl b = data[j];
     Gl sum = gl_add(a, b);
     Gl diff = gl_sub(a, b);
-    Gl w = twiddles_inv[twiddle_idx];
-
     data[i] = sum;
-    data[j] = gl_mul(diff, w);
+    if (twiddle_idx == 0) {
+        data[j] = diff;
+    } else {
+        Gl w = twiddles_inv[twiddle_idx];
+        data[j] = gl_mul(diff, w);
+    }
 }
 
 // Radix-4 DIT butterfly: processes 2 stages at once, halving global memory passes.
@@ -88,25 +95,26 @@ kernel void gl_ntt_butterfly_radix4(
 
     // Stage s twiddle: same for (a0,a1) and (a2,a3)
     uint tw_s = local_idx * (n / (2 * h));
-    Gl ws = twiddles[tw_s];
 
     // Stage s+1 twiddles
     uint tw_s1_lo = local_idx * (n / block4);
     uint tw_s1_hi = (local_idx + h) * (n / block4);
 
     // Stage s
-    Gl ws_a1 = gl_mul(ws, a1);
-    Gl ws_a3 = gl_mul(ws, a3);
-    Gl b0 = gl_add(a0, ws_a1);
-    Gl b1 = gl_sub(a0, ws_a1);
-    Gl b2 = gl_add(a2, ws_a3);
-    Gl b3 = gl_sub(a2, ws_a3);
+    Gl b0, b1, b2, b3;
+    if (tw_s == 0) {
+        b0 = gl_add(a0, a1); b1 = gl_sub(a0, a1);
+        b2 = gl_add(a2, a3); b3 = gl_sub(a2, a3);
+    } else {
+        Gl ws = twiddles[tw_s];
+        Gl ws_a1 = gl_mul(ws, a1); Gl ws_a3 = gl_mul(ws, a3);
+        b0 = gl_add(a0, ws_a1); b1 = gl_sub(a0, ws_a1);
+        b2 = gl_add(a2, ws_a3); b3 = gl_sub(a2, ws_a3);
+    }
 
     // Stage s+1
-    Gl w_lo = twiddles[tw_s1_lo];
-    Gl w_hi = twiddles[tw_s1_hi];
-    Gl wb2 = gl_mul(w_lo, b2);
-    Gl wb3 = gl_mul(w_hi, b3);
+    Gl wb2 = (tw_s1_lo == 0) ? b2 : gl_mul(twiddles[tw_s1_lo], b2);
+    Gl wb3 = (tw_s1_hi == 0) ? b3 : gl_mul(twiddles[tw_s1_hi], b3);
 
     data[i0] = gl_add(b0, wb2);
     data[i2] = gl_sub(b0, wb2);
@@ -149,28 +157,23 @@ kernel void gl_intt_butterfly_radix4(
     Gl ws_lo = twiddles_inv[tw_s_lo];
     Gl ws_hi = twiddles_inv[tw_s_hi];
 
-    Gl sum02 = gl_add(a0, a2);
+    Gl b0 = gl_add(a0, a2);
     Gl diff02 = gl_sub(a0, a2);
-    Gl b0 = sum02;
-    Gl b2 = gl_mul(diff02, ws_lo);
-    Gl sum13 = gl_add(a1, a3);
+    Gl b2 = (tw_s_lo == 0) ? diff02 : gl_mul(diff02, ws_lo);
+    Gl b1 = gl_add(a1, a3);
     Gl diff13 = gl_sub(a1, a3);
-    Gl b1 = sum13;
-    Gl b3 = gl_mul(diff13, ws_hi);
+    Gl b3 = (tw_s_hi == 0) ? diff13 : gl_mul(diff13, ws_hi);
 
     // Stage s-1 (DIF): pairs (b0,b1) and (b2,b3)
     uint tw_s1 = local_idx * (n / (2 * h_lo));
-    Gl w_s1 = twiddles_inv[tw_s1];
 
-    Gl sum01 = gl_add(b0, b1);
     Gl diff01 = gl_sub(b0, b1);
-    Gl sum23 = gl_add(b2, b3);
     Gl diff23 = gl_sub(b2, b3);
 
-    data[i0] = sum01;
-    data[i1] = gl_mul(diff01, w_s1);
-    data[i2] = sum23;
-    data[i3] = gl_mul(diff23, w_s1);
+    data[i0] = gl_add(b0, b1);
+    data[i1] = (tw_s1 == 0) ? diff01 : gl_mul(diff01, twiddles_inv[tw_s1]);
+    data[i2] = gl_add(b2, b3);
+    data[i3] = (tw_s1 == 0) ? diff23 : gl_mul(diff23, twiddles_inv[tw_s1]);
 }
 
 kernel void gl_ntt_scale(
@@ -236,10 +239,15 @@ kernel void gl_ntt_butterfly_fused(
 
         Gl a = shared[i];
         Gl b = shared[j];
-        Gl w = twiddles[twiddle_idx];
-        Gl wb = gl_mul(w, b);
-        shared[i] = gl_add(a, wb);
-        shared[j] = gl_sub(a, wb);
+        if (twiddle_idx == 0) {
+            shared[i] = gl_add(a, b);
+            shared[j] = gl_sub(a, b);
+        } else {
+            Gl w = twiddles[twiddle_idx];
+            Gl wb = gl_mul(w, b);
+            shared[i] = gl_add(a, wb);
+            shared[j] = gl_sub(a, wb);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -291,10 +299,15 @@ kernel void gl_ntt_butterfly_fused_bitrev(
 
         Gl a = shared[i];
         Gl b = shared[j];
-        Gl w = twiddles[twiddle_idx];
-        Gl wb = gl_mul(w, b);
-        shared[i] = gl_add(a, wb);
-        shared[j] = gl_sub(a, wb);
+        if (twiddle_idx == 0) {
+            shared[i] = gl_add(a, b);
+            shared[j] = gl_sub(a, b);
+        } else {
+            Gl w = twiddles[twiddle_idx];
+            Gl wb = gl_mul(w, b);
+            shared[i] = gl_add(a, wb);
+            shared[j] = gl_sub(a, wb);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -351,10 +364,15 @@ kernel void gl_ntt_column_fused(
 
         Gl a = shared_data[i];
         Gl b = shared_data[j];
-        Gl w = twiddles[twiddle_idx];
-        Gl wb = gl_mul(w, b);
-        shared_data[i] = gl_add(a, wb);
-        shared_data[j] = gl_sub(a, wb);
+        if (twiddle_idx == 0) {
+            shared_data[i] = gl_add(a, b);
+            shared_data[j] = gl_sub(a, b);
+        } else {
+            Gl w = twiddles[twiddle_idx];
+            Gl wb = gl_mul(w, b);
+            shared_data[i] = gl_add(a, wb);
+            shared_data[j] = gl_sub(a, wb);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -400,10 +418,15 @@ kernel void gl_ntt_row_fused(
 
         Gl a = shared_data[i];
         Gl b = shared_data[j];
-        Gl w = twiddles[twiddle_idx];
-        Gl wb = gl_mul(w, b);
-        shared_data[i] = gl_add(a, wb);
-        shared_data[j] = gl_sub(a, wb);
+        if (twiddle_idx == 0) {
+            shared_data[i] = gl_add(a, b);
+            shared_data[j] = gl_sub(a, b);
+        } else {
+            Gl w = twiddles[twiddle_idx];
+            Gl wb = gl_mul(w, b);
+            shared_data[i] = gl_add(a, wb);
+            shared_data[j] = gl_sub(a, wb);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -459,10 +482,15 @@ kernel void gl_ntt_row_fused_twiddle(
 
         Gl a = shared_data[i];
         Gl b = shared_data[j];
-        Gl w = twiddles[twiddle_idx];
-        Gl wb = gl_mul(w, b);
-        shared_data[i] = gl_add(a, wb);
-        shared_data[j] = gl_sub(a, wb);
+        if (twiddle_idx == 0) {
+            shared_data[i] = gl_add(a, b);
+            shared_data[j] = gl_sub(a, b);
+        } else {
+            Gl w = twiddles[twiddle_idx];
+            Gl wb = gl_mul(w, b);
+            shared_data[i] = gl_add(a, wb);
+            shared_data[j] = gl_sub(a, wb);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -503,9 +531,13 @@ kernel void gl_intt_row_fused_twiddle(
         Gl b = shared_data[j];
         Gl sum = gl_add(a, b);
         Gl diff = gl_sub(a, b);
-        Gl w = twiddles_inv[twiddle_idx];
         shared_data[i] = sum;
-        shared_data[j] = gl_mul(diff, w);
+        if (twiddle_idx == 0) {
+            shared_data[j] = diff;
+        } else {
+            Gl w = twiddles_inv[twiddle_idx];
+            shared_data[j] = gl_mul(diff, w);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -597,9 +629,13 @@ kernel void gl_intt_column_fused_scale(
         Gl b = shared_data[j];
         Gl sum = gl_add(a, b);
         Gl diff = gl_sub(a, b);
-        Gl w = twiddles_inv[twiddle_idx];
         shared_data[i] = sum;
-        shared_data[j] = gl_mul(diff, w);
+        if (twiddle_idx == 0) {
+            shared_data[j] = diff;
+        } else {
+            Gl w = twiddles_inv[twiddle_idx];
+            shared_data[j] = gl_mul(diff, w);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -642,9 +678,13 @@ kernel void gl_intt_column_fused(
         Gl b = shared_data[j];
         Gl sum = gl_add(a, b);
         Gl diff = gl_sub(a, b);
-        Gl w = twiddles_inv[twiddle_idx];
         shared_data[i] = sum;
-        shared_data[j] = gl_mul(diff, w);
+        if (twiddle_idx == 0) {
+            shared_data[j] = diff;
+        } else {
+            Gl w = twiddles_inv[twiddle_idx];
+            shared_data[j] = gl_mul(diff, w);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -687,9 +727,13 @@ kernel void gl_intt_row_fused(
         Gl b = shared_data[j];
         Gl sum = gl_add(a, b);
         Gl diff = gl_sub(a, b);
-        Gl w = twiddles_inv[twiddle_idx];
         shared_data[i] = sum;
-        shared_data[j] = gl_mul(diff, w);
+        if (twiddle_idx == 0) {
+            shared_data[j] = diff;
+        } else {
+            Gl w = twiddles_inv[twiddle_idx];
+            shared_data[j] = gl_mul(diff, w);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 

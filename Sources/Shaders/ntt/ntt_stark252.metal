@@ -37,11 +37,15 @@ kernel void stark252_ntt_butterfly(
 
     Stark252 a = data[i];
     Stark252 b = data[j];
-    Stark252 w = twiddles[twiddle_idx];
-    Stark252 wb = stark252_mul(w, b);
-
-    data[i] = stark252_add(a, wb);
-    data[j] = stark252_sub(a, wb);
+    if (twiddle_idx == 0) {
+        data[i] = stark252_add(a, b);
+        data[j] = stark252_sub(a, b);
+    } else {
+        Stark252 w = twiddles[twiddle_idx];
+        Stark252 wb = stark252_mul(w, b);
+        data[i] = stark252_add(a, wb);
+        data[j] = stark252_sub(a, wb);
+    }
 }
 
 // --- iNTT Butterfly Kernel (Gentleman-Sande DIF) ---
@@ -74,10 +78,13 @@ kernel void stark252_intt_butterfly(
 
     Stark252 sum = stark252_add(a, b);
     Stark252 diff = stark252_sub(a, b);
-    Stark252 w = twiddles_inv[twiddle_idx];
-
     data[i] = sum;
-    data[j] = stark252_mul(diff, w);
+    if (twiddle_idx == 0) {
+        data[j] = diff;
+    } else {
+        Stark252 w = twiddles_inv[twiddle_idx];
+        data[j] = stark252_mul(diff, w);
+    }
 }
 
 // Radix-4 DIT butterfly: processes 2 stages at once for BN254.
@@ -102,18 +109,22 @@ kernel void stark252_ntt_butterfly_radix4(
     Stark252 a2 = data[base + 2 * h];
     Stark252 a3 = data[base + 3 * h];
 
-    Stark252 ws = twiddles[local_idx * (n / (2 * h))];
-    Stark252 ws_a1 = stark252_mul(ws, a1);
-    Stark252 ws_a3 = stark252_mul(ws, a3);
-    Stark252 b0 = stark252_add(a0, ws_a1);
-    Stark252 b1 = stark252_sub(a0, ws_a1);
-    Stark252 b2 = stark252_add(a2, ws_a3);
-    Stark252 b3 = stark252_sub(a2, ws_a3);
+    uint tw_s = local_idx * (n / (2 * h));
+    Stark252 b0, b1, b2, b3;
+    if (tw_s == 0) {
+        b0 = stark252_add(a0, a1); b1 = stark252_sub(a0, a1);
+        b2 = stark252_add(a2, a3); b3 = stark252_sub(a2, a3);
+    } else {
+        Stark252 ws = twiddles[tw_s];
+        Stark252 ws_a1 = stark252_mul(ws, a1); Stark252 ws_a3 = stark252_mul(ws, a3);
+        b0 = stark252_add(a0, ws_a1); b1 = stark252_sub(a0, ws_a1);
+        b2 = stark252_add(a2, ws_a3); b3 = stark252_sub(a2, ws_a3);
+    }
 
-    Stark252 w_lo = twiddles[local_idx * (n / block4)];
-    Stark252 w_hi = twiddles[(local_idx + h) * (n / block4)];
-    Stark252 wb2 = stark252_mul(w_lo, b2);
-    Stark252 wb3 = stark252_mul(w_hi, b3);
+    uint tw_lo = local_idx * (n / block4);
+    uint tw_hi = (local_idx + h) * (n / block4);
+    Stark252 wb2 = (tw_lo == 0) ? b2 : stark252_mul(twiddles[tw_lo], b2);
+    Stark252 wb3 = (tw_hi == 0) ? b3 : stark252_mul(twiddles[tw_hi], b3);
 
     data[base]         = stark252_add(b0, wb2);
     data[base + 2 * h] = stark252_sub(b0, wb2);
@@ -144,18 +155,22 @@ kernel void stark252_intt_butterfly_radix4(
     Stark252 a2 = data[base + h_hi];
     Stark252 a3 = data[base + h_hi + h_lo];
 
-    Stark252 ws_lo = twiddles_inv[local_idx * (n / block4)];
-    Stark252 ws_hi = twiddles_inv[(local_idx + h_lo) * (n / block4)];
+    uint tw_s_lo = local_idx * (n / block4);
+    uint tw_s_hi = (local_idx + h_lo) * (n / block4);
     Stark252 b0 = stark252_add(a0, a2);
-    Stark252 b2 = stark252_mul(stark252_sub(a0, a2), ws_lo);
+    Stark252 diff02 = stark252_sub(a0, a2);
+    Stark252 b2 = (tw_s_lo == 0) ? diff02 : stark252_mul(diff02, twiddles_inv[tw_s_lo]);
     Stark252 b1 = stark252_add(a1, a3);
-    Stark252 b3 = stark252_mul(stark252_sub(a1, a3), ws_hi);
+    Stark252 diff13 = stark252_sub(a1, a3);
+    Stark252 b3 = (tw_s_hi == 0) ? diff13 : stark252_mul(diff13, twiddles_inv[tw_s_hi]);
 
-    Stark252 w_s1 = twiddles_inv[local_idx * (n / (2 * h_lo))];
+    uint tw_s1 = local_idx * (n / (2 * h_lo));
+    Stark252 diff_b01 = stark252_sub(b0, b1);
+    Stark252 diff_b23 = stark252_sub(b2, b3);
     data[base]              = stark252_add(b0, b1);
-    data[base + h_lo]       = stark252_mul(stark252_sub(b0, b1), w_s1);
+    data[base + h_lo]       = (tw_s1 == 0) ? diff_b01 : stark252_mul(diff_b01, twiddles_inv[tw_s1]);
     data[base + h_hi]       = stark252_add(b2, b3);
-    data[base + h_hi + h_lo] = stark252_mul(stark252_sub(b2, b3), w_s1);
+    data[base + h_hi + h_lo] = (tw_s1 == 0) ? diff_b23 : stark252_mul(diff_b23, twiddles_inv[tw_s1]);
 }
 
 // --- Fused NTT kernel: process multiple DIT stages in threadgroup memory ---
@@ -204,11 +219,15 @@ kernel void stark252_ntt_butterfly_fused(
 
         Stark252 a = shared[i];
         Stark252 b = shared[j];
-        Stark252 w = twiddles[twiddle_idx];
-        Stark252 wb = stark252_mul(w, b);
-
-        shared[i] = stark252_add(a, wb);
-        shared[j] = stark252_sub(a, wb);
+        if (twiddle_idx == 0) {
+            shared[i] = stark252_add(a, b);
+            shared[j] = stark252_sub(a, b);
+        } else {
+            Stark252 w = twiddles[twiddle_idx];
+            Stark252 wb = stark252_mul(w, b);
+            shared[i] = stark252_add(a, wb);
+            shared[j] = stark252_sub(a, wb);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -268,11 +287,15 @@ kernel void stark252_ntt_butterfly_fused_bitrev(
 
         Stark252 a = shared[i];
         Stark252 b = shared[j];
-        Stark252 w = twiddles[twiddle_idx];
-        Stark252 wb = stark252_mul(w, b);
-
-        shared[i] = stark252_add(a, wb);
-        shared[j] = stark252_sub(a, wb);
+        if (twiddle_idx == 0) {
+            shared[i] = stark252_add(a, b);
+            shared[j] = stark252_sub(a, b);
+        } else {
+            Stark252 w = twiddles[twiddle_idx];
+            Stark252 wb = stark252_mul(w, b);
+            shared[i] = stark252_add(a, wb);
+            shared[j] = stark252_sub(a, wb);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -323,10 +346,13 @@ kernel void stark252_intt_butterfly_fused(
         Stark252 b = shared[j];
         Stark252 sum = stark252_add(a, b);
         Stark252 diff = stark252_sub(a, b);
-        Stark252 w = twiddles_inv[twiddle_idx];
-
         shared[i] = sum;
-        shared[j] = stark252_mul(diff, w);
+        if (twiddle_idx == 0) {
+            shared[j] = diff;
+        } else {
+            Stark252 w = twiddles_inv[twiddle_idx];
+            shared[j] = stark252_mul(diff, w);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -452,11 +478,15 @@ kernel void stark252_ntt_column_fused(
 
         Stark252 a = shared[i];
         Stark252 b = shared[j];
-        Stark252 w = twiddles[twiddle_idx];
-        Stark252 wb = stark252_mul(w, b);
-
-        shared[i] = stark252_add(a, wb);
-        shared[j] = stark252_sub(a, wb);
+        if (twiddle_idx == 0) {
+            shared[i] = stark252_add(a, b);
+            shared[j] = stark252_sub(a, b);
+        } else {
+            Stark252 w = twiddles[twiddle_idx];
+            Stark252 wb = stark252_mul(w, b);
+            shared[i] = stark252_add(a, wb);
+            shared[j] = stark252_sub(a, wb);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -509,11 +539,15 @@ kernel void stark252_ntt_row_fused(
 
         Stark252 a = shared[i];
         Stark252 b = shared[j];
-        Stark252 w = twiddles[twiddle_idx];
-        Stark252 wb = stark252_mul(w, b);
-
-        shared[i] = stark252_add(a, wb);
-        shared[j] = stark252_sub(a, wb);
+        if (twiddle_idx == 0) {
+            shared[i] = stark252_add(a, b);
+            shared[j] = stark252_sub(a, b);
+        } else {
+            Stark252 w = twiddles[twiddle_idx];
+            Stark252 wb = stark252_mul(w, b);
+            shared[i] = stark252_add(a, wb);
+            shared[j] = stark252_sub(a, wb);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -576,11 +610,15 @@ kernel void stark252_ntt_row_fused_twiddle(
 
         Stark252 a = shared[i];
         Stark252 b = shared[j];
-        Stark252 w = twiddles[twiddle_idx];
-        Stark252 wb = stark252_mul(w, b);
-
-        shared[i] = stark252_add(a, wb);
-        shared[j] = stark252_sub(a, wb);
+        if (twiddle_idx == 0) {
+            shared[i] = stark252_add(a, b);
+            shared[j] = stark252_sub(a, b);
+        } else {
+            Stark252 w = twiddles[twiddle_idx];
+            Stark252 wb = stark252_mul(w, b);
+            shared[i] = stark252_add(a, wb);
+            shared[j] = stark252_sub(a, wb);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -644,11 +682,15 @@ kernel void stark252_ntt_row_fused_twiddle_transpose(
 
         Stark252 a = shared[i];
         Stark252 b = shared[j];
-        Stark252 w = twiddles[twiddle_idx];
-        Stark252 wb = stark252_mul(w, b);
-
-        shared[i] = stark252_add(a, wb);
-        shared[j] = stark252_sub(a, wb);
+        if (twiddle_idx == 0) {
+            shared[i] = stark252_add(a, b);
+            shared[j] = stark252_sub(a, b);
+        } else {
+            Stark252 w = twiddles[twiddle_idx];
+            Stark252 wb = stark252_mul(w, b);
+            shared[i] = stark252_add(a, wb);
+            shared[j] = stark252_sub(a, wb);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -721,10 +763,13 @@ kernel void stark252_intt_column_fused(
         Stark252 b = shared[j];
         Stark252 sum = stark252_add(a, b);
         Stark252 diff = stark252_sub(a, b);
-        Stark252 w = twiddles_inv[twiddle_idx];
-
         shared[i] = sum;
-        shared[j] = stark252_mul(diff, w);
+        if (twiddle_idx == 0) {
+            shared[j] = diff;
+        } else {
+            Stark252 w = twiddles_inv[twiddle_idx];
+            shared[j] = stark252_mul(diff, w);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -791,10 +836,13 @@ kernel void stark252_intt_column_fused_twiddle(
         Stark252 b = shared[j];
         Stark252 sum = stark252_add(a, b);
         Stark252 diff = stark252_sub(a, b);
-        Stark252 w = twiddles_inv[twiddle_idx];
-
         shared[i] = sum;
-        shared[j] = stark252_mul(diff, w);
+        if (twiddle_idx == 0) {
+            shared[j] = diff;
+        } else {
+            Stark252 w = twiddles_inv[twiddle_idx];
+            shared[j] = stark252_mul(diff, w);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -846,10 +894,13 @@ kernel void stark252_intt_row_fused(
         Stark252 b = shared[j];
         Stark252 sum = stark252_add(a, b);
         Stark252 diff = stark252_sub(a, b);
-        Stark252 w = twiddles_inv[twiddle_idx];
-
         shared[i] = sum;
-        shared[j] = stark252_mul(diff, w);
+        if (twiddle_idx == 0) {
+            shared[j] = diff;
+        } else {
+            Stark252 w = twiddles_inv[twiddle_idx];
+            shared[j] = stark252_mul(diff, w);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -915,11 +966,15 @@ kernel void stark252_ntt_column_fused_subblock(
 
         Stark252 a = shared[i];
         Stark252 b = shared[j];
-        Stark252 w = twiddles[twiddle_idx];
-        Stark252 wb = stark252_mul(w, b);
-
-        shared[i] = stark252_add(a, wb);
-        shared[j] = stark252_sub(a, wb);
+        if (twiddle_idx == 0) {
+            shared[i] = stark252_add(a, b);
+            shared[j] = stark252_sub(a, b);
+        } else {
+            Stark252 w = twiddles[twiddle_idx];
+            Stark252 wb = stark252_mul(w, b);
+            shared[i] = stark252_add(a, wb);
+            shared[j] = stark252_sub(a, wb);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -963,11 +1018,15 @@ kernel void stark252_ntt_column_butterfly(
 
     Stark252 a = data[addr_i];
     Stark252 b = data[addr_j];
-    Stark252 w = twiddles[twiddle_idx];
-    Stark252 wb = stark252_mul(w, b);
-
-    data[addr_i] = stark252_add(a, wb);
-    data[addr_j] = stark252_sub(a, wb);
+    if (twiddle_idx == 0) {
+        data[addr_i] = stark252_add(a, b);
+        data[addr_j] = stark252_sub(a, b);
+    } else {
+        Stark252 w = twiddles[twiddle_idx];
+        Stark252 wb = stark252_mul(w, b);
+        data[addr_i] = stark252_add(a, wb);
+        data[addr_j] = stark252_sub(a, wb);
+    }
 }
 
 // Radix-4 DIT column butterfly: processes 2 stages at once (halves memory passes).
@@ -1074,10 +1133,13 @@ kernel void stark252_intt_column_butterfly(
     Stark252 b = data[addr_j];
     Stark252 sum = stark252_add(a, b);
     Stark252 diff = stark252_sub(a, b);
-    Stark252 w = twiddles_inv[twiddle_idx];
-
     data[addr_i] = sum;
-    data[addr_j] = stark252_mul(diff, w);
+    if (twiddle_idx == 0) {
+        data[addr_j] = diff;
+    } else {
+        Stark252 w = twiddles_inv[twiddle_idx];
+        data[addr_j] = stark252_mul(diff, w);
+    }
 }
 
 // Radix-4 DIF column butterfly for iNTT: processes 2 stages at once.
@@ -1191,10 +1253,13 @@ kernel void stark252_intt_column_fused_subblock(
         Stark252 b = shared[j];
         Stark252 sum = stark252_add(a, b);
         Stark252 diff = stark252_sub(a, b);
-        Stark252 w = twiddles_inv[twiddle_idx];
-
         shared[i] = sum;
-        shared[j] = stark252_mul(diff, w);
+        if (twiddle_idx == 0) {
+            shared[j] = diff;
+        } else {
+            Stark252 w = twiddles_inv[twiddle_idx];
+            shared[j] = stark252_mul(diff, w);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -1248,10 +1313,13 @@ kernel void stark252_intt_row_fused_twiddle(
         Stark252 b = shared[j];
         Stark252 sum = stark252_add(a, b);
         Stark252 diff = stark252_sub(a, b);
-        Stark252 w = twiddles_inv[twiddle_idx];
-
         shared[i] = sum;
-        shared[j] = stark252_mul(diff, w);
+        if (twiddle_idx == 0) {
+            shared[j] = diff;
+        } else {
+            Stark252 w = twiddles_inv[twiddle_idx];
+            shared[j] = stark252_mul(diff, w);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 

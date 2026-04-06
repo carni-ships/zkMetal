@@ -37,11 +37,15 @@ kernel void bls377_ntt_butterfly(
 
     Fr377 a = data[i];
     Fr377 b = data[j];
-    Fr377 w = twiddles[twiddle_idx];
-    Fr377 wb = fr377_mul(w, b);
-
-    data[i] = fr377_add(a, wb);
-    data[j] = fr377_sub(a, wb);
+    if (twiddle_idx == 0) {
+        data[i] = fr377_add(a, b);
+        data[j] = fr377_sub(a, b);
+    } else {
+        Fr377 w = twiddles[twiddle_idx];
+        Fr377 wb = fr377_mul(w, b);
+        data[i] = fr377_add(a, wb);
+        data[j] = fr377_sub(a, wb);
+    }
 }
 
 // --- iNTT Butterfly Kernel (Gentleman-Sande DIF) ---
@@ -74,10 +78,13 @@ kernel void bls377_intt_butterfly(
 
     Fr377 sum = fr377_add(a, b);
     Fr377 diff = fr377_sub(a, b);
-    Fr377 w = twiddles_inv[twiddle_idx];
-
     data[i] = sum;
-    data[j] = fr377_mul(diff, w);
+    if (twiddle_idx == 0) {
+        data[j] = diff;
+    } else {
+        Fr377 w = twiddles_inv[twiddle_idx];
+        data[j] = fr377_mul(diff, w);
+    }
 }
 
 // Radix-4 DIT butterfly: processes 2 stages at once for BN254.
@@ -102,18 +109,22 @@ kernel void bls377_ntt_butterfly_radix4(
     Fr377 a2 = data[base + 2 * h];
     Fr377 a3 = data[base + 3 * h];
 
-    Fr377 ws = twiddles[local_idx * (n / (2 * h))];
-    Fr377 ws_a1 = fr377_mul(ws, a1);
-    Fr377 ws_a3 = fr377_mul(ws, a3);
-    Fr377 b0 = fr377_add(a0, ws_a1);
-    Fr377 b1 = fr377_sub(a0, ws_a1);
-    Fr377 b2 = fr377_add(a2, ws_a3);
-    Fr377 b3 = fr377_sub(a2, ws_a3);
+    uint tw_s = local_idx * (n / (2 * h));
+    Fr377 b0, b1, b2, b3;
+    if (tw_s == 0) {
+        b0 = fr377_add(a0, a1); b1 = fr377_sub(a0, a1);
+        b2 = fr377_add(a2, a3); b3 = fr377_sub(a2, a3);
+    } else {
+        Fr377 ws = twiddles[tw_s];
+        Fr377 ws_a1 = fr377_mul(ws, a1); Fr377 ws_a3 = fr377_mul(ws, a3);
+        b0 = fr377_add(a0, ws_a1); b1 = fr377_sub(a0, ws_a1);
+        b2 = fr377_add(a2, ws_a3); b3 = fr377_sub(a2, ws_a3);
+    }
 
-    Fr377 w_lo = twiddles[local_idx * (n / block4)];
-    Fr377 w_hi = twiddles[(local_idx + h) * (n / block4)];
-    Fr377 wb2 = fr377_mul(w_lo, b2);
-    Fr377 wb3 = fr377_mul(w_hi, b3);
+    uint tw_lo = local_idx * (n / block4);
+    uint tw_hi = (local_idx + h) * (n / block4);
+    Fr377 wb2 = (tw_lo == 0) ? b2 : fr377_mul(twiddles[tw_lo], b2);
+    Fr377 wb3 = (tw_hi == 0) ? b3 : fr377_mul(twiddles[tw_hi], b3);
 
     data[base]         = fr377_add(b0, wb2);
     data[base + 2 * h] = fr377_sub(b0, wb2);
@@ -144,18 +155,22 @@ kernel void bls377_intt_butterfly_radix4(
     Fr377 a2 = data[base + h_hi];
     Fr377 a3 = data[base + h_hi + h_lo];
 
-    Fr377 ws_lo = twiddles_inv[local_idx * (n / block4)];
-    Fr377 ws_hi = twiddles_inv[(local_idx + h_lo) * (n / block4)];
+    uint tw_s_lo = local_idx * (n / block4);
+    uint tw_s_hi = (local_idx + h_lo) * (n / block4);
     Fr377 b0 = fr377_add(a0, a2);
-    Fr377 b2 = fr377_mul(fr377_sub(a0, a2), ws_lo);
+    Fr377 diff02 = fr377_sub(a0, a2);
+    Fr377 b2 = (tw_s_lo == 0) ? diff02 : fr377_mul(diff02, twiddles_inv[tw_s_lo]);
     Fr377 b1 = fr377_add(a1, a3);
-    Fr377 b3 = fr377_mul(fr377_sub(a1, a3), ws_hi);
+    Fr377 diff13 = fr377_sub(a1, a3);
+    Fr377 b3 = (tw_s_hi == 0) ? diff13 : fr377_mul(diff13, twiddles_inv[tw_s_hi]);
 
-    Fr377 w_s1 = twiddles_inv[local_idx * (n / (2 * h_lo))];
+    uint tw_s1 = local_idx * (n / (2 * h_lo));
+    Fr377 diff_b01 = fr377_sub(b0, b1);
+    Fr377 diff_b23 = fr377_sub(b2, b3);
     data[base]              = fr377_add(b0, b1);
-    data[base + h_lo]       = fr377_mul(fr377_sub(b0, b1), w_s1);
+    data[base + h_lo]       = (tw_s1 == 0) ? diff_b01 : fr377_mul(diff_b01, twiddles_inv[tw_s1]);
     data[base + h_hi]       = fr377_add(b2, b3);
-    data[base + h_hi + h_lo] = fr377_mul(fr377_sub(b2, b3), w_s1);
+    data[base + h_hi + h_lo] = (tw_s1 == 0) ? diff_b23 : fr377_mul(diff_b23, twiddles_inv[tw_s1]);
 }
 
 // --- Fused NTT kernel: process multiple DIT stages in threadgroup memory ---
@@ -204,11 +219,15 @@ kernel void bls377_ntt_butterfly_fused(
 
         Fr377 a = shared[i];
         Fr377 b = shared[j];
-        Fr377 w = twiddles[twiddle_idx];
-        Fr377 wb = fr377_mul(w, b);
-
-        shared[i] = fr377_add(a, wb);
-        shared[j] = fr377_sub(a, wb);
+        if (twiddle_idx == 0) {
+            shared[i] = fr377_add(a, b);
+            shared[j] = fr377_sub(a, b);
+        } else {
+            Fr377 w = twiddles[twiddle_idx];
+            Fr377 wb = fr377_mul(w, b);
+            shared[i] = fr377_add(a, wb);
+            shared[j] = fr377_sub(a, wb);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -268,11 +287,15 @@ kernel void bls377_ntt_butterfly_fused_bitrev(
 
         Fr377 a = shared[i];
         Fr377 b = shared[j];
-        Fr377 w = twiddles[twiddle_idx];
-        Fr377 wb = fr377_mul(w, b);
-
-        shared[i] = fr377_add(a, wb);
-        shared[j] = fr377_sub(a, wb);
+        if (twiddle_idx == 0) {
+            shared[i] = fr377_add(a, b);
+            shared[j] = fr377_sub(a, b);
+        } else {
+            Fr377 w = twiddles[twiddle_idx];
+            Fr377 wb = fr377_mul(w, b);
+            shared[i] = fr377_add(a, wb);
+            shared[j] = fr377_sub(a, wb);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -323,10 +346,13 @@ kernel void bls377_intt_butterfly_fused(
         Fr377 b = shared[j];
         Fr377 sum = fr377_add(a, b);
         Fr377 diff = fr377_sub(a, b);
-        Fr377 w = twiddles_inv[twiddle_idx];
-
         shared[i] = sum;
-        shared[j] = fr377_mul(diff, w);
+        if (twiddle_idx == 0) {
+            shared[j] = diff;
+        } else {
+            Fr377 w = twiddles_inv[twiddle_idx];
+            shared[j] = fr377_mul(diff, w);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -452,11 +478,15 @@ kernel void bls377_ntt_column_fused(
 
         Fr377 a = shared[i];
         Fr377 b = shared[j];
-        Fr377 w = twiddles[twiddle_idx];
-        Fr377 wb = fr377_mul(w, b);
-
-        shared[i] = fr377_add(a, wb);
-        shared[j] = fr377_sub(a, wb);
+        if (twiddle_idx == 0) {
+            shared[i] = fr377_add(a, b);
+            shared[j] = fr377_sub(a, b);
+        } else {
+            Fr377 w = twiddles[twiddle_idx];
+            Fr377 wb = fr377_mul(w, b);
+            shared[i] = fr377_add(a, wb);
+            shared[j] = fr377_sub(a, wb);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -509,11 +539,15 @@ kernel void bls377_ntt_row_fused(
 
         Fr377 a = shared[i];
         Fr377 b = shared[j];
-        Fr377 w = twiddles[twiddle_idx];
-        Fr377 wb = fr377_mul(w, b);
-
-        shared[i] = fr377_add(a, wb);
-        shared[j] = fr377_sub(a, wb);
+        if (twiddle_idx == 0) {
+            shared[i] = fr377_add(a, b);
+            shared[j] = fr377_sub(a, b);
+        } else {
+            Fr377 w = twiddles[twiddle_idx];
+            Fr377 wb = fr377_mul(w, b);
+            shared[i] = fr377_add(a, wb);
+            shared[j] = fr377_sub(a, wb);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -576,11 +610,15 @@ kernel void bls377_ntt_row_fused_twiddle(
 
         Fr377 a = shared[i];
         Fr377 b = shared[j];
-        Fr377 w = twiddles[twiddle_idx];
-        Fr377 wb = fr377_mul(w, b);
-
-        shared[i] = fr377_add(a, wb);
-        shared[j] = fr377_sub(a, wb);
+        if (twiddle_idx == 0) {
+            shared[i] = fr377_add(a, b);
+            shared[j] = fr377_sub(a, b);
+        } else {
+            Fr377 w = twiddles[twiddle_idx];
+            Fr377 wb = fr377_mul(w, b);
+            shared[i] = fr377_add(a, wb);
+            shared[j] = fr377_sub(a, wb);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -644,11 +682,15 @@ kernel void bls377_ntt_row_fused_twiddle_transpose(
 
         Fr377 a = shared[i];
         Fr377 b = shared[j];
-        Fr377 w = twiddles[twiddle_idx];
-        Fr377 wb = fr377_mul(w, b);
-
-        shared[i] = fr377_add(a, wb);
-        shared[j] = fr377_sub(a, wb);
+        if (twiddle_idx == 0) {
+            shared[i] = fr377_add(a, b);
+            shared[j] = fr377_sub(a, b);
+        } else {
+            Fr377 w = twiddles[twiddle_idx];
+            Fr377 wb = fr377_mul(w, b);
+            shared[i] = fr377_add(a, wb);
+            shared[j] = fr377_sub(a, wb);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -721,10 +763,13 @@ kernel void bls377_intt_column_fused(
         Fr377 b = shared[j];
         Fr377 sum = fr377_add(a, b);
         Fr377 diff = fr377_sub(a, b);
-        Fr377 w = twiddles_inv[twiddle_idx];
-
         shared[i] = sum;
-        shared[j] = fr377_mul(diff, w);
+        if (twiddle_idx == 0) {
+            shared[j] = diff;
+        } else {
+            Fr377 w = twiddles_inv[twiddle_idx];
+            shared[j] = fr377_mul(diff, w);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -791,10 +836,13 @@ kernel void bls377_intt_column_fused_twiddle(
         Fr377 b = shared[j];
         Fr377 sum = fr377_add(a, b);
         Fr377 diff = fr377_sub(a, b);
-        Fr377 w = twiddles_inv[twiddle_idx];
-
         shared[i] = sum;
-        shared[j] = fr377_mul(diff, w);
+        if (twiddle_idx == 0) {
+            shared[j] = diff;
+        } else {
+            Fr377 w = twiddles_inv[twiddle_idx];
+            shared[j] = fr377_mul(diff, w);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -846,10 +894,13 @@ kernel void bls377_intt_row_fused(
         Fr377 b = shared[j];
         Fr377 sum = fr377_add(a, b);
         Fr377 diff = fr377_sub(a, b);
-        Fr377 w = twiddles_inv[twiddle_idx];
-
         shared[i] = sum;
-        shared[j] = fr377_mul(diff, w);
+        if (twiddle_idx == 0) {
+            shared[j] = diff;
+        } else {
+            Fr377 w = twiddles_inv[twiddle_idx];
+            shared[j] = fr377_mul(diff, w);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -915,11 +966,15 @@ kernel void bls377_ntt_column_fused_subblock(
 
         Fr377 a = shared[i];
         Fr377 b = shared[j];
-        Fr377 w = twiddles[twiddle_idx];
-        Fr377 wb = fr377_mul(w, b);
-
-        shared[i] = fr377_add(a, wb);
-        shared[j] = fr377_sub(a, wb);
+        if (twiddle_idx == 0) {
+            shared[i] = fr377_add(a, b);
+            shared[j] = fr377_sub(a, b);
+        } else {
+            Fr377 w = twiddles[twiddle_idx];
+            Fr377 wb = fr377_mul(w, b);
+            shared[i] = fr377_add(a, wb);
+            shared[j] = fr377_sub(a, wb);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -963,11 +1018,15 @@ kernel void bls377_ntt_column_butterfly(
 
     Fr377 a = data[addr_i];
     Fr377 b = data[addr_j];
-    Fr377 w = twiddles[twiddle_idx];
-    Fr377 wb = fr377_mul(w, b);
-
-    data[addr_i] = fr377_add(a, wb);
-    data[addr_j] = fr377_sub(a, wb);
+    if (twiddle_idx == 0) {
+        data[addr_i] = fr377_add(a, b);
+        data[addr_j] = fr377_sub(a, b);
+    } else {
+        Fr377 w = twiddles[twiddle_idx];
+        Fr377 wb = fr377_mul(w, b);
+        data[addr_i] = fr377_add(a, wb);
+        data[addr_j] = fr377_sub(a, wb);
+    }
 }
 
 // Radix-4 DIT column butterfly: processes 2 stages at once (halves memory passes).
@@ -1074,10 +1133,13 @@ kernel void bls377_intt_column_butterfly(
     Fr377 b = data[addr_j];
     Fr377 sum = fr377_add(a, b);
     Fr377 diff = fr377_sub(a, b);
-    Fr377 w = twiddles_inv[twiddle_idx];
-
     data[addr_i] = sum;
-    data[addr_j] = fr377_mul(diff, w);
+    if (twiddle_idx == 0) {
+        data[addr_j] = diff;
+    } else {
+        Fr377 w = twiddles_inv[twiddle_idx];
+        data[addr_j] = fr377_mul(diff, w);
+    }
 }
 
 // Radix-4 DIF column butterfly for iNTT: processes 2 stages at once.
@@ -1191,10 +1253,13 @@ kernel void bls377_intt_column_fused_subblock(
         Fr377 b = shared[j];
         Fr377 sum = fr377_add(a, b);
         Fr377 diff = fr377_sub(a, b);
-        Fr377 w = twiddles_inv[twiddle_idx];
-
         shared[i] = sum;
-        shared[j] = fr377_mul(diff, w);
+        if (twiddle_idx == 0) {
+            shared[j] = diff;
+        } else {
+            Fr377 w = twiddles_inv[twiddle_idx];
+            shared[j] = fr377_mul(diff, w);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -1248,10 +1313,13 @@ kernel void bls377_intt_row_fused_twiddle(
         Fr377 b = shared[j];
         Fr377 sum = fr377_add(a, b);
         Fr377 diff = fr377_sub(a, b);
-        Fr377 w = twiddles_inv[twiddle_idx];
-
         shared[i] = sum;
-        shared[j] = fr377_mul(diff, w);
+        if (twiddle_idx == 0) {
+            shared[j] = diff;
+        } else {
+            Fr377 w = twiddles_inv[twiddle_idx];
+            shared[j] = fr377_mul(diff, w);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 

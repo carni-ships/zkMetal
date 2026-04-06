@@ -42,19 +42,23 @@ kernel void radix4_butterfly_bb(
     Bb a3 = data[base + 3 * h];
 
     // Stage s: twiddle for pairs (a0,a1) and (a2,a3)
-    Bb ws = twiddles[local_idx * (n / (2 * h))];
-    Bb ws_a1 = bb_mul(ws, a1);
-    Bb ws_a3 = bb_mul(ws, a3);
-    Bb b0 = bb_add(a0, ws_a1);
-    Bb b1 = bb_sub(a0, ws_a1);
-    Bb b2 = bb_add(a2, ws_a3);
-    Bb b3 = bb_sub(a2, ws_a3);
+    uint tw_s = local_idx * (n / (2 * h));
+    Bb b0, b1, b2, b3;
+    if (tw_s == 0) {
+        b0 = bb_add(a0, a1); b1 = bb_sub(a0, a1);
+        b2 = bb_add(a2, a3); b3 = bb_sub(a2, a3);
+    } else {
+        Bb ws = twiddles[tw_s];
+        Bb ws_a1 = bb_mul(ws, a1); Bb ws_a3 = bb_mul(ws, a3);
+        b0 = bb_add(a0, ws_a1); b1 = bb_sub(a0, ws_a1);
+        b2 = bb_add(a2, ws_a3); b3 = bb_sub(a2, ws_a3);
+    }
 
     // Stage s+1: twiddle for pairs (b0,b2) and (b1,b3)
-    Bb w_lo = twiddles[local_idx * (n / block4)];
-    Bb w_hi = twiddles[(local_idx + h) * (n / block4)];
-    Bb wb2 = bb_mul(w_lo, b2);
-    Bb wb3 = bb_mul(w_hi, b3);
+    uint tw_lo = local_idx * (n / block4);
+    uint tw_hi = (local_idx + h) * (n / block4);
+    Bb wb2 = (tw_lo == 0) ? b2 : bb_mul(twiddles[tw_lo], b2);
+    Bb wb3 = (tw_hi == 0) ? b3 : bb_mul(twiddles[tw_hi], b3);
 
     data[base]         = bb_add(b0, wb2);
     data[base + 2 * h] = bb_sub(b0, wb2);
@@ -89,19 +93,23 @@ kernel void radix4_inv_butterfly_bb(
     Bb a3 = data[base + h_hi + h_lo];
 
     // Stage s (DIF): pairs (a0,a2) and (a1,a3)
-    Bb ws_lo = twiddles_inv[local_idx * (n / block4)];
-    Bb ws_hi = twiddles_inv[(local_idx + h_lo) * (n / block4)];
+    uint tw_s_lo = local_idx * (n / block4);
+    uint tw_s_hi = (local_idx + h_lo) * (n / block4);
     Bb b0 = bb_add(a0, a2);
-    Bb b2 = bb_mul(bb_sub(a0, a2), ws_lo);
+    Bb diff02 = bb_sub(a0, a2);
+    Bb b2 = (tw_s_lo == 0) ? diff02 : bb_mul(diff02, twiddles_inv[tw_s_lo]);
     Bb b1 = bb_add(a1, a3);
-    Bb b3 = bb_mul(bb_sub(a1, a3), ws_hi);
+    Bb diff13 = bb_sub(a1, a3);
+    Bb b3 = (tw_s_hi == 0) ? diff13 : bb_mul(diff13, twiddles_inv[tw_s_hi]);
 
     // Stage s-1 (DIF): pairs (b0,b1) and (b2,b3)
-    Bb w_s1 = twiddles_inv[local_idx * (n / (2 * h_lo))];
+    uint tw_s1 = local_idx * (n / (2 * h_lo));
+    Bb diff_b01 = bb_sub(b0, b1);
+    Bb diff_b23 = bb_sub(b2, b3);
     data[base]              = bb_add(b0, b1);
-    data[base + h_lo]       = bb_mul(bb_sub(b0, b1), w_s1);
+    data[base + h_lo]       = (tw_s1 == 0) ? diff_b01 : bb_mul(diff_b01, twiddles_inv[tw_s1]);
     data[base + h_hi]       = bb_add(b2, b3);
-    data[base + h_hi + h_lo] = bb_mul(bb_sub(b2, b3), w_s1);
+    data[base + h_hi + h_lo] = (tw_s1 == 0) ? diff_b23 : bb_mul(diff_b23, twiddles_inv[tw_s1]);
 }
 
 // --- Fused threadgroup radix-4 DIT for BabyBear ---
@@ -150,20 +158,24 @@ kernel void radix4_butterfly_fused_bb(
             uint global_half = 1u << global_stage;
 
             // Stage s twiddle
-            Bb ws = twiddles[loc_idx * (n / (2 * global_half))];
-            Bb ws_a1 = bb_mul(ws, a1);
-            Bb ws_a3 = bb_mul(ws, a3);
-            Bb b0 = bb_add(a0, ws_a1);
-            Bb b1 = bb_sub(a0, ws_a1);
-            Bb b2 = bb_add(a2, ws_a3);
-            Bb b3 = bb_sub(a2, ws_a3);
+            uint tw_s = loc_idx * (n / (2 * global_half));
+            Bb b0, b1, b2, b3;
+            if (tw_s == 0) {
+                b0 = bb_add(a0, a1); b1 = bb_sub(a0, a1);
+                b2 = bb_add(a2, a3); b3 = bb_sub(a2, a3);
+            } else {
+                Bb ws = twiddles[tw_s];
+                Bb ws_a1 = bb_mul(ws, a1); Bb ws_a3 = bb_mul(ws, a3);
+                b0 = bb_add(a0, ws_a1); b1 = bb_sub(a0, ws_a1);
+                b2 = bb_add(a2, ws_a3); b3 = bb_sub(a2, ws_a3);
+            }
 
             // Stage s+1 twiddles
             uint global_block4 = global_half << 2;
-            Bb w_lo = twiddles[loc_idx * (n / global_block4)];
-            Bb w_hi = twiddles[(loc_idx + h) * (n / global_block4)];
-            Bb wb2 = bb_mul(w_lo, b2);
-            Bb wb3 = bb_mul(w_hi, b3);
+            uint tw_lo = loc_idx * (n / global_block4);
+            uint tw_hi = (loc_idx + h) * (n / global_block4);
+            Bb wb2 = (tw_lo == 0) ? b2 : bb_mul(twiddles[tw_lo], b2);
+            Bb wb3 = (tw_hi == 0) ? b3 : bb_mul(twiddles[tw_hi], b3);
 
             shared[lbase]         = bb_add(b0, wb2);
             shared[lbase + 2 * h] = bb_sub(b0, wb2);
@@ -189,10 +201,15 @@ kernel void radix4_butterfly_fused_bb(
 
         Bb a = shared[i];
         Bb b = shared[j];
-        Bb w = twiddles[twiddle_idx];
-        Bb wb = bb_mul(w, b);
-        shared[i] = bb_add(a, wb);
-        shared[j] = bb_sub(a, wb);
+        if (twiddle_idx == 0) {
+            shared[i] = bb_add(a, b);
+            shared[j] = bb_sub(a, b);
+        } else {
+            Bb w = twiddles[twiddle_idx];
+            Bb wb = bb_mul(w, b);
+            shared[i] = bb_add(a, wb);
+            shared[j] = bb_sub(a, wb);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -243,20 +260,24 @@ kernel void radix4_inv_butterfly_fused_bb(
 
             // Stage s (DIF high)
             uint global_block4 = 1u << (stage_hi + 1);
-            Bb ws_lo = twiddles_inv[loc_idx * (n / global_block4)];
-            Bb ws_hi = twiddles_inv[(loc_idx + h_lo) * (n / global_block4)];
+            uint tw_s_lo = loc_idx * (n / global_block4);
+            uint tw_s_hi = (loc_idx + h_lo) * (n / global_block4);
             Bb b0 = bb_add(a0, a2);
-            Bb b2 = bb_mul(bb_sub(a0, a2), ws_lo);
+            Bb diff02 = bb_sub(a0, a2);
+            Bb b2 = (tw_s_lo == 0) ? diff02 : bb_mul(diff02, twiddles_inv[tw_s_lo]);
             Bb b1 = bb_add(a1, a3);
-            Bb b3 = bb_mul(bb_sub(a1, a3), ws_hi);
+            Bb diff13 = bb_sub(a1, a3);
+            Bb b3 = (tw_s_hi == 0) ? diff13 : bb_mul(diff13, twiddles_inv[tw_s_hi]);
 
             // Stage s-1 (DIF low)
             uint global_half_lo = 1u << (stage_hi - 1);
-            Bb w_s1 = twiddles_inv[loc_idx * (n / (2 * global_half_lo))];
+            uint tw_s1 = loc_idx * (n / (2 * global_half_lo));
+            Bb diff_b01 = bb_sub(b0, b1);
+            Bb diff_b23 = bb_sub(b2, b3);
             shared[lbase]              = bb_add(b0, b1);
-            shared[lbase + h_lo]       = bb_mul(bb_sub(b0, b1), w_s1);
+            shared[lbase + h_lo]       = (tw_s1 == 0) ? diff_b01 : bb_mul(diff_b01, twiddles_inv[tw_s1]);
             shared[lbase + h_hi]       = bb_add(b2, b3);
-            shared[lbase + h_hi + h_lo] = bb_mul(bb_sub(b2, b3), w_s1);
+            shared[lbase + h_hi + h_lo] = (tw_s1 == 0) ? diff_b23 : bb_mul(diff_b23, twiddles_inv[tw_s1]);
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
         done += 2;
@@ -279,9 +300,13 @@ kernel void radix4_inv_butterfly_fused_bb(
         Bb b = shared[j];
         Bb sum = bb_add(a, b);
         Bb diff = bb_sub(a, b);
-        Bb w = twiddles_inv[twiddle_idx];
         shared[i] = sum;
-        shared[j] = bb_mul(diff, w);
+        if (twiddle_idx == 0) {
+            shared[j] = diff;
+        } else {
+            Bb w = twiddles_inv[twiddle_idx];
+            shared[j] = bb_mul(diff, w);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -319,19 +344,23 @@ kernel void radix4_butterfly_gl(
     Gl a3 = data[base + 3 * h];
 
     // Stage s
-    Gl ws = twiddles[local_idx * (n / (2 * h))];
-    Gl ws_a1 = gl_mul(ws, a1);
-    Gl ws_a3 = gl_mul(ws, a3);
-    Gl b0 = gl_add(a0, ws_a1);
-    Gl b1 = gl_sub(a0, ws_a1);
-    Gl b2 = gl_add(a2, ws_a3);
-    Gl b3 = gl_sub(a2, ws_a3);
+    uint tw_s = local_idx * (n / (2 * h));
+    Gl b0, b1, b2, b3;
+    if (tw_s == 0) {
+        b0 = gl_add(a0, a1); b1 = gl_sub(a0, a1);
+        b2 = gl_add(a2, a3); b3 = gl_sub(a2, a3);
+    } else {
+        Gl ws = twiddles[tw_s];
+        Gl ws_a1 = gl_mul(ws, a1); Gl ws_a3 = gl_mul(ws, a3);
+        b0 = gl_add(a0, ws_a1); b1 = gl_sub(a0, ws_a1);
+        b2 = gl_add(a2, ws_a3); b3 = gl_sub(a2, ws_a3);
+    }
 
     // Stage s+1
-    Gl w_lo = twiddles[local_idx * (n / block4)];
-    Gl w_hi = twiddles[(local_idx + h) * (n / block4)];
-    Gl wb2 = gl_mul(w_lo, b2);
-    Gl wb3 = gl_mul(w_hi, b3);
+    uint tw_lo = local_idx * (n / block4);
+    uint tw_hi = (local_idx + h) * (n / block4);
+    Gl wb2 = (tw_lo == 0) ? b2 : gl_mul(twiddles[tw_lo], b2);
+    Gl wb3 = (tw_hi == 0) ? b3 : gl_mul(twiddles[tw_hi], b3);
 
     data[base]         = gl_add(b0, wb2);
     data[base + 2 * h] = gl_sub(b0, wb2);
@@ -364,19 +393,23 @@ kernel void radix4_inv_butterfly_gl(
     Gl a3 = data[base + h_hi + h_lo];
 
     // Stage s (DIF)
-    Gl ws_lo = twiddles_inv[local_idx * (n / block4)];
-    Gl ws_hi = twiddles_inv[(local_idx + h_lo) * (n / block4)];
+    uint tw_s_lo = local_idx * (n / block4);
+    uint tw_s_hi = (local_idx + h_lo) * (n / block4);
     Gl b0 = gl_add(a0, a2);
-    Gl b2 = gl_mul(gl_sub(a0, a2), ws_lo);
+    Gl diff02 = gl_sub(a0, a2);
+    Gl b2 = (tw_s_lo == 0) ? diff02 : gl_mul(diff02, twiddles_inv[tw_s_lo]);
     Gl b1 = gl_add(a1, a3);
-    Gl b3 = gl_mul(gl_sub(a1, a3), ws_hi);
+    Gl diff13 = gl_sub(a1, a3);
+    Gl b3 = (tw_s_hi == 0) ? diff13 : gl_mul(diff13, twiddles_inv[tw_s_hi]);
 
     // Stage s-1 (DIF)
-    Gl w_s1 = twiddles_inv[local_idx * (n / (2 * h_lo))];
+    uint tw_s1 = local_idx * (n / (2 * h_lo));
+    Gl diff_b01 = gl_sub(b0, b1);
+    Gl diff_b23 = gl_sub(b2, b3);
     data[base]              = gl_add(b0, b1);
-    data[base + h_lo]       = gl_mul(gl_sub(b0, b1), w_s1);
+    data[base + h_lo]       = (tw_s1 == 0) ? diff_b01 : gl_mul(diff_b01, twiddles_inv[tw_s1]);
     data[base + h_hi]       = gl_add(b2, b3);
-    data[base + h_hi + h_lo] = gl_mul(gl_sub(b2, b3), w_s1);
+    data[base + h_hi + h_lo] = (tw_s1 == 0) ? diff_b23 : gl_mul(diff_b23, twiddles_inv[tw_s1]);
 }
 
 // --- Fused threadgroup radix-4 DIT for Goldilocks ---
@@ -418,19 +451,23 @@ kernel void radix4_butterfly_fused_gl(
             uint global_stage = stage_offset + s;
             uint global_half = 1u << global_stage;
 
-            Gl ws = twiddles[loc_idx * (n / (2 * global_half))];
-            Gl ws_a1 = gl_mul(ws, a1);
-            Gl ws_a3 = gl_mul(ws, a3);
-            Gl b0 = gl_add(a0, ws_a1);
-            Gl b1 = gl_sub(a0, ws_a1);
-            Gl b2 = gl_add(a2, ws_a3);
-            Gl b3 = gl_sub(a2, ws_a3);
+            uint tw_s = loc_idx * (n / (2 * global_half));
+            Gl b0, b1, b2, b3;
+            if (tw_s == 0) {
+                b0 = gl_add(a0, a1); b1 = gl_sub(a0, a1);
+                b2 = gl_add(a2, a3); b3 = gl_sub(a2, a3);
+            } else {
+                Gl ws = twiddles[tw_s];
+                Gl ws_a1 = gl_mul(ws, a1); Gl ws_a3 = gl_mul(ws, a3);
+                b0 = gl_add(a0, ws_a1); b1 = gl_sub(a0, ws_a1);
+                b2 = gl_add(a2, ws_a3); b3 = gl_sub(a2, ws_a3);
+            }
 
             uint global_block4 = global_half << 2;
-            Gl w_lo = twiddles[loc_idx * (n / global_block4)];
-            Gl w_hi = twiddles[(loc_idx + h) * (n / global_block4)];
-            Gl wb2 = gl_mul(w_lo, b2);
-            Gl wb3 = gl_mul(w_hi, b3);
+            uint tw_lo = loc_idx * (n / global_block4);
+            uint tw_hi = (loc_idx + h) * (n / global_block4);
+            Gl wb2 = (tw_lo == 0) ? b2 : gl_mul(twiddles[tw_lo], b2);
+            Gl wb3 = (tw_hi == 0) ? b3 : gl_mul(twiddles[tw_hi], b3);
 
             shared[lbase]         = gl_add(b0, wb2);
             shared[lbase + 2 * h] = gl_sub(b0, wb2);
@@ -456,10 +493,15 @@ kernel void radix4_butterfly_fused_gl(
 
         Gl a = shared[i];
         Gl b = shared[j];
-        Gl w = twiddles[twiddle_idx];
-        Gl wb = gl_mul(w, b);
-        shared[i] = gl_add(a, wb);
-        shared[j] = gl_sub(a, wb);
+        if (twiddle_idx == 0) {
+            shared[i] = gl_add(a, b);
+            shared[j] = gl_sub(a, b);
+        } else {
+            Gl w = twiddles[twiddle_idx];
+            Gl wb = gl_mul(w, b);
+            shared[i] = gl_add(a, wb);
+            shared[j] = gl_sub(a, wb);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -506,19 +548,23 @@ kernel void radix4_inv_butterfly_fused_gl(
             Gl a3 = shared[lbase + h_hi + h_lo];
 
             uint global_block4 = 1u << (stage_hi + 1);
-            Gl ws_lo = twiddles_inv[loc_idx * (n / global_block4)];
-            Gl ws_hi = twiddles_inv[(loc_idx + h_lo) * (n / global_block4)];
+            uint tw_s_lo = loc_idx * (n / global_block4);
+            uint tw_s_hi = (loc_idx + h_lo) * (n / global_block4);
             Gl b0 = gl_add(a0, a2);
-            Gl b2 = gl_mul(gl_sub(a0, a2), ws_lo);
+            Gl diff02 = gl_sub(a0, a2);
+            Gl b2 = (tw_s_lo == 0) ? diff02 : gl_mul(diff02, twiddles_inv[tw_s_lo]);
             Gl b1 = gl_add(a1, a3);
-            Gl b3 = gl_mul(gl_sub(a1, a3), ws_hi);
+            Gl diff13 = gl_sub(a1, a3);
+            Gl b3 = (tw_s_hi == 0) ? diff13 : gl_mul(diff13, twiddles_inv[tw_s_hi]);
 
             uint global_half_lo = 1u << (stage_hi - 1);
-            Gl w_s1 = twiddles_inv[loc_idx * (n / (2 * global_half_lo))];
+            uint tw_s1 = loc_idx * (n / (2 * global_half_lo));
+            Gl diff_b01 = gl_sub(b0, b1);
+            Gl diff_b23 = gl_sub(b2, b3);
             shared[lbase]              = gl_add(b0, b1);
-            shared[lbase + h_lo]       = gl_mul(gl_sub(b0, b1), w_s1);
+            shared[lbase + h_lo]       = (tw_s1 == 0) ? diff_b01 : gl_mul(diff_b01, twiddles_inv[tw_s1]);
             shared[lbase + h_hi]       = gl_add(b2, b3);
-            shared[lbase + h_hi + h_lo] = gl_mul(gl_sub(b2, b3), w_s1);
+            shared[lbase + h_hi + h_lo] = (tw_s1 == 0) ? diff_b23 : gl_mul(diff_b23, twiddles_inv[tw_s1]);
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
         done += 2;
@@ -541,9 +587,13 @@ kernel void radix4_inv_butterfly_fused_gl(
         Gl b = shared[j];
         Gl sum = gl_add(a, b);
         Gl diff = gl_sub(a, b);
-        Gl w = twiddles_inv[twiddle_idx];
         shared[i] = sum;
-        shared[j] = gl_mul(diff, w);
+        if (twiddle_idx == 0) {
+            shared[j] = diff;
+        } else {
+            Gl w = twiddles_inv[twiddle_idx];
+            shared[j] = gl_mul(diff, w);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
