@@ -294,13 +294,27 @@ public class CQEngine {
         let zTInv = frInverse(zT)
         let lhs = frMul(phiZ, zTInv)
 
+        // Batch-invert (z - omega^i) for all non-zero multiplicity entries
+        var cqDenoms = [Fr](repeating: Fr.zero, count: T)
+        for i in 0..<T { cqDenoms[i] = frSub(z, table.roots[i]) }
+        var cqPrefix = [Fr](repeating: Fr.one, count: T)
+        for i in 1..<T {
+            cqPrefix[i] = cqDenoms[i - 1] == Fr.zero ? cqPrefix[i - 1] : frMul(cqPrefix[i - 1], cqDenoms[i - 1])
+        }
+        let cqLast = cqDenoms[T - 1] == Fr.zero ? cqPrefix[T - 1] : frMul(cqPrefix[T - 1], cqDenoms[T - 1])
+        var cqInvRunning = frInverse(cqLast)
+        var cqDenomInvs = [Fr](repeating: Fr.zero, count: T)
+        for i in stride(from: T - 1, through: 0, by: -1) {
+            if cqDenoms[i] != Fr.zero {
+                cqDenomInvs[i] = frMul(cqInvRunning, cqPrefix[i])
+                cqInvRunning = frMul(cqInvRunning, cqDenoms[i])
+            }
+        }
         var rhs = Fr.zero
         for i in 0..<T {
             let mi = proof.multiplicities[i]
             if frEqual(mi, Fr.zero) { continue }
-            let zMinusOmegaI = frSub(z, table.roots[i])
-            let inv = frInverse(zMinusOmegaI)
-            rhs = frAdd(rhs, frMul(mi, inv))
+            rhs = frAdd(rhs, frMul(mi, cqDenomInvs[i]))
         }
 
         guard frEqual(lhs, rhs) else { return false }
@@ -377,13 +391,27 @@ public class CQEngine {
         let zTInv = frInverse(zT)
         let lhs = frMul(phiZ, zTInv)
 
+        // Batch-invert (z - omega^i)
+        var cq2Denoms = [Fr](repeating: Fr.zero, count: T)
+        for i in 0..<T { cq2Denoms[i] = frSub(z, table.roots[i]) }
+        var cq2Prefix = [Fr](repeating: Fr.one, count: T)
+        for i in 1..<T {
+            cq2Prefix[i] = cq2Denoms[i - 1] == Fr.zero ? cq2Prefix[i - 1] : frMul(cq2Prefix[i - 1], cq2Denoms[i - 1])
+        }
+        let cq2Last = cq2Denoms[T - 1] == Fr.zero ? cq2Prefix[T - 1] : frMul(cq2Prefix[T - 1], cq2Denoms[T - 1])
+        var cq2InvRunning = frInverse(cq2Last)
+        var cq2DenomInvs = [Fr](repeating: Fr.zero, count: T)
+        for i in stride(from: T - 1, through: 0, by: -1) {
+            if cq2Denoms[i] != Fr.zero {
+                cq2DenomInvs[i] = frMul(cq2InvRunning, cq2Prefix[i])
+                cq2InvRunning = frMul(cq2InvRunning, cq2Denoms[i])
+            }
+        }
         var rhs = Fr.zero
         for i in 0..<T {
             let mi = proof.multiplicities[i]
             if frEqual(mi, Fr.zero) { continue }
-            let zMinusOmegaI = frSub(z, table.roots[i])
-            let inv = frInverse(zMinusOmegaI)
-            rhs = frAdd(rhs, frMul(mi, inv))
+            rhs = frAdd(rhs, frMul(mi, cq2DenomInvs[i]))
         }
         guard frEqual(lhs, rhs) else { return false }
 
