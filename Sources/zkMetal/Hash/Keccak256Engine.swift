@@ -10,6 +10,7 @@ public class Keccak256Engine {
     let hash32Function: MTLComputePipelineState   // hash 32-byte inputs
     let hashM31Function: MTLComputePipelineState  // hash 4-byte M31 inputs
     let merkleFusedFunction: MTLComputePipelineState  // fused 1024-leaf subtree
+    let merkleFusedFullFunction: MTLComputePipelineState  // fused with all intermediate nodes
 
     // Cached buffers for hash64 array API
     private var cachedH64InputBuf: MTLBuffer?
@@ -33,13 +34,15 @@ public class Keccak256Engine {
         guard let hash64Fn = library.makeFunction(name: "keccak256_hash_64"),
               let hash32Fn = library.makeFunction(name: "keccak256_hash_32"),
               let hashM31Fn = library.makeFunction(name: "keccak256_hash_m31"),
-              let merkleFusedFn = library.makeFunction(name: "keccak256_merkle_fused") else {
+              let merkleFusedFn = library.makeFunction(name: "keccak256_merkle_fused"),
+              let merkleFusedFullFn = library.makeFunction(name: "keccak256_merkle_fused_full") else {
             throw MSMError.missingKernel
         }
         self.hash64Function = try device.makeComputePipelineState(function: hash64Fn)
         self.hash32Function = try device.makeComputePipelineState(function: hash32Fn)
         self.hashM31Function = try device.makeComputePipelineState(function: hashM31Fn)
         self.merkleFusedFunction = try device.makeComputePipelineState(function: merkleFusedFn)
+        self.merkleFusedFullFunction = try device.makeComputePipelineState(function: merkleFusedFullFn)
         self.tuning = TuningManager.shared.config(device: device)
     }
 
@@ -152,6 +155,25 @@ public class Keccak256Engine {
         encoder.setBuffer(rootsBuffer, offset: rootsOffset, index: 1)
         var numLevels = UInt32(subtreeSize.trailingZeroBitCount)
         encoder.setBytes(&numLevels, length: 4, index: 2)
+        let tgSize = min(subtreeSize / 2, 512)
+        encoder.dispatchThreadgroups(MTLSize(width: numSubtrees, height: 1, depth: 1),
+                                     threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
+    }
+
+    /// Encode fused Merkle subtree dispatch with full intermediate node output.
+    /// Writes ALL intermediate nodes at correct tree offsets (for proof path extraction).
+    /// levelOffsetsBuffer contains cumulative start indices: [n, n+n/2, n+n/2+n/4, ...]
+    public func encodeMerkleFusedFull(encoder: MTLComputeCommandEncoder,
+                                       leavesBuffer: MTLBuffer, leavesOffset: Int,
+                                       treeBuffer: MTLBuffer, treeOffset: Int,
+                                       levelOffsetsBuffer: MTLBuffer,
+                                       numSubtrees: Int, subtreeSize: Int = 1024) {
+        encoder.setComputePipelineState(merkleFusedFullFunction)
+        encoder.setBuffer(leavesBuffer, offset: leavesOffset, index: 0)
+        encoder.setBuffer(treeBuffer, offset: treeOffset, index: 1)
+        var numLevels = UInt32(subtreeSize.trailingZeroBitCount)
+        encoder.setBytes(&numLevels, length: 4, index: 2)
+        encoder.setBuffer(levelOffsetsBuffer, offset: 0, index: 3)
         let tgSize = min(subtreeSize / 2, 512)
         encoder.dispatchThreadgroups(MTLSize(width: numSubtrees, height: 1, depth: 1),
                                      threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))

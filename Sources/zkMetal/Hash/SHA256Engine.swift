@@ -242,66 +242,28 @@ public class SHA256MerkleEngine {
         }
 
         let enc = cmdBuf.makeComputeCommandEncoder()!
-        let subtreeSize = SHA256Engine.merkleSubtreeSize
-        let useFused = n >= subtreeSize
 
-        if useFused {
-            // Phase 1: Fused subtrees for bottom 10 levels
-            let numSubtrees = n / subtreeSize
-            let fusedOutputOffset = (2 * n - 2 * numSubtrees) * 32
+        // Level-by-level construction (preserves ALL internal nodes for proof extraction).
+        // Note: fused subtrees only output roots, not intermediate nodes, so they
+        // cannot be used here. Fused subtrees ARE used in encodeMerkleRoot.
+        var levelStart = 0
+        var levelSize = n
 
-            engine.encodeMerkleFused(encoder: enc,
-                                      leavesBuffer: treeBuf, leavesOffset: 0,
-                                      rootsBuffer: treeBuf, rootsOffset: fusedOutputOffset,
-                                      numSubtrees: numSubtrees)
+        while levelSize > 1 {
+            let parentCount = levelSize / 2
+            let inputOffset = levelStart * 32
+            let outputOffset = (levelStart + levelSize) * 32
 
-            // Phase 2: Level-by-level for remaining upper levels
-            var levelStart = 2 * n - 2 * numSubtrees
-            var levelSize = numSubtrees
+            engine.encodeHashPairs(encoder: enc, buffer: treeBuf,
+                                   inputOffset: inputOffset,
+                                   outputOffset: outputOffset,
+                                   count: parentCount)
 
-            while levelSize > 1 {
+            levelStart += levelSize
+            levelSize = parentCount
+
+            if levelSize > 1 {
                 enc.memoryBarrier(scope: .buffers)
-                if levelSize >= 4 && levelSize <= 1024 && (levelSize & (levelSize - 1)) == 0 {
-                    let outputOffset = (treeSize - 1) * 32
-                    engine.encodeMerkleFused(encoder: enc,
-                                              leavesBuffer: treeBuf, leavesOffset: levelStart * 32,
-                                              rootsBuffer: treeBuf, rootsOffset: outputOffset,
-                                              numSubtrees: 1, subtreeSize: levelSize)
-                    break
-                }
-                let parentCount = levelSize / 2
-                let inputOffset = levelStart * 32
-                let outputOffset = (levelStart + levelSize) * 32
-
-                engine.encodeHashPairs(encoder: enc, buffer: treeBuf,
-                                       inputOffset: inputOffset,
-                                       outputOffset: outputOffset,
-                                       count: parentCount)
-
-                levelStart += levelSize
-                levelSize = parentCount
-            }
-        } else {
-            // Small tree: level-by-level
-            var levelStart = 0
-            var levelSize = n
-
-            while levelSize > 1 {
-                let parentCount = levelSize / 2
-                let inputOffset = levelStart * 32
-                let outputOffset = (levelStart + levelSize) * 32
-
-                engine.encodeHashPairs(encoder: enc, buffer: treeBuf,
-                                       inputOffset: inputOffset,
-                                       outputOffset: outputOffset,
-                                       count: parentCount)
-
-                levelStart += levelSize
-                levelSize = parentCount
-
-                if levelSize > 1 {
-                    enc.memoryBarrier(scope: .buffers)
-                }
             }
         }
         enc.endEncoding()

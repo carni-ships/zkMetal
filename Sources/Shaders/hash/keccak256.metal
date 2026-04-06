@@ -358,6 +358,56 @@ kernel void keccak256_merkle_fused(
     }
 }
 
+// Fused multi-level Keccak Merkle tree with full intermediate node output.
+// Like keccak256_merkle_fused but writes ALL intermediate nodes to the tree buffer
+// at correct global offsets (for proof path extraction).
+// buffer(0) = leaves (n * 32 bytes)
+// buffer(1) = tree (full tree output, (2n-1) * 32 bytes)
+// buffer(2) = num_levels (log2 of subtree size)
+// buffer(3) = level_offsets (cumulative start index of each internal level in tree)
+kernel void keccak256_merkle_fused_full(
+    device const uchar* leaves        [[buffer(0)]],
+    device uchar* tree                [[buffer(1)]],
+    constant uint& num_levels         [[buffer(2)]],
+    constant uint* level_offsets      [[buffer(3)]],
+    uint tid                          [[thread_index_in_threadgroup]],
+    uint tgid                         [[threadgroup_position_in_grid]],
+    uint tg_size                      [[threads_per_threadgroup]]
+) {
+    threadgroup uint2 shared_data[1024 * 4];
+
+    uint subtree_size = 1u << num_levels;
+    uint leaf_base = tgid * subtree_size;
+    device const ulong* leaves64 = (device const ulong*)leaves;
+
+    // Load leaves and convert to bit-interleaved format
+    for (uint i = tid; i < subtree_size; i += tg_size) {
+        for (uint j = 0; j < 4; j++) {
+            shared_data[i * 4 + j] = to_interleaved(leaves64[(leaf_base + i) * 4 + j]);
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    uint active = subtree_size;
+    uint subtree_stride = subtree_size / 2;  // pairs at level 0 within each subtree
+
+    for (uint level = 0; level < num_levels; level++) {
+        uint pairs = active >> 1;
+        if (tid < pairs) {
+            keccak256_hash_pair_il(&shared_data[tid * 2 * 4],
+                                   &shared_data[(tid * 2 + 1) * 4],
+                                   &shared_data[tid * 4]);
+            // Write intermediate node to global tree buffer
+            uint global_idx = level_offsets[level] + tgid * subtree_stride + tid;
+            device ulong* out64 = (device ulong*)(tree + global_idx * 32);
+            for (uint i = 0; i < 4; i++) out64[i] = from_interleaved(shared_data[tid * 4 + i]);
+        }
+        active = pairs;
+        subtree_stride >>= 1;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+}
+
 // Keccak-256 hash of a 32-byte input (single field element or leaf)
 kernel void keccak256_hash_32(
     device const uchar* input      [[buffer(0)]],

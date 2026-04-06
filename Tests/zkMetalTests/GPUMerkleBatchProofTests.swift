@@ -232,6 +232,36 @@ public func runGPUMerkleBatchProofTests() {
         }
 
         // ================================================================
+        // Test 12b: Keccak buildTree fused path (n=2048, exercises fused subtrees)
+        // ================================================================
+        suite("GPUMerkleBatchProof — Keccak Fused Subtree Proof")
+
+        if let kEngine = try? KeccakMerkleEngine() {
+            let n = 2048
+            let kLeaves = (0..<n).map { i -> [UInt8] in
+                var h = keccak256([UInt8(i & 0xff), UInt8(i >> 8)])
+                return Array(h[0..<32])
+            }
+            let kTree = try kEngine.buildTree(kLeaves)
+
+            // Verify batch proof with leaves deep inside fused subtrees
+            let testIndices = [0, 511, 1023, 1024, 1500, 2047]
+            let kProof = engine.generateByteBatchProof(
+                flatTree: kTree, leafCount: n,
+                leafIndices: testIndices, backend: .keccak256
+            )
+            let kValid = engine.verifyBatchProof(kProof)
+            expect(kValid, "keccak fused subtree batch proof verifies (n=2048)")
+
+            // Cross-validate: merkleRoot should match buildTree root
+            let rootOnly = try kEngine.merkleRoot(kLeaves)
+            let treeRoot = KeccakMerkleEngine.rootFromFlat(kTree, n: n)
+            expect(rootOnly == treeRoot, "keccak fused buildTree root matches merkleRoot")
+        } else {
+            print("  [SKIP] KeccakMerkleEngine unavailable")
+        }
+
+        // ================================================================
         // Test 13: Blake3 backend batch proof
         // ================================================================
         suite("GPUMerkleBatchProof — Blake3 Backend")
