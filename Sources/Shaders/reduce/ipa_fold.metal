@@ -136,16 +136,14 @@ kernel void ipa_cross_products(
     Fr accL = fr_zero();
     Fr accR = fr_zero();
 
-    // Each thread accumulates strided elements
-    uint base = tgid * tg_size;
-    for (uint i = base + tid; i < halfLen; i += tg_size) {
+    // Each thread handles one element from its tile
+    uint global_id = tgid * tg_size + tid;
+    if (global_id < halfLen) {
         // crossL = <a_lo, b_hi> = sum(a[i] * b[halfLen + i])
-        Fr prodL = fr_mul(a_data[i], b_data[halfLen + i]);
-        accL = fr_add(accL, prodL);
+        accL = fr_mul(a_data[global_id], b_data[halfLen + global_id]);
 
         // crossR = <a_hi, b_lo> = sum(a[halfLen + i] * b[i])
-        Fr prodR = fr_mul(a_data[halfLen + i], b_data[i]);
-        accR = fr_add(accR, prodR);
+        accR = fr_mul(a_data[halfLen + global_id], b_data[global_id]);
     }
 
     // SIMD shuffle reduction

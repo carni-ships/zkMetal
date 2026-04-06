@@ -63,12 +63,11 @@ kernel void ip_field_mul_reduce(
 ) {
     threadgroup Fr simd_partials[32];
 
-    // Fused multiply-accumulate: each thread handles multiple strided elements
+    // Fused multiply-accumulate: each thread handles one element
     Fr acc = fr_zero();
-    uint base = tgid * tg_size;
-    for (uint i = base + tid; i < count; i += tg_size) {
-        Fr prod = fr_mul(a[i], b[i]);
-        acc = fr_add(acc, prod);
+    uint global_id = tgid * tg_size + tid;
+    if (global_id < count) {
+        acc = fr_mul(a[global_id], b[global_id]);
     }
 
     // Phase 1: SIMD shuffle reduction within each 32-lane group
@@ -112,9 +111,9 @@ kernel void ip_field_partial_reduce(
     threadgroup Fr simd_partials[32];
 
     Fr acc = fr_zero();
-    uint base = tgid * tg_size;
-    for (uint i = base + tid; i < count; i += tg_size) {
-        acc = fr_add(acc, input[i]);
+    uint global_id = tgid * tg_size + tid;
+    if (global_id < count) {
+        acc = input[global_id];
     }
 
     acc = ip_fr_simd_reduce_sum(acc, simd_lane);
