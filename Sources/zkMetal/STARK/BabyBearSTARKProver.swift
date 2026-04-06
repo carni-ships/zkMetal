@@ -337,17 +337,29 @@ public class BabyBearSTARKProver {
 
         // Precompute vanishing polynomial evaluations: Z_H(x) = x^traceLen - 1
         // On the coset domain, x = cosetShift * omega_lde^i
-        var vanishingInv = [Bb](repeating: Bb.zero, count: ldeLen)
-        var cosetPow = Bb.one
+        // Precompute vanishing polynomial inverses: 1 / (x^traceLen - 1)
+        // x_i^N = cosetShift^N * (omega^N)^i — chain multiply instead of per-element bbPow
+        let cosetShiftN = bbPow(cosetShift, UInt32(traceLen))
+        let omegaN = bbPow(omega, UInt32(traceLen))
+        var vanishingVals = [Bb](repeating: Bb.zero, count: ldeLen)
+        var omegaNpow = cosetShiftN
         for i in 0..<ldeLen {
-            // x = cosetShift * omega^i on the LDE domain
-            // Z_H(x) = x^traceLen - 1
-            let xToN = bbPow(bbMul(cosetShift, cosetPow), UInt32(traceLen))
-            let zh = bbSub(xToN, Bb.one)
-            if zh.v != 0 {
-                vanishingInv[i] = bbInverse(zh)
+            vanishingVals[i] = bbSub(omegaNpow, Bb.one)
+            omegaNpow = bbMul(omegaNpow, omegaN)
+        }
+        // Montgomery batch inversion: 3(n-1) muls + 1 inverse
+        var vanishingInv = [Bb](repeating: Bb.zero, count: ldeLen)
+        var prefix = [Bb](repeating: Bb.one, count: ldeLen)
+        for i in 1..<ldeLen {
+            prefix[i] = vanishingVals[i - 1].v == 0 ? prefix[i - 1] : bbMul(prefix[i - 1], vanishingVals[i - 1])
+        }
+        let lastNonZero = vanishingVals[ldeLen - 1].v == 0 ? prefix[ldeLen - 1] : bbMul(prefix[ldeLen - 1], vanishingVals[ldeLen - 1])
+        var inv = bbInverse(lastNonZero)
+        for i in stride(from: ldeLen - 1, through: 0, by: -1) {
+            if vanishingVals[i].v != 0 {
+                vanishingInv[i] = bbMul(inv, prefix[i])
+                inv = bbMul(inv, vanishingVals[i])
             }
-            cosetPow = bbMul(cosetPow, omega)
         }
 
         // Evaluate constraints and form quotient polynomial
@@ -486,16 +498,33 @@ public class BabyBearSTARKProver {
 
             // Fold: f'(x^2) = (f(x) + f(-x))/2 + beta * (f(x) - f(-x))/(2x)
             let omega = bbRootOfUnity(logN: currentLogN)
+            let inv2 = bbInverse(Bb(v: 2))
+
+            // Precompute omega powers and batch-invert odd denominators
+            var omegaPows = [Bb](repeating: Bb.one, count: half)
+            for i in 1..<half { omegaPows[i] = bbMul(omegaPows[i - 1], omega) }
+            var oddDenoms = [Bb](repeating: Bb.zero, count: half)
+            for i in 0..<half { oddDenoms[i] = bbMul(Bb(v: 2), omegaPows[i]) }
+            var denomPrefix = [Bb](repeating: Bb.one, count: half)
+            for i in 1..<half {
+                denomPrefix[i] = oddDenoms[i - 1].v == 0 ? denomPrefix[i - 1] : bbMul(denomPrefix[i - 1], oddDenoms[i - 1])
+            }
+            let denomLast = oddDenoms[half - 1].v == 0 ? denomPrefix[half - 1] : bbMul(denomPrefix[half - 1], oddDenoms[half - 1])
+            var denomInv = bbInverse(denomLast)
+            var oddDenomInvs = [Bb](repeating: Bb.zero, count: half)
+            for i in stride(from: half - 1, through: 0, by: -1) {
+                if oddDenoms[i].v != 0 {
+                    oddDenomInvs[i] = bbMul(denomInv, denomPrefix[i])
+                    denomInv = bbMul(denomInv, oddDenoms[i])
+                }
+            }
+
             var folded = [Bb](repeating: Bb.zero, count: half)
             for i in 0..<half {
                 let f0 = currentEvals[i]
                 let f1 = currentEvals[i + half]
-                // (f(x) + f(-x)) / 2
-                let even = bbMul(bbAdd(f0, f1), bbInverse(Bb(v: 2)))
-                // (f(x) - f(-x)) / (2 * omega^i)
-                let omegaI = bbPow(omega, UInt32(i))
-                let oddDenom = bbMul(Bb(v: 2), omegaI)
-                let odd = bbMul(bbSub(f0, f1), bbInverse(oddDenom))
+                let even = bbMul(bbAdd(f0, f1), inv2)
+                let odd = bbMul(bbSub(f0, f1), oddDenomInvs[i])
                 folded[i] = bbAdd(even, bbMul(beta, odd))
             }
 

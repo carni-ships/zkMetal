@@ -552,17 +552,29 @@ public class Stark252STARKProver {
         // Step 5: Evaluate constraints over LDE domain, compute quotient
         let omega = stark252RootOfUnity(logN: logLDE)
 
-        // Precompute vanishing polynomial evaluations: Z_H(x) = x^traceLen - 1
-        var vanishingInv = [Stark252](repeating: Stark252.zero, count: ldeLen)
-        var cosetPow = Stark252.one
+        // Precompute vanishing polynomial inverses: 1 / (x^traceLen - 1)
+        // x_i^N = cosetShift^N * (omega^N)^i — chain multiply instead of per-element stark252Pow
+        let cosetShiftN = stark252Pow(cosetShift, UInt64(traceLen))
+        let omegaN = stark252Pow(omega, UInt64(traceLen))
+        var vanishingVals = [Stark252](repeating: Stark252.zero, count: ldeLen)
+        var omegaNpow = cosetShiftN
         for i in 0..<ldeLen {
-            let x = stark252Mul(cosetShift, cosetPow)
-            let xToN = stark252Pow(x, UInt64(traceLen))
-            let zh = stark252Sub(xToN, Stark252.one)
-            if !zh.isZero {
-                vanishingInv[i] = stark252Inverse(zh)
+            vanishingVals[i] = stark252Sub(omegaNpow, Stark252.one)
+            omegaNpow = stark252Mul(omegaNpow, omegaN)
+        }
+        // Montgomery batch inversion: 3(n-1) muls + 1 inverse
+        var vanishingInv = [Stark252](repeating: Stark252.zero, count: ldeLen)
+        var prefix = [Stark252](repeating: Stark252.one, count: ldeLen)
+        for i in 1..<ldeLen {
+            prefix[i] = vanishingVals[i - 1].isZero ? prefix[i - 1] : stark252Mul(prefix[i - 1], vanishingVals[i - 1])
+        }
+        let lastNonZero = vanishingVals[ldeLen - 1].isZero ? prefix[ldeLen - 1] : stark252Mul(prefix[ldeLen - 1], vanishingVals[ldeLen - 1])
+        var inv = stark252Inverse(lastNonZero)
+        for i in stride(from: ldeLen - 1, through: 0, by: -1) {
+            if !vanishingVals[i].isZero {
+                vanishingInv[i] = stark252Mul(inv, prefix[i])
+                inv = stark252Mul(inv, vanishingVals[i])
             }
-            cosetPow = stark252Mul(cosetPow, omega)
         }
 
         // Evaluate constraints and form quotient polynomial
@@ -700,16 +712,32 @@ public class Stark252STARKProver {
 
             // Fold: f'(x^2) = (f(x) + f(-x))/2 + beta * (f(x) - f(-x))/(2x)
             let omega = stark252RootOfUnity(logN: currentLogN)
+
+            // Precompute omega powers and batch-invert odd denominators
+            var omegaPows = [Stark252](repeating: Stark252.one, count: half)
+            for i in 1..<half { omegaPows[i] = stark252Mul(omegaPows[i - 1], omega) }
+            var oddDenoms = [Stark252](repeating: Stark252.zero, count: half)
+            for i in 0..<half { oddDenoms[i] = stark252Mul(two, omegaPows[i]) }
+            var denomPrefix = [Stark252](repeating: Stark252.one, count: half)
+            for i in 1..<half {
+                denomPrefix[i] = oddDenoms[i - 1].isZero ? denomPrefix[i - 1] : stark252Mul(denomPrefix[i - 1], oddDenoms[i - 1])
+            }
+            let denomLast = oddDenoms[half - 1].isZero ? denomPrefix[half - 1] : stark252Mul(denomPrefix[half - 1], oddDenoms[half - 1])
+            var denomInv = stark252Inverse(denomLast)
+            var oddDenomInvs = [Stark252](repeating: Stark252.zero, count: half)
+            for i in stride(from: half - 1, through: 0, by: -1) {
+                if !oddDenoms[i].isZero {
+                    oddDenomInvs[i] = stark252Mul(denomInv, denomPrefix[i])
+                    denomInv = stark252Mul(denomInv, oddDenoms[i])
+                }
+            }
+
             var folded = [Stark252](repeating: Stark252.zero, count: half)
             for i in 0..<half {
                 let f0 = currentEvals[i]
                 let f1 = currentEvals[i + half]
-                // (f(x) + f(-x)) / 2
                 let even = stark252Mul(stark252Add(f0, f1), inv2)
-                // (f(x) - f(-x)) / (2 * omega^i)
-                let omegaI = stark252Pow(omega, UInt64(i))
-                let oddDenom = stark252Mul(two, omegaI)
-                let odd = stark252Mul(stark252Sub(f0, f1), stark252Inverse(oddDenom))
+                let odd = stark252Mul(stark252Sub(f0, f1), oddDenomInvs[i])
                 folded[i] = stark252Add(even, stark252Mul(beta, odd))
             }
 
