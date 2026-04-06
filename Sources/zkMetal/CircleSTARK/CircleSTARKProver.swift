@@ -444,29 +444,42 @@ public class CircleSTARKProver {
         let queue = ntt.commandQueue
         let sz = MemoryLayout<UInt32>.stride
 
-        var traceLDEs = [[M31]]()
+        // Allocate all column buffers and copy trace data
+        var bufs = [MTLBuffer]()
         for colIdx in 0..<air.numColumns {
             guard let buf = dev.makeBuffer(length: evalLen * sz, options: .storageModeShared) else {
                 throw MSMError.gpuError("Failed to allocate LDE buffer for column \(colIdx)")
             }
             let ptr = buf.contents().bindMemory(to: UInt32.self, capacity: evalLen)
             for i in 0..<traceLen { ptr[i] = trace[colIdx][i].v }
+            bufs.append(buf)
+        }
 
-            // INTT: trace -> coefficients
-            guard let cb1 = queue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
-            ntt.encodeINTT(data: buf, logN: logTrace, cmdBuf: cb1)
-            cb1.commit(); cb1.waitUntilCompleted()
-            if let err = cb1.error { throw MSMError.gpuError("INTT error col \(colIdx): \(err)") }
+        // Batch INTT: all columns in one command buffer
+        guard let cb1 = queue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
+        for colIdx in 0..<air.numColumns {
+            ntt.encodeINTT(data: bufs[colIdx], logN: logTrace, cmdBuf: cb1)
+        }
+        cb1.commit(); cb1.waitUntilCompleted()
+        if let err = cb1.error { throw MSMError.gpuError("INTT error: \(err)") }
 
-            // Zero-pad
-            for i in traceLen..<evalLen { ptr[i] = 0 }
+        // Zero-pad all columns on CPU
+        for colIdx in 0..<air.numColumns {
+            let ptr = bufs[colIdx].contents().bindMemory(to: UInt32.self, capacity: evalLen)
+            memset(ptr + traceLen, 0, (evalLen - traceLen) * sz)
+        }
 
-            // NTT: coefficients -> LDE evaluations
-            guard let cb2 = queue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
-            ntt.encodeNTT(data: buf, logN: logEval, cmdBuf: cb2)
-            cb2.commit(); cb2.waitUntilCompleted()
-            if let err = cb2.error { throw MSMError.gpuError("NTT error col \(colIdx): \(err)") }
+        // Batch NTT: all columns in one command buffer
+        guard let cb2 = queue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
+        for colIdx in 0..<air.numColumns {
+            ntt.encodeNTT(data: bufs[colIdx], logN: logEval, cmdBuf: cb2)
+        }
+        cb2.commit(); cb2.waitUntilCompleted()
+        if let err = cb2.error { throw MSMError.gpuError("NTT error: \(err)") }
 
+        var traceLDEs = [[M31]]()
+        for colIdx in 0..<air.numColumns {
+            let ptr = bufs[colIdx].contents().bindMemory(to: UInt32.self, capacity: evalLen)
             var lde = [M31](repeating: M31.zero, count: evalLen)
             for i in 0..<evalLen { lde[i] = M31(v: ptr[i]) }
             traceLDEs.append(lde)
