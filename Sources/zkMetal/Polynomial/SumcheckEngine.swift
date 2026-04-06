@@ -726,78 +726,83 @@ public class SumcheckEngine {
         var rounds: [[Fr]] = []
         var useFirst = true
 
-        for round in 0..<numVars {
-            let halfN = currentN / 2
+        // Pre-compute per-round metadata and allocate partial sums buffer for all rounds
+        var roundMeta: [(halfN: Int, numGroups: Int, partialOffset: Int)] = []
+        var totalPartials = 0
+        var tempN = n
+        for _ in 0..<numVars {
+            let halfN = tempN / 2
             let numGroups = max(1, (halfN + tgSize - 1) / tgSize)
+            roundMeta.append((halfN: halfN, numGroups: numGroups, partialOffset: totalPartials))
+            totalPartials += numGroups * numEvalPts
+            tempN = halfN
+        }
 
-            // Ensure partial buffer is large enough
-            let partialBytes = numGroups * numEvalPts * stride
-            if hdPartialBufSize < partialBytes {
-                guard let buf = device.makeBuffer(length: partialBytes, options: .storageModeShared) else {
-                    throw MSMError.gpuError("Failed to allocate high-degree partial buffer")
-                }
-                hdPartialBuf = buf
-                hdPartialBufSize = partialBytes
+        let totalPartialBytes = totalPartials * stride
+        if hdPartialBufSize < totalPartialBytes {
+            guard let buf = device.makeBuffer(length: totalPartialBytes, options: .storageModeShared) else {
+                throw MSMError.gpuError("Failed to allocate high-degree partial buffer")
             }
+            hdPartialBuf = buf
+            hdPartialBufSize = totalPartialBytes
+        }
 
+        // Single command buffer for all rounds
+        guard let cmdBuf = commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
+        }
+        let enc = cmdBuf.makeComputeCommandEncoder()!
+        let pipelineState = numPolys <= 8 ? highDegRoundReduceSmallFunction : highDegRoundReduceFunction
+
+        for round in 0..<numVars {
+            let meta = roundMeta[round]
             let srcBuf = useFirst ? hdPolyBufs[0] : hdPolyBufs[1]
             let dstBuf = useFirst ? hdPolyBufs[1] : hdPolyBufs[0]
 
-            // Reuse cached challenge buffer (grow-only)
-            let chalBytes = stride
-            if hdChalBufSize < chalBytes {
-                guard let buf = device.makeBuffer(length: chalBytes, options: .storageModeShared) else {
-                    throw MSMError.gpuError("Failed to allocate high-degree challenge buffer")
-                }
-                hdChalBuf = buf
-                hdChalBufSize = chalBytes
-            }
-            var chalVal = challenges[round]
-            memcpy(hdChalBuf!.contents(), &chalVal, chalBytes)
-            let chalBuf = hdChalBuf!
-
-            guard let cmdBuf = commandQueue.makeCommandBuffer() else {
-                throw MSMError.noCommandBuffer
-            }
-
-            var halfNVal = UInt32(halfN)
+            var halfNVal = UInt32(meta.halfN)
             var numPolysVal = UInt32(numPolys)
             var numEvalPtsVal = UInt32(numEvalPts)
+            var chalVal = challenges[round]
 
-            let pipelineState = numPolys <= 8 ? highDegRoundReduceSmallFunction : highDegRoundReduceFunction
-
-            let enc = cmdBuf.makeComputeCommandEncoder()!
             enc.setComputePipelineState(pipelineState)
             enc.setBuffer(srcBuf, offset: 0, index: 0)
             enc.setBuffer(dstBuf, offset: 0, index: 1)
-            enc.setBuffer(hdPartialBuf, offset: 0, index: 2)
+            enc.setBuffer(hdPartialBuf, offset: meta.partialOffset * stride, index: 2)
             enc.setBuffer(hdEvalPointsBuf, offset: 0, index: 3)
-            enc.setBuffer(chalBuf, offset: 0, index: 4)
+            enc.setBytes(&chalVal, length: stride, index: 4)
             enc.setBytes(&halfNVal, length: 4, index: 5)
             enc.setBytes(&numPolysVal, length: 4, index: 6)
             enc.setBytes(&numEvalPtsVal, length: 4, index: 7)
-            enc.dispatchThreadgroups(MTLSize(width: numGroups, height: 1, depth: 1),
+            enc.dispatchThreadgroups(MTLSize(width: meta.numGroups, height: 1, depth: 1),
                                     threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
-            enc.endEncoding()
 
-            cmdBuf.commit()
-            cmdBuf.waitUntilCompleted()
-            if let error = cmdBuf.error {
-                throw MSMError.gpuError(error.localizedDescription)
+            if round < numVars - 1 {
+                enc.memoryBarrier(scope: .buffers)
             }
 
-            // CPU-side reduction of partial sums
-            let ptr = hdPartialBuf!.contents().bindMemory(to: Fr.self, capacity: numGroups * numEvalPts)
+            currentN = meta.halfN
+            useFirst = !useFirst
+        }
+        enc.endEncoding()
+
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+        if let error = cmdBuf.error {
+            throw MSMError.gpuError(error.localizedDescription)
+        }
+
+        // CPU-side reduction of all rounds' partial sums (single readback)
+        let basePtr = hdPartialBuf!.contents().bindMemory(to: Fr.self, capacity: totalPartials)
+        for round in 0..<numVars {
+            let meta = roundMeta[round]
+            let ptr = basePtr + meta.partialOffset
             var roundEvals = [Fr](repeating: Fr.zero, count: numEvalPts)
-            for g in 0..<numGroups {
+            for g in 0..<meta.numGroups {
                 for t in 0..<numEvalPts {
                     roundEvals[t] = frAdd(roundEvals[t], ptr[g * numEvalPts + t])
                 }
             }
             rounds.append(roundEvals)
-
-            currentN = halfN
-            useFirst = !useFirst
         }
 
         // Final evaluation: product of the single remaining value from each polynomial
