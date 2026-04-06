@@ -162,49 +162,43 @@ public class BasefoldEngine {
 
         let stride = MemoryLayout<Fr>.stride
 
-        // Phase 1: Fold all rounds on CPU using C CIOS (single call, minimal allocation).
-        let totalOut = n - 1  // n/2 + n/4 + ... + 1
-        let flatBuf = UnsafeMutablePointer<UInt64>.allocate(capacity: totalOut * 4)
-        defer { flatBuf.deallocate() }
-
-        evals.withUnsafeBytes { evalsPtr in
-            point.withUnsafeBytes { pointPtr in
-                bn254_fr_basefold_fold_all(
-                    evalsPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                    Int32(numVars),
-                    pointPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                    flatBuf
-                )
-            }
-        }
-
-        // Phase 2: Extract layers and build Merkle trees (separate buffers per tree).
-        var layers: [[Fr]] = []
-        layers.reserveCapacity(numVars)
-        var roots: [Fr] = []
-        roots.reserveCapacity(numVars)
-
+        // Phase 1: GPU fold all rounds, writing each intermediate layer directly into tree buffers.
+        // Each round's fold output becomes the leaves of that round's Merkle tree.
+        // Round i reads from tree[i-1] (or input) and writes to tree[i].
         if n != cachedTreeBufsN {
             cachedTreeBufsArr.removeAll()
             cachedTreeBufsN = n
         }
 
+        // Upload evaluations to GPU
+        if n > inputBufElements {
+            guard let buf = device.makeBuffer(length: n * stride, options: .storageModeShared) else {
+                throw MSMError.gpuError("Failed to create input buffer")
+            }
+            inputBuf = buf
+            inputBufElements = n
+        }
+        evals.withUnsafeBytes { src in
+            memcpy(inputBuf!.contents(), src.baseAddress!, n * stride)
+        }
+
+        var layers: [[Fr]] = []
+        layers.reserveCapacity(numVars)
+        var roots: [Fr] = []
+        roots.reserveCapacity(numVars)
         var treeBufPtrs: [MTLBuffer?] = []
         var treeSizesArr: [Int] = []
         var treeNodeCounts: [Int] = []
         var tbIdx = 0
 
-        var flatOffset = 0
+        // Pre-allocate tree buffers for all rounds (fold output goes to leaves region)
+        var roundTreeBufs: [MTLBuffer?] = []
+        roundTreeBufs.reserveCapacity(numVars)
+        var currentN = n
         for round in 0..<numVars {
-            let layerN = n >> (round + 1)
-            let layerPtr = UnsafeRawPointer(flatBuf + flatOffset * 4).assumingMemoryBound(to: Fr.self)
-            layers.append(Array(UnsafeBufferPointer(start: layerPtr, count: layerN)))
-
+            let layerN = currentN / 2
             if layerN <= 1 {
-                roots.append(layerN == 1 ? layers.last![0] : Fr.zero)
-                treeBufPtrs.append(nil)
-                treeSizesArr.append(0)
-                treeNodeCounts.append(0)
+                roundTreeBufs.append(nil)
             } else {
                 let treeSize = 2 * layerN - 1
                 let tb: MTLBuffer
@@ -219,13 +213,92 @@ public class BasefoldEngine {
                     tb = buf
                 }
                 tbIdx += 1
-                memcpy(tb.contents(), flatBuf + flatOffset * 4, layerN * stride)
+                roundTreeBufs.append(tb)
+            }
+            currentN = layerN
+        }
+
+        // GPU fold: each round writes fold output to the tree buffer's leaf region.
+        // Round i+1 reads from round i's tree buffer.
+        guard let foldCB = commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
+        }
+        let foldEnc = foldCB.makeComputeCommandEncoder()!
+
+        var currentInputBuf = inputBuf!
+        currentN = n
+
+        for round in 0..<numVars {
+            let halfN = currentN / 2
+            let outputBuf: MTLBuffer
+            if let tb = roundTreeBufs[round] {
+                outputBuf = tb  // Write fold output directly to tree buffer leaves
+            } else {
+                // Very small layer (≤1 element): use foldBufA as scratch
+                let maxHalf = n / 2
+                if foldBufSize < maxHalf {
+                    guard let a = device.makeBuffer(length: maxHalf * stride, options: .storageModeShared) else {
+                        throw MSMError.gpuError("Failed to create fold buffer")
+                    }
+                    foldBufA = a
+                    foldBufSize = maxHalf
+                }
+                outputBuf = foldBufA!
+            }
+
+            var alpha = point[round]
+            var hnVal = UInt32(halfN)
+            foldEnc.setComputePipelineState(foldFunction)
+            foldEnc.setBuffer(currentInputBuf, offset: 0, index: 0)
+            foldEnc.setBuffer(outputBuf, offset: 0, index: 1)
+            foldEnc.setBytes(&alpha, length: stride, index: 2)
+            foldEnc.setBytes(&hnVal, length: 4, index: 3)
+            let tg = min(tuning.friThreadgroupSize, Int(foldFunction.maxTotalThreadsPerThreadgroup))
+            foldEnc.dispatchThreads(MTLSize(width: max(halfN, 1), height: 1, depth: 1),
+                                   threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+
+            currentInputBuf = outputBuf
+            currentN = halfN
+            if round + 1 < numVars {
+                foldEnc.memoryBarrier(scope: .buffers)
+            }
+        }
+        foldEnc.endEncoding()
+        foldCB.commit()
+        foldCB.waitUntilCompleted()
+        if let foldErr = foldCB.error {
+            throw MSMError.gpuError("Fold: \(foldErr.localizedDescription)")
+        }
+
+        // Phase 2: Extract layers from tree buffers (zero-copy read) and set up for Merkle trees.
+        currentN = n
+        for round in 0..<numVars {
+            let layerN = currentN / 2
+            if layerN <= 1 {
+                if layerN == 1 {
+                    // Read final value from the last output buffer
+                    let srcBuf = roundTreeBufs[round] ?? foldBufA!
+                    let ptr = srcBuf.contents().bindMemory(to: Fr.self, capacity: 1)
+                    layers.append([ptr[0]])
+                    roots.append(ptr[0])
+                } else {
+                    layers.append([])
+                    roots.append(Fr.zero)
+                }
+                treeBufPtrs.append(nil)
+                treeSizesArr.append(0)
+                treeNodeCounts.append(0)
+            } else {
+                let treeSize = 2 * layerN - 1
+                let tb = roundTreeBufs[round]!
+                let ptr = tb.contents().bindMemory(to: Fr.self, capacity: layerN)
+                layers.append(Array(UnsafeBufferPointer(start: ptr, count: layerN)))
                 treeBufPtrs.append(tb)
                 treeSizesArr.append(layerN)
                 treeNodeCounts.append(treeSize)
                 roots.append(Fr.zero)
             }
-            flatOffset += layerN
+            currentN = layerN
         }
 
         // Build Merkle trees with overlapped GPU command buffers.

@@ -546,8 +546,91 @@ public class NTTEngine {
         }
         enc.memoryBarrier(scope: .buffers)
 
-        if needsExtended {
-            // Steps 2+3+4 fused: Row FFTs + twiddle + transpose (data → scratch)
+        if needsExtended && n1 == n2 {
+            // In-place path for balanced splits (N1=N2): twiddle + extended row FFT + transpose
+            // Avoids scratch buffer and blit copy by keeping everything in data buffer.
+
+            // Step 2: Twiddle multiply (in-place)
+            enc.setComputePipelineState(twiddleMultiplyFunction)
+            enc.setBuffer(data, offset: 0, index: 0)
+            enc.setBuffer(twiddles, offset: 0, index: 1)
+            enc.setBytes(&n2Val, length: 4, index: 2)  // number of columns
+            enc.setBytes(&nVal, length: 4, index: 3)
+            let twTg = min(tuning.nttThreadgroupSize, Int(twiddleMultiplyFunction.maxTotalThreadsPerThreadgroup))
+            enc.dispatchThreads(MTLSize(width: nInt, height: 1, depth: 1),
+                                threadsPerThreadgroup: MTLSize(width: twTg, height: 1, depth: 1))
+
+            enc.memoryBarrier(scope: .buffers)
+
+            // Step 3: Row FFTs of size N2 using subblock fused + global butterfly
+            let rowFusedStages = min(logN2, NTTEngine.maxFusedLogN)
+            let rowGlobalStages = logN2 - rowFusedStages
+
+            // 3a: Row subblock fused (up to maxFusedLogN stages)
+            let rowSubSize = UInt32(1 << rowFusedStages)
+            let rowNumSubblocks = n2 / rowSubSize
+            var rowSubStagesVal = UInt32(rowFusedStages)
+            var rowNumSubblocksVal = rowNumSubblocks
+
+            enc.setComputePipelineState(rowSubblockFusedFunction)
+            enc.setBuffer(data, offset: 0, index: 0)
+            enc.setBuffer(twiddles, offset: 0, index: 1)
+            enc.setBytes(&nVal, length: 4, index: 2)
+            enc.setBytes(&n2Val, length: 4, index: 3)   // row size = N2
+            enc.setBytes(&n1Val, length: 4, index: 4)   // num rows = N1
+            enc.setBytes(&rowSubStagesVal, length: 4, index: 5)
+            enc.setBytes(&rowNumSubblocksVal, length: 4, index: 6)
+            let rowSubThreads = Int(rowSubSize) / 2
+            let rowNumGroups = Int(n1) * Int(rowNumSubblocks)
+            enc.dispatchThreadgroups(MTLSize(width: rowNumGroups, height: 1, depth: 1),
+                                     threadsPerThreadgroup: MTLSize(width: rowSubThreads, height: 1, depth: 1))
+
+            // 3b: Row global butterfly stages
+            if rowGlobalStages > 0 {
+                var rs = rowFusedStages
+                while rs + 1 < logN2 {
+                    enc.memoryBarrier(scope: .buffers)
+                    enc.setComputePipelineState(rowButterflyRadix4Function)
+                    enc.setBuffer(data, offset: 0, index: 0)
+                    enc.setBuffer(twiddles, offset: 0, index: 1)
+                    enc.setBytes(&n2Val, length: 4, index: 2)
+                    enc.setBytes(&n1Val, length: 4, index: 3)
+                    var stageVal = UInt32(rs)
+                    enc.setBytes(&stageVal, length: 4, index: 4)
+                    let totalQuads = Int(n1) * Int(n2) / 4
+                    let r4tg = min(tuning.nttThreadgroupSize, Int(rowButterflyRadix4Function.maxTotalThreadsPerThreadgroup))
+                    enc.dispatchThreads(MTLSize(width: totalQuads, height: 1, depth: 1),
+                                        threadsPerThreadgroup: MTLSize(width: r4tg, height: 1, depth: 1))
+                    rs += 2
+                }
+                if rs < logN2 {
+                    enc.memoryBarrier(scope: .buffers)
+                    enc.setComputePipelineState(rowButterflyFunction)
+                    enc.setBuffer(data, offset: 0, index: 0)
+                    enc.setBuffer(twiddles, offset: 0, index: 1)
+                    enc.setBytes(&n2Val, length: 4, index: 2)
+                    enc.setBytes(&n1Val, length: 4, index: 3)
+                    var stageVal = UInt32(rs)
+                    enc.setBytes(&stageVal, length: 4, index: 4)
+                    let totalPairs = Int(n1) * Int(n2) / 2
+                    let r2tg = min(tuning.nttThreadgroupSize, Int(rowButterflyFunction.maxTotalThreadsPerThreadgroup))
+                    enc.dispatchThreads(MTLSize(width: totalPairs, height: 1, depth: 1),
+                                        threadsPerThreadgroup: MTLSize(width: r2tg, height: 1, depth: 1))
+                }
+            }
+
+            enc.memoryBarrier(scope: .buffers)
+
+            // Step 4: In-place square transpose (N1 = N2)
+            enc.setComputePipelineState(transposeFunction)
+            enc.setBuffer(data, offset: 0, index: 0)
+            enc.setBytes(&n1Val, length: 4, index: 1)
+            let trTg = min(tuning.nttThreadgroupSize, Int(transposeFunction.maxTotalThreadsPerThreadgroup))
+            enc.dispatchThreads(MTLSize(width: nInt, height: 1, depth: 1),
+                                threadsPerThreadgroup: MTLSize(width: trTg, height: 1, depth: 1))
+            enc.endEncoding()
+        } else if needsExtended {
+            // Unbalanced extended path: use scratch buffer + blit (N1 ≠ N2)
             let scratch = getScratchBuffer(n: nInt)
             enc.setComputePipelineState(rowFusedTwiddleTransposeFunction)
             enc.setBuffer(data, offset: 0, index: 0)
