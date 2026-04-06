@@ -271,7 +271,19 @@ void stark252_ntt(uint64_t *data, int logN) {
 
         for (int bk = 0; bk < nBlocks; bk++) {
             int base = bk * blockSize;
-            for (int j = 0; j < halfBlock; j++) {
+            // Twiddle skip: j==0 has twiddle==1, skip expensive 252-bit mul
+            {
+                uint64_t *u = &data[base * 4];
+                uint64_t *vp = &data[(base + halfBlock) * 4];
+
+                uint64_t sum[4], diff[4];
+                stark252_fp_add(u, vp, sum);
+                stark252_fp_sub(u, vp, diff);
+
+                memcpy(u, sum, 32);
+                memcpy(vp, diff, 32);
+            }
+            for (int j = 1; j < halfBlock; j++) {
                 uint64_t *u = &data[(base + j) * 4];
                 uint64_t *vp = &data[(base + j + halfBlock) * 4];
                 const uint64_t *twj = &tw[(twOffset + j) * 4];
@@ -306,7 +318,23 @@ void stark252_intt(uint64_t *data, int logN) {
 
         for (int bk = 0; bk < nBlocks; bk++) {
             int base = bk * blockSize;
-            for (int j = 0; j < halfBlock; j++) {
+            // Twiddle skip: j==0 has twiddle==1
+            {
+                uint64_t *ap = &data[base * 4];
+                uint64_t *bp = &data[(base + halfBlock) * 4];
+
+                uint64_t a[4], b[4];
+                memcpy(a, ap, 32);
+                memcpy(b, bp, 32);
+
+                uint64_t sum[4], diff[4];
+                stark252_fp_add(a, b, sum);
+                stark252_fp_sub(a, b, diff);
+
+                memcpy(ap, sum, 32);
+                memcpy(bp, diff, 32);
+            }
+            for (int j = 1; j < halfBlock; j++) {
                 uint64_t *ap = &data[(base + j) * 4];
                 uint64_t *bp = &data[(base + j + halfBlock) * 4];
                 const uint64_t *twj = &tw[(twOffset + j) * 4];

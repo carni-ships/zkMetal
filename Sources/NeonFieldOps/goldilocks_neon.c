@@ -213,7 +213,14 @@ static inline void gl_butterfly_neon_pair(
 void gl_batch_butterfly_neon(uint64_t *data, const uint64_t *twiddles, int halfBlock, int nBlocks) {
     for (int bk = 0; bk < nBlocks; bk++) {
         int base = bk * (halfBlock << 1);
-        int j = 0;
+        // Twiddle skip: j==0 always has twiddle==1, skip expensive 64-bit mul
+        {
+            uint64_t a0 = data[base];
+            uint64_t b0 = data[base + halfBlock];
+            data[base] = gl_add_scalar(a0, b0);
+            data[base + halfBlock] = gl_sub_scalar(a0, b0);
+        }
+        int j = 1;
         // Process pairs of butterflies with NEON add/sub
         for (; j + 1 < halfBlock; j += 2) {
             uint64_t a0 = data[base + j];
@@ -248,7 +255,14 @@ void gl_batch_butterfly_neon(uint64_t *data, const uint64_t *twiddles, int halfB
 void gl_batch_butterfly_dif_neon(uint64_t *data, const uint64_t *twiddles, int halfBlock, int nBlocks) {
     for (int bk = 0; bk < nBlocks; bk++) {
         int base = bk * (halfBlock << 1);
-        int j = 0;
+        // Twiddle skip: j==0 has twiddle==1, diff * 1 = diff (skip mul)
+        {
+            uint64_t a0 = data[base];
+            uint64_t b0 = data[base + halfBlock];
+            data[base] = gl_add_scalar(a0, b0);
+            data[base + halfBlock] = gl_sub_scalar(a0, b0);
+        }
+        int j = 1;
         for (; j + 1 < halfBlock; j += 2) {
             uint64x2_t va = vld1q_u64(data + base + j);
             uint64x2_t vb = vld1q_u64(data + base + j + halfBlock);

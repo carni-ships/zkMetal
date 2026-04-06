@@ -31,6 +31,26 @@ public func poseidon2Permutation(_ input: [Fr]) -> [Fr] {
     return result
 }
 
+/// In-place Poseidon2 permutation on a 3-element tuple — zero allocation.
+/// Use this in hot loops (sponge, transcript) to avoid array allocation overhead.
+@inline(__always)
+public func poseidon2PermuteInPlace(_ s0: inout Fr, _ s1: inout Fr, _ s2: inout Fr) {
+    // Build contiguous input/output on stack (no heap allocation)
+    var input = (s0, s1, s2)
+    var output: (Fr, Fr, Fr) = (Fr.zero, Fr.zero, Fr.zero)
+    withUnsafeBytes(of: &input) { inBuf in
+        withUnsafeMutableBytes(of: &output) { outBuf in
+            poseidon2_permutation_cpu(
+                inBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                outBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+            )
+        }
+    }
+    s0 = output.0
+    s1 = output.1
+    s2 = output.2
+}
+
 // MARK: - Poseidon2 Hash (Sponge) — C CIOS accelerated
 
 /// Hash two field elements using Poseidon2 sponge (2-to-1 compression).
@@ -54,53 +74,20 @@ public func poseidon2Hash(_ a: Fr, _ b: Fr) -> Fr {
 
 /// Hash a variable-length array of field elements using Poseidon2 sponge.
 /// Uses rate=2, capacity=1. Uses C CIOS for the permutation.
+/// Zero-allocation inner loop: uses stack-based tuple permutation.
 public func poseidon2HashMany(_ inputs: [Fr]) -> Fr {
     var s0 = Fr.zero, s1 = Fr.zero, s2 = Fr.zero
 
     var i = 0
     while i < inputs.count {
         // Absorb: add inputs to rate portion of state
-        withUnsafePointer(to: s0) { s0Ptr in
-            withUnsafePointer(to: inputs[i]) { inPtr in
-                var r = Fr.zero
-                withUnsafeMutablePointer(to: &r) { rPtr in
-                    bn254_fr_add(
-                        UnsafeRawPointer(s0Ptr).assumingMemoryBound(to: UInt64.self),
-                        UnsafeRawPointer(inPtr).assumingMemoryBound(to: UInt64.self),
-                        UnsafeMutableRawPointer(rPtr).assumingMemoryBound(to: UInt64.self)
-                    )
-                }
-                s0 = r
-            }
-        }
+        s0 = frAdd(s0, inputs[i])
         if i + 1 < inputs.count {
-            withUnsafePointer(to: s1) { s1Ptr in
-                withUnsafePointer(to: inputs[i + 1]) { inPtr in
-                    var r = Fr.zero
-                    withUnsafeMutablePointer(to: &r) { rPtr in
-                        bn254_fr_add(
-                            UnsafeRawPointer(s1Ptr).assumingMemoryBound(to: UInt64.self),
-                            UnsafeRawPointer(inPtr).assumingMemoryBound(to: UInt64.self),
-                            UnsafeMutableRawPointer(rPtr).assumingMemoryBound(to: UInt64.self)
-                        )
-                    }
-                    s1 = r
-                }
-            }
+            s1 = frAdd(s1, inputs[i + 1])
         }
 
-        // Permute
-        var state = [s0, s1, s2]
-        var result = [Fr](repeating: Fr.zero, count: 3)
-        state.withUnsafeBytes { inPtr in
-            result.withUnsafeMutableBytes { outPtr in
-                poseidon2_permutation_cpu(
-                    inPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                    outPtr.baseAddress!.assumingMemoryBound(to: UInt64.self)
-                )
-            }
-        }
-        s0 = result[0]; s1 = result[1]; s2 = result[2]
+        // Permute (zero-allocation, stack-based)
+        poseidon2PermuteInPlace(&s0, &s1, &s2)
         i += 2
     }
 

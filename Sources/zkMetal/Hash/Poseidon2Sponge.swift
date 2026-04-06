@@ -124,9 +124,23 @@ public struct Poseidon2Sponge {
         }
     }
 
-    /// Absorb a single field element.
+    /// Absorb a single field element (zero-allocation fast path).
     public mutating func absorb(element: Fr) {
-        absorb(elements: [element])
+        switch absorbed {
+        case 0:
+            state.0 = frAdd(state.0, element)
+        case 1:
+            state.1 = frAdd(state.1, element)
+        default:
+            fatalError("Internal error: absorbed count out of range")
+        }
+        absorbed += 1
+        dirty = true
+
+        if absorbed == 2 {
+            permute()
+            absorbed = 0
+        }
     }
 
     /// Absorb raw bytes, packing into Fr elements (31 bytes per element).
@@ -192,9 +206,18 @@ public struct Poseidon2Sponge {
         return result
     }
 
-    /// Squeeze a single field element.
+    /// Squeeze a single field element (zero-allocation fast path).
     public mutating func squeezeOne() -> Fr {
-        return squeeze(count: 1)[0]
+        // If we have absorbed data, finalize with a permutation
+        if dirty || absorbed > 0 {
+            permute()
+            absorbed = 0
+            dirty = false
+        }
+        let result = state.0
+        // Mark dirty so next absorb/squeeze knows state was read
+        dirty = true
+        return result
     }
 
     // MARK: - Convenience
@@ -225,10 +248,9 @@ public struct Poseidon2Sponge {
     // MARK: - Internal
 
     /// Apply the Poseidon2 permutation to the internal state.
+    /// Uses zero-allocation in-place permutation.
     private mutating func permute() {
-        var stateArr = [state.0, state.1, state.2]
-        stateArr = poseidon2Permutation(stateArr)
-        state = (stateArr[0], stateArr[1], stateArr[2])
+        poseidon2PermuteInPlace(&state.0, &state.1, &state.2)
     }
 
     /// Clone the sponge state for fork operations.

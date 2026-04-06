@@ -121,13 +121,22 @@ extension MultilinearPoly {
         return MultilinearPoly(numVars: a.numVars, evals: result)
     }
 
-    /// Subtract b from a (pointwise).
+    /// Subtract b from a (pointwise). Uses C batch sub for performance.
     public static func sub(_ a: MultilinearPoly, _ b: MultilinearPoly) -> MultilinearPoly {
         precondition(a.numVars == b.numVars, "Cannot subtract MLPs with different numVars")
         let n = a.size
         var result = [Fr](repeating: Fr.zero, count: n)
-        for i in 0..<n {
-            result[i] = frSub(a.evals[i], b.evals[i])
+        a.evals.withUnsafeBytes { aBuf in
+            b.evals.withUnsafeBytes { bBuf in
+                result.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_sub_neon(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n)
+                    )
+                }
+            }
         }
         return MultilinearPoly(numVars: a.numVars, evals: result)
     }

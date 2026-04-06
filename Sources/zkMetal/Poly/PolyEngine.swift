@@ -403,12 +403,16 @@ public class PolyEngine {
         while n < resultLen { n <<= 1 }
         let logN = Int(log2(Double(n)))
 
-        // Pad and copy to GPU buffers once
-        let aPad = a + [Fr](repeating: Fr.zero, count: n - a.count)
-        let bPad = b + [Fr](repeating: Fr.zero, count: n - b.count)
-
-        let aBuf = createBuffer(aPad)
-        let bBuf = createBuffer(bPad)
+        // Create zero-padded GPU buffers directly (avoids intermediate Swift array allocation)
+        let stride = MemoryLayout<Fr>.stride
+        let bufBytes = n * stride
+        let aBuf = device.makeBuffer(length: bufBytes, options: .storageModeShared)!
+        let bBuf = device.makeBuffer(length: bufBytes, options: .storageModeShared)!
+        // Zero the padding region, then copy data
+        memset(aBuf.contents(), 0, bufBytes)
+        memset(bBuf.contents(), 0, bufBytes)
+        a.withUnsafeBytes { src in memcpy(aBuf.contents(), src.baseAddress!, a.count * stride) }
+        b.withUnsafeBytes { src in memcpy(bBuf.contents(), src.baseAddress!, b.count * stride) }
 
         guard let cmdBuf = nttEngine.commandQueue.makeCommandBuffer() else {
             throw MSMError.noCommandBuffer

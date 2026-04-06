@@ -288,7 +288,14 @@ void babybear_ntt_neon(uint32_t *data, int logN) {
             // Small stages: scalar
             for (int bk = 0; bk < nBlocks; bk++) {
                 int base = bk * blockSize;
-                for (int j = 0; j < halfBlock; j++) {
+                // Twiddle skip: j==0 always has twiddle==1
+                {
+                    uint32_t u = data[base];
+                    uint32_t v_raw = data[base + halfBlock];
+                    data[base] = monty_add(u, v_raw);
+                    data[base + halfBlock] = monty_sub(u, v_raw);
+                }
+                for (int j = 1; j < halfBlock; j++) {
                     uint32_t u = data[base + j];
                     uint32_t v = monty_mul(tw[twOffset + j], data[base + j + halfBlock]);
                     data[base + j] = monty_add(u, v);
@@ -376,7 +383,14 @@ void babybear_intt_neon(uint32_t *data, int logN) {
         } else {
             for (int bk = 0; bk < nBlocks; bk++) {
                 int base = bk * blockSize;
-                for (int j = 0; j < halfBlock; j++) {
+                // Twiddle skip: j==0 has twiddle==1
+                {
+                    uint32_t a = data[base];
+                    uint32_t b = data[base + halfBlock];
+                    data[base] = monty_add(a, b);
+                    data[base + halfBlock] = monty_sub(a, b);
+                }
+                for (int j = 1; j < halfBlock; j++) {
                     uint32_t a = data[base + j];
                     uint32_t b = data[base + j + halfBlock];
                     data[base + j] = monty_add(a, b);

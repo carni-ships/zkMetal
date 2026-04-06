@@ -101,6 +101,10 @@ runPlonky2VerifierTests()
 runGPUBatchInverseEngineTests()
 runPedersenHashTests()
 runAIRConstraintCompilerTests()
+runMultiScalarInnerProductTests()
+runGPUInnerProductTests()
+runGroth16GPUWitnessTests()
+runPCSComparisonTests()
 
 let elapsed = CFAbsoluteTimeGetCurrent() - t0
 print(String(format: "\nCompleted in %.1fs", elapsed))

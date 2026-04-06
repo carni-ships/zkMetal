@@ -188,7 +188,14 @@ void goldilocks_ntt(uint64_t *data, int logN) {
 
         for (int bk = 0; bk < nBlocks; bk++) {
             int base = bk * blockSize;
-            for (int j = 0; j < halfBlock; j++) {
+            // Twiddle skip: j==0 always has twiddle==1, skip expensive 64-bit mul
+            {
+                uint64_t u = data[base];
+                uint64_t v = data[base + halfBlock];
+                data[base] = gl_add(u, v);
+                data[base + halfBlock] = gl_sub(u, v);
+            }
+            for (int j = 1; j < halfBlock; j++) {
                 uint64_t u = data[base + j];
                 uint64_t v = gl_mul(tw[twOffset + j], data[base + j + halfBlock]);
                 data[base + j] = gl_add(u, v);
@@ -219,7 +226,14 @@ void goldilocks_intt(uint64_t *data, int logN) {
 
         for (int bk = 0; bk < nBlocks; bk++) {
             int base = bk * blockSize;
-            for (int j = 0; j < halfBlock; j++) {
+            // Twiddle skip: j==0 has twiddle==1, diff * 1 = diff (skip mul)
+            {
+                uint64_t a = data[base];
+                uint64_t b = data[base + halfBlock];
+                data[base] = gl_add(a, b);
+                data[base + halfBlock] = gl_sub(a, b);
+            }
+            for (int j = 1; j < halfBlock; j++) {
                 uint64_t a = data[base + j];
                 uint64_t b = data[base + j + halfBlock];
                 data[base + j] = gl_add(a, b);

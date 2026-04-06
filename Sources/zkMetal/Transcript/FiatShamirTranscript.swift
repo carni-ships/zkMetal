@@ -452,7 +452,10 @@ public struct KeccakTranscriptHasher: TranscriptHasher {
 /// Uses t=3 (rate=2, capacity=1), operating directly on Fr elements.
 /// Bytes are packed into Fr elements (31 bytes per element to stay < p).
 public struct Poseidon2TranscriptHasher: TranscriptHasher {
-    private var state: [Fr] = [Fr.zero, Fr.zero, Fr.zero]
+    // Tuple-based state avoids array allocation on every permute
+    private var s0: Fr = Fr.zero
+    private var s1: Fr = Fr.zero
+    private var s2: Fr = Fr.zero
     private var absorbed: Int = 0
     private var needsPermute: Bool = false
 
@@ -495,17 +498,23 @@ public struct Poseidon2TranscriptHasher: TranscriptHasher {
 
     public func clone() -> Poseidon2TranscriptHasher {
         var copy = Poseidon2TranscriptHasher()
-        copy.state = self.state
+        copy.s0 = self.s0
+        copy.s1 = self.s1
+        copy.s2 = self.s2
         copy.absorbed = self.absorbed
         copy.needsPermute = self.needsPermute
         return copy
     }
 
     private mutating func absorbFrElement(_ value: Fr) {
-        state[absorbed] = frAdd(state[absorbed], value)
+        switch absorbed {
+        case 0: s0 = frAdd(s0, value)
+        case 1: s1 = frAdd(s1, value)
+        default: break
+        }
         absorbed += 1
         if absorbed == 2 {
-            state = poseidon2Permutation(state)
+            poseidon2PermuteInPlace(&s0, &s1, &s2)
             absorbed = 0
         }
         needsPermute = true
@@ -513,11 +522,11 @@ public struct Poseidon2TranscriptHasher: TranscriptHasher {
 
     private mutating func squeezeFrElement() -> Fr {
         if needsPermute || absorbed > 0 {
-            state = poseidon2Permutation(state)
+            poseidon2PermuteInPlace(&s0, &s1, &s2)
             absorbed = 0
             needsPermute = false
         }
-        let result = state[0]
+        let result = s0
         needsPermute = true
         return result
     }

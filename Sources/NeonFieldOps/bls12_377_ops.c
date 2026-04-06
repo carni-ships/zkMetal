@@ -929,7 +929,20 @@ void bls12_377_fr_ntt(uint64_t *data, int logN) {
 
         for (int bk = 0; bk < nBlocks; bk++) {
             int base = bk * blockSize;
-            for (int j = 0; j < halfBlock; j++) {
+            // Twiddle skip: j==0 has twiddle==1 (Montgomery identity),
+            // skip expensive 256-bit Montgomery mul
+            {
+                uint64_t *u = &data[base * 4];
+                uint64_t *vp = &data[(base + halfBlock) * 4];
+
+                uint64_t sum[4], diff[4];
+                fr_add(u, vp, sum);
+                fr_sub(u, vp, diff);
+
+                memcpy(u, sum, 32);
+                memcpy(vp, diff, 32);
+            }
+            for (int j = 1; j < halfBlock; j++) {
                 uint64_t *u = &data[(base + j) * 4];
                 uint64_t *vp = &data[(base + j + halfBlock) * 4];
                 const uint64_t *twj = &tw[(twOffset + j) * 4];
@@ -966,7 +979,23 @@ void bls12_377_fr_intt(uint64_t *data, int logN) {
 
         for (int bk = 0; bk < nBlocks; bk++) {
             int base = bk * blockSize;
-            for (int j = 0; j < halfBlock; j++) {
+            // Twiddle skip: j==0 has twiddle==1 (Montgomery identity)
+            {
+                uint64_t *ap = &data[base * 4];
+                uint64_t *bp = &data[(base + halfBlock) * 4];
+
+                uint64_t a[4], b[4];
+                memcpy(a, ap, 32);
+                memcpy(b, bp, 32);
+
+                uint64_t sum[4], diff[4];
+                fr_add(a, b, sum);
+                fr_sub(a, b, diff);
+
+                memcpy(ap, sum, 32);
+                memcpy(bp, diff, 32);
+            }
+            for (int j = 1; j < halfBlock; j++) {
                 uint64_t *ap = &data[(base + j) * 4];
                 uint64_t *bp = &data[(base + j + halfBlock) * 4];
                 const uint64_t *twj = &tw[(twOffset + j) * 4];

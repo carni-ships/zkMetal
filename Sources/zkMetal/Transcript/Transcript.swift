@@ -190,19 +190,25 @@ public class Transcript: TranscriptEngine {
 /// Absorb: XOR (additive) into rate positions, permute when rate is full.
 /// Squeeze: permute, output state[0].
 private struct Poseidon2Backend: TranscriptBackend {
-    // Sponge state: [rate0, rate1, capacity]
-    var state: [Fr] = [Fr.zero, Fr.zero, Fr.zero]
+    // Sponge state as tuple: (rate0, rate1, capacity) — avoids array allocation
+    var s0: Fr = Fr.zero
+    var s1: Fr = Fr.zero
+    var s2: Fr = Fr.zero
     // How many rate cells have been filled since last permute
     var absorbed: Int = 0
     // Whether we need to permute before squeezing
     var needsPermute: Bool = false
 
     mutating func absorbFr(_ value: Fr) {
-        state[absorbed] = frAdd(state[absorbed], value)
+        switch absorbed {
+        case 0: s0 = frAdd(s0, value)
+        case 1: s1 = frAdd(s1, value)
+        default: break
+        }
         absorbed += 1
         if absorbed == 2 {
-            // Rate is full, permute
-            state = poseidon2Permutation(state)
+            // Rate is full, permute (zero-allocation)
+            poseidon2PermuteInPlace(&s0, &s1, &s2)
             absorbed = 0
         }
         needsPermute = true
@@ -232,12 +238,12 @@ private struct Poseidon2Backend: TranscriptBackend {
         // If anything was absorbed since last squeeze, or buffer partially filled, permute
         if needsPermute || absorbed > 0 {
             // Pad: if absorbed < rate, we've already got zeros in remaining positions
-            state = poseidon2Permutation(state)
+            poseidon2PermuteInPlace(&s0, &s1, &s2)
             absorbed = 0
             needsPermute = false
         }
         // Output from rate portion
-        let result = state[0]
+        let result = s0
         // Subsequent squeezes need fresh permutations
         needsPermute = true
         return result
@@ -263,7 +269,9 @@ private struct Poseidon2Backend: TranscriptBackend {
 
     func clone() -> any TranscriptBackend {
         var copy = Poseidon2Backend()
-        copy.state = self.state
+        copy.s0 = self.s0
+        copy.s1 = self.s1
+        copy.s2 = self.s2
         copy.absorbed = self.absorbed
         copy.needsPermute = self.needsPermute
         return copy
