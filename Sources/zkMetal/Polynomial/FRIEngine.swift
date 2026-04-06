@@ -2173,9 +2173,9 @@ public class FRIEngine {
 
     // MARK: - Unified FRI API (mode-dispatched)
 
-    /// Default fold mode. Set to `.foldBy4` for optimal round/commitment tradeoff.
-    /// Change to `.foldBy2` for maximum compatibility or `.foldBy8` for fewest rounds.
-    public var defaultFoldMode: FRIFoldMode = .foldBy4
+    /// Default fold mode. Set to `.foldBy8` for fewest rounds and best GPU throughput.
+    /// Change to `.foldBy4` for balanced tradeoff or `.foldBy2` for maximum compatibility.
+    public var defaultFoldMode: FRIFoldMode = .foldBy8
 
     /// Unified commit phase: dispatches to commitPhase, commitPhase4, or commitPhase8
     /// based on the current `defaultFoldMode`.
