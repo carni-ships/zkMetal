@@ -102,11 +102,20 @@ public class GPUFRIFoldEngine {
             bytes: domain, length: count * stride,
             options: .storageModeShared)!
 
-        // Small domains: CPU fallback (GPU dispatch overhead not worth it)
+        // Small domains: CPU fallback with Montgomery batch inversion
         if count < GPUFRIFoldEngine.cpuFallbackThreshold {
+            var invPrefix = [Fr](repeating: Fr.one, count: count)
+            for i in 1..<count {
+                invPrefix[i] = domain[i - 1] == Fr.zero ? invPrefix[i - 1] : frMul(invPrefix[i - 1], domain[i - 1])
+            }
+            let invLast = domain[count - 1] == Fr.zero ? invPrefix[count - 1] : frMul(invPrefix[count - 1], domain[count - 1])
+            var invR = frInverse(invLast)
             var invs = [Fr](repeating: Fr.zero, count: count)
-            for i in 0..<count {
-                invs[i] = frInverse(domain[i])
+            for i in Swift.stride(from: count - 1, through: 0, by: -1) {
+                if domain[i] != Fr.zero {
+                    invs[i] = frMul(invR, invPrefix[i])
+                    invR = frMul(invR, domain[i])
+                }
             }
             let outBuf = device.makeBuffer(
                 bytes: invs, length: count * stride,
