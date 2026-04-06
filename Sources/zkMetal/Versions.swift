@@ -274,6 +274,16 @@ public enum Versions {
     public static let gpuBLSSignature = PrimitiveVersion(version: "1.0.0", updated: "2026-04-06")
     public static let gpuConstraintSat = PrimitiveVersion(version: "1.0.0", updated: "2026-04-06")
 
+    // --- Wave 17 ---
+    public static let gpuPlonky3AIR = PrimitiveVersion(version: "1.0.0", updated: "2026-04-06")
+    public static let gpuCQLookup = PrimitiveVersion(version: "1.0.0", updated: "2026-04-06")
+    public static let gpuVerkleMultiproof = PrimitiveVersion(version: "1.0.0", updated: "2026-04-06")
+    public static let gpuVanishingPoly = PrimitiveVersion(version: "1.0.0", updated: "2026-04-06")
+    public static let gpuJoltInstruction = PrimitiveVersion(version: "1.0.0", updated: "2026-04-06")
+    public static let gpuRangeProofProtocol = PrimitiveVersion(version: "1.0.0", updated: "2026-04-06")
+    public static let gpuCairoMemoryArg = PrimitiveVersion(version: "1.0.0", updated: "2026-04-06")
+    public static let gpuFflonkProver = PrimitiveVersion(version: "1.0.0", updated: "2026-04-06")
+
     /// Print all primitive versions
     public static func printAll() {
         let entries: [(String, PrimitiveVersion)] = [
@@ -459,6 +469,15 @@ public enum Versions {
             ("GPU Nova Relax",   gpuNovaRelaxation),
             ("GPU BLS Sig",      gpuBLSSignature),
             ("GPU Constr Sat",   gpuConstraintSat),
+            // --- Wave 17 ---
+            ("GPU Plonky3 AIR",  gpuPlonky3AIR),
+            ("GPU CQ Lookup",    gpuCQLookup),
+            ("GPU Verkle MP",    gpuVerkleMultiproof),
+            ("GPU Vanish Poly",  gpuVanishingPoly),
+            ("GPU Jolt Instr",   gpuJoltInstruction),
+            ("GPU Range Proof",  gpuRangeProofProtocol),
+            ("GPU Cairo Mem",    gpuCairoMemoryArg),
+            ("GPU Fflonk",       gpuFflonkProver),
         ]
         print("=== zkMetal Primitive Versions ===")
         for (name, v) in entries {
