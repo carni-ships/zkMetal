@@ -310,7 +310,7 @@ public struct BatchPIT {
 
         for relation in relations {
             // Each relation gets tested at the same points for consistency
-            var innerRng = FieldPRNG(seed: seed &+ UInt64(relation.name.hashValue))
+            var innerRng = FieldPRNG(seed: seed &+ UInt64(bitPattern: Int64(relation.name.hashValue)))
             var failed = false
             var failTrial = 0
             var failPoint = Fr.zero
@@ -375,7 +375,7 @@ public struct BatchPIT {
             let result = SchwartzZippel.testMultivariate(
                 relation: relation,
                 numTrials: numTrials,
-                seed: seed &+ UInt64(relation.name.hashValue)
+                seed: seed &+ UInt64(bitPattern: Int64(relation.name.hashValue))
             )
             results.append((relation.name, result))
         }
