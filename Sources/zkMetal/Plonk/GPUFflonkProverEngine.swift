@@ -634,6 +634,10 @@ public class GPUFflonkProverEngine {
             omegaPow = frMul(omegaPow, omega)
         }
 
+        // Precompute omega^j for all j via chain multiply
+        var omegaJPows = [Fr](repeating: Fr.one, count: k)
+        for j in 1..<k { omegaJPows[j] = frMul(omegaJPows[j - 1], omega) }
+
         // Values at these points
         var values = [Fr]()
         values.reserveCapacity(k)
@@ -643,7 +647,7 @@ public class GPUFflonkProverEngine {
             var zPow = Fr.one
             for i in 0..<k {
                 val = frAdd(val, frMul(evaluations[i], frMul(omegaIJ, zPow)))
-                omegaIJ = frMul(omegaIJ, frPow(omega, UInt64(j)))
+                omegaIJ = frMul(omegaIJ, omegaJPows[j])
                 zPow = frMul(zPow, z)
             }
             values.append(val)
@@ -660,15 +664,29 @@ public class GPUFflonkProverEngine {
 
         var result = [Fr](repeating: Fr.zero, count: n)
 
+        // Precompute all Lagrange denominators and batch-invert
+        var lagDenoms = [Fr](repeating: Fr.one, count: n)
         for i in 0..<n {
-            var denom = Fr.one
-            for j in 0..<n {
-                if j != i {
-                    denom = frMul(denom, frSub(points[i], points[j]))
-                }
+            for j in 0..<n where j != i {
+                lagDenoms[i] = frMul(lagDenoms[i], frSub(points[i], points[j]))
             }
-            let denomInv = frInverse(denom)
-            let coeff = frMul(values[i], denomInv)
+        }
+        var lagPrefix = [Fr](repeating: Fr.one, count: n)
+        for i in 1..<n {
+            lagPrefix[i] = lagDenoms[i - 1] == Fr.zero ? lagPrefix[i - 1] : frMul(lagPrefix[i - 1], lagDenoms[i - 1])
+        }
+        let lagLast = lagDenoms[n - 1] == Fr.zero ? lagPrefix[n - 1] : frMul(lagPrefix[n - 1], lagDenoms[n - 1])
+        var lagInv = frInverse(lagLast)
+        var lagDenomInvs = [Fr](repeating: Fr.zero, count: n)
+        for i in stride(from: n - 1, through: 0, by: -1) {
+            if lagDenoms[i] != Fr.zero {
+                lagDenomInvs[i] = frMul(lagInv, lagPrefix[i])
+                lagInv = frMul(lagInv, lagDenoms[i])
+            }
+        }
+
+        for i in 0..<n {
+            let coeff = frMul(values[i], lagDenomInvs[i])
 
             var basis = [Fr](repeating: Fr.zero, count: n)
             basis[0] = Fr.one
