@@ -540,40 +540,39 @@ public class GPUGKRProtocolEngine {
         var srcBuf = bufA
         var dstBuf = bufB
 
+        // Single command buffer for all fold rounds
+        guard let cmdBuf = commandQueue.makeCommandBuffer() else {
+            return cpuMleEval(evals: evals, point: point)
+        }
+        let encoder = cmdBuf.makeComputeCommandEncoder()!
+
         for varIdx in 0..<numVars {
             let halfSize = currentSize / 2
             if halfSize == 0 { break }
 
-            guard let cmdBuf = commandQueue.makeCommandBuffer(),
-                  let encoder = cmdBuf.makeComputeCommandEncoder() else {
-                return cpuMleEval(evals: evals, point: point)
-            }
-
-            // Create challenge buffer with this variable's coordinate
             var challenge = point[varIdx]
-            let chalBuf = device.makeBuffer(bytes: &challenge, length: elemSize,
-                                            options: .storageModeShared)!
             var halfN = UInt32(halfSize)
-            let halfBuf = device.makeBuffer(bytes: &halfN, length: 4,
-                                            options: .storageModeShared)!
 
             encoder.setComputePipelineState(tableFoldPipeline)
             encoder.setBuffer(srcBuf, offset: 0, index: 0)
             encoder.setBuffer(dstBuf, offset: 0, index: 1)
-            encoder.setBuffer(chalBuf, offset: 0, index: 2)
-            encoder.setBuffer(halfBuf, offset: 0, index: 3)
+            encoder.setBytes(&challenge, length: elemSize, index: 2)
+            encoder.setBytes(&halfN, length: 4, index: 3)
 
             let tgSize = min(config.maxThreadgroupSize, halfSize)
-            let gridSize = MTLSize(width: halfSize, height: 1, depth: 1)
-            let groupSize = MTLSize(width: tgSize, height: 1, depth: 1)
-            encoder.dispatchThreads(gridSize, threadsPerThreadgroup: groupSize)
-            encoder.endEncoding()
-            cmdBuf.commit()
-            cmdBuf.waitUntilCompleted()
+            encoder.dispatchThreads(MTLSize(width: halfSize, height: 1, depth: 1),
+                                    threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
 
             swap(&srcBuf, &dstBuf)
             currentSize = halfSize
+
+            if currentSize > 1 {
+                encoder.memoryBarrier(scope: .buffers)
+            }
         }
+        encoder.endEncoding()
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
 
         // Read back the single result
         var result = Fr.zero
@@ -598,34 +597,34 @@ public class GPUGKRProtocolEngine {
         var one = Fr.one
         eqBuf.contents().copyMemory(from: &one, byteCount: elemSize)
 
-        // Build eq polynomial level by level via GPU dispatch
+        // Build eq polynomial level by level — single command buffer for all levels
+        guard let cmdBuf = commandQueue.makeCommandBuffer() else {
+            return cpuEqPoly(point: point)
+        }
+        let encoder = cmdBuf.makeComputeCommandEncoder()!
+
         for i in 0..<n {
             let half = 1 << i
-            guard let cmdBuf = commandQueue.makeCommandBuffer(),
-                  let encoder = cmdBuf.makeComputeCommandEncoder() else {
-                return cpuEqPoly(point: point)
-            }
 
             var ri = point[i]
-            let riBuf = device.makeBuffer(bytes: &ri, length: elemSize,
-                                          options: .storageModeShared)!
             var halfVal = UInt32(half)
-            let halfBuf = device.makeBuffer(bytes: &halfVal, length: 4,
-                                            options: .storageModeShared)!
 
             encoder.setComputePipelineState(eqPolyPipeline)
             encoder.setBuffer(eqBuf, offset: 0, index: 0)
-            encoder.setBuffer(riBuf, offset: 0, index: 1)
-            encoder.setBuffer(halfBuf, offset: 0, index: 2)
+            encoder.setBytes(&ri, length: elemSize, index: 1)
+            encoder.setBytes(&halfVal, length: 4, index: 2)
 
-            let gridSize = MTLSize(width: half, height: 1, depth: 1)
             let tgSize = min(config.maxThreadgroupSize, half)
-            let groupSize = MTLSize(width: tgSize, height: 1, depth: 1)
-            encoder.dispatchThreads(gridSize, threadsPerThreadgroup: groupSize)
-            encoder.endEncoding()
-            cmdBuf.commit()
-            cmdBuf.waitUntilCompleted()
+            encoder.dispatchThreads(MTLSize(width: half, height: 1, depth: 1),
+                                    threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
+
+            if i < n - 1 {
+                encoder.memoryBarrier(scope: .buffers)
+            }
         }
+        encoder.endEncoding()
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
 
         // Read back
         var result = [Fr](repeating: Fr.zero, count: size)

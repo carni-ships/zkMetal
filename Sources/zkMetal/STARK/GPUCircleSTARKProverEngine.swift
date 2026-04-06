@@ -642,27 +642,18 @@ public class GPUCircleSTARKProverEngine {
                 throw MSMError.gpuError("Failed to allocate LDE buffer for column \(colIdx)")
             }
             let ptr = buf.contents().bindMemory(to: UInt32.self, capacity: evalLen)
+            // Copy trace values and pre-zero the padding region
             for i in 0..<traceLen { ptr[i] = trace[colIdx][i].v }
+            memset(ptr + traceLen, 0, (evalLen - traceLen) * sz)
 
-            // INTT: trace values -> circle polynomial coefficients
-            guard let cbIntt = queue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
-            ntt.encodeINTT(data: buf, logN: logTrace, cmdBuf: cbIntt)
-            cbIntt.commit()
-            cbIntt.waitUntilCompleted()
-            if let err = cbIntt.error {
-                throw MSMError.gpuError("INTT error col \(colIdx): \(err.localizedDescription)")
-            }
-
-            // Zero-pad to evaluation domain size
-            for i in traceLen..<evalLen { ptr[i] = 0 }
-
-            // NTT: coefficients -> evaluation domain values
-            guard let cbNtt = queue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
-            ntt.encodeNTT(data: buf, logN: logEval, cmdBuf: cbNtt)
-            cbNtt.commit()
-            cbNtt.waitUntilCompleted()
-            if let err = cbNtt.error {
-                throw MSMError.gpuError("NTT error col \(colIdx): \(err.localizedDescription)")
+            // Single command buffer: INTT → NTT (zero-pad already in place)
+            guard let cb = queue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
+            ntt.encodeINTT(data: buf, logN: logTrace, cmdBuf: cb)
+            ntt.encodeNTT(data: buf, logN: logEval, cmdBuf: cb)
+            cb.commit()
+            cb.waitUntilCompleted()
+            if let err = cb.error {
+                throw MSMError.gpuError("LDE error col \(colIdx): \(err.localizedDescription)")
             }
 
             var lde = [M31](repeating: M31.zero, count: evalLen)
