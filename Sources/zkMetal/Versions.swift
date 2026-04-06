@@ -23,6 +23,8 @@ public enum Versions {
     public static let sha256Merkle     = PrimitiveVersion(version: "1.0.0", updated: "2026-04-04")
     public static let blake3Merkle    = PrimitiveVersion(version: "1.1.0", updated: "2026-04-02")
     public static let groestl256      = PrimitiveVersion(version: "1.0.0", updated: "2026-04-06")
+    public static let xhash12        = PrimitiveVersion(version: "1.0.0", updated: "2026-04-06")
+    public static let xhashM31       = PrimitiveVersion(version: "1.0.0", updated: "2026-04-06")
     public static let incrementalMerkle = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
 
     // --- MSM ---
@@ -123,6 +125,7 @@ public enum Versions {
     public static let joltVM            = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let groth16Batch      = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let proofAggregation  = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let snarkPack         = PrimitiveVersion(version: "1.0.0", updated: "2026-04-06")
     public static let sp1Bridge         = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let parallelReduce    = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let batchField        = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
@@ -309,6 +312,8 @@ public enum Versions {
             ("SHA-256 Merkle",     sha256Merkle),
             ("Blake3 Merkle",     blake3Merkle),
             ("Groestl-256",       groestl256),
+            ("XHash12",           xhash12),
+            ("XHash-M31",         xhashM31),
             ("MSM BN254",         msmBN254),
             ("MSM BLS12-377",     msmBLS12377),
             ("MSM secp256k1",     msmSecp256k1),
@@ -370,6 +375,7 @@ public enum Versions {
             ("Jolt VM",          joltVM),
             ("Groth16 Batch",    groth16Batch),
             ("Proof Aggregation", proofAggregation),
+            ("SnarkPack",         snarkPack),
             ("Marlin",           marlin),
             ("Varuna",           varuna),
             ("Unified Verify",   unifiedVerify),
