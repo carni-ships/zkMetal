@@ -224,6 +224,16 @@ public enum Versions {
     public static let gpuRecursiveComposition = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let gpuGroth16VK    = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
 
+    // --- Wave 12 ---
+    public static let gpuPlonkCopyConstraint = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuSTARKDeepComposition = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuJoltSubtable = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuKZGSetup     = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuAIRTraceValidator = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuPedersenChain = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuBabyBearExtension = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuGoldilocksExtension = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+
     /// Print all primitive versions
     public static func printAll() {
         let entries: [(String, PrimitiveVersion)] = [
@@ -369,6 +379,14 @@ public enum Versions {
             ("GPU Constr Comp",  gpuConstraintCompiler),
             ("GPU Recurs Comp",  gpuRecursiveComposition),
             ("GPU Groth16 VK",   gpuGroth16VK),
+            ("GPU Plonk Copy",   gpuPlonkCopyConstraint),
+            ("GPU STARK Deep",   gpuSTARKDeepComposition),
+            ("GPU Jolt Subtbl",  gpuJoltSubtable),
+            ("GPU KZG Setup",    gpuKZGSetup),
+            ("GPU AIR Trace V",  gpuAIRTraceValidator),
+            ("GPU Ped Chain",    gpuPedersenChain),
+            ("GPU BB Ext",       gpuBabyBearExtension),
+            ("GPU GL Ext",       gpuGoldilocksExtension),
         ]
         print("=== zkMetal Primitive Versions ===")
         for (name, v) in entries {
