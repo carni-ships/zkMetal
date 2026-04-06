@@ -203,12 +203,14 @@ public class Poseidon2BabyBearEngine {
             return result
         }
 
-        // Large tree: fused subtrees + iterative hash-pairs
+        // Large tree: fused subtrees + level-by-level in single command buffer
         let numSubtrees = numLeaves / subtreeMax
         let subtreeLogN = UInt32(subtreeMax.trailingZeroBitCount)
 
+        // Allocate two ping-pong buffers for upper levels (avoids per-level allocation)
         let rootsBytes = numSubtrees * nodeSize * stride
-        guard let rootsBuf = device.makeBuffer(length: rootsBytes, options: .storageModeShared) else {
+        guard let bufA = device.makeBuffer(length: rootsBytes, options: .storageModeShared),
+              let bufB = device.makeBuffer(length: rootsBytes, options: .storageModeShared) else {
             throw MSMError.gpuError("Failed to allocate roots buffer")
         }
 
@@ -216,61 +218,36 @@ public class Poseidon2BabyBearEngine {
             throw MSMError.noCommandBuffer
         }
 
-        // Phase 1: Fused subtrees
         let enc = cmdBuf.makeComputeCommandEncoder()!
-        enc.setComputePipelineState(merkleFusedFunction)
-        enc.setBuffer(leafBuf, offset: 0, index: 0)
-        enc.setBuffer(rootsBuf, offset: 0, index: 1)
-        enc.setBuffer(rcBuffer, offset: 0, index: 2)
-        var numLevels = subtreeLogN
-        enc.setBytes(&numLevels, length: 4, index: 3)
-        let tgSize = min(subtreeMax / 2, 256)
-        enc.dispatchThreadgroups(MTLSize(width: numSubtrees, height: 1, depth: 1),
-                                  threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
-        enc.endEncoding()
 
+        // Phase 1: Fused subtrees → roots into bufA
+        encodeMerkleFused(encoder: enc, leavesBuffer: leafBuf, leavesOffset: 0,
+                          rootsBuffer: bufA, rootsOffset: 0,
+                          numSubtrees: numSubtrees, subtreeSize: subtreeMax)
+
+        // Phase 2: Level-by-level with memoryBarrier (single encoder, no round-trips)
+        var currentNodes = numSubtrees
+        var srcBuf = bufA
+        var dstBuf = bufB
+
+        while currentNodes > 1 {
+            enc.memoryBarrier(scope: .buffers)
+            let pairs = currentNodes / 2
+            encodeHashPairs(encoder: enc, buffer: srcBuf, inputOffset: 0,
+                           outputOffset: 0, count: pairs,
+                           outputBuffer: dstBuf)
+            currentNodes = pairs
+            swap(&srcBuf, &dstBuf)
+        }
+
+        enc.endEncoding()
         cmdBuf.commit()
         cmdBuf.waitUntilCompleted()
         if let error = cmdBuf.error {
             throw MSMError.gpuError(error.localizedDescription)
         }
 
-        // Phase 2: Iteratively hash remaining levels
-        var currentNodes = numSubtrees
-        var currentBuf = rootsBuf
-
-        while currentNodes > 1 {
-            let pairs = currentNodes / 2
-            let outBytes = pairs * nodeSize * stride
-            guard let outBuf = device.makeBuffer(length: outBytes, options: .storageModeShared) else {
-                throw MSMError.gpuError("Failed to allocate level buffer")
-            }
-
-            guard let cb = commandQueue.makeCommandBuffer() else {
-                throw MSMError.noCommandBuffer
-            }
-
-            let e = cb.makeComputeCommandEncoder()!
-            e.setComputePipelineState(hashPairsFunction)
-            e.setBuffer(currentBuf, offset: 0, index: 0)
-            e.setBuffer(outBuf, offset: 0, index: 1)
-            e.setBuffer(rcBuffer, offset: 0, index: 2)
-            var pairCount = UInt32(pairs)
-            e.setBytes(&pairCount, length: 4, index: 3)
-            let tg = min(tuning.hashThreadgroupSize, Int(hashPairsFunction.maxTotalThreadsPerThreadgroup))
-            e.dispatchThreads(MTLSize(width: pairs, height: 1, depth: 1),
-                             threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
-            e.endEncoding()
-
-            cb.commit()
-            cb.waitUntilCompleted()
-            if let error = cb.error {
-                throw MSMError.gpuError(error.localizedDescription)
-            }
-
-            currentBuf = outBuf
-            currentNodes = pairs
-        }
+        let currentBuf = srcBuf
 
         let outPtr = currentBuf.contents().bindMemory(to: UInt32.self, capacity: nodeSize)
         var result = [Bb](repeating: Bb.zero, count: nodeSize)
@@ -294,13 +271,29 @@ public class Poseidon2BabyBearEngine {
                                       threadsPerThreadgroup: MTLSize(width: max(tgSize, 1), height: 1, depth: 1))
     }
 
-    /// Encode hash pairs dispatch into an existing encoder.
+    /// Encode hash pairs dispatch into an existing encoder (single buffer with offsets).
     public func encodeHashPairs(encoder: MTLComputeCommandEncoder,
                                  buffer: MTLBuffer, inputOffset: Int,
                                  outputOffset: Int, count: Int) {
         encoder.setComputePipelineState(hashPairsFunction)
         encoder.setBuffer(buffer, offset: inputOffset, index: 0)
         encoder.setBuffer(buffer, offset: outputOffset, index: 1)
+        encoder.setBuffer(rcBuffer, offset: 0, index: 2)
+        var n = UInt32(count)
+        encoder.setBytes(&n, length: 4, index: 3)
+        let tg = min(tuning.hashThreadgroupSize, Int(hashPairsFunction.maxTotalThreadsPerThreadgroup))
+        encoder.dispatchThreads(MTLSize(width: count, height: 1, depth: 1),
+                               threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+    }
+
+    /// Encode hash pairs dispatch with separate input/output buffers.
+    public func encodeHashPairs(encoder: MTLComputeCommandEncoder,
+                                 buffer inputBuffer: MTLBuffer, inputOffset: Int,
+                                 outputOffset: Int, count: Int,
+                                 outputBuffer: MTLBuffer) {
+        encoder.setComputePipelineState(hashPairsFunction)
+        encoder.setBuffer(inputBuffer, offset: inputOffset, index: 0)
+        encoder.setBuffer(outputBuffer, offset: outputOffset, index: 1)
         encoder.setBuffer(rcBuffer, offset: 0, index: 2)
         var n = UInt32(count)
         encoder.setBytes(&n, length: 4, index: 3)
