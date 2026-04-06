@@ -317,15 +317,28 @@ public class GPUBabyBearSTARKProver {
         let step = ldeLen / traceLen
 
         // Precompute vanishing polynomial inverses: 1 / (x^traceLen - 1)
-        var vanishingInv = [Bb](repeating: Bb.zero, count: ldeLen)
-        var cosetPow = Bb.one
+        // x_i^N = cosetShift^N * (omega^N)^i — chain multiply instead of per-element bbPow
+        let cosetShiftN = bbPow(cosetShift, UInt32(traceLen))
+        let omegaN = bbPow(omega, UInt32(traceLen))  // (ldeLen/traceLen)-th root of unity
+        var vanishingVals = [Bb](repeating: Bb.zero, count: ldeLen)
+        var omegaNpow = cosetShiftN  // cosetShift^N * (omega^N)^0
         for i in 0..<ldeLen {
-            let xToN = bbPow(bbMul(cosetShift, cosetPow), UInt32(traceLen))
-            let zh = bbSub(xToN, Bb.one)
-            if zh.v != 0 {
-                vanishingInv[i] = bbInverse(zh)
+            vanishingVals[i] = bbSub(omegaNpow, Bb.one)
+            omegaNpow = bbMul(omegaNpow, omegaN)
+        }
+        // Montgomery batch inversion: compute all 1/zh[i] with 3(n-1) muls + 1 inverse
+        var vanishingInv = [Bb](repeating: Bb.zero, count: ldeLen)
+        var prefix = [Bb](repeating: Bb.one, count: ldeLen)
+        for i in 1..<ldeLen {
+            prefix[i] = vanishingVals[i - 1].v == 0 ? prefix[i - 1] : bbMul(prefix[i - 1], vanishingVals[i - 1])
+        }
+        let lastNonZero = vanishingVals[ldeLen - 1].v == 0 ? prefix[ldeLen - 1] : bbMul(prefix[ldeLen - 1], vanishingVals[ldeLen - 1])
+        var inv = bbInverse(lastNonZero)  // single inversion
+        for i in stride(from: ldeLen - 1, through: 0, by: -1) {
+            if vanishingVals[i].v != 0 {
+                vanishingInv[i] = bbMul(inv, prefix[i])
+                inv = bbMul(inv, vanishingVals[i])
             }
-            cosetPow = bbMul(cosetPow, omega)
         }
 
         // Parallel constraint evaluation over LDE domain
@@ -431,10 +444,30 @@ public class GPUBabyBearSTARKProver {
             let omega = bbRootOfUnity(logN: currentLogN)
             let inv2 = bbInverse(Bb(v: 2))
 
+            // Precompute omega powers: omega^0, omega^1, ..., omega^(half-1)
+            var omegaPows = [Bb](repeating: Bb.one, count: half)
+            for i in 1..<half { omegaPows[i] = bbMul(omegaPows[i - 1], omega) }
+
+            // Batch inversion of oddDenoms = 2 * omega^i
+            var oddDenoms = [Bb](repeating: Bb.zero, count: half)
+            for i in 0..<half { oddDenoms[i] = bbMul(Bb(v: 2), omegaPows[i]) }
+            var denomPrefix = [Bb](repeating: Bb.one, count: half)
+            for i in 1..<half {
+                denomPrefix[i] = oddDenoms[i - 1].v == 0 ? denomPrefix[i - 1] : bbMul(denomPrefix[i - 1], oddDenoms[i - 1])
+            }
+            let denomLast = oddDenoms[half - 1].v == 0 ? denomPrefix[half - 1] : bbMul(denomPrefix[half - 1], oddDenoms[half - 1])
+            var denomInv = bbInverse(denomLast)
+            var oddDenomInvs = [Bb](repeating: Bb.zero, count: half)
+            for i in stride(from: half - 1, through: 0, by: -1) {
+                if oddDenoms[i].v != 0 {
+                    oddDenomInvs[i] = bbMul(denomInv, denomPrefix[i])
+                    denomInv = bbMul(denomInv, oddDenoms[i])
+                }
+            }
+
             var folded = [Bb](repeating: Bb.zero, count: half)
 
             if half >= config.gpuFRIFoldThreshold {
-                // Parallel fold
                 let chunkSize = max(1, half / ProcessInfo.processInfo.activeProcessorCount)
                 let chunks = stride(from: 0, to: half, by: chunkSize).map { start in
                     (start, min(start + chunkSize, half))
@@ -447,22 +480,17 @@ public class GPUBabyBearSTARKProver {
                             let f0 = currentEvals[i]
                             let f1 = currentEvals[i + half]
                             let even = bbMul(bbAdd(f0, f1), inv2)
-                            let omegaI = bbPow(omega, UInt32(i))
-                            let oddDenom = bbMul(Bb(v: 2), omegaI)
-                            let odd = bbMul(bbSub(f0, f1), bbInverse(oddDenom))
+                            let odd = bbMul(bbSub(f0, f1), oddDenomInvs[i])
                             outBuf[i] = bbAdd(even, bbMul(beta, odd))
                         }
                     }
                 }
             } else {
-                // Sequential fold for small domains
                 for i in 0..<half {
                     let f0 = currentEvals[i]
                     let f1 = currentEvals[i + half]
                     let even = bbMul(bbAdd(f0, f1), inv2)
-                    let omegaI = bbPow(omega, UInt32(i))
-                    let oddDenom = bbMul(Bb(v: 2), omegaI)
-                    let odd = bbMul(bbSub(f0, f1), bbInverse(oddDenom))
+                    let odd = bbMul(bbSub(f0, f1), oddDenomInvs[i])
                     folded[i] = bbAdd(even, bbMul(beta, odd))
                 }
             }

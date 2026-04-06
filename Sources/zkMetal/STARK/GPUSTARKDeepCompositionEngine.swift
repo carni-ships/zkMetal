@@ -411,17 +411,33 @@ public final class GPUSTARKDeepCompositionEngine {
     private func batchQuotients(
         quotients: [DEEPQuotient], alpha: Fr, domainSize: Int
     ) -> (evaluations: [Fr], alphas: [Fr]) {
-        var composed = [Fr](repeating: Fr.zero, count: domainSize)
         var alphas = [Fr]()
         alphas.reserveCapacity(quotients.count)
-
         var alphaPow = Fr.one
-        for q in quotients {
+        for _ in quotients {
             alphas.append(alphaPow)
-            for i in 0..<domainSize {
-                composed[i] = frAdd(composed[i], frMul(alphaPow, q.evaluations[i]))
-            }
             alphaPow = frMul(alphaPow, alpha)
+        }
+
+        // Parallel composition: each chunk of domain points processes all quotients
+        var composed = [Fr](repeating: Fr.zero, count: domainSize)
+        let numCPUs = ProcessInfo.processInfo.activeProcessorCount
+        let chunkSize = max(1, domainSize / numCPUs)
+        let chunks = stride(from: 0, to: domainSize, by: chunkSize).map { start in
+            (start, min(start + chunkSize, domainSize))
+        }
+
+        composed.withUnsafeMutableBufferPointer { outBuf in
+            DispatchQueue.concurrentPerform(iterations: chunks.count) { chunkIdx in
+                let (start, end) = chunks[chunkIdx]
+                for i in start..<end {
+                    var acc = Fr.zero
+                    for (qIdx, q) in quotients.enumerated() {
+                        acc = frAdd(acc, frMul(alphas[qIdx], q.evaluations[i]))
+                    }
+                    outBuf[i] = acc
+                }
+            }
         }
 
         return (composed, alphas)

@@ -120,16 +120,28 @@ public class GPUGoldilocksSTARKProver {
         let omega = glRootOfUnity(logN: logLDE)
 
         // Precompute vanishing polynomial inverse: 1 / Z_H(x) where Z_H(x) = x^traceLen - 1
-        var vanishingInv = [Gl](repeating: Gl.zero, count: ldeLen)
-        var cosetPow = Gl.one
+        // x_i^N = cosetShift^N * (omega^N)^i — chain multiply instead of per-element glPow
+        let cosetShiftN = glPow(cosetShift, UInt64(traceLen))
+        let omegaN = glPow(omega, UInt64(traceLen))
+        var vanishingVals = [Gl](repeating: Gl.zero, count: ldeLen)
+        var omegaNpow = cosetShiftN
         for i in 0..<ldeLen {
-            let x = glMul(cosetShift, cosetPow)
-            let xToN = glPow(x, UInt64(traceLen))
-            let zh = glSub(xToN, Gl.one)
-            if !zh.isZero {
-                vanishingInv[i] = glInverse(zh)
+            vanishingVals[i] = glSub(omegaNpow, Gl.one)
+            omegaNpow = glMul(omegaNpow, omegaN)
+        }
+        // Montgomery batch inversion: 3(n-1) muls + 1 inverse
+        var vanishingInv = [Gl](repeating: Gl.zero, count: ldeLen)
+        var prefix = [Gl](repeating: Gl.one, count: ldeLen)
+        for i in 1..<ldeLen {
+            prefix[i] = vanishingVals[i - 1].isZero ? prefix[i - 1] : glMul(prefix[i - 1], vanishingVals[i - 1])
+        }
+        let lastNonZero = vanishingVals[ldeLen - 1].isZero ? prefix[ldeLen - 1] : glMul(prefix[ldeLen - 1], vanishingVals[ldeLen - 1])
+        var inv = glInverse(lastNonZero)
+        for i in stride(from: ldeLen - 1, through: 0, by: -1) {
+            if !vanishingVals[i].isZero {
+                vanishingInv[i] = glMul(inv, prefix[i])
+                inv = glMul(inv, vanishingVals[i])
             }
-            cosetPow = glMul(cosetPow, omega)
         }
 
         // Evaluate constraints and build quotient polynomial
@@ -394,14 +406,32 @@ public class GPUGoldilocksSTARKProver {
 
             // Fold: f'(x^2) = (f(x) + f(-x))/2 + beta * (f(x) - f(-x))/(2x)
             let omega = glRootOfUnity(logN: currentLogN)
+
+            // Precompute omega powers and batch-invert oddDenoms = 2 * omega^i
+            var omegaPows = [Gl](repeating: Gl.one, count: half)
+            for i in 1..<half { omegaPows[i] = glMul(omegaPows[i - 1], omega) }
+            var oddDenoms = [Gl](repeating: Gl.zero, count: half)
+            for i in 0..<half { oddDenoms[i] = glMul(Gl(v: 2), omegaPows[i]) }
+            var denomPrefix = [Gl](repeating: Gl.one, count: half)
+            for i in 1..<half {
+                denomPrefix[i] = oddDenoms[i - 1].isZero ? denomPrefix[i - 1] : glMul(denomPrefix[i - 1], oddDenoms[i - 1])
+            }
+            let denomLast = oddDenoms[half - 1].isZero ? denomPrefix[half - 1] : glMul(denomPrefix[half - 1], oddDenoms[half - 1])
+            var denomInv = glInverse(denomLast)
+            var oddDenomInvs = [Gl](repeating: Gl.zero, count: half)
+            for i in stride(from: half - 1, through: 0, by: -1) {
+                if !oddDenoms[i].isZero {
+                    oddDenomInvs[i] = glMul(denomInv, denomPrefix[i])
+                    denomInv = glMul(denomInv, oddDenoms[i])
+                }
+            }
+
             var folded = [Gl](repeating: Gl.zero, count: half)
             for i in 0..<half {
                 let f0 = currentEvals[i]
                 let f1 = currentEvals[i + half]
                 let even = glMul(glAdd(f0, f1), inv2)
-                let omegaI = glPow(omega, UInt64(i))
-                let oddDenom = glMul(Gl(v: 2), omegaI)
-                let odd = glMul(glSub(f0, f1), glInverse(oddDenom))
+                let odd = glMul(glSub(f0, f1), oddDenomInvs[i])
                 folded[i] = glAdd(even, glMul(beta, odd))
             }
 

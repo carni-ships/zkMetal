@@ -637,25 +637,32 @@ public class GPUCircleSTARKProverEngine {
 
         var results = [[M31]]()
 
+        // Allocate all column buffers and copy trace data
+        var bufs = [MTLBuffer]()
         for colIdx in 0..<trace.count {
             guard let buf = dev.makeBuffer(length: evalLen * sz, options: .storageModeShared) else {
                 throw MSMError.gpuError("Failed to allocate LDE buffer for column \(colIdx)")
             }
             let ptr = buf.contents().bindMemory(to: UInt32.self, capacity: evalLen)
-            // Copy trace values and pre-zero the padding region
             for i in 0..<traceLen { ptr[i] = trace[colIdx][i].v }
             memset(ptr + traceLen, 0, (evalLen - traceLen) * sz)
+            bufs.append(buf)
+        }
 
-            // Single command buffer: INTT → NTT (zero-pad already in place)
-            guard let cb = queue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
-            ntt.encodeINTT(data: buf, logN: logTrace, cmdBuf: cb)
-            ntt.encodeNTT(data: buf, logN: logEval, cmdBuf: cb)
-            cb.commit()
-            cb.waitUntilCompleted()
-            if let err = cb.error {
-                throw MSMError.gpuError("LDE error col \(colIdx): \(err.localizedDescription)")
-            }
+        // Single command buffer: batch all columns' INTT → NTT
+        guard let cb = queue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
+        for colIdx in 0..<trace.count {
+            ntt.encodeINTT(data: bufs[colIdx], logN: logTrace, cmdBuf: cb)
+            ntt.encodeNTT(data: bufs[colIdx], logN: logEval, cmdBuf: cb)
+        }
+        cb.commit()
+        cb.waitUntilCompleted()
+        if let err = cb.error {
+            throw MSMError.gpuError("LDE error: \(err.localizedDescription)")
+        }
 
+        for colIdx in 0..<trace.count {
+            let ptr = bufs[colIdx].contents().bindMemory(to: UInt32.self, capacity: evalLen)
             var lde = [M31](repeating: M31.zero, count: evalLen)
             for i in 0..<evalLen { lde[i] = M31(v: ptr[i]) }
             results.append(lde)
