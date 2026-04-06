@@ -159,6 +159,8 @@ if cmd == "calibrate" {
     runKZGBatchBench()
 } else if cmd == "kzg-fused" {
     runKZGFusedBench()
+} else if cmd == "gpu-kzg" || cmd == "gpukzg" {
+    runGPUKZGBench()
 } else if cmd == "bls377" || cmd == "bls12377" {
     runBLS12377NTTBench()
 } else if cmd == "bls377msm" || cmd == "bls12377msm" {

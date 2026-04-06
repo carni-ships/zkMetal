@@ -1290,4 +1290,52 @@ void packed_bb_ntt(uint32_t *data, int logN);
 void packed_bb_intt(uint32_t *data, int logN);
 #endif // __ARM_NEON
 
+// ============================================================
+// Lattice NTT — Kyber (q=3329) and Dilithium (q=8380417)
+// NEON-accelerated Barrett reduction + vectorized butterflies.
+// ============================================================
+
+/// Forward NTT for Kyber (q=3329, n=256) using ARM NEON.
+/// Cooley-Tukey DIT, in-place. Values must be in [0, 3329).
+/// @param poly Array of 256 uint32_t elements.
+void lattice_ntt_kyber_neon(uint32_t *poly);
+
+/// Inverse NTT for Kyber (q=3329, n=256) using ARM NEON.
+/// Gentleman-Sande DIF + 1/128 scaling. Values must be in [0, 3329).
+void lattice_intt_kyber_neon(uint32_t *poly);
+
+/// Forward NTT for Dilithium (q=8380417, n=256) using ARM NEON.
+/// Cooley-Tukey DIT, in-place. Values must be in [0, 8380417).
+void lattice_ntt_dilithium_neon(uint32_t *poly);
+
+/// Inverse NTT for Dilithium (q=8380417, n=256) using ARM NEON.
+/// Gentleman-Sande DIF + 1/128 scaling.
+void lattice_intt_dilithium_neon(uint32_t *poly);
+
+/// Batch-4 forward NTT for Kyber: 4 independent NTTs in 4 NEON lanes.
+/// @param polys Interleaved layout: polys[j*4 + lane] = polynomial[lane][j].
+///              Must have 256*4 = 1024 elements.
+void lattice_ntt_kyber_batch4(uint32_t *polys);
+
+/// Batch-4 inverse NTT for Kyber.
+void lattice_intt_kyber_batch4(uint32_t *polys);
+
+/// Batch-4 forward NTT for Dilithium: 4 independent NTTs in 4 NEON lanes.
+void lattice_ntt_dilithium_batch4(uint32_t *polys);
+
+/// Batch-4 inverse NTT for Dilithium.
+void lattice_intt_dilithium_batch4(uint32_t *polys);
+
+/// Interleave 4 polynomials (256 elements each) into batch-4 layout.
+/// @param p0..p3 Input polynomials (256 uint32 each).
+/// @param out    Output buffer (1024 uint32, interleaved).
+void lattice_interleave4(const uint32_t *p0, const uint32_t *p1,
+                         const uint32_t *p2, const uint32_t *p3,
+                         uint32_t *out);
+
+/// Deinterleave batch-4 layout back into 4 separate polynomials.
+void lattice_deinterleave4(const uint32_t *interleaved,
+                            uint32_t *p0, uint32_t *p1,
+                            uint32_t *p2, uint32_t *p3);
+
 #endif // NEON_FIELD_OPS_H

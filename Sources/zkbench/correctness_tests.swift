@@ -51,6 +51,7 @@ public func runAllCorrectnessTests() {
     testSumcheck()
     testPolyOps()
     testKZG()
+    testGPUKZG()
     testMSM_BN254()
     testSecp256k1MSM()
     testBLS12377MSM()
@@ -700,6 +701,80 @@ private func testKZG() {
         check("p(1)=6", frToInt(try engine.open(p, at: frFromInt(1)).evaluation)[0] == 6)
     } catch {
         print("  [FAIL] KZG error: \(error)")
+        _testFailed += 1
+    }
+}
+
+// ============================================================
+// MARK: - GPU KZG
+// ============================================================
+private func testGPUKZG() {
+    print("\n--- GPU KZG ---")
+    do {
+        let gx = fpFromInt(1)
+        let gy = fpFromInt(2)
+        let generator = PointAffine(x: gx, y: gy)
+        let secretLimbs: [UInt32] = [42, 0, 0, 0, 0, 0, 0, 0]
+        let secret = frFromLimbs(secretLimbs)
+        let srs = KZGEngine.generateTestSRS(secret: secretLimbs, size: 256, generator: generator)
+        let engine = try GPUKZGEngine(srs: srs)
+        let cpuEngine = try KZGEngine(srs: srs)
+
+        // Commit matches KZGEngine
+        let poly = [frFromInt(1), frFromInt(2), frFromInt(3)]
+        let gpuC = try engine.commit(poly)
+        let cpuC = try cpuEngine.commit(poly)
+        let ga = batchToAffine([gpuC])[0]
+        let ca = batchToAffine([cpuC])[0]
+        check("GPU commit matches KZGEngine",
+              fpToInt(ga.x) == fpToInt(ca.x) && fpToInt(ga.y) == fpToInt(ca.y))
+
+        // Open correctness
+        let proof = try engine.open(poly, at: frFromInt(5))
+        check("GPU open p(5) = 86", frToInt(proof.evaluation)[0] == 86)
+
+        // Batch open correctness
+        let polys: [[Fr]] = [
+            [frFromInt(1), frFromInt(2), frFromInt(3)],
+            [frFromInt(5), frFromInt(7)],
+            [frFromInt(10), frFromInt(0), frFromInt(1), frFromInt(4)],
+        ]
+        let gamma = frFromInt(17)
+        let batch = try engine.batchOpen(polys: polys, point: frFromInt(5), gamma: gamma)
+        check("Batch eval p0(5)=86", frToInt(batch.evaluations[0])[0] == 86)
+        check("Batch eval p1(5)=40", frToInt(batch.evaluations[1])[0] == 40)
+        check("Batch eval p2(5)=535", frToInt(batch.evaluations[2])[0] == 535)
+
+        // Batch verify
+        let valid = engine.batchVerifyProof(batch, srsSecret: secret)
+        check("Batch verify accepts valid proof", valid)
+
+        // Reject tampered proof
+        let tampered = GPUBatchProof(
+            commitments: batch.commitments,
+            evaluations: [frFromInt(999)] + Array(batch.evaluations.dropFirst()),
+            witness: batch.witness, point: batch.point, gamma: batch.gamma)
+        let rejected = engine.batchVerify(
+            commitments: tampered.commitments, point: tampered.point,
+            values: tampered.evaluations, proof: tampered, srsSecret: secret)
+        check("Batch verify rejects tampered eval", !rejected)
+
+        // Multi-point batch open
+        let pts = [frFromInt(5), frFromInt(7), frFromInt(3)]
+        let multi = try engine.batchOpenMultiPoint(polys: polys, points: pts, gamma: gamma)
+        check("Multi-point p0(5)=86", frToInt(multi.evaluations[0])[0] == 86)
+        check("Multi-point p1(7)=54", frToInt(multi.evaluations[1])[0] == 54)
+        check("Multi-point p2(3)=127", frToInt(multi.evaluations[2])[0] == 127)
+
+        // Multi-point verify
+        let multiValid = engine.batchVerifyMultiPoint(
+            commitments: multi.commitments, points: pts,
+            values: multi.evaluations, witness: multi.witness,
+            gamma: gamma, srsSecret: secret)
+        check("Multi-point verify accepts valid proof", multiValid)
+
+    } catch {
+        print("  [FAIL] GPU KZG error: \(error)")
         _testFailed += 1
     }
 }
