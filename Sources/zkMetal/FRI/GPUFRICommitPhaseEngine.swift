@@ -602,37 +602,62 @@ public final class GPUFRICommitPhaseEngine {
         return cpuFoldOnce(evals: evals, logN: logN, challenge: challenge)
     }
 
+    /// GPU-resident multi-fold: chains k fold-by-2 rounds in a single command buffer.
+    /// Avoids intermediate CPU↔GPU copies between sub-fold rounds.
+    private func foldMultiRound(evals: [Fr], logN: Int, challenge: Fr,
+                                 numSubFolds: Int) throws -> [Fr] {
+        let n = evals.count
+        precondition(n == 1 << logN && numSubFolds <= logN)
+        let stride = MemoryLayout<Fr>.stride
+
+        // Build derived challenges: ch, ch², ch³, ...
+        var challenges = [Fr]()
+        var ch = challenge
+        for _ in 0..<numSubFolds {
+            challenges.append(ch)
+            ch = frMul(ch, challenge)
+        }
+
+        if n >= GPUFRICommitPhaseEngine.cpuFoldThreshold {
+            let evalsBuf = device.makeBuffer(
+                bytes: evals, length: n * stride,
+                options: .storageModeShared)!
+            let resultBuf = try foldEngine.foldMultiRound(
+                evals: evalsBuf, logN: logN, challenges: challenges)
+            let outN = n >> numSubFolds
+            let ptr = resultBuf.contents().bindMemory(to: Fr.self, capacity: outN)
+            return Array(UnsafeBufferPointer(start: ptr, count: outN))
+        }
+
+        // CPU fallback: chain individual folds
+        var current = evals
+        var curLogN = logN
+        for i in 0..<numSubFolds {
+            current = cpuFoldOnce(evals: current, logN: curLogN, challenge: challenges[i])
+            curLogN -= 1
+        }
+        return current
+    }
+
     /// Fold by 4: two successive folds with derived challenges.
     private func foldByFour(evals: [Fr], logN: Int, challenge: Fr,
                             config: FRICommitPhaseConfig) throws -> [Fr] {
         precondition(logN >= 2, "Need logN >= 2 for fold-by-4")
-        let mid = try foldByTwo(evals: evals, logN: logN, challenge: challenge, config: config)
-        let challenge2 = frMul(challenge, challenge)
-        return try foldByTwo(evals: mid, logN: logN - 1, challenge: challenge2, config: config)
+        return try foldMultiRound(evals: evals, logN: logN, challenge: challenge, numSubFolds: 2)
     }
 
-    /// Fold by 8: three successive folds.
+    /// Fold by 8: three successive folds in a single GPU command buffer.
     private func foldByEight(evals: [Fr], logN: Int, challenge: Fr,
                              config: FRICommitPhaseConfig) throws -> [Fr] {
         precondition(logN >= 3, "Need logN >= 3 for fold-by-8")
-        let mid1 = try foldByTwo(evals: evals, logN: logN, challenge: challenge, config: config)
-        let ch2 = frMul(challenge, challenge)
-        let mid2 = try foldByTwo(evals: mid1, logN: logN - 1, challenge: ch2, config: config)
-        let ch3 = frMul(ch2, challenge)
-        return try foldByTwo(evals: mid2, logN: logN - 2, challenge: ch3, config: config)
+        return try foldMultiRound(evals: evals, logN: logN, challenge: challenge, numSubFolds: 3)
     }
 
-    /// Fold by 16: four successive folds.
+    /// Fold by 16: four successive folds in a single GPU command buffer.
     private func foldBySixteen(evals: [Fr], logN: Int, challenge: Fr,
                                config: FRICommitPhaseConfig) throws -> [Fr] {
         precondition(logN >= 4, "Need logN >= 4 for fold-by-16")
-        let mid1 = try foldByTwo(evals: evals, logN: logN, challenge: challenge, config: config)
-        let ch2 = frMul(challenge, challenge)
-        let mid2 = try foldByTwo(evals: mid1, logN: logN - 1, challenge: ch2, config: config)
-        let ch3 = frMul(ch2, challenge)
-        let mid3 = try foldByTwo(evals: mid2, logN: logN - 2, challenge: ch3, config: config)
-        let ch4 = frMul(ch3, challenge)
-        return try foldByTwo(evals: mid3, logN: logN - 3, challenge: ch4, config: config)
+        return try foldMultiRound(evals: evals, logN: logN, challenge: challenge, numSubFolds: 4)
     }
 
     /// Generic fold dispatcher based on config.
