@@ -8,7 +8,7 @@
 
 import Foundation
 import Metal
-@testable import zkMetal
+import zkMetal
 
 public func runGPUGrandProductEngineTests() {
     suite("GPUGrandProductEngine")

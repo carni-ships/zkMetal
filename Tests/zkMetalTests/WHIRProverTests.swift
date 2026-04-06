@@ -9,7 +9,7 @@
 //   6. Configurable parameters
 
 import Foundation
-@testable import zkMetal
+import zkMetal
 
 public func runWHIRProverTests() {
     suite("WHIR Prover/Verifier IOP")

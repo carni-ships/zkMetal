@@ -1,7 +1,7 @@
 // ConstraintOptimizerTests — Tests for constraint system optimization passes
 
 import Foundation
-@testable import zkMetal
+import zkMetal
 
 func runConstraintOptimizerTests() {
     suite("ConstraintOptimizer")

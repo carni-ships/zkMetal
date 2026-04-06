@@ -1,7 +1,7 @@
 // PlonkishArithTests — Tests for the Plonkish arithmetization engine
 
 import Foundation
-@testable import zkMetal
+import zkMetal
 
 public func runPlonkishArithTests() {
     suite("PlonkishArith")

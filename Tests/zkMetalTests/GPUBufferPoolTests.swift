@@ -2,7 +2,7 @@
 
 import Foundation
 import Metal
-@testable import zkMetal
+import zkMetal
 
 func runGPUBufferPoolTests() {
     suite("GPUBufferPool")

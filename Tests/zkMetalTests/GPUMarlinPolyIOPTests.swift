@@ -5,7 +5,7 @@
 // polynomial arithmetic, configuration modes, statistics, edge cases.
 
 import Foundation
-@testable import zkMetal
+import zkMetal
 
 public func runGPUMarlinPolyIOPTests() {
     suite("GPUMarlinPolyIOP")

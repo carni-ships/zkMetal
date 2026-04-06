@@ -80,6 +80,13 @@ public struct DASSample {
 
     /// The evaluation point z = omega^index (or coset shifted).
     public let evalPoint: Fr381
+
+    public init(index: Int, value: Fr381, proof: G1Projective381, evalPoint: Fr381) {
+        self.index = index
+        self.value = value
+        self.proof = proof
+        self.evalPoint = evalPoint
+    }
 }
 
 // MARK: - Data Availability Sampler

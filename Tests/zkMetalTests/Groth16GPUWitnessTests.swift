@@ -6,7 +6,7 @@
 
 import Foundation
 import Metal
-@testable import zkMetal
+import zkMetal
 
 public func runGroth16GPUWitnessTests() {
     suite("Groth16 GPU Witness")

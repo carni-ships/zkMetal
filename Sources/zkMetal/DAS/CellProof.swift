@@ -62,6 +62,13 @@ public struct CellProof {
 
     /// The random challenge used to batch the cell's opening proofs (if cellSize > 1).
     public let batchChallenge: Fr381
+
+    public init(cellIndex: Int, values: [Fr381], witness: G1Projective381, batchChallenge: Fr381) {
+        self.cellIndex = cellIndex
+        self.values = values
+        self.witness = witness
+        self.batchChallenge = batchChallenge
+    }
 }
 
 // MARK: - Cell Proof Engine

@@ -2,7 +2,7 @@
 // Tests for EIP-4844 / Danksharding DAS engine and cell proofs.
 
 import Foundation
-@testable import zkMetal
+import zkMetal
 
 func runDASTests() {
     suite("DAS — Data Availability Sampling")

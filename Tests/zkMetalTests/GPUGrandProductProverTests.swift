@@ -11,7 +11,7 @@
 //   - CPU fallback and GPU paths
 
 import Foundation
-@testable import zkMetal
+import zkMetal
 
 public func runGPUGrandProductProverTests() {
     let engine = GPUGrandProductProverEngine()

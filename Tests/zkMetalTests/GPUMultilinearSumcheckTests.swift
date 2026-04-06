@@ -9,7 +9,7 @@
 //   - Edge cases: zero polynomial, single variable, constant polynomial
 
 import Foundation
-@testable import zkMetal
+import zkMetal
 
 public func runGPUMultilinearSumcheckTests() {
     suite("GPUMultilinearSumcheckEngine")

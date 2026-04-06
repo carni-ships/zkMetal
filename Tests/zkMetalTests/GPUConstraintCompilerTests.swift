@@ -4,7 +4,7 @@
 // verifying R1CS satisfaction, witness evaluation, and statistics.
 
 import Foundation
-@testable import zkMetal
+import zkMetal
 
 public func runGPUConstraintCompilerTests() {
     suite("GPUConstraintCompiler")

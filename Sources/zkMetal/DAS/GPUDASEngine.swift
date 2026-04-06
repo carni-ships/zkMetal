@@ -48,6 +48,13 @@ public struct KZGProof381 {
 
     /// Index in the extended codeword this proof corresponds to.
     public let index: Int
+
+    public init(evalPoint: Fr381, value: Fr381, witness: G1Projective381, index: Int) {
+        self.evalPoint = evalPoint
+        self.value = value
+        self.witness = witness
+        self.index = index
+    }
 }
 
 // MARK: - GPU DAS Engine

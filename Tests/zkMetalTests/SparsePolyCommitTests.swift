@@ -1,7 +1,7 @@
 // Sparse Polynomial Commitment Tests
 
 import Foundation
-@testable import zkMetal
+import zkMetal
 
 public func runSparsePolyCommitTests() {
     suite("SparsePolyCommit")

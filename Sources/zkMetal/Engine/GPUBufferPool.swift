@@ -287,7 +287,7 @@ public final class GPUBufferPool: @unchecked Sendable {
     // MARK: - Size class helpers
 
     /// Round up to the next power of 2.
-    static func roundUpToPowerOf2(_ n: Int) -> Int {
+    public static func roundUpToPowerOf2(_ n: Int) -> Int {
         guard n > 0 else { return 1 }
         // If already a power of 2, return as-is
         if n & (n - 1) == 0 { return n }
@@ -303,7 +303,7 @@ public final class GPUBufferPool: @unchecked Sendable {
     }
 
     /// Compute the exponent (log2) for a power-of-2 value.
-    static func sizeClassExponent(_ n: Int) -> Int {
+    public static func sizeClassExponent(_ n: Int) -> Int {
         guard n > 0 else { return 0 }
         // n is assumed to be a power of 2
         var v = n

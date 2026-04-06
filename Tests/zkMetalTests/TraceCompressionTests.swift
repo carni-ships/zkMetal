@@ -1,7 +1,7 @@
 // Tests for STARK trace compression and column analysis
 
 import Foundation
-@testable import zkMetal
+import zkMetal
 
 func runTraceCompressionTests() {
     suite("TraceCompression")

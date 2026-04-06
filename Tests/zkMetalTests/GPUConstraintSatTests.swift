@@ -5,7 +5,7 @@
 // gate descriptor checking, batch checking, and edge cases.
 
 import Foundation
-@testable import zkMetal
+import zkMetal
 
 public func runGPUConstraintSatTests() {
     suite("GPUConstraintSat")

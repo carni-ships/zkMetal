@@ -4,7 +4,7 @@
 // constraint validation, and diamond dependency patterns.
 
 import Foundation
-@testable import zkMetal
+import zkMetal
 
 // MARK: - Test: Simple Addition Circuit
 

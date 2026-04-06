@@ -4,7 +4,7 @@
 // streaming generation, R1CS validation, and reconstruction.
 
 import Foundation
-@testable import zkMetal
+import zkMetal
 
 // MARK: - Test: Column Compression — Independent Columns
 

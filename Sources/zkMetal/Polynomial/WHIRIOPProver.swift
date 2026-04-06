@@ -116,6 +116,19 @@ public struct WHIRIOPProof {
     public let config: WHIRIOPConfig
     public let domainSize: Int
 
+    public init(initialCommitment: Fr, roundCommitments: [Fr], challenges: [Fr], weightSeeds: [Fr], queryResponses: [[WHIRQueryResponse]], weightedSums: [Fr], hashCommitments: [Fr], finalPolynomial: [Fr], config: WHIRIOPConfig, domainSize: Int) {
+        self.initialCommitment = initialCommitment
+        self.roundCommitments = roundCommitments
+        self.challenges = challenges
+        self.weightSeeds = weightSeeds
+        self.queryResponses = queryResponses
+        self.weightedSums = weightedSums
+        self.hashCommitments = hashCommitments
+        self.finalPolynomial = finalPolynomial
+        self.config = config
+        self.domainSize = domainSize
+    }
+
     /// Proof size in bytes.
     public var proofSizeBytes: Int {
         let frSize = MemoryLayout<Fr>.stride

@@ -4,7 +4,7 @@
 // CPU reference implementations for all supported gate types.
 
 import Foundation
-@testable import zkMetal
+import zkMetal
 
 public func runGPUConstraintEvalTests() {
     suite("GPUConstraintEval")

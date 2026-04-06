@@ -3,7 +3,7 @@
 // Verifies round-trip correctness, simple/linear/mixed circuits, and satisfaction checks.
 
 import Foundation
-@testable import zkMetal
+import zkMetal
 
 public func runConstraintConverterTests() {
     suite("ConstraintConverter")

@@ -44,6 +44,15 @@ public struct ConstraintViolation: CustomStringConvertible {
     /// Right-hand side value (for R1CS: C*z[i]).
     public let rhsValue: Fr?
 
+    public init(constraintIndex: Int, row: Int, residual: Fr, label: String?, lhsValue: Fr?, rhsValue: Fr?) {
+        self.constraintIndex = constraintIndex
+        self.row = row
+        self.residual = residual
+        self.label = label
+        self.lhsValue = lhsValue
+        self.rhsValue = rhsValue
+    }
+
     public var description: String {
         var s = "Violation at constraint \(constraintIndex), row \(row)"
         if let lbl = label { s += " (\(lbl))" }
@@ -70,6 +79,15 @@ public struct SatisfactionResult {
     public let checkTimeMs: Double
     /// Whether the check ran on GPU or fell back to CPU.
     public let usedGPU: Bool
+
+    public init(isSatisfied: Bool, firstViolation: ConstraintViolation?, numConstraints: Int, numRows: Int, checkTimeMs: Double, usedGPU: Bool) {
+        self.isSatisfied = isSatisfied
+        self.firstViolation = firstViolation
+        self.numConstraints = numConstraints
+        self.numRows = numRows
+        self.checkTimeMs = checkTimeMs
+        self.usedGPU = usedGPU
+    }
 
     public var summary: String {
         if isSatisfied {

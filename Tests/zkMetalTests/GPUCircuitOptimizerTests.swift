@@ -4,7 +4,7 @@
 // that optimized circuits produce the same outputs as the originals.
 
 import Foundation
-@testable import zkMetal
+import zkMetal
 
 public func runGPUCircuitOptimizerTests() {
     suite("GPUCircuitOptimizer")

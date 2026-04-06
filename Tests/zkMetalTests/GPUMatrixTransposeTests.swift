@@ -5,7 +5,7 @@
 
 import Foundation
 import Metal
-@testable import zkMetal
+import zkMetal
 
 public func runGPUMatrixTransposeTests() {
     suite("GPUMatrixTranspose")

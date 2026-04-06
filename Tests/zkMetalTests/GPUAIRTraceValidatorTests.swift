@@ -3,7 +3,7 @@
 // and multi-register trace validation.
 
 import Foundation
-@testable import zkMetal
+import zkMetal
 
 public func runGPUAIRTraceValidatorTests() {
     suite("GPUAIRTraceValidator - Construction")

@@ -3,7 +3,7 @@
 // constant folding, standard library AIRs, and error handling.
 
 import Foundation
-@testable import zkMetal
+import zkMetal
 
 public func runGPUAIRConstraintCompilerTests() {
     suite("GPUAIRCompiler - Expression Builder")

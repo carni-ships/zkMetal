@@ -414,7 +414,7 @@ func nextPow2RS(_ n: Int) -> Int {
 }
 
 /// Log base 2 of a power-of-2 integer.
-func logBase2(_ n: Int) -> Int {
+public func logBase2(_ n: Int) -> Int {
     precondition(n > 0 && (n & (n - 1)) == 0, "n must be a power of 2")
     var v = n
     var log = 0

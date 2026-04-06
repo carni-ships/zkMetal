@@ -4,7 +4,7 @@
 
 import Foundation
 import Metal
-@testable import zkMetal
+import zkMetal
 
 public func runGPUBatchInverseTests() {
     suite("GPUBatchInverse")

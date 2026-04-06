@@ -3,7 +3,7 @@
 // full prove+verify for various sizes, zero polynomial handling.
 
 import Foundation
-@testable import zkMetal
+import zkMetal
 
 public func runGPUSumcheckProverTests() {
     suite("GPUSumcheckProverEngine")

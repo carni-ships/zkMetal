@@ -329,6 +329,11 @@ public struct SparseOpeningProof {
     public let evaluation: Fr
     /// The witness point [q(s)] where q(x) = (p(x) - p(z)) / (x - z).
     public let witness: PointProjective
+
+    public init(evaluation: Fr, witness: PointProjective) {
+        self.evaluation = evaluation
+        self.witness = witness
+    }
 }
 
 /// Sparse opening engine: prove and verify evaluations of sparse polynomials.

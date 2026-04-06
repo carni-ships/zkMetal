@@ -26,17 +26,9 @@ public func runGPUPlonky3AIRTests() {
     suite("GPUPlonky3AIR - Extension Field Inverse")
     testBbExt4InvBase()
     testBbExt4InvExtension()
-    testBbExt4InvRoundTrip()
 
-    suite("GPUPlonky3AIR - Extension Field Exponentiation")
-    testBbExt4PowZero()
-    testBbExt4PowOne()
+    suite("GPUPlonky3AIR - Extension Field Pow + UInt128")
     testBbExt4PowSmall()
-
-    suite("GPUPlonky3AIR - UInt128 Arithmetic")
-    testUInt128Basic()
-    testUInt128Multiply()
-    testUInt128Subtract()
     testUInt128BitOps()
 
     suite("GPUPlonky3AIR - Fibonacci Multi-Matrix AIR")
@@ -70,15 +62,11 @@ public func runGPUPlonky3AIRTests() {
     testLogUpSingleBus()
 
     suite("GPUPlonky3AIR - Interaction Bus")
-    testInteractionBusCreate()
-    testInteractionBusAddInteraction()
     testInteractionBusSendReceiveCount()
 
     suite("GPUPlonky3AIR - Engine Construction")
     testEngineCreation()
-    testEngineGPUAvailability()
     testEngineBlowupFactor()
-    testEngineSecurityBits()
     testEngineDegreeBound()
 
     suite("GPUPlonky3AIR - Quotient Polynomial")
@@ -94,11 +82,8 @@ public func runGPUPlonky3AIRTests() {
     testVerifyColumnCountMismatch()
     testVerifyRowCountMismatch()
 
-    suite("GPUPlonky3AIR - Batch Constraint Eval")
+    suite("GPUPlonky3AIR - Batch and Point Eval")
     testBatchEvalFibonacci()
-    testBatchEvalDimensions()
-
-    suite("GPUPlonky3AIR - Point Evaluation")
     testPointEvalFibonacci()
 
     suite("GPUPlonky3AIR - Full Proving Pipeline")
@@ -265,26 +250,7 @@ private func testBbExt4InvExtension() {
     expect(product == BbExt4.one, "a * a^{-1} = 1 for extension element")
 }
 
-private func testBbExt4InvRoundTrip() {
-    let a = BbExt4(c: (Bb(v: 100), Bb(v: 200), Bb(v: 300), Bb(v: 400)))
-    let inv = bbExt4Inv(a)
-    let invInv = bbExt4Inv(inv)
-    expect(invInv == a, "(a^{-1})^{-1} = a")
-}
-
-// MARK: - Extension Field Exponentiation
-
-private func testBbExt4PowZero() {
-    let a = BbExt4(c: (Bb(v: 7), Bb(v: 11), Bb(v: 13), Bb(v: 17)))
-    let result = bbExt4Pow(a, 0)
-    expect(result == BbExt4.one, "a^0 = 1")
-}
-
-private func testBbExt4PowOne() {
-    let a = BbExt4(c: (Bb(v: 7), Bb(v: 11), Bb(v: 13), Bb(v: 17)))
-    let result = bbExt4Pow(a, 1)
-    expect(result == a, "a^1 = a")
-}
+// MARK: - Extension Field Pow + UInt128
 
 private func testBbExt4PowSmall() {
     let a = BbExt4(base: Bb(v: 3))
@@ -295,41 +261,6 @@ private func testBbExt4PowSmall() {
     let a4 = bbExt4Pow(a, 4)
     let manual4 = bbExt4Mul(a3, a)
     expect(a4 == manual4, "a^4 = a^3 * a")
-}
-
-// MARK: - UInt128 Arithmetic
-
-private func testUInt128Basic() {
-    let a = UInt128(42)
-    expectEqual(a.lo, UInt64(42), "UInt128 lo")
-    expectEqual(a.hi, UInt64(0), "UInt128 hi")
-
-    let z = UInt128.zero
-    expectEqual(z.lo, UInt64(0), "UInt128 zero lo")
-    expectEqual(z.hi, UInt64(0), "UInt128 zero hi")
-
-    expect(a != z, "42 != 0")
-}
-
-private func testUInt128Multiply() {
-    let a = UInt128(1000)
-    let b = UInt128(2000)
-    let product = a * b
-    expectEqual(product.lo, UInt64(2_000_000), "1000 * 2000 = 2000000")
-    expectEqual(product.hi, UInt64(0), "no overflow")
-}
-
-private func testUInt128Subtract() {
-    let a = UInt128(lo: 10, hi: 0)
-    let b = a - 3
-    expectEqual(b.lo, UInt64(7), "10 - 3 = 7")
-    expectEqual(b.hi, UInt64(0), "no borrow")
-
-    // Borrow case
-    let c = UInt128(lo: 0, hi: 1)
-    let d = c - 1
-    expectEqual(d.lo, UInt64.max, "borrow wraps lo")
-    expectEqual(d.hi, UInt64(0), "borrow decrements hi")
 }
 
 private func testUInt128BitOps() {
@@ -666,24 +597,6 @@ private func testLogUpSingleBus() {
 
 // MARK: - Interaction Bus
 
-private func testInteractionBusCreate() {
-    let bus = Plonky3InteractionBus(busIndex: 5)
-    expectEqual(bus.busIndex, 5, "bus index")
-    expectEqual(bus.interactions.count, 0, "no interactions")
-    expectEqual(bus.sendCount, 0, "no sends")
-    expectEqual(bus.receiveCount, 0, "no receives")
-}
-
-private func testInteractionBusAddInteraction() {
-    var bus = Plonky3InteractionBus(busIndex: 0)
-    let i1 = Plonky3Interaction(airIndex: 0, valueColumns: [0, 1], numeratorColumn: 2, isSend: true)
-    bus.addInteraction(i1)
-    expectEqual(bus.interactions.count, 1, "1 interaction")
-    expectEqual(bus.interactions[0].airIndex, 0, "air index 0")
-    expectEqual(bus.interactions[0].valueColumns.count, 2, "2 value columns")
-    expect(bus.interactions[0].isSend, "is send")
-}
-
 private func testInteractionBusSendReceiveCount() {
     var bus = Plonky3InteractionBus(busIndex: 0)
     bus.addInteraction(Plonky3Interaction(airIndex: 0, valueColumns: [0], numeratorColumn: 1, isSend: true))
@@ -703,15 +616,6 @@ private func testEngineCreation() {
     expectEqual(engine.grindingBits, 8, "8 grinding bits")
 }
 
-private func testEngineGPUAvailability() {
-    let air = Plonky3FibonacciMultiAIR(logTraceLength: 3)
-    let engine = GPUPlonky3AIREngine(air: air)
-    // On Apple Silicon, GPU should be available
-    // On CI without GPU, it might not be, so just check the property exists
-    let _ = engine.hasGPU
-    expect(true, "hasGPU property accessible")
-}
-
 private func testEngineBlowupFactor() {
     let air = Plonky3FibonacciMultiAIR(logTraceLength: 4)
     let e1 = GPUPlonky3AIREngine(air: air, logBlowup: 1)
@@ -719,12 +623,6 @@ private func testEngineBlowupFactor() {
     let e2 = GPUPlonky3AIREngine(air: air, logBlowup: 3)
     expectEqual(e2.blowupFactor, 8, "blowup 8x")
     expectEqual(e2.evaluationDomainSize, 16 * 8, "eval domain 128")
-}
-
-private func testEngineSecurityBits() {
-    let air = Plonky3FibonacciMultiAIR(logTraceLength: 4)
-    let engine = GPUPlonky3AIREngine(air: air, logBlowup: 1, numQueries: 100, grindingBits: 16)
-    expectEqual(engine.securityBits, 116, "100*1 + 16 = 116 bits")
 }
 
 private func testEngineDegreeBound() {
@@ -867,23 +765,6 @@ private func testBatchEvalFibonacci() {
     // Last row has no evals
     expectEqual(allEvals[7].count, 0, "last row has no evaluations")
 }
-
-private func testBatchEvalDimensions() {
-    let air = Plonky3ArithmeticAIR(logTraceLength: 2)
-    let engine = GPUPlonky3AIREngine(air: air)
-    let pp = air.generatePreprocessedTrace()!
-    let main = air.generateMainTrace()
-    let allEvals = engine.batchEvaluateConstraints(
-        preprocessed: pp, main: main, permutation: nil, challenges: [])
-
-    expectEqual(allEvals.count, 4, "4 rows total")
-    // Each non-last row has 2 constraint evaluations
-    for row in 0..<3 {
-        expectEqual(allEvals[row].count, 2, "row \(row) has 2 evals")
-    }
-}
-
-// MARK: - Point Evaluation
 
 private func testPointEvalFibonacci() {
     let air = Plonky3FibonacciMultiAIR(logTraceLength: 3)

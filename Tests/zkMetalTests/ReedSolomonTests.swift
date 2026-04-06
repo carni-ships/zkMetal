@@ -8,7 +8,7 @@
 // - Performance benchmark
 
 import Foundation
-@testable import zkMetal
+import zkMetal
 
 public func runReedSolomonEngineTests() {
     suite("Reed-Solomon Engine")
