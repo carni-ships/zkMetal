@@ -223,17 +223,45 @@ public class MarlinProver {
         let omegaNZ = frRootOfUnity(logN: logNZ)
         let etas = [etaA, etaB, etaC]
 
-        var sigmaEvals = [Fr](repeating: .zero, count: nzSize)
+        // Precompute domain points via chain multiply
+        var domainPts = [Fr](repeating: Fr.one, count: nzSize)
+        for i in 1..<nzSize { domainPts[i] = frMul(domainPts[i - 1], omegaNZ) }
+
+        // Collect all denominators for batch inversion (3 per domain point)
+        var allDenoms = [Fr](repeating: Fr.zero, count: nzSize * 3)
+        var denomNZ = [Bool](repeating: false, count: nzSize * 3)
         for i in 0..<nzSize {
-            let pt = frPow(omegaNZ, UInt64(i))
-            var sigmaI = Fr.zero
+            let pt = domainPts[i]
             for mi in 0..<3 {
                 let rg = evalPoly(pk.indexPolynomials[mi * 4], at: pt)
                 let cg = evalPoly(pk.indexPolynomials[mi * 4 + 1], at: pt)
-                let vg = evalPoly(pk.indexPolynomials[mi * 4 + 2], at: pt)
                 let d = frMul(frSub(beta, rg), frSub(pt, cg))
-                if !d.isZero {
-                    sigmaI = frAdd(sigmaI, frMul(etas[mi], frMul(vg, frInverse(d))))
+                allDenoms[i * 3 + mi] = d
+                denomNZ[i * 3 + mi] = !d.isZero
+            }
+        }
+        let totalD = nzSize * 3
+        var dPfx = [Fr](repeating: Fr.one, count: totalD)
+        for i in 1..<totalD {
+            dPfx[i] = denomNZ[i - 1] ? frMul(dPfx[i - 1], allDenoms[i - 1]) : dPfx[i - 1]
+        }
+        let lastProd = denomNZ[totalD - 1] ? frMul(dPfx[totalD - 1], allDenoms[totalD - 1]) : dPfx[totalD - 1]
+        var dAcc = frInverse(lastProd)
+        var denomInvs = [Fr](repeating: Fr.zero, count: totalD)
+        for i in Swift.stride(from: totalD - 1, through: 0, by: -1) {
+            if denomNZ[i] {
+                denomInvs[i] = frMul(dAcc, dPfx[i])
+                dAcc = frMul(dAcc, allDenoms[i])
+            }
+        }
+        var sigmaEvals = [Fr](repeating: .zero, count: nzSize)
+        for i in 0..<nzSize {
+            let pt = domainPts[i]
+            var sigmaI = Fr.zero
+            for mi in 0..<3 {
+                if denomNZ[i * 3 + mi] {
+                    let vg = evalPoly(pk.indexPolynomials[mi * 4 + 2], at: pt)
+                    sigmaI = frAdd(sigmaI, frMul(etas[mi], frMul(vg, denomInvs[i * 3 + mi])))
                 }
             }
             sigmaEvals[i] = sigmaI

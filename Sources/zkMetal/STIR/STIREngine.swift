@@ -380,11 +380,14 @@ public class STIRProver {
     /// Simple CPU NTT (Cooley-Tukey) for correctness testing.
     static func cpuNTT(coeffs: [Fr], omega: Fr, n: Int) -> [Fr] {
         if n == 1 { return coeffs }
+        // Precompute omega^i via chain multiply
+        var omegaPows = [Fr](repeating: Fr.one, count: n)
+        for i in 1..<n { omegaPows[i] = frMul(omegaPows[i - 1], omega) }
         var result = [Fr](repeating: Fr.zero, count: n)
         for i in 0..<n {
             var val = Fr.zero
             var omegaPow = Fr.one
-            let omegaI = frPow(omega, UInt64(i))
+            let omegaI = omegaPows[i]
             for j in 0..<n {
                 val = frAdd(val, frMul(coeffs[j], omegaPow))
                 omegaPow = frMul(omegaPow, omegaI)
@@ -397,11 +400,14 @@ public class STIRProver {
     /// Simple CPU iNTT for correctness testing.
     static func cpuINTT(evals: [Fr], omegaInv: Fr, n: Int) -> [Fr] {
         let nInv = frInverse(frFromInt(UInt64(n)))
+        // Precompute omegaInv^i via chain multiply
+        var omegaInvPows = [Fr](repeating: Fr.one, count: n)
+        for i in 1..<n { omegaInvPows[i] = frMul(omegaInvPows[i - 1], omegaInv) }
         var result = [Fr](repeating: Fr.zero, count: n)
         for i in 0..<n {
             var val = Fr.zero
             var omegaPow = Fr.one
-            let omegaInvI = frPow(omegaInv, UInt64(i))
+            let omegaInvI = omegaInvPows[i]
             for j in 0..<n {
                 val = frAdd(val, frMul(evals[j], omegaPow))
                 omegaPow = frMul(omegaPow, omegaInvI)

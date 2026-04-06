@@ -589,16 +589,39 @@ public final class GPUAIRCompositionEngine {
         let domainSize = domainPoints.count
         let omega = computeNthRootOfUnity(logN: logTraceLength)
         let zOmega = frMul(z, omega)
-        var result = [Fr](repeating: Fr.zero, count: domainSize)
 
+        // Batch-invert all (x - z) and (x - z*omega) denominators
+        // Interleave: [xMinusZ_0, xMinusZOmega_0, xMinusZ_1, xMinusZOmega_1, ...]
+        let totalInvs = domainSize * 2
+        var denoms = [Fr](repeating: Fr.zero, count: totalInvs)
+        var denomIsNZ = [Bool](repeating: false, count: totalInvs)
         for i in 0..<domainSize {
             let x = domainPoints[i]
-            let xMinusZ = frSub(x, z)
-            let xMinusZOmega = frSub(x, zOmega)
+            let d1 = frSub(x, z)
+            let d2 = frSub(x, zOmega)
+            denoms[i * 2] = d1
+            denoms[i * 2 + 1] = d2
+            denomIsNZ[i * 2] = !d1.isZero
+            denomIsNZ[i * 2 + 1] = !d2.isZero
+        }
+        var iPfx = [Fr](repeating: Fr.one, count: totalInvs)
+        for i in 1..<totalInvs {
+            iPfx[i] = denomIsNZ[i - 1] ? frMul(iPfx[i - 1], denoms[i - 1]) : iPfx[i - 1]
+        }
+        let iLast = denomIsNZ[totalInvs - 1] ? frMul(iPfx[totalInvs - 1], denoms[totalInvs - 1]) : iPfx[totalInvs - 1]
+        var iAcc = frInverse(iLast)
+        var denomInvs = [Fr](repeating: Fr.zero, count: totalInvs)
+        for i in Swift.stride(from: totalInvs - 1, through: 0, by: -1) {
+            if denomIsNZ[i] {
+                denomInvs[i] = frMul(iAcc, iPfx[i])
+                iAcc = frMul(iAcc, denoms[i])
+            }
+        }
 
-            // Guard against division by zero
-            let xMinusZInv = xMinusZ.isZero ? Fr.zero : frInverse(xMinusZ)
-            let xMinusZOmegaInv = xMinusZOmega.isZero ? Fr.zero : frInverse(xMinusZOmega)
+        var result = [Fr](repeating: Fr.zero, count: domainSize)
+        for i in 0..<domainSize {
+            let xMinusZInv = denomInvs[i * 2]
+            let xMinusZOmegaInv = denomInvs[i * 2 + 1]
 
             var val = Fr.zero
 
@@ -774,18 +797,35 @@ public final class GPUAIRCompositionEngine {
             domainPoints[i] = frMul(domainPoints[i - 1], omega)
         }
 
-        var basisValues = [Fr](repeating: Fr.zero, count: n)
+        // Precompute omega^{-i} via chain multiply and batch-invert diffs
+        let omegaInv = frInverse(omega)
+        var omegaNegPows = [Fr](repeating: Fr.one, count: n)
+        for i in 1..<n { omegaNegPows[i] = frMul(omegaNegPows[i - 1], omegaInv) }
+
+        var diffs = [Fr](repeating: Fr.zero, count: n)
+        var onDomain = -1
         for i in 0..<n {
-            let diff = frSub(point, domainPoints[i])
-            if diff.isZero {
-                // Point is on the domain; basis value is 1 at this index, 0 elsewhere
-                for j in 0..<n { basisValues[j] = Fr.zero }
-                basisValues[i] = Fr.one
-                break
+            diffs[i] = frSub(point, domainPoints[i])
+            if diffs[i].isZero { onDomain = i }
+        }
+
+        var basisValues = [Fr](repeating: Fr.zero, count: n)
+        if onDomain >= 0 {
+            basisValues[onDomain] = Fr.one
+        } else {
+            // Batch-invert all diffs
+            var bPfx = [Fr](repeating: Fr.one, count: n)
+            for i in 1..<n { bPfx[i] = frMul(bPfx[i - 1], diffs[i - 1]) }
+            var bAcc = frInverse(frMul(bPfx[n - 1], diffs[n - 1]))
+            var diffInvs = [Fr](repeating: Fr.zero, count: n)
+            for i in Swift.stride(from: n - 1, through: 0, by: -1) {
+                diffInvs[i] = frMul(bAcc, bPfx[i])
+                bAcc = frMul(bAcc, diffs[i])
             }
-            let omegaNegI = frInverse(domainPoints[i])
-            basisValues[i] = frMul(frMul(vanishing, nInv),
-                                   frMul(omegaNegI, frInverse(diff)))
+            let vanNInv = frMul(vanishing, nInv)
+            for i in 0..<n {
+                basisValues[i] = frMul(vanNInv, frMul(omegaNegPows[i], diffInvs[i]))
+            }
         }
 
         // Evaluate each column at the point

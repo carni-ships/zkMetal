@@ -254,17 +254,46 @@ public class MarlinEngine {
 
         // Get index polynomial evaluations on K_NZ domain (they were originally built
         // as evaluations on this domain before INTT, so just NTT the coefficients)
+        // Precompute domain points via chain multiply instead of per-element frPow
+        var domainPts = [Fr](repeating: Fr.one, count: nzSize)
+        for i in 1..<nzSize { domainPts[i] = frMul(domainPts[i - 1], omegaNZ) }
+
         var sigmaEvals = [Fr](repeating: .zero, count: nzSize)
+        // Collect all denominators for batch inversion (3 per domain point)
+        var allDenoms = [Fr](repeating: Fr.zero, count: nzSize * 3)
+        var denomNonZero = [Bool](repeating: false, count: nzSize * 3)
         for i in 0..<nzSize {
-            let pt = frPow(omegaNZ, UInt64(i))
-            var sigmaI = Fr.zero
+            let pt = domainPts[i]
             for mi in 0..<3 {
                 let rg = evalPoly(pk.indexPolynomials[mi * 4], at: pt)
                 let cg = evalPoly(pk.indexPolynomials[mi * 4 + 1], at: pt)
-                let vg = evalPoly(pk.indexPolynomials[mi * 4 + 2], at: pt)
                 let d = frMul(frSub(beta, rg), frSub(pt, cg))
-                if !d.isZero {
-                    sigmaI = frAdd(sigmaI, frMul(etas[mi], frMul(vg, frInverse(d))))
+                allDenoms[i * 3 + mi] = d
+                denomNonZero[i * 3 + mi] = !d.isZero
+            }
+        }
+        // Batch-invert all non-zero denominators
+        let totalDenoms = nzSize * 3
+        var dPfx = [Fr](repeating: Fr.one, count: totalDenoms)
+        for i in 1..<totalDenoms {
+            dPfx[i] = denomNonZero[i - 1] ? frMul(dPfx[i - 1], allDenoms[i - 1]) : dPfx[i - 1]
+        }
+        let lastNZ = denomNonZero[totalDenoms - 1] ? frMul(dPfx[totalDenoms - 1], allDenoms[totalDenoms - 1]) : dPfx[totalDenoms - 1]
+        var dAcc = frInverse(lastNZ)
+        var denomInvs = [Fr](repeating: Fr.zero, count: totalDenoms)
+        for i in Swift.stride(from: totalDenoms - 1, through: 0, by: -1) {
+            if denomNonZero[i] {
+                denomInvs[i] = frMul(dAcc, dPfx[i])
+                dAcc = frMul(dAcc, allDenoms[i])
+            }
+        }
+        for i in 0..<nzSize {
+            let pt = domainPts[i]
+            var sigmaI = Fr.zero
+            for mi in 0..<3 {
+                if denomNonZero[i * 3 + mi] {
+                    let vg = evalPoly(pk.indexPolynomials[mi * 4 + 2], at: pt)
+                    sigmaI = frAdd(sigmaI, frMul(etas[mi], frMul(vg, denomInvs[i * 3 + mi])))
                 }
             }
             sigmaEvals[i] = sigmaI
