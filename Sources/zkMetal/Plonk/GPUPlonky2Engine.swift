@@ -713,28 +713,43 @@ public class GPUPlonky2Engine {
             }
         }
 
-        // Compute z polynomial evaluations
-        var z = [Gl](repeating: Gl.one, count: n)
-        for i in 0..<(n - 1) {
+        // Compute numerators and denominators for all rows
+        let m = n - 1
+        var gpNums = [Gl](repeating: Gl.one, count: m)
+        var gpDens = [Gl](repeating: Gl.one, count: m)
+        for i in 0..<m {
             var numerator = Gl.one
             var denominator = Gl.one
             for j in 0..<numWires {
                 let fVal = (j < trace[i].count) ? trace[i][j] : Gl.zero
-                // id(i, j) = i * numWires + j
                 let idVal = Gl(v: UInt64(i * numWires + j))
-                // sigma(i, j)
                 let sigmaEntry = sigma[i * numWires + j]
                 let sigmaVal = Gl(v: UInt64(sigmaEntry.0 * numWires + sigmaEntry.1))
-
-                // numerator *= f + beta * sigma + gamma
-                let numTerm = glAdd(fVal, glAdd(glMul(beta, sigmaVal), gamma))
-                numerator = glMul(numerator, numTerm)
-                // denominator *= f + beta * id + gamma
-                let denTerm = glAdd(fVal, glAdd(glMul(beta, idVal), gamma))
-                denominator = glMul(denominator, denTerm)
+                numerator = glMul(numerator, glAdd(fVal, glAdd(glMul(beta, sigmaVal), gamma)))
+                denominator = glMul(denominator, glAdd(fVal, glAdd(glMul(beta, idVal), gamma)))
             }
-            let denInv = glInverse(denominator)
-            z[i + 1] = glMul(z[i], glMul(numerator, denInv))
+            gpNums[i] = numerator
+            gpDens[i] = denominator
+        }
+
+        // Montgomery batch inversion of all denominators
+        var gpPrefix = [Gl](repeating: Gl.one, count: m)
+        for i in 1..<m {
+            gpPrefix[i] = gpDens[i - 1].v == 0 ? gpPrefix[i - 1] : glMul(gpPrefix[i - 1], gpDens[i - 1])
+        }
+        let gpLast = gpDens[m - 1].v == 0 ? gpPrefix[m - 1] : glMul(gpPrefix[m - 1], gpDens[m - 1])
+        var gpInv = glInverse(gpLast)
+        var gpDenInvs = [Gl](repeating: Gl.zero, count: m)
+        for i in stride(from: m - 1, through: 0, by: -1) {
+            if gpDens[i].v != 0 {
+                gpDenInvs[i] = glMul(gpInv, gpPrefix[i])
+                gpInv = glMul(gpInv, gpDens[i])
+            }
+        }
+
+        var z = [Gl](repeating: Gl.one, count: n)
+        for i in 0..<m {
+            z[i + 1] = glMul(z[i], glMul(gpNums[i], gpDenInvs[i]))
         }
         return z
     }
@@ -781,14 +796,33 @@ public class GPUPlonky2Engine {
             let betaR = GoldilocksExtField(c0: b0, c1: b1)
 
             let omegaR = glRootOfUnity(logN: currentLogN)
+            // Precompute 2*omega^i via chain multiply, then batch-invert
+            var oddDenoms = [Gl](repeating: Gl.zero, count: half)
+            var omPow = Gl.one
+            for i in 0..<half {
+                oddDenoms[i] = glMul(Gl(v: 2), omPow)
+                omPow = glMul(omPow, omegaR)
+            }
+            var odPrefix = [Gl](repeating: Gl.one, count: half)
+            for i in 1..<half {
+                odPrefix[i] = oddDenoms[i - 1].v == 0 ? odPrefix[i - 1] : glMul(odPrefix[i - 1], oddDenoms[i - 1])
+            }
+            let odLast = oddDenoms[half - 1].v == 0 ? odPrefix[half - 1] : glMul(odPrefix[half - 1], oddDenoms[half - 1])
+            var odInv = glInverse(odLast)
+            var oddDenomInvs = [Gl](repeating: Gl.zero, count: half)
+            for i in stride(from: half - 1, through: 0, by: -1) {
+                if oddDenoms[i].v != 0 {
+                    oddDenomInvs[i] = glMul(odInv, odPrefix[i])
+                    odInv = glMul(odInv, oddDenoms[i])
+                }
+            }
+
             var folded = [Gl](repeating: Gl.zero, count: half)
             for i in 0..<half {
                 let f0 = currentEvals[i]
                 let f1 = currentEvals[i + half]
                 let even = glMul(glAdd(f0, f1), inv2)
-                let omegaI = glPow(omegaR, UInt64(i))
-                let oddDenom = glMul(Gl(v: 2), omegaI)
-                let odd = glMul(glSub(f0, f1), glInverse(oddDenom))
+                let odd = glMul(glSub(f0, f1), oddDenomInvs[i])
                 folded[i] = glAdd(even, glMul(betaR.c0, odd))
             }
 

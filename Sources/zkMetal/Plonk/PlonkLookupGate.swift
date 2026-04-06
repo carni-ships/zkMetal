@@ -128,29 +128,40 @@ public class PlonkLookupArgument {
         let onePlusBeta = frAdd(Fr.one, beta)
         let gammaOnePlusBeta = frMul(gamma, onePlusBeta)
 
+        var lookupNums = [Fr](repeating: Fr.zero, count: nn)
+        var lookupDens = [Fr](repeating: Fr.zero, count: nn)
+
         for i in 0..<(nn - 1) {
             // Numerator: (1+beta) * (gamma + f_i) * (gamma*(1+beta) + t_i + beta*t_{i+1})
             let num1 = onePlusBeta
             let num2 = frAdd(gamma, lookupEvals[i])
             let tNext = tableEvals[(i + 1) % nn]
             let num3 = frAdd(gammaOnePlusBeta, frAdd(tableEvals[i], frMul(beta, tNext)))
-            let numerator = frMul(frMul(num1, num2), num3)
+            lookupNums[i] = frMul(frMul(num1, num2), num3)
 
             // Denominator: (gamma*(1+beta) + s_i + beta*s_{i+1})^2
-            // Note: the squared denominator comes from the two copies of s in the protocol
-            // (one for the lookup side, one for the table side).
-            // Simplified: we use a single denominator factor for each side.
             let sNext = sortedEvals[(i + 1) % nn]
             let den1 = frAdd(gammaOnePlusBeta, frAdd(sortedEvals[i], frMul(beta, sNext)))
+            lookupDens[i] = frSqr(den1)
+        }
 
-            // For the Plookup grand product, we need den1 * den2 where
-            // den2 handles the second half of the sorted vector.
-            // In the simplified single-accumulator form:
-            let denominator = frSqr(den1)
-
-            // Z(omega^{i+1}) = Z(omega^i) * numerator / denominator
-            let denInv = frInverse(denominator)
-            zEvals[i + 1] = frMul(zEvals[i], frMul(numerator, denInv))
+        // Montgomery batch inversion of denominators (nn-1 entries)
+        let m = nn - 1
+        var lkPrefix = [Fr](repeating: Fr.one, count: m)
+        for i in 1..<m {
+            lkPrefix[i] = lookupDens[i - 1] == Fr.zero ? lkPrefix[i - 1] : frMul(lkPrefix[i - 1], lookupDens[i - 1])
+        }
+        let lkLast = lookupDens[m - 1] == Fr.zero ? lkPrefix[m - 1] : frMul(lkPrefix[m - 1], lookupDens[m - 1])
+        var lkInv = frInverse(lkLast)
+        var lookupDenInvs = [Fr](repeating: Fr.zero, count: m)
+        for i in stride(from: m - 1, through: 0, by: -1) {
+            if lookupDens[i] != Fr.zero {
+                lookupDenInvs[i] = frMul(lkInv, lkPrefix[i])
+                lkInv = frMul(lkInv, lookupDens[i])
+            }
+        }
+        for i in 0..<m {
+            zEvals[i + 1] = frMul(zEvals[i], frMul(lookupNums[i], lookupDenInvs[i]))
         }
 
         return zEvals

@@ -170,18 +170,29 @@ public struct AIRTraceGenerator {
         var colPermuted = [Bb](repeating: Bb.zero, count: n)
         var colAccumulator = [Bb](repeating: Bb.zero, count: n)
 
-        var runningProduct = Bb.one
+        // Batch-invert all (permuted[i] + beta) denominators
+        var airDens = [Bb](repeating: Bb.zero, count: n)
+        for i in 0..<n { airDens[i] = bbAdd(permuted[i], beta) }
+        var airPrefix = [Bb](repeating: Bb.one, count: n)
+        for i in 1..<n {
+            airPrefix[i] = airDens[i - 1].v == 0 ? airPrefix[i - 1] : bbMul(airPrefix[i - 1], airDens[i - 1])
+        }
+        let airLast = airDens[n - 1].v == 0 ? airPrefix[n - 1] : bbMul(airPrefix[n - 1], airDens[n - 1])
+        var airInv = bbInverse(airLast)
+        var airDenInvs = [Bb](repeating: Bb.zero, count: n)
+        for i in stride(from: n - 1, through: 0, by: -1) {
+            if airDens[i].v != 0 {
+                airDenInvs[i] = bbMul(airInv, airPrefix[i])
+                airInv = bbMul(airInv, airDens[i])
+            }
+        }
 
+        var runningProduct = Bb.one
         for i in 0..<n {
             colOriginal[i] = original[i]
             colPermuted[i] = permuted[i]
-
-            // accumulator[i] = running_product * (original[i] + beta) / (permuted[i] + beta)
             let numerator = bbAdd(original[i], beta)
-            let denominator = bbAdd(permuted[i], beta)
-            let denomInv = bbInverse(denominator)
-            runningProduct = bbMul(runningProduct, bbMul(numerator, denomInv))
-
+            runningProduct = bbMul(runningProduct, bbMul(numerator, airDenInvs[i]))
             colAccumulator[i] = runningProduct
         }
 

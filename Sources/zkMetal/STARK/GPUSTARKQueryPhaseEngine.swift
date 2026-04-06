@@ -496,15 +496,39 @@ public final class GPUSTARKQueryPhaseEngine {
         let logM = config.logLDEDomainSize
         let omegaM = frRootOfUnity(logN: logM)
 
-        var deepEvals = [Fr](repeating: Fr.zero, count: querySet.indices.count)
+        let qCount = querySet.indices.count
+
+        // Batch-invert all (x_i - zeta) and (x_i - zetaNext) denominators
+        var qDenoms = [Fr](repeating: Fr.zero, count: 2 * qCount)
+        for (qi, idx) in querySet.indices.enumerated() {
+            let domainPoint = computeDomainPoint(
+                index: idx, omegaM: omegaM, cosetShift: config.cosetShift)
+            qDenoms[2 * qi] = frSub(domainPoint, oodFrame.zeta)
+            qDenoms[2 * qi + 1] = frSub(domainPoint, zetaNext)
+        }
+        var qPrefix = [Fr](repeating: Fr.one, count: 2 * qCount)
+        for i in 1..<(2 * qCount) {
+            qPrefix[i] = qDenoms[i - 1] == Fr.zero ? qPrefix[i - 1] : frMul(qPrefix[i - 1], qDenoms[i - 1])
+        }
+        let qLast = qDenoms[2 * qCount - 1] == Fr.zero ? qPrefix[2 * qCount - 1] : frMul(qPrefix[2 * qCount - 1], qDenoms[2 * qCount - 1])
+        var qInv = frInverse(qLast)
+        var qDenomInvs = [Fr](repeating: Fr.zero, count: 2 * qCount)
+        for i in stride(from: 2 * qCount - 1, through: 0, by: -1) {
+            if qDenoms[i] != Fr.zero {
+                qDenomInvs[i] = frMul(qInv, qPrefix[i])
+                qInv = frMul(qInv, qDenoms[i])
+            }
+        }
+
+        var deepEvals = [Fr](repeating: Fr.zero, count: qCount)
 
         for (qi, idx) in querySet.indices.enumerated() {
             // Compute the domain point x_i = cosetShift * omega_M^idx
             let domainPoint = computeDomainPoint(
                 index: idx, omegaM: omegaM, cosetShift: config.cosetShift)
 
-            let xMinusZetaInv = frInverse(frSub(domainPoint, oodFrame.zeta))
-            let xMinusZetaNextInv = frInverse(frSub(domainPoint, zetaNext))
+            let xMinusZetaInv = qDenomInvs[2 * qi]
+            let xMinusZetaNextInv = qDenomInvs[2 * qi + 1]
 
             var alphaPow = Fr.one
             var result = Fr.zero

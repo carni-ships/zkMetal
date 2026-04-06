@@ -360,37 +360,53 @@ public class SP1FRIFolder {
 
             // Fold-by-4: combine 4 evaluations into 1
             let omega = bbRootOfUnity(logN: currentLogN)
-            var folded = [Bb](repeating: Bb.zero, count: quarter)
+            let inv4 = bbInverse(Bb(v: 4))
+            let beta2 = bbSqr(beta)
+            let beta3 = bbMul(beta2, beta)
+            let betaInv4 = bbMul(beta, inv4)
+            let beta2Inv4 = bbMul(beta2, inv4)
+            let beta3Inv4 = bbMul(beta3, inv4)
 
+            // Precompute omega powers via chain multiply, then batch-invert omega^i, omega^2i, omega^3i
+            var omegaPows = [Bb](repeating: Bb.one, count: quarter)
+            for i in 1..<quarter { omegaPows[i] = bbMul(omegaPows[i - 1], omega) }
+
+            var omegaDenoms = [Bb](repeating: Bb.zero, count: 3 * quarter)
             for i in 0..<quarter {
-                // Gather f(omega^i), f(omega^(i+N/4)), f(omega^(i+N/2)), f(omega^(i+3N/4))
+                omegaDenoms[3 * i] = omegaPows[i]
+                omegaDenoms[3 * i + 1] = bbSqr(omegaPows[i])
+                omegaDenoms[3 * i + 2] = bbMul(omegaDenoms[3 * i + 1], omegaPows[i])
+            }
+            var oPrefix = [Bb](repeating: Bb.one, count: 3 * quarter)
+            for i in 1..<(3 * quarter) {
+                oPrefix[i] = omegaDenoms[i - 1].v == 0 ? oPrefix[i - 1] : bbMul(oPrefix[i - 1], omegaDenoms[i - 1])
+            }
+            let oLast = omegaDenoms[3 * quarter - 1].v == 0 ? oPrefix[3 * quarter - 1] : bbMul(oPrefix[3 * quarter - 1], omegaDenoms[3 * quarter - 1])
+            var oInv = bbInverse(oLast)
+            var omegaInvs = [Bb](repeating: Bb.zero, count: 3 * quarter)
+            for i in stride(from: 3 * quarter - 1, through: 0, by: -1) {
+                if omegaDenoms[i].v != 0 {
+                    omegaInvs[i] = bbMul(oInv, oPrefix[i])
+                    oInv = bbMul(oInv, omegaDenoms[i])
+                }
+            }
+
+            var folded = [Bb](repeating: Bb.zero, count: quarter)
+            for i in 0..<quarter {
                 let f0 = currentEvals[i]
                 let f1 = currentEvals[i + quarter]
                 let f2 = currentEvals[i + 2 * quarter]
                 let f3 = currentEvals[i + 3 * quarter]
-
-                // Fold-by-4 using beta:
-                // result = (f0 + f1 + f2 + f3)/4
-                //        + beta * (f0 - f1 + f2 - f3) / (4 * omega^i)
-                //        + beta^2 * (f0 + f1 - f2 - f3) / (4 * omega^(2i))
-                //        + beta^3 * (f0 - f1 - f2 + f3) / (4 * omega^(3i))
-                let inv4 = bbInverse(Bb(v: 4))
-                let omegaI = bbPow(omega, UInt32(i))
-                let omega2I = bbSqr(omegaI)
-                let omega3I = bbMul(omega2I, omegaI)
 
                 let sum0 = bbAdd(bbAdd(f0, f1), bbAdd(f2, f3))
                 let sum1 = bbAdd(bbSub(f0, f1), bbSub(f2, f3))
                 let sum2 = bbSub(bbAdd(f0, f1), bbAdd(f2, f3))
                 let sum3 = bbSub(bbSub(f0, f1), bbSub(f2, f3))
 
-                let beta2 = bbSqr(beta)
-                let beta3 = bbMul(beta2, beta)
-
                 var result = bbMul(sum0, inv4)
-                result = bbAdd(result, bbMul(bbMul(beta, inv4), bbMul(sum1, bbInverse(omegaI))))
-                result = bbAdd(result, bbMul(bbMul(beta2, inv4), bbMul(sum2, bbInverse(omega2I))))
-                result = bbAdd(result, bbMul(bbMul(beta3, inv4), bbMul(sum3, bbInverse(omega3I))))
+                result = bbAdd(result, bbMul(betaInv4, bbMul(sum1, omegaInvs[3 * i])))
+                result = bbAdd(result, bbMul(beta2Inv4, bbMul(sum2, omegaInvs[3 * i + 1])))
+                result = bbAdd(result, bbMul(beta3Inv4, bbMul(sum3, omegaInvs[3 * i + 2])))
 
                 folded[i] = result
             }
@@ -505,16 +521,27 @@ public class SP1ConstraintEvaluator {
         let cosetShift = bbCosetGenerator(logN: logLDE)
         let omega = bbRootOfUnity(logN: logLDE)
 
-        // Precompute vanishing polynomial inverses: 1 / Z_H(x) at each LDE point
-        var vanishingInv = [Bb](repeating: Bb.zero, count: ldeLen)
+        // Precompute vanishing polynomial values at each LDE point, then batch-invert
+        var zhVals = [Bb](repeating: Bb.zero, count: ldeLen)
         var cosetPow = Bb.one
         for i in 0..<ldeLen {
             let xToN = bbPow(bbMul(cosetShift, cosetPow), UInt32(traceLen))
-            let zh = bbSub(xToN, Bb.one)
-            if zh.v != 0 {
-                vanishingInv[i] = bbInverse(zh)
-            }
+            zhVals[i] = bbSub(xToN, Bb.one)
             cosetPow = bbMul(cosetPow, omega)
+        }
+        // Montgomery batch inversion
+        var zhPrefix = [Bb](repeating: Bb.one, count: ldeLen)
+        for i in 1..<ldeLen {
+            zhPrefix[i] = zhVals[i - 1].v == 0 ? zhPrefix[i - 1] : bbMul(zhPrefix[i - 1], zhVals[i - 1])
+        }
+        let zhLast = zhVals[ldeLen - 1].v == 0 ? zhPrefix[ldeLen - 1] : bbMul(zhPrefix[ldeLen - 1], zhVals[ldeLen - 1])
+        var zhInv = bbInverse(zhLast)
+        var vanishingInv = [Bb](repeating: Bb.zero, count: ldeLen)
+        for i in stride(from: ldeLen - 1, through: 0, by: -1) {
+            if zhVals[i].v != 0 {
+                vanishingInv[i] = bbMul(zhInv, zhPrefix[i])
+                zhInv = bbMul(zhInv, zhVals[i])
+            }
         }
 
         // Evaluate constraints at each LDE point

@@ -618,35 +618,40 @@ public class GPUHalo2LookupArgEngine {
     ) -> LookupProduct {
         let n = permuted.domainSize
 
+        // Precompute all denominators and batch-invert
+        var dens = [Fr](repeating: Fr.zero, count: n)
+        for i in 0..<n {
+            let aPrimePlusBeta = frAdd(permuted.permutedInput[i], beta)
+            let sPrimePlusGamma = frAdd(permuted.permutedTable[i], gamma)
+            dens[i] = frMul(aPrimePlusBeta, sPrimePlusGamma)
+        }
+
+        var dPrefix = [Fr](repeating: Fr.one, count: n)
+        for i in 1..<n {
+            dPrefix[i] = dens[i - 1] == Fr.zero ? dPrefix[i - 1] : frMul(dPrefix[i - 1], dens[i - 1])
+        }
+        let dLast = dens[n - 1] == Fr.zero ? dPrefix[n - 1] : frMul(dPrefix[n - 1], dens[n - 1])
+        var dInv = frInverse(dLast)
+        var denInvs = [Fr](repeating: Fr.zero, count: n)
+        for i in stride(from: n - 1, through: 0, by: -1) {
+            if dens[i] != Fr.zero {
+                denInvs[i] = frMul(dInv, dPrefix[i])
+                dInv = frMul(dInv, dens[i])
+            }
+        }
+
         var zEvals = [Fr](repeating: Fr.zero, count: n)
         zEvals[0] = Fr.one  // Z_L(omega^0) = 1
 
         for i in 0..<(n - 1) {
-            // Numerator: (A[i] + beta) * (S[i] + gamma)
-            let aPlusBeta = frAdd(inputs[i], beta)
-            let sPlusGamma = frAdd(table[i], gamma)
-            let num = frMul(aPlusBeta, sPlusGamma)
-
-            // Denominator: (A'[i] + beta) * (S'[i] + gamma)
-            let aPrimePlusBeta = frAdd(permuted.permutedInput[i], beta)
-            let sPrimePlusGamma = frAdd(permuted.permutedTable[i], gamma)
-            let den = frMul(aPrimePlusBeta, sPrimePlusGamma)
-
-            // Z_L[i+1] = Z_L[i] * num / den
-            let denInv = frInverse(den)
-            let ratio = frMul(num, denInv)
+            let num = frMul(frAdd(inputs[i], beta), frAdd(table[i], gamma))
+            let ratio = frMul(num, denInvs[i])
             zEvals[i + 1] = frMul(zEvals[i], ratio)
         }
 
         // Check: Z_L at the last position should telescope to give a valid product
-        // For the full argument, Z_L(omega^{n-1}) * (last ratio) should equal 1
         let lastNum = frMul(frAdd(inputs[n - 1], beta), frAdd(table[n - 1], gamma))
-        let lastDen = frMul(
-            frAdd(permuted.permutedInput[n - 1], beta),
-            frAdd(permuted.permutedTable[n - 1], gamma)
-        )
-        let lastDenInv = frInverse(lastDen)
-        let finalProduct = frMul(zEvals[n - 1], frMul(lastNum, lastDenInv))
+        let finalProduct = frMul(zEvals[n - 1], frMul(lastNum, denInvs[n - 1]))
         let isValid = frEqual(finalProduct, Fr.one)
 
         return LookupProduct(
@@ -683,14 +688,31 @@ public class GPUHalo2LookupArgEngine {
         guard frEqual(product.zEvals[0], Fr.one) else { return false }
 
         // Check 2: Product relation at each row
-        for i in 0..<(n - 1) {
-            let num = frMul(frAdd(inputs[i], beta), frAdd(table[i], gamma))
-            let den = frMul(
+        // Batch-invert all denominators
+        let m = n - 1
+        var vDens = [Fr](repeating: Fr.zero, count: m)
+        for i in 0..<m {
+            vDens[i] = frMul(
                 frAdd(product.permuted.permutedInput[i], beta),
                 frAdd(product.permuted.permutedTable[i], gamma)
             )
-            let denInv = frInverse(den)
-            let expected = frMul(product.zEvals[i], frMul(num, denInv))
+        }
+        var vPrefix = [Fr](repeating: Fr.one, count: m)
+        for i in 1..<m {
+            vPrefix[i] = vDens[i - 1] == Fr.zero ? vPrefix[i - 1] : frMul(vPrefix[i - 1], vDens[i - 1])
+        }
+        let vLast = vDens[m - 1] == Fr.zero ? vPrefix[m - 1] : frMul(vPrefix[m - 1], vDens[m - 1])
+        var vInv = frInverse(vLast)
+        var vDenInvs = [Fr](repeating: Fr.zero, count: m)
+        for i in stride(from: m - 1, through: 0, by: -1) {
+            if vDens[i] != Fr.zero {
+                vDenInvs[i] = frMul(vInv, vPrefix[i])
+                vInv = frMul(vInv, vDens[i])
+            }
+        }
+        for i in 0..<m {
+            let num = frMul(frAdd(inputs[i], beta), frAdd(table[i], gamma))
+            let expected = frMul(product.zEvals[i], frMul(num, vDenInvs[i]))
             if !frEqual(expected, product.zEvals[i + 1]) {
                 return false
             }

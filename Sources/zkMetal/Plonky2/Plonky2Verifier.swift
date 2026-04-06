@@ -700,13 +700,32 @@ public struct Plonky2ProofBuilder {
             let betaR = GoldilocksExtField(c0: b0, c1: b1)
             friBetas.append(betaR)
 
+            // Precompute 2*omega^i via chain multiply, then batch-invert
+            var vOddDenoms = [Gl](repeating: Gl.zero, count: half)
+            var vOmPow = Gl.one
+            for i in 0..<half {
+                vOddDenoms[i] = glMul(Gl(v: 2), vOmPow)
+                vOmPow = glMul(vOmPow, omegaR)
+            }
+            var vOdPrefix = [Gl](repeating: Gl.one, count: half)
+            for i in 1..<half {
+                vOdPrefix[i] = vOddDenoms[i - 1].v == 0 ? vOdPrefix[i - 1] : glMul(vOdPrefix[i - 1], vOddDenoms[i - 1])
+            }
+            let vOdLast = vOddDenoms[half - 1].v == 0 ? vOdPrefix[half - 1] : glMul(vOdPrefix[half - 1], vOddDenoms[half - 1])
+            var vOdInv = glInverse(vOdLast)
+            var vOddInvs = [Gl](repeating: Gl.zero, count: half)
+            for i in stride(from: half - 1, through: 0, by: -1) {
+                if vOddDenoms[i].v != 0 {
+                    vOddInvs[i] = glMul(vOdInv, vOdPrefix[i])
+                    vOdInv = glMul(vOdInv, vOddDenoms[i])
+                }
+            }
+
             for i in 0..<half {
                 let f0 = currentEvals[i]
                 let f1 = currentEvals[i + half]
                 let even = glMul(glAdd(f0, f1), inv2)
-                let omegaI = glPow(omegaR, UInt64(i))
-                let oddDenom = glMul(Gl(v: 2), omegaI)
-                let odd = glMul(glSub(f0, f1), glInverse(oddDenom))
+                let odd = glMul(glSub(f0, f1), vOddInvs[i])
                 // Use base field part of beta only for simplicity
                 folded[i] = glAdd(even, glMul(betaR.c0, odd))
             }

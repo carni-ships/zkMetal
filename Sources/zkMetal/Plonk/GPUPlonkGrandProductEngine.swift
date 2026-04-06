@@ -404,16 +404,33 @@ public class GPUPlonkGrandProductEngine {
 
         // Barycentric weights: L_j(X) = Z_H(X) / (n * (X - omega^j) * omega^{-j})
         // Since all coset points share the same Z_H value, we precompute.
+        let zhNinv = frMul(zhCoset, nInv)
         var zCosetEvals = [Fr](repeating: Fr.zero, count: n)
         for i in 0..<n {
-            var acc = Fr.zero
             let x = cosetPoints[i]
+
+            // Batch-invert all (x - omega^j) for this coset point
+            var diffs = [Fr](repeating: Fr.zero, count: n)
+            for j in 0..<n { diffs[j] = frSub(x, stdDomain[j]) }
+
+            var bPrefix = [Fr](repeating: Fr.one, count: n)
+            for j in 1..<n {
+                bPrefix[j] = diffs[j - 1] == Fr.zero ? bPrefix[j - 1] : frMul(bPrefix[j - 1], diffs[j - 1])
+            }
+            let bLast = diffs[n - 1] == Fr.zero ? bPrefix[n - 1] : frMul(bPrefix[n - 1], diffs[n - 1])
+            var bInv = frInverse(bLast)
+            var diffInvs = [Fr](repeating: Fr.zero, count: n)
+            for j in stride(from: n - 1, through: 0, by: -1) {
+                if diffs[j] != Fr.zero {
+                    diffInvs[j] = frMul(bInv, bPrefix[j])
+                    bInv = frMul(bInv, diffs[j])
+                }
+            }
+
+            var acc = Fr.zero
             for j in 0..<n {
-                let diff = frSub(x, stdDomain[j])
-                let diffInv = frInverse(diff)
-                // weight_j = omega^{-j} but since omega^n=1, omega^{-j} = omega^{n-j}
                 let omegaNegJ = j == 0 ? Fr.one : stdDomain[n - j]
-                let baryWeight = frMul(frMul(zhCoset, nInv), frMul(omegaNegJ, diffInv))
+                let baryWeight = frMul(zhNinv, frMul(omegaNegJ, diffInvs[j]))
                 acc = frAdd(acc, frMul(z[j], baryWeight))
             }
             zCosetEvals[i] = acc
@@ -672,9 +689,25 @@ public class GPUPlonkGrandProductEngine {
     public func fullRatioProduct(numerators: [Fr], denominators: [Fr]) -> Fr {
         let n = numerators.count
         guard n == denominators.count, n > 0 else { return Fr.one }
+
+        // Montgomery batch inversion of all denominators
+        var prefix = [Fr](repeating: Fr.one, count: n)
+        for i in 1..<n {
+            prefix[i] = denominators[i - 1] == Fr.zero ? prefix[i - 1] : frMul(prefix[i - 1], denominators[i - 1])
+        }
+        let last = denominators[n - 1] == Fr.zero ? prefix[n - 1] : frMul(prefix[n - 1], denominators[n - 1])
+        var inv = frInverse(last)
+        var denInvs = [Fr](repeating: Fr.zero, count: n)
+        for i in stride(from: n - 1, through: 0, by: -1) {
+            if denominators[i] != Fr.zero {
+                denInvs[i] = frMul(inv, prefix[i])
+                inv = frMul(inv, denominators[i])
+            }
+        }
+
         var acc = Fr.one
         for i in 0..<n {
-            acc = frMul(acc, frMul(numerators[i], frInverse(denominators[i])))
+            acc = frMul(acc, frMul(numerators[i], denInvs[i]))
         }
         return acc
     }
