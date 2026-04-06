@@ -256,7 +256,7 @@ public struct SraSubtable: JoltSubtable {
         let signBit = Int64(1 << (chunkBits - 1))
         let sx = (Int64(x) ^ signBit) - signBit
         let shifted = sx >> Int64(shamt)
-        return UInt64(shifted) & chunkMask
+        return UInt64(bitPattern: shifted) & chunkMask
     }
 }
 
