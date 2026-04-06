@@ -15,11 +15,12 @@ Fr mv_p2_sbox(Fr x) {
 }
 
 // External linear layer: circulant [2,1,1] for t=3
+// All outputs fully reduced to [0, p) to prevent value explosion in partial rounds.
 void mv_p2_external_layer(thread Fr &s0, thread Fr &s1, thread Fr &s2) {
-    Fr sum = fr_reduce(fr_add_lazy(fr_add_lazy(s0, s1), s2));
-    s0 = fr_add_lazy(s0, sum);
-    s1 = fr_add_lazy(s1, sum);
-    s2 = fr_add_lazy(s2, sum);
+    Fr sum = fr_add(fr_add(s0, s1), s2);
+    s0 = fr_add(s0, sum);
+    s1 = fr_add(s1, sum);
+    s2 = fr_add(s2, sum);
 }
 
 // Internal linear layer: M_I = [[2,1,1],[1,2,1],[1,1,3]]

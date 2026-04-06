@@ -23,14 +23,17 @@ Fr p2perm_sbox(Fr x) {
 
 // External linear layer: circulant [2,1,1] for t=3
 // M_E * [a,b,c] = [a+(a+b+c), b+(a+b+c), c+(a+b+c)]
+// All outputs fully reduced to [0, p) to prevent value explosion
+// through the partial rounds' internal layer.
 void p2perm_external_layer_w3(thread Fr &s0, thread Fr &s1, thread Fr &s2) {
-    Fr sum = fr_reduce(fr_add_lazy(fr_add_lazy(s0, s1), s2));
-    s0 = fr_add_lazy(s0, sum);
-    s1 = fr_add_lazy(s1, sum);
-    s2 = fr_add_lazy(s2, sum);
+    Fr sum = fr_add(fr_add(s0, s1), s2);
+    s0 = fr_add(s0, sum);
+    s1 = fr_add(s1, sum);
+    s2 = fr_add(s2, sum);
 }
 
 // Internal linear layer: M_I = [[2,1,1],[1,2,1],[1,1,3]]
+// Inputs must be in [0, p) for fr_add to produce correct [0, p) outputs.
 void p2perm_internal_layer_w3(thread Fr &s0, thread Fr &s1, thread Fr &s2) {
     Fr sum = fr_add(fr_add(s0, s1), s2);
     s0 = fr_add(s0, sum);
@@ -50,13 +53,11 @@ void p2perm_internal_layer_w3(thread Fr &s0, thread Fr &s1, thread Fr &s2) {
 //   out[2] = a + 3b + 5c + 7d
 //   out[3] = 7a + b + 3c + 5d
 void p2perm_external_layer_w4(thread Fr &s0, thread Fr &s1, thread Fr &s2, thread Fr &s3) {
-    // Compute using sums to minimize multiplications
-    // sum = a + b + c + d
-    Fr sum = fr_reduce(fr_add_lazy(fr_add_lazy(s0, s1), fr_add_lazy(s2, s3)));
-
-    // t_i = sum + 4*s_i  (gives 5*s_i + s_j + s_k + s_l)
-    // Then add 6*s_{i+1} + 2*s_{i+3} to get circ(5,7,1,3)
+    // Reduce inputs to [0, p) first
     Fr a = fr_reduce(s0), b = fr_reduce(s1), c = fr_reduce(s2), d = fr_reduce(s3);
+
+    // sum = a + b + c + d (fully reduced)
+    Fr sum = fr_add(fr_add(a, b), fr_add(c, d));
 
     // Direct computation of circ(5,7,1,3):
     // out0 = 5a + 7b + c + 3d
