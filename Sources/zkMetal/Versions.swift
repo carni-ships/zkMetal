@@ -183,6 +183,14 @@ public enum Versions {
     public static let gpuSumcheckProver = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let gpuLogUp         = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let gpuR1CSSolver    = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuGroth16Prover = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuIPAEngine     = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuZeromorph     = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuKZGMultiOpen  = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuLasso         = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuFRIProver     = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuSTARKVerifier = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuNovaFold      = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
 
     /// Print all primitive versions
     public static func printAll() {
@@ -289,6 +297,14 @@ public enum Versions {
             ("GPU Sumcheck Pv",  gpuSumcheckProver),
             ("GPU LogUp",        gpuLogUp),
             ("GPU R1CS Solver",  gpuR1CSSolver),
+            ("GPU Groth16 Pv",   gpuGroth16Prover),
+            ("GPU IPA Engine",   gpuIPAEngine),
+            ("GPU Zeromorph",    gpuZeromorph),
+            ("GPU KZG MultiOp",  gpuKZGMultiOpen),
+            ("GPU Lasso",        gpuLasso),
+            ("GPU FRI Prover",   gpuFRIProver),
+            ("GPU STARK Verify", gpuSTARKVerifier),
+            ("GPU Nova Fold",    gpuNovaFold),
         ]
         print("=== zkMetal Primitive Versions ===")
         for (name, v) in entries {

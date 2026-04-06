@@ -2,7 +2,7 @@
 
 GPU-accelerated zero-knowledge proof library for Apple Silicon. Metal compute shaders + C/NEON field arithmetic + Swift orchestration.
 
-**115 primitives** across 18 fields and 10 elliptic curves:
+**123 primitives** across 18 fields and 10 elliptic curves:
 
 - **Core:** MSM (Pippenger+GLV), NTT (four-step FFT), Poseidon2/Keccak/Blake3/SHA-256, Merkle trees
 - **Proof systems:** Plonk, Groth16, STARK (Circle/BabyBear/Goldilocks/Stark252), Spartan, Marlin, GKR
@@ -651,7 +651,7 @@ swift build -c release
 
 ## Correctness & Testing
 
-Run `swift build && .build/debug/zkMetalTests`. 138 test files, 141 test suites. All GPU kernels verified against CPU reference implementations.
+Run `swift build && .build/debug/zkMetalTests`. 146 test files, 149 test suites. All GPU kernels verified against CPU reference implementations.
 
 | Category | Primitives | Verification |
 |----------|------------|-------------|
