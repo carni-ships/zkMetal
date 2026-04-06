@@ -10,7 +10,45 @@
 import Foundation
 import NeonFieldOps
 
-// MARK: - Single-polynomial NEON NTT
+// MARK: - Signed-coefficient NEON NTT (standard PQC representations)
+
+/// Kyber forward NTT via ARM NEON with signed int16 coefficients (in-place).
+/// Uses vmull_s16 for 8-way SIMD Barrett reduction.
+/// Coefficients must be in [0, 3329).
+public func kyberNTTNeonS16(_ poly: inout [Int16], logN: Int = 8) {
+    precondition(poly.count == (1 << logN))
+    poly.withUnsafeMutableBufferPointer { buf in
+        kyber_ntt_neon(buf.baseAddress!, Int32(logN))
+    }
+}
+
+/// Kyber inverse NTT via ARM NEON with signed int16 coefficients (in-place).
+public func kyberINTTNeonS16(_ poly: inout [Int16], logN: Int = 8) {
+    precondition(poly.count == (1 << logN))
+    poly.withUnsafeMutableBufferPointer { buf in
+        kyber_intt_neon(buf.baseAddress!, Int32(logN))
+    }
+}
+
+/// Dilithium forward NTT via ARM NEON with signed int32 coefficients (in-place).
+/// Uses vmull_s32 for 4-way SIMD Barrett reduction.
+/// Coefficients must be in [0, 8380417).
+public func dilithiumNTTNeonS32(_ poly: inout [Int32], logN: Int = 8) {
+    precondition(poly.count == (1 << logN))
+    poly.withUnsafeMutableBufferPointer { buf in
+        dilithium_ntt_neon(buf.baseAddress!, Int32(logN))
+    }
+}
+
+/// Dilithium inverse NTT via ARM NEON with signed int32 coefficients (in-place).
+public func dilithiumINTTNeonS32(_ poly: inout [Int32], logN: Int = 8) {
+    precondition(poly.count == (1 << logN))
+    poly.withUnsafeMutableBufferPointer { buf in
+        dilithium_intt_neon(buf.baseAddress!, Int32(logN))
+    }
+}
+
+// MARK: - Single-polynomial NEON NTT (unsigned, existing API)
 
 /// Kyber forward NTT via ARM NEON (in-place)
 public func kyberNTTNeon(_ poly: inout [UInt32]) {

@@ -667,3 +667,512 @@ void lattice_deinterleave4(const uint32_t *interleaved,
         p3[j] = interleaved[j * 4 + 3];
     }
 }
+
+// ============================================================
+// Signed-coefficient APIs for standard PQC representations
+// Kyber: int16_t coefficients in [0, q) (FIPS 203 canonical)
+// Dilithium: int32_t coefficients in [0, q) (FIPS 204 canonical)
+// These use vmull_s16 / vmull_s32 for signed NEON multiply.
+// ============================================================
+
+// --- Signed scalar helpers ---
+
+static inline int16_t kyber_reduce_s(int32_t x) {
+    // Barrett reduction for signed input, result in [0, q)
+    int32_t t = (int32_t)(((int64_t)x * (int64_t)KYBER_BARRETT_M) >> KYBER_BARRETT_S);
+    int32_t r = x - t * (int32_t)KYBER_Q;
+    if (r >= (int32_t)KYBER_Q) r -= (int32_t)KYBER_Q;
+    if (r < 0) r += (int32_t)KYBER_Q;
+    return (int16_t)r;
+}
+
+static inline int16_t kyber_mul_s(int16_t a, int16_t b) {
+    return kyber_reduce_s((int32_t)a * (int32_t)b);
+}
+
+static inline int16_t kyber_add_s(int16_t a, int16_t b) {
+    int32_t s = (int32_t)a + (int32_t)b;
+    if (s >= (int32_t)KYBER_Q) s -= (int32_t)KYBER_Q;
+    if (s < 0) s += (int32_t)KYBER_Q;
+    return (int16_t)s;
+}
+
+static inline int16_t kyber_sub_s(int16_t a, int16_t b) {
+    int32_t d = (int32_t)a - (int32_t)b;
+    if (d < 0) d += (int32_t)KYBER_Q;
+    if (d >= (int32_t)KYBER_Q) d -= (int32_t)KYBER_Q;
+    return (int16_t)d;
+}
+
+static inline int16_t kyber_pow_s(int16_t base, uint32_t exp) {
+    int32_t result = 1;
+    int32_t b = (int32_t)base;
+    if (b < 0) b += KYBER_Q;
+    while (exp > 0) {
+        if (exp & 1) result = (int32_t)kyber_reduce_s(result * b);
+        b = (int32_t)kyber_reduce_s(b * b);
+        exp >>= 1;
+    }
+    return (int16_t)result;
+}
+
+static inline int32_t dil_reduce_s(int64_t x) {
+    int64_t t = (x * (int64_t)DIL_BARRETT_M) >> DIL_BARRETT_S;
+    int32_t r = (int32_t)(x - t * (int64_t)DIL_Q);
+    if (r >= (int32_t)DIL_Q) r -= (int32_t)DIL_Q;
+    if (r < 0) r += (int32_t)DIL_Q;
+    return r;
+}
+
+static inline int32_t dil_mul_s(int32_t a, int32_t b) {
+    return dil_reduce_s((int64_t)a * (int64_t)b);
+}
+
+static inline int32_t dil_add_s(int32_t a, int32_t b) {
+    int64_t s = (int64_t)a + (int64_t)b;
+    if (s >= (int64_t)DIL_Q) s -= (int64_t)DIL_Q;
+    if (s < 0) s += (int64_t)DIL_Q;
+    return (int32_t)s;
+}
+
+static inline int32_t dil_sub_s(int32_t a, int32_t b) {
+    int64_t d = (int64_t)a - (int64_t)b;
+    if (d < 0) d += (int64_t)DIL_Q;
+    if (d >= (int64_t)DIL_Q) d -= (int64_t)DIL_Q;
+    return (int32_t)d;
+}
+
+static inline int32_t dil_pow_s(int32_t base, uint32_t exp) {
+    int64_t result = 1;
+    int64_t b = (int64_t)base;
+    if (b < 0) b += DIL_Q;
+    while (exp > 0) {
+        if (exp & 1) result = (int64_t)dil_reduce_s(result * b);
+        b = (int64_t)dil_reduce_s(b * b);
+        exp >>= 1;
+    }
+    return (int32_t)result;
+}
+
+// --- Signed twiddle tables (int16_t for Kyber, int32_t for Dilithium) ---
+
+static int16_t kyber_twiddles_s16[128];
+static int32_t dil_twiddles_s32[128];
+static int kyber_twiddles_s16_init = 0;
+static int dil_twiddles_s32_init = 0;
+
+static void kyber_init_twiddles_s16(void) {
+    if (kyber_twiddles_s16_init) return;
+    int16_t powers[256];
+    powers[0] = 1;
+    for (int i = 1; i < 256; i++)
+        powers[i] = kyber_reduce_s((int32_t)powers[i-1] * (int32_t)KYBER_ZETA);
+    for (int i = 0; i < 128; i++)
+        kyber_twiddles_s16[i] = powers[bitrev7((uint8_t)i)];
+    __sync_synchronize();
+    kyber_twiddles_s16_init = 1;
+}
+
+static void dil_init_twiddles_s32(void) {
+    if (dil_twiddles_s32_init) return;
+    int32_t powers[256];
+    powers[0] = 1;
+    for (int i = 1; i < 256; i++)
+        powers[i] = dil_reduce_s((int64_t)powers[i-1] * (int64_t)DIL_ZETA);
+    for (int i = 0; i < 128; i++)
+        dil_twiddles_s32[i] = powers[bitrev7((uint8_t)i)];
+    __sync_synchronize();
+    dil_twiddles_s32_init = 1;
+}
+
+// ============================================================
+// NEON vectorized Barrett for signed Kyber: int32x4_t -> int16x4_t
+// Input: 4 signed 32-bit products. Output: 4 reduced int16 in [0, q).
+// ============================================================
+
+#ifdef __ARM_NEON
+static inline int16x4_t kyber_barrett_neon_s(int32x4_t a) {
+    // t = (a * BARRETT_M) >> 24, using 64-bit widening multiply
+    int32x4_t m_vec = vdupq_n_s32((int32_t)KYBER_BARRETT_M);
+    int64x2_t prod_lo = vmull_s32(vget_low_s32(a), vget_low_s32(m_vec));
+    int64x2_t prod_hi = vmull_s32(vget_high_s32(a), vget_high_s32(m_vec));
+    int32x2_t t_lo = vmovn_s64(vshrq_n_s64(prod_lo, KYBER_BARRETT_S));
+    int32x2_t t_hi = vmovn_s64(vshrq_n_s64(prod_hi, KYBER_BARRETT_S));
+    int32x4_t t = vcombine_s32(t_lo, t_hi);
+    // r = a - t * q
+    int32x4_t q_vec = vdupq_n_s32((int32_t)KYBER_Q);
+    int32x4_t r = vsubq_s32(a, vmulq_s32(t, q_vec));
+    // Conditional: if r >= q, r -= q; if r < 0, r += q
+    uint32x4_t ge_q = vcgeq_s32(r, q_vec);
+    uint32x4_t lt_0 = vcltq_s32(r, vdupq_n_s32(0));
+    r = vsubq_s32(r, vandq_s32(vreinterpretq_s32_u32(ge_q), q_vec));
+    r = vaddq_s32(r, vandq_s32(vreinterpretq_s32_u32(lt_0), q_vec));
+    return vmovn_s32(r);
+}
+#endif
+
+// ============================================================
+// kyber_ntt_neon: Signed int16_t Kyber NTT with NEON vmull_s16
+// Cooley-Tukey DIT, in-place, n = 2^logN (max 256)
+// ============================================================
+
+void kyber_ntt_neon(int16_t *data, int logN) {
+    kyber_init_twiddles_s16();
+    int n = 1 << logN;
+    if (n > 256) n = 256;
+
+    int k = 1;
+    int len = n / 2;
+
+#ifdef __ARM_NEON
+    while (len >= 4) {
+        for (int start = 0; start < n; start += 2 * len) {
+            int16_t tw = kyber_twiddles_s16[k];
+            k++;
+            int j;
+            for (j = start; j + 3 < start + len; j += 4) {
+                int16x4_t a = vld1_s16(&data[j]);
+                int16x4_t b = vld1_s16(&data[j + len]);
+                // t = tw * b mod q using vmull_s16 -> int32x4_t
+                int32x4_t prod = vmull_s16(vdup_n_s16(tw), b);
+                int16x4_t t = kyber_barrett_neon_s(prod);
+                // data[j] = (a + t) mod q
+                int32x4_t sum = vaddl_s16(a, t);
+                int32x4_t q_vec = vdupq_n_s32((int32_t)KYBER_Q);
+                uint32x4_t ge_q = vcgeq_s32(sum, q_vec);
+                sum = vsubq_s32(sum, vandq_s32(vreinterpretq_s32_u32(ge_q), q_vec));
+                // data[j+len] = (a - t) mod q
+                int32x4_t diff = vsubl_s16(a, t);
+                uint32x4_t lt_0 = vcltq_s32(diff, vdupq_n_s32(0));
+                diff = vaddq_s32(diff, vandq_s32(vreinterpretq_s32_u32(lt_0), q_vec));
+                vst1_s16(&data[j], vmovn_s32(sum));
+                vst1_s16(&data[j + len], vmovn_s32(diff));
+            }
+            for (; j < start + len; j++) {
+                int16_t t = kyber_mul_s(tw, data[j + len]);
+                int16_t u = data[j];
+                data[j] = kyber_add_s(u, t);
+                data[j + len] = kyber_sub_s(u, t);
+            }
+        }
+        len >>= 1;
+    }
+    while (len >= 2) {
+        for (int start = 0; start < n; start += 2 * len) {
+            int16_t tw = kyber_twiddles_s16[k];
+            k++;
+            for (int j = start; j < start + len; j++) {
+                int16_t t = kyber_mul_s(tw, data[j + len]);
+                int16_t u = data[j];
+                data[j] = kyber_add_s(u, t);
+                data[j + len] = kyber_sub_s(u, t);
+            }
+        }
+        len >>= 1;
+    }
+#else
+    while (len >= 2) {
+        for (int start = 0; start < n; start += 2 * len) {
+            int16_t tw = kyber_twiddles_s16[k];
+            k++;
+            for (int j = start; j < start + len; j++) {
+                int16_t t = kyber_mul_s(tw, data[j + len]);
+                int16_t u = data[j];
+                data[j] = kyber_add_s(u, t);
+                data[j + len] = kyber_sub_s(u, t);
+            }
+        }
+        len >>= 1;
+    }
+#endif
+}
+
+// ============================================================
+// kyber_intt_neon: Signed int16_t Kyber INTT with NEON vmull_s16
+// Gentleman-Sande DIF + 1/(n/2) scaling
+// ============================================================
+
+void kyber_intt_neon(int16_t *data, int logN) {
+    kyber_init_twiddles_s16();
+    int n = 1 << logN;
+    if (n > 256) n = 256;
+
+    int16_t inv_n = kyber_pow_s((int16_t)(n / 2), KYBER_Q - 2);
+
+    int k = 127;
+    int len = 2;
+
+#ifdef __ARM_NEON
+    // Scalar for small len
+    while (len < 4 && len <= n / 2) {
+        for (int start = 0; start < n; start += 2 * len) {
+            int16_t tw = kyber_twiddles_s16[k];
+            k--;
+            for (int j = start; j < start + len; j++) {
+                int16_t t_val = data[j];
+                data[j] = kyber_add_s(t_val, data[j + len]);
+                data[j + len] = kyber_mul_s(tw, kyber_sub_s(data[j + len], t_val));
+            }
+        }
+        len <<= 1;
+    }
+
+    // NEON path for len >= 4
+    while (len <= n / 2) {
+        for (int start = 0; start < n; start += 2 * len) {
+            int16_t tw = kyber_twiddles_s16[k];
+            k--;
+            int j;
+            for (j = start; j + 3 < start + len; j += 4) {
+                int16x4_t a = vld1_s16(&data[j]);
+                int16x4_t b = vld1_s16(&data[j + len]);
+                // sum = (a + b) mod q
+                int32x4_t sum = vaddl_s16(a, b);
+                int32x4_t q_vec = vdupq_n_s32((int32_t)KYBER_Q);
+                uint32x4_t ge_q = vcgeq_s32(sum, q_vec);
+                sum = vsubq_s32(sum, vandq_s32(vreinterpretq_s32_u32(ge_q), q_vec));
+                // diff = (b - a) mod q
+                int32x4_t diff = vsubl_s16(b, a);
+                uint32x4_t lt_0 = vcltq_s32(diff, vdupq_n_s32(0));
+                diff = vaddq_s32(diff, vandq_s32(vreinterpretq_s32_u32(lt_0), q_vec));
+                // data[j+len] = tw * diff mod q
+                int16x4_t diff16 = vmovn_s32(diff);
+                int32x4_t prod = vmull_s16(vdup_n_s16(tw), diff16);
+                int16x4_t reduced = kyber_barrett_neon_s(prod);
+                vst1_s16(&data[j], vmovn_s32(sum));
+                vst1_s16(&data[j + len], reduced);
+            }
+            for (; j < start + len; j++) {
+                int16_t t_val = data[j];
+                data[j] = kyber_add_s(t_val, data[j + len]);
+                data[j + len] = kyber_mul_s(tw, kyber_sub_s(data[j + len], t_val));
+            }
+        }
+        len <<= 1;
+    }
+
+    // Scale by inv_n using vmull_s16
+    for (int i = 0; i + 3 < n; i += 4) {
+        int16x4_t vals = vld1_s16(&data[i]);
+        int32x4_t prod = vmull_s16(vdup_n_s16(inv_n), vals);
+        int16x4_t reduced = kyber_barrett_neon_s(prod);
+        vst1_s16(&data[i], reduced);
+    }
+    for (int i = (n & ~3); i < n; i++) {
+        data[i] = kyber_mul_s(inv_n, data[i]);
+    }
+#else
+    while (len <= n / 2) {
+        for (int start = 0; start < n; start += 2 * len) {
+            int16_t tw = kyber_twiddles_s16[k];
+            k--;
+            for (int j = start; j < start + len; j++) {
+                int16_t t_val = data[j];
+                data[j] = kyber_add_s(t_val, data[j + len]);
+                data[j + len] = kyber_mul_s(tw, kyber_sub_s(data[j + len], t_val));
+            }
+        }
+        len <<= 1;
+    }
+    for (int i = 0; i < n; i++) {
+        data[i] = kyber_mul_s(inv_n, data[i]);
+    }
+#endif
+}
+
+// ============================================================
+// dilithium_ntt_neon: Signed int32_t Dilithium NTT with NEON vmull_s32
+// Cooley-Tukey DIT, in-place, n = 2^logN (max 256)
+// ============================================================
+
+void dilithium_ntt_neon(int32_t *data, int logN) {
+    dil_init_twiddles_s32();
+    int n = 1 << logN;
+    if (n > 256) n = 256;
+
+    int k = 1;
+    int len = n / 2;
+
+#ifdef __ARM_NEON
+    while (len >= 4) {
+        for (int start = 0; start < n; start += 2 * len) {
+            int32_t tw = dil_twiddles_s32[k];
+            k++;
+            int j;
+            for (j = start; j + 3 < start + len; j += 4) {
+                int32x4_t a = vld1q_s32(&data[j]);
+                int32x4_t b = vld1q_s32(&data[j + len]);
+                // t = tw * b mod q using vmull_s32 -> int64x2_t (2 at a time)
+                int32x2_t tw_v = vdup_n_s32(tw);
+                int64x2_t prod_lo = vmull_s32(tw_v, vget_low_s32(b));
+                int64x2_t prod_hi = vmull_s32(tw_v, vget_high_s32(b));
+                // Barrett reduce each 64-bit product
+                int64_t p0 = vgetq_lane_s64(prod_lo, 0);
+                int64_t p1 = vgetq_lane_s64(prod_lo, 1);
+                int64_t p2 = vgetq_lane_s64(prod_hi, 0);
+                int64_t p3 = vgetq_lane_s64(prod_hi, 1);
+                int32_t r0 = dil_reduce_s(p0);
+                int32_t r1 = dil_reduce_s(p1);
+                int32_t r2 = dil_reduce_s(p2);
+                int32_t r3 = dil_reduce_s(p3);
+                int32_t tarr[4] = {r0, r1, r2, r3};
+                int32x4_t t = vld1q_s32(tarr);
+
+                // data[j] = (a + t) mod q
+                int32x4_t sum = vaddq_s32(a, t);
+                int32x4_t q_vec = vdupq_n_s32((int32_t)DIL_Q);
+                uint32x4_t ge_q = vcgeq_s32(sum, q_vec);
+                sum = vsubq_s32(sum, vandq_s32(vreinterpretq_s32_u32(ge_q), q_vec));
+                // data[j+len] = (a - t) mod q
+                int32x4_t diff = vsubq_s32(a, t);
+                uint32x4_t lt_0 = vcltq_s32(diff, vdupq_n_s32(0));
+                diff = vaddq_s32(diff, vandq_s32(vreinterpretq_s32_u32(lt_0), q_vec));
+
+                vst1q_s32(&data[j], sum);
+                vst1q_s32(&data[j + len], diff);
+            }
+            for (; j < start + len; j++) {
+                int32_t t = dil_mul_s(tw, data[j + len]);
+                int32_t u = data[j];
+                data[j] = dil_add_s(u, t);
+                data[j + len] = dil_sub_s(u, t);
+            }
+        }
+        len >>= 1;
+    }
+    while (len >= 2) {
+        for (int start = 0; start < n; start += 2 * len) {
+            int32_t tw = dil_twiddles_s32[k];
+            k++;
+            for (int j = start; j < start + len; j++) {
+                int32_t t = dil_mul_s(tw, data[j + len]);
+                int32_t u = data[j];
+                data[j] = dil_add_s(u, t);
+                data[j + len] = dil_sub_s(u, t);
+            }
+        }
+        len >>= 1;
+    }
+#else
+    while (len >= 2) {
+        for (int start = 0; start < n; start += 2 * len) {
+            int32_t tw = dil_twiddles_s32[k];
+            k++;
+            for (int j = start; j < start + len; j++) {
+                int32_t t = dil_mul_s(tw, data[j + len]);
+                int32_t u = data[j];
+                data[j] = dil_add_s(u, t);
+                data[j + len] = dil_sub_s(u, t);
+            }
+        }
+        len >>= 1;
+    }
+#endif
+}
+
+// ============================================================
+// dilithium_intt_neon: Signed int32_t Dilithium INTT with NEON vmull_s32
+// Gentleman-Sande DIF + 1/(n/2) scaling
+// ============================================================
+
+void dilithium_intt_neon(int32_t *data, int logN) {
+    dil_init_twiddles_s32();
+    int n = 1 << logN;
+    if (n > 256) n = 256;
+
+    int32_t inv_n = dil_pow_s((int32_t)(n / 2), DIL_Q - 2);
+
+    int k = 127;
+    int len = 2;
+
+#ifdef __ARM_NEON
+    // Scalar for small len
+    while (len < 4 && len <= n / 2) {
+        for (int start = 0; start < n; start += 2 * len) {
+            int32_t tw = dil_twiddles_s32[k];
+            k--;
+            for (int j = start; j < start + len; j++) {
+                int32_t t_val = data[j];
+                data[j] = dil_add_s(t_val, data[j + len]);
+                data[j + len] = dil_mul_s(tw, dil_sub_s(data[j + len], t_val));
+            }
+        }
+        len <<= 1;
+    }
+
+    // NEON path for len >= 4
+    while (len <= n / 2) {
+        for (int start = 0; start < n; start += 2 * len) {
+            int32_t tw = dil_twiddles_s32[k];
+            k--;
+            int j;
+            for (j = start; j + 3 < start + len; j += 4) {
+                int32x4_t a = vld1q_s32(&data[j]);
+                int32x4_t b = vld1q_s32(&data[j + len]);
+                // sum = (a + b) mod q
+                int32x4_t sum = vaddq_s32(a, b);
+                int32x4_t q_vec = vdupq_n_s32((int32_t)DIL_Q);
+                uint32x4_t ge_q = vcgeq_s32(sum, q_vec);
+                sum = vsubq_s32(sum, vandq_s32(vreinterpretq_s32_u32(ge_q), q_vec));
+                // diff = (b - a) mod q
+                int32x4_t diff = vsubq_s32(b, a);
+                uint32x4_t lt_0 = vcltq_s32(diff, vdupq_n_s32(0));
+                diff = vaddq_s32(diff, vandq_s32(vreinterpretq_s32_u32(lt_0), q_vec));
+                // data[j+len] = tw * diff mod q via vmull_s32
+                int32x2_t tw_v = vdup_n_s32(tw);
+                int64x2_t p_lo = vmull_s32(tw_v, vget_low_s32(diff));
+                int64x2_t p_hi = vmull_s32(tw_v, vget_high_s32(diff));
+                int64_t p0 = vgetq_lane_s64(p_lo, 0);
+                int64_t p1 = vgetq_lane_s64(p_lo, 1);
+                int64_t p2 = vgetq_lane_s64(p_hi, 0);
+                int64_t p3 = vgetq_lane_s64(p_hi, 1);
+                int32_t rarr[4] = { dil_reduce_s(p0), dil_reduce_s(p1),
+                                    dil_reduce_s(p2), dil_reduce_s(p3) };
+                int32x4_t reduced = vld1q_s32(rarr);
+                vst1q_s32(&data[j], sum);
+                vst1q_s32(&data[j + len], reduced);
+            }
+            for (; j < start + len; j++) {
+                int32_t t_val = data[j];
+                data[j] = dil_add_s(t_val, data[j + len]);
+                data[j + len] = dil_mul_s(tw, dil_sub_s(data[j + len], t_val));
+            }
+        }
+        len <<= 1;
+    }
+
+    // Scale by inv_n using vmull_s32
+    int32x2_t inv_v = vdup_n_s32(inv_n);
+    for (int i = 0; i + 3 < n; i += 4) {
+        int32x4_t vals = vld1q_s32(&data[i]);
+        int64x2_t p_lo = vmull_s32(inv_v, vget_low_s32(vals));
+        int64x2_t p_hi = vmull_s32(inv_v, vget_high_s32(vals));
+        int64_t v0 = vgetq_lane_s64(p_lo, 0);
+        int64_t v1 = vgetq_lane_s64(p_lo, 1);
+        int64_t v2 = vgetq_lane_s64(p_hi, 0);
+        int64_t v3 = vgetq_lane_s64(p_hi, 1);
+        int32_t rarr[4] = { dil_reduce_s(v0), dil_reduce_s(v1),
+                            dil_reduce_s(v2), dil_reduce_s(v3) };
+        vst1q_s32(&data[i], vld1q_s32(rarr));
+    }
+    for (int i = (n & ~3); i < n; i++) {
+        data[i] = dil_mul_s(inv_n, data[i]);
+    }
+#else
+    while (len <= n / 2) {
+        for (int start = 0; start < n; start += 2 * len) {
+            int32_t tw = dil_twiddles_s32[k];
+            k--;
+            for (int j = start; j < start + len; j++) {
+                int32_t t_val = data[j];
+                data[j] = dil_add_s(t_val, data[j + len]);
+                data[j + len] = dil_mul_s(tw, dil_sub_s(data[j + len], t_val));
+            }
+        }
+        len <<= 1;
+    }
+    for (int i = 0; i < n; i++) {
+        data[i] = dil_mul_s(inv_n, data[i]);
+    }
+#endif
+}

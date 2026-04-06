@@ -33,6 +33,7 @@ public enum Versions {
     public static let msmEd25519     = PrimitiveVersion(version: "1.0.0", updated: "2026-04-04")
     public static let msmGrumpkin    = PrimitiveVersion(version: "1.0.0", updated: "2026-04-04")
     public static let msmBN254G2    = PrimitiveVersion(version: "1.0.0", updated: "2026-04-04")
+    public static let msmBLS12381   = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
 
     // --- Signatures ---
     public static let eddsa          = PrimitiveVersion(version: "1.0.0", updated: "2026-04-04")
@@ -40,6 +41,7 @@ public enum Versions {
     public static let blsSignature   = PrimitiveVersion(version: "1.0.0", updated: "2026-04-04")
     public static let schnorr        = PrimitiveVersion(version: "1.0.0", updated: "2026-04-04")
     public static let batchECDSA     = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let batchEd25519   = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
 
     // --- BabyJubjub ---
     public static let babyJubjub     = PrimitiveVersion(version: "1.0.0", updated: "2026-04-04")
@@ -89,6 +91,7 @@ public enum Versions {
     public static let lookup         = PrimitiveVersion(version: "1.0.0", updated: "2026-04-01")
     public static let lasso          = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let cqLookup       = PrimitiveVersion(version: "2.0.0", updated: "2026-04-05")
+    public static let plookup        = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let unifiedLookup  = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let constraint     = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let gpuConstraintEval = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
@@ -101,7 +104,7 @@ public enum Versions {
     public static let folding        = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let brakedown      = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let binaryTower    = PrimitiveVersion(version: "2.0.0", updated: "2026-04-05")
-    public static let latticeNTT     = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
+    public static let latticeNTT     = PrimitiveVersion(version: "1.1.0", updated: "2026-04-05")
     public static let reedSolomon    = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let kyber          = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let dilithium      = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
@@ -143,6 +146,7 @@ public enum Versions {
     public static let verkleProofEngine = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let plonkishArith     = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let gpuCosetLDE       = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuCosetNTT       = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let plonky2Verifier   = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let pedersenHashBN254 = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let airCompiler       = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
@@ -157,6 +161,12 @@ public enum Versions {
     public static let gpuKZG            = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let gpuGrandProduct   = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let gpuPrefixSum     = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuQuotientEngine = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let interpolation     = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuRLC           = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuMatrixTranspose = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuPolyComposition = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuTraceGen      = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
 
     /// Print all primitive versions
     public static func printAll() {
@@ -183,6 +193,7 @@ public enum Versions {
             ("BLS Signature",    blsSignature),
             ("Schnorr BIP340",   schnorr),
             ("Batch ECDSA",      batchECDSA),
+            ("Batch Ed25519",    batchEd25519),
             ("NTT BN254",         nttBN254),
             ("NTT Goldilocks",    nttGoldilocks),
             ("NTT BabyBear",      nttBabyBear),
@@ -206,6 +217,7 @@ public enum Versions {
             ("Lookup (LogUp)",    lookup),
             ("Lasso Lookup",      lasso),
             ("cq Lookup",         cqLookup),
+            ("Plookup",           plookup),
             ("Unified Lookup",    unifiedLookup),
             ("Constraint IR",    constraint),
             ("GPU Constr Eval",  gpuConstraintEval),
@@ -237,6 +249,13 @@ public enum Versions {
             ("GPU KZG",          gpuKZG),
             ("GPU Grand Prod",   gpuGrandProduct),
             ("GPU Prefix Sum",   gpuPrefixSum),
+            ("GPU Quotient Eng", gpuQuotientEngine),
+            ("GPU Coset NTT",    gpuCosetNTT),
+            ("Interpolation",    interpolation),
+            ("GPU RLC Engine",   gpuRLC),
+            ("GPU Transpose",    gpuMatrixTranspose),
+            ("GPU Poly Compose", gpuPolyComposition),
+            ("GPU Trace Gen",    gpuTraceGen),
         ]
         print("=== zkMetal Primitive Versions ===")
         for (name, v) in entries {

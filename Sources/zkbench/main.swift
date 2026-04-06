@@ -191,6 +191,8 @@ if cmd == "calibrate" {
     runBLSSignatureBench()
 } else if cmd == "ed25519" || cmd == "eddsa" || cmd == "curve25519" {
     runEd25519Bench()
+} else if cmd == "batch-ed25519" || cmd == "batched25519" {
+    runBatchEd25519Bench()
 } else if cmd == "babyjubjub" || cmd == "bjj" || cmd == "pedersen-bjj" {
     runBabyJubjubBench()
 } else if cmd == "jubjub" {
@@ -201,6 +203,8 @@ if cmd == "calibrate" {
     runVerkleBench()
 } else if cmd == "lookup" || cmd == "logup" {
     runLookupBench()
+} else if cmd == "plookup" {
+    runPlookupBench()
 } else if cmd == "lasso" {
     runLassoBench()
 } else if cmd == "cq" || cmd == "cached-quotients" {
@@ -322,6 +326,7 @@ if cmd == "calibrate" {
     runIPABench()
     runVerkleBench()
     runLookupBench()
+    runPlookupBench()
     runLassoBench()
     runSparseSumcheckBench()
     runHighDegSumcheckBench()

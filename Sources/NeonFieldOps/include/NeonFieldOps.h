@@ -1338,4 +1338,30 @@ void lattice_deinterleave4(const uint32_t *interleaved,
                             uint32_t *p0, uint32_t *p1,
                             uint32_t *p2, uint32_t *p3);
 
+// ============================================================
+// Signed-coefficient lattice NTT — standard PQC representations
+// Kyber:     int16_t coefficients in [0, q), uses vmull_s16 for 8-way SIMD
+// Dilithium: int32_t coefficients in [0, q), uses vmull_s32 for 4-way SIMD
+// ============================================================
+
+/// Forward NTT for Kyber (q=3329) with signed int16_t coefficients.
+/// Uses vmull_s16 for NEON-accelerated Barrett reduction.
+/// @param data Array of 2^logN int16_t elements in [0, 3329).
+/// @param logN Log2 of transform size (max 8 for n=256).
+void kyber_ntt_neon(int16_t *data, int logN);
+
+/// Inverse NTT for Kyber with signed int16_t coefficients.
+/// Gentleman-Sande DIF + 1/(n/2) scaling.
+void kyber_intt_neon(int16_t *data, int logN);
+
+/// Forward NTT for Dilithium (q=8380417) with signed int32_t coefficients.
+/// Uses vmull_s32 for NEON-accelerated Barrett reduction.
+/// @param data Array of 2^logN int32_t elements in [0, 8380417).
+/// @param logN Log2 of transform size (max 8 for n=256).
+void dilithium_ntt_neon(int32_t *data, int logN);
+
+/// Inverse NTT for Dilithium with signed int32_t coefficients.
+/// Gentleman-Sande DIF + 1/(n/2) scaling.
+void dilithium_intt_neon(int32_t *data, int logN);
+
 #endif // NEON_FIELD_OPS_H
