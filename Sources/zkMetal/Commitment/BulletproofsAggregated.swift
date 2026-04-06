@@ -396,9 +396,9 @@ public class BulletproofsAggregatedVerifier {
             twoPow[i] = frMul(twoPow[i - 1], two)
         }
 
-        // z powers
-        var zPow = [Fr](repeating: Fr.one, count: m + 2)
-        for i in 1..<(m + 2) {
+        // z powers — need up to z^{m+2} for zPow[j+3] with j < m
+        var zPow = [Fr](repeating: Fr.one, count: m + 3)
+        for i in 1..<(m + 3) {
             zPow[i] = frMul(zPow[i - 1], z)
         }
         let z2 = zPow[2]
