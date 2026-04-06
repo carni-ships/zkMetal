@@ -140,12 +140,27 @@ public final class GPUPolyInterpolationEngine {
             if weights.points[i] == z { return values[i] }
         }
 
+        // Batch-invert all (z - x_i) denominators
+        var beDiffs = [Fr](repeating: Fr.zero, count: n)
+        for i in 0..<n { beDiffs[i] = frSub(z, weights.points[i]) }
+        var bePrefix = [Fr](repeating: Fr.one, count: n)
+        for i in 1..<n {
+            bePrefix[i] = beDiffs[i - 1] == Fr.zero ? bePrefix[i - 1] : frMul(bePrefix[i - 1], beDiffs[i - 1])
+        }
+        let beLast = beDiffs[n - 1] == Fr.zero ? bePrefix[n - 1] : frMul(bePrefix[n - 1], beDiffs[n - 1])
+        var beInv = frInverse(beLast)
+        var beDiffInvs = [Fr](repeating: Fr.zero, count: n)
+        for i in stride(from: n - 1, through: 0, by: -1) {
+            if beDiffs[i] != Fr.zero {
+                beDiffInvs[i] = frMul(beInv, bePrefix[i])
+                beInv = frMul(beInv, beDiffs[i])
+            }
+        }
+
         var numer = Fr.zero
         var denom = Fr.zero
         for i in 0..<n {
-            let diff = frSub(z, weights.points[i])
-            let invDiff = frInverse(diff)
-            let wOverDiff = frMul(weights.weights[i], invDiff)
+            let wOverDiff = frMul(weights.weights[i], beDiffInvs[i])
             numer = frAdd(numer, frMul(values[i], wOverDiff))
             denom = frAdd(denom, wOverDiff)
         }
@@ -443,25 +458,39 @@ public final class GPUPolyInterpolationEngine {
 
         var result = [Fr](repeating: .zero, count: n)
 
+        // Precompute all denominators and basis polynomials, then batch-invert
+        var cpuDenoms = [Fr](repeating: Fr.one, count: n)
+        var cpuBases = [[Fr]](repeating: [Fr](repeating: .zero, count: n), count: n)
         for i in 0..<n {
-            var basis = [Fr](repeating: .zero, count: n)
-            basis[0] = .one
-            var denom = Fr.one
+            cpuBases[i][0] = .one
             var basisDeg = 0
-
-            for j in 0..<n {
-                if j == i { continue }
-                denom = frMul(denom, frSub(points[i], points[j]))
+            for j in 0..<n where j != i {
+                cpuDenoms[i] = frMul(cpuDenoms[i], frSub(points[i], points[j]))
                 basisDeg += 1
                 for d in stride(from: basisDeg, through: 1, by: -1) {
-                    basis[d] = frSub(basis[d - 1], frMul(points[j], basis[d]))
+                    cpuBases[i][d] = frSub(cpuBases[i][d - 1], frMul(points[j], cpuBases[i][d]))
                 }
-                basis[0] = frSub(.zero, frMul(points[j], basis[0]))
+                cpuBases[i][0] = frSub(.zero, frMul(points[j], cpuBases[i][0]))
             }
+        }
+        var cpuPfx = [Fr](repeating: Fr.one, count: n)
+        for i in 1..<n {
+            cpuPfx[i] = cpuDenoms[i - 1] == Fr.zero ? cpuPfx[i - 1] : frMul(cpuPfx[i - 1], cpuDenoms[i - 1])
+        }
+        let cpuLst = cpuDenoms[n - 1] == Fr.zero ? cpuPfx[n - 1] : frMul(cpuPfx[n - 1], cpuDenoms[n - 1])
+        var cpuInvR = frInverse(cpuLst)
+        var cpuDenomInvs = [Fr](repeating: Fr.zero, count: n)
+        for i in stride(from: n - 1, through: 0, by: -1) {
+            if cpuDenoms[i] != Fr.zero {
+                cpuDenomInvs[i] = frMul(cpuInvR, cpuPfx[i])
+                cpuInvR = frMul(cpuInvR, cpuDenoms[i])
+            }
+        }
 
-            let scale = frMul(values[i], frInverse(denom))
+        for i in 0..<n {
+            let scale = frMul(values[i], cpuDenomInvs[i])
             for d in 0..<n {
-                result[d] = frAdd(result[d], frMul(scale, basis[d]))
+                result[d] = frAdd(result[d], frMul(scale, cpuBases[i][d]))
             }
         }
         return result
