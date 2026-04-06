@@ -215,6 +215,14 @@ public enum Versions {
     public static let gpuR1CSToQAP   = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let gpuBLSAggregate = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let gpuCommitmentBatch = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuNovaDecider  = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuPlonkLookup  = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuMultilinearSumcheck = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuVerkleTree   = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuSTARKTraceLDE = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuConstraintCompiler = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuRecursiveComposition = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuGroth16VK    = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
 
     /// Print all primitive versions
     public static func printAll() {
@@ -353,6 +361,14 @@ public enum Versions {
             ("GPU R1CS->QAP",    gpuR1CSToQAP),
             ("GPU BLS Agg",      gpuBLSAggregate),
             ("GPU Commit Batch", gpuCommitmentBatch),
+            ("GPU Nova Decide",  gpuNovaDecider),
+            ("GPU Plonk Look",   gpuPlonkLookup),
+            ("GPU ML Sumcheck",  gpuMultilinearSumcheck),
+            ("GPU Verkle Tree",  gpuVerkleTree),
+            ("GPU STARK LDE",    gpuSTARKTraceLDE),
+            ("GPU Constr Comp",  gpuConstraintCompiler),
+            ("GPU Recurs Comp",  gpuRecursiveComposition),
+            ("GPU Groth16 VK",   gpuGroth16VK),
         ]
         print("=== zkMetal Primitive Versions ===")
         for (name, v) in entries {
