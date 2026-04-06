@@ -85,6 +85,11 @@ public struct ProtogalaxyFoldingProof {
     public let fCoefficients: [Fr]
     /// Number of instances folded
     public let instanceCount: Int
+
+    public init(fCoefficients: [Fr], instanceCount: Int) {
+        self.fCoefficients = fCoefficients
+        self.instanceCount = instanceCount
+    }
 }
 
 // MARK: - Protogalaxy Prover

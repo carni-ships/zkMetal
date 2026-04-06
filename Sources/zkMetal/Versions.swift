@@ -254,6 +254,16 @@ public enum Versions {
     public static let gpuMerkleAggregate = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let gpuSpartanLinearize = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
 
+    // --- Wave 15 ---
+    public static let gpuProtogalaxyVerifier = PrimitiveVersion(version: "1.0.0", updated: "2026-04-06")
+    public static let gpuPlonkLinearize = PrimitiveVersion(version: "1.0.0", updated: "2026-04-06")
+    public static let gpuAIRComposition = PrimitiveVersion(version: "1.0.0", updated: "2026-04-06")
+    public static let gpuZeromorphProver = PrimitiveVersion(version: "1.0.0", updated: "2026-04-06")
+    public static let gpuGKRProtocol  = PrimitiveVersion(version: "1.0.0", updated: "2026-04-06")
+    public static let gpuBasefoldProver = PrimitiveVersion(version: "1.0.0", updated: "2026-04-06")
+    public static let gpuECDSABatchVerify = PrimitiveVersion(version: "1.0.0", updated: "2026-04-06")
+    public static let gpuWitnessCommit = PrimitiveVersion(version: "1.0.0", updated: "2026-04-06")
+
     /// Print all primitive versions
     public static func printAll() {
         let entries: [(String, PrimitiveVersion)] = [
@@ -423,6 +433,14 @@ public enum Versions {
             ("GPU IPA Prover",   gpuIPAProver),
             ("GPU Merkle Agg",   gpuMerkleAggregate),
             ("GPU Spartan Lin",  gpuSpartanLinearize),
+            ("GPU Proto Verif",  gpuProtogalaxyVerifier),
+            ("GPU Plonk Lnrz",  gpuPlonkLinearize),
+            ("GPU AIR Comp",     gpuAIRComposition),
+            ("GPU Zeromorph",    gpuZeromorphProver),
+            ("GPU GKR Proto",    gpuGKRProtocol),
+            ("GPU Basefold",     gpuBasefoldProver),
+            ("GPU ECDSA Batch",  gpuECDSABatchVerify),
+            ("GPU Wit Commit",   gpuWitnessCommit),
         ]
         print("=== zkMetal Primitive Versions ===")
         for (name, v) in entries {
