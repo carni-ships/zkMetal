@@ -70,14 +70,19 @@ extension PolyEngine {
         let weights = try remainderTreeDescent(poly: mPrimePadded, tree: tree, logN: logN)
 
         // Step 4: Compute scaled values s_i = y_i / w_i
+        // Batch-invert all n weights (padding weights are unused since value=0)
+        let activeWeights = Array(weights.prefix(n))
+        var wPrefix = [Fr](repeating: Fr.one, count: n)
+        for i in 1..<n { wPrefix[i] = frMul(wPrefix[i - 1], activeWeights[i - 1]) }
+        var wAcc = frInverse(frMul(wPrefix[n - 1], activeWeights[n - 1]))
+        var weightInvs = [Fr](repeating: Fr.zero, count: n)
+        for i in Swift.stride(from: n - 1, through: 0, by: -1) {
+            weightInvs[i] = frMul(wAcc, wPrefix[i])
+            wAcc = frMul(wAcc, activeWeights[i])
+        }
         var scaledValues = [Fr](repeating: Fr.zero, count: N)
-        for i in 0..<N {
-            if i < n {
-                scaledValues[i] = frMul(vals[i], frInverse(weights[i]))
-            } else {
-                // Padding points: value=0 so s_i=0 regardless
-                scaledValues[i] = Fr.zero
-            }
+        for i in 0..<n {
+            scaledValues[i] = frMul(vals[i], weightInvs[i])
         }
 
         // Step 5: Linear combination ascent — build result polynomial bottom-up
@@ -106,23 +111,31 @@ extension PolyEngine {
 
         var result = [Fr](repeating: Fr.zero, count: n)
 
+        // Precompute all Lagrange denominators and batch-invert
+        var denoms = [Fr](repeating: Fr.one, count: n)
         for i in 0..<n {
-            // Compute Lagrange basis polynomial L_i evaluated coefficient-wise
-            // L_i(x) = product_{j!=i} (x - z_j) / (z_i - z_j)
-            var denom = Fr.one
             for j in 0..<n where j != i {
-                denom = frMul(denom, frSub(points[i], points[j]))
+                denoms[i] = frMul(denoms[i], frSub(points[i], points[j]))
             }
-            let weight = frMul(values[i], frInverse(denom))
+        }
+        var dPrefix = [Fr](repeating: Fr.one, count: n)
+        for i in 1..<n { dPrefix[i] = frMul(dPrefix[i - 1], denoms[i - 1]) }
+        var dAcc = frInverse(frMul(dPrefix[n - 1], denoms[n - 1]))
+        var denomInvs = [Fr](repeating: Fr.zero, count: n)
+        for i in Swift.stride(from: n - 1, through: 0, by: -1) {
+            denomInvs[i] = frMul(dAcc, dPrefix[i])
+            dAcc = frMul(dAcc, denoms[i])
+        }
+
+        for i in 0..<n {
+            let weight = frMul(values[i], denomInvs[i])
 
             // Build numerator polynomial: product_{j!=i} (x - z_j)
-            // Start with [1] and multiply by (x - z_j) = [-z_j, 1] iteratively
             var basis = [Fr](repeating: Fr.zero, count: n)
             basis[0] = Fr.one
             var basisLen = 1
             for j in 0..<n where j != i {
                 let negZj = frSub(Fr.zero, points[j])
-                // Multiply basis by (x - z_j): new[k] = basis[k-1] + negZj * basis[k]
                 var newBasis = [Fr](repeating: Fr.zero, count: basisLen + 1)
                 for k in 0...basisLen {
                     var val = Fr.zero
@@ -134,7 +147,6 @@ extension PolyEngine {
                 basisLen += 1
             }
 
-            // Add weight * basis to result
             for k in 0..<n {
                 result[k] = frAdd(result[k], frMul(weight, basis[k]))
             }

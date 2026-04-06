@@ -22,6 +22,7 @@ public enum Versions {
     public static let sha256           = PrimitiveVersion(version: "1.0.0", updated: "2026-04-04")
     public static let sha256Merkle     = PrimitiveVersion(version: "1.0.0", updated: "2026-04-04")
     public static let blake3Merkle    = PrimitiveVersion(version: "1.1.0", updated: "2026-04-02")
+    public static let groestl256      = PrimitiveVersion(version: "1.0.0", updated: "2026-04-06")
     public static let incrementalMerkle = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
 
     // --- MSM ---
@@ -307,6 +308,7 @@ public enum Versions {
             ("Keccak Merkle",     keccakMerkle),
             ("SHA-256 Merkle",     sha256Merkle),
             ("Blake3 Merkle",     blake3Merkle),
+            ("Groestl-256",       groestl256),
             ("MSM BN254",         msmBN254),
             ("MSM BLS12-377",     msmBLS12377),
             ("MSM secp256k1",     msmSecp256k1),

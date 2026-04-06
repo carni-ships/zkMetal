@@ -234,6 +234,8 @@ runGPUFRIGrindingTests()
 runGPUPlonkCustomGateTests()
 runGPUBiniusPolyTests()
 runGPUProofBatchAggregationTests()
+runBiniusM3Tests()
+runGroestlHashTests()
 
 let elapsed = CFAbsoluteTimeGetCurrent() - t0
 print(String(format: "\nCompleted in %.1fs", elapsed))

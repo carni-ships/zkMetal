@@ -217,23 +217,38 @@ public class ReedSolomonEngine {
         let n = points.count
         var result = [Fr](repeating: .zero, count: n)
 
+        // Precompute all Lagrange denominators and batch-invert
+        var denoms = [Fr](repeating: Fr.one, count: n)
+        for i in 0..<n {
+            for j in 0..<n where j != i {
+                denoms[i] = frMul(denoms[i], frSub(points[i], points[j]))
+            }
+        }
+        // Montgomery batch inversion: n inverses → 1 inverse + 3(n-1) muls
+        var prefix = [Fr](repeating: Fr.one, count: n)
+        for i in 1..<n { prefix[i] = frMul(prefix[i - 1], denoms[i - 1]) }
+        var acc = frInverse(frMul(prefix[n - 1], denoms[n - 1]))
+        var denomInvs = [Fr](repeating: Fr.zero, count: n)
+        for i in Swift.stride(from: n - 1, through: 0, by: -1) {
+            denomInvs[i] = frMul(acc, prefix[i])
+            acc = frMul(acc, denoms[i])
+        }
+
         for i in 0..<n {
             var basis = [Fr](repeating: .zero, count: n)
             basis[0] = .one
-            var denom = Fr.one
             var basisDeg = 0
 
             for j in 0..<n {
                 if j == i { continue }
-                denom = frMul(denom, frSub(points[i], points[j]))
                 basisDeg += 1
-                for d in stride(from: basisDeg, through: 1, by: -1) {
+                for d in Swift.stride(from: basisDeg, through: 1, by: -1) {
                     basis[d] = frSub(basis[d - 1], frMul(points[j], basis[d]))
                 }
                 basis[0] = frSub(.zero, frMul(points[j], basis[0]))
             }
 
-            let scale = frMul(values[i], frInverse(denom))
+            let scale = frMul(values[i], denomInvs[i])
             for d in 0..<n {
                 result[d] = frAdd(result[d], frMul(scale, basis[d]))
             }
@@ -371,23 +386,38 @@ public class ReedSolomonBbEngine {
         let n = points.count
         var result = [Bb](repeating: .zero, count: n)
 
+        // Precompute all Lagrange denominators and batch-invert
+        var denoms = [Bb](repeating: Bb.one, count: n)
+        for i in 0..<n {
+            for j in 0..<n where j != i {
+                denoms[i] = bbMul(denoms[i], bbSub(points[i], points[j]))
+            }
+        }
+        // Montgomery batch inversion: n inverses → 1 inverse + 3(n-1) muls
+        var prefix = [Bb](repeating: Bb.one, count: n)
+        for i in 1..<n { prefix[i] = bbMul(prefix[i - 1], denoms[i - 1]) }
+        var acc = bbInverse(bbMul(prefix[n - 1], denoms[n - 1]))
+        var denomInvs = [Bb](repeating: .zero, count: n)
+        for i in Swift.stride(from: n - 1, through: 0, by: -1) {
+            denomInvs[i] = bbMul(acc, prefix[i])
+            acc = bbMul(acc, denoms[i])
+        }
+
         for i in 0..<n {
             var basis = [Bb](repeating: .zero, count: n)
             basis[0] = .one
-            var denom = Bb.one
             var basisDeg = 0
 
             for j in 0..<n {
                 if j == i { continue }
-                denom = bbMul(denom, bbSub(points[i], points[j]))
                 basisDeg += 1
-                for d in stride(from: basisDeg, through: 1, by: -1) {
+                for d in Swift.stride(from: basisDeg, through: 1, by: -1) {
                     basis[d] = bbSub(basis[d - 1], bbMul(points[j], basis[d]))
                 }
                 basis[0] = bbSub(.zero, bbMul(points[j], basis[0]))
             }
 
-            let scale = bbMul(values[i], bbInverse(denom))
+            let scale = bbMul(values[i], denomInvs[i])
             for d in 0..<n {
                 result[d] = bbAdd(result[d], bbMul(scale, basis[d]))
             }

@@ -376,14 +376,24 @@ public final class GPUFRICommitPhaseEngine {
 
             // Circle fold: f'(2x^2-1) = f_even(x) + alpha/y * f_odd(x)
             let half = currentEvals.count / 2
+            // Batch-invert all y-coordinates
+            var yVals = [Fr](repeating: Fr.zero, count: half)
+            for i in 0..<half { yVals[i] = currentDomain[i].y }
+            var yPfx = [Fr](repeating: Fr.one, count: half)
+            for i in 1..<half { yPfx[i] = frMul(yPfx[i - 1], yVals[i - 1]) }
+            var yAcc = frInverse(frMul(yPfx[half - 1], yVals[half - 1]))
+            var yInvs = [Fr](repeating: Fr.zero, count: half)
+            for i in Swift.stride(from: half - 1, through: 0, by: -1) {
+                yInvs[i] = frMul(yAcc, yPfx[i])
+                yAcc = frMul(yAcc, yVals[i])
+            }
             var folded = [Fr](repeating: Fr.zero, count: half)
             for i in 0..<half {
                 let a = currentEvals[i]
                 let b = currentEvals[i + half]
                 let sum = frAdd(a, b)
                 let diff = frSub(a, b)
-                let yInv = frInverse(currentDomain[i].y)
-                let term = frMul(challenge, frMul(diff, yInv))
+                let term = frMul(challenge, frMul(diff, yInvs[i]))
                 folded[i] = frAdd(sum, term)
             }
             currentEvals = folded

@@ -928,17 +928,28 @@ public class SumcheckEngine {
     /// Lagrange interpolation: given (x_i, y_i) pairs, evaluate the polynomial at point z.
     private static func lagrangeInterpolateEval(points: [Fr], values: [Fr], at z: Fr) -> Fr {
         let n = points.count
+        // Precompute all denominators and batch-invert
+        var denoms = [Fr](repeating: Fr.one, count: n)
+        for i in 0..<n {
+            for j in 0..<n where j != i {
+                denoms[i] = frMul(denoms[i], frSub(points[i], points[j]))
+            }
+        }
+        var dPfx = [Fr](repeating: Fr.one, count: n)
+        for i in 1..<n { dPfx[i] = frMul(dPfx[i - 1], denoms[i - 1]) }
+        var dAcc = frInverse(frMul(dPfx[n - 1], denoms[n - 1]))
+        var denomInvs = [Fr](repeating: Fr.zero, count: n)
+        for i in Swift.stride(from: n - 1, through: 0, by: -1) {
+            denomInvs[i] = frMul(dAcc, dPfx[i])
+            dAcc = frMul(dAcc, denoms[i])
+        }
         var result = Fr.zero
         for i in 0..<n {
-            // Compute Lagrange basis L_i(z) = product_{j != i} (z - x_j) / (x_i - x_j)
             var num = Fr.one
-            var den = Fr.one
-            for j in 0..<n {
-                if j == i { continue }
+            for j in 0..<n where j != i {
                 num = frMul(num, frSub(z, points[j]))
-                den = frMul(den, frSub(points[i], points[j]))
             }
-            let basis = frMul(num, frInverse(den))
+            let basis = frMul(num, denomInvs[i])
             result = frAdd(result, frMul(values[i], basis))
         }
         return result

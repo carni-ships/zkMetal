@@ -533,13 +533,22 @@ public func bb4NTTInverse(_ values: [Bb4]) -> [Bb4] {
         }
     }
 
-    // Gentleman-Sande butterfly with inverse roots
+    // Gentleman-Sande butterfly with precomputed inverse roots
+    // Precompute all inverse twiddles: log(n) inversions → log(n) chain multiplies
+    var invTwiddles = [[Bb]]()
+    for s in 0..<logN {
+        let halfLen = 1 << s
+        let omegaInv = bbInverse(bbRootOfUnity(logN: s + 1))
+        var twiddle = [Bb](repeating: Bb.one, count: halfLen)
+        for j in 1..<halfLen { twiddle[j] = bbMul(twiddle[j - 1], omegaInv) }
+        invTwiddles.append(twiddle)
+    }
     var len = 1
+    var stage = 0
     while len < n {
-        let omega = bbInverse(bbRootOfUnity(logN: intLog2(len * 2)))
-        var w = Bb.one
+        let twiddle = invTwiddles[stage]
         for j in 0..<len {
-            let wExt = bb4FromBase(w)
+            let wExt = bb4FromBase(twiddle[j])
             var k = j
             while k < n {
                 let u = a[k]
@@ -548,12 +557,12 @@ public func bb4NTTInverse(_ values: [Bb4]) -> [Bb4] {
                 a[k + len] = bb4Sub(u, v)
                 k += 2 * len
             }
-            w = bbMul(w, omega)
         }
         len <<= 1
+        stage += 1
     }
 
-    // Scale by 1/n
+    // Scale by 1/n (single inverse, hoisted)
     let nInv = bbInverse(Bb(v: UInt32(n)))
     for i in 0..<n {
         a[i] = bb4ScalarMul(nInv, a[i])

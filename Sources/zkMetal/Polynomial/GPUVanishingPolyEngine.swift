@@ -497,21 +497,30 @@ public class GPUVanishingPolyEngine {
             let omega = frRootOfUnity(logN: logDomain)
             var result = [UInt32]()
             result.reserveCapacity(domainSize * 8)
+            // Precompute all Z_H values and batch-invert
+            var zhVals = [Fr](repeating: Fr.zero, count: domainSize)
             var current = g
             for i in 0..<domainSize {
                 var x = current
-                for _ in 0..<logSubgroup {
-                    x = frSqr(x)
-                }
-                let zh = frSub(x, Fr.one)
-                let zhInv = frInverse(zh)
+                for _ in 0..<logSubgroup { x = frSqr(x) }
+                zhVals[i] = frSub(x, Fr.one)
+                current = frMul(current, omega)
+            }
+            var zhPrefix = [Fr](repeating: Fr.one, count: domainSize)
+            for i in 1..<domainSize { zhPrefix[i] = frMul(zhPrefix[i - 1], zhVals[i - 1]) }
+            var zhAcc = frInverse(frMul(zhPrefix[domainSize - 1], zhVals[domainSize - 1]))
+            var zhInvs = [Fr](repeating: Fr.zero, count: domainSize)
+            for i in Swift.stride(from: domainSize - 1, through: 0, by: -1) {
+                zhInvs[i] = frMul(zhAcc, zhPrefix[i])
+                zhAcc = frMul(zhAcc, zhVals[i])
+            }
+            for i in 0..<domainSize {
                 let base = i * 8
                 let eval = Fr(v: (evals[base], evals[base+1], evals[base+2], evals[base+3],
                                   evals[base+4], evals[base+5], evals[base+6], evals[base+7]))
-                let q = frMul(eval, zhInv)
+                let q = frMul(eval, zhInvs[i])
                 result.append(contentsOf: [q.v.0, q.v.1, q.v.2, q.v.3,
                                            q.v.4, q.v.5, q.v.6, q.v.7])
-                current = frMul(current, omega)
             }
             return result
 
@@ -520,17 +529,26 @@ public class GPUVanishingPolyEngine {
             let omega = bbRootOfUnity(logN: logDomain)
             var result = [UInt32]()
             result.reserveCapacity(domainSize)
+            // Precompute all Z_H values and batch-invert
+            var bbZhVals = [Bb](repeating: Bb.zero, count: domainSize)
             var current = g
             for i in 0..<domainSize {
                 var x = current
-                for _ in 0..<logSubgroup {
-                    x = bbSqr(x)
-                }
-                let zh = bbSub(x, Bb.one)
-                let zhInv = bbInverse(zh)
-                let eval = Bb(v: evals[i])
-                result.append(bbMul(eval, zhInv).v)
+                for _ in 0..<logSubgroup { x = bbSqr(x) }
+                bbZhVals[i] = bbSub(x, Bb.one)
                 current = bbMul(current, omega)
+            }
+            var bbZhPrefix = [Bb](repeating: Bb.one, count: domainSize)
+            for i in 1..<domainSize { bbZhPrefix[i] = bbMul(bbZhPrefix[i - 1], bbZhVals[i - 1]) }
+            var bbZhAcc = bbInverse(bbMul(bbZhPrefix[domainSize - 1], bbZhVals[domainSize - 1]))
+            var bbZhInvs = [Bb](repeating: Bb.zero, count: domainSize)
+            for i in Swift.stride(from: domainSize - 1, through: 0, by: -1) {
+                bbZhInvs[i] = bbMul(bbZhAcc, bbZhPrefix[i])
+                bbZhAcc = bbMul(bbZhAcc, bbZhVals[i])
+            }
+            for i in 0..<domainSize {
+                let eval = Bb(v: evals[i])
+                result.append(bbMul(eval, bbZhInvs[i]).v)
             }
             return result
 
@@ -932,29 +950,52 @@ public class GPUVanishingPolyEngine {
 
         switch field {
         case .bn254:
+            // Precompute Z_H values and batch-invert
+            var frZhArr = [Fr](repeating: Fr.zero, count: numPoints)
             for i in 0..<numPoints {
                 let base = i * 8
                 let pt = Fr(v: (points[base], points[base+1], points[base+2], points[base+3],
                                 points[base+4], points[base+5], points[base+6], points[base+7]))
                 var x = pt
                 for _ in 0..<logSubgroup { x = frSqr(x) }
-                let zh = frSub(x, Fr.one)
-                let zhInv = frInverse(zh)
+                frZhArr[i] = frSub(x, Fr.one)
+            }
+            var frPfx = [Fr](repeating: Fr.one, count: numPoints)
+            for i in 1..<numPoints { frPfx[i] = frMul(frPfx[i - 1], frZhArr[i - 1]) }
+            var frAcc = frInverse(frMul(frPfx[numPoints - 1], frZhArr[numPoints - 1]))
+            var frZhInvArr = [Fr](repeating: Fr.zero, count: numPoints)
+            for i in Swift.stride(from: numPoints - 1, through: 0, by: -1) {
+                frZhInvArr[i] = frMul(frAcc, frPfx[i])
+                frAcc = frMul(frAcc, frZhArr[i])
+            }
+            for i in 0..<numPoints {
+                let base = i * 8
                 let eval = Fr(v: (evals[base], evals[base+1], evals[base+2], evals[base+3],
                                   evals[base+4], evals[base+5], evals[base+6], evals[base+7]))
-                let q = frMul(eval, zhInv)
+                let q = frMul(eval, frZhInvArr[i])
                 result.append(contentsOf: [q.v.0, q.v.1, q.v.2, q.v.3,
                                            q.v.4, q.v.5, q.v.6, q.v.7])
             }
 
         case .babybear:
+            // Precompute Z_H values and batch-invert
+            var bbZhArr = [Bb](repeating: Bb.zero, count: numPoints)
             for i in 0..<numPoints {
                 var x = Bb(v: points[i])
                 for _ in 0..<logSubgroup { x = bbSqr(x) }
-                let zh = bbSub(x, Bb.one)
-                let zhInv = bbInverse(zh)
+                bbZhArr[i] = bbSub(x, Bb.one)
+            }
+            var bbPfx = [Bb](repeating: Bb.one, count: numPoints)
+            for i in 1..<numPoints { bbPfx[i] = bbMul(bbPfx[i - 1], bbZhArr[i - 1]) }
+            var bbAcc = bbInverse(bbMul(bbPfx[numPoints - 1], bbZhArr[numPoints - 1]))
+            var bbZhInvArr = [Bb](repeating: Bb.zero, count: numPoints)
+            for i in Swift.stride(from: numPoints - 1, through: 0, by: -1) {
+                bbZhInvArr[i] = bbMul(bbAcc, bbPfx[i])
+                bbAcc = bbMul(bbAcc, bbZhArr[i])
+            }
+            for i in 0..<numPoints {
                 let eval = Bb(v: evals[i])
-                result.append(bbMul(eval, zhInv).v)
+                result.append(bbMul(eval, bbZhInvArr[i]).v)
             }
 
         case .goldilocks:

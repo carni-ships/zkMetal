@@ -49,15 +49,31 @@ public class Groth16Setup {
         let nInv = frInverse(nFr)
         let zOverN = frMul(zTau, nInv)  // Z(tau) / domainN
 
+        // Batch-invert all (tau - omega^i) denominators
+        var diffs = [Fr](repeating: Fr.zero, count: domainN)
+        for i in 0..<domainN { diffs[i] = frSub(tau, omegaPow[i]) }
+        // Montgomery batch inversion (skip any zero diffs — vanishingly unlikely)
+        var diffPrefix = [Fr](repeating: Fr.one, count: domainN)
+        for i in 1..<domainN {
+            diffPrefix[i] = diffs[i - 1].isZero ? diffPrefix[i - 1] : frMul(diffPrefix[i - 1], diffs[i - 1])
+        }
+        let lastProd = diffs[domainN - 1].isZero ? diffPrefix[domainN - 1] : frMul(diffPrefix[domainN - 1], diffs[domainN - 1])
+        var diffAcc = frInverse(lastProd)
+        var diffInvs = [Fr](repeating: Fr.zero, count: domainN)
+        for i in Swift.stride(from: domainN - 1, through: 0, by: -1) {
+            if diffs[i].isZero {
+                diffInvs[i] = Fr.zero  // sentinel
+            } else {
+                diffInvs[i] = frMul(diffAcc, diffPrefix[i])
+                diffAcc = frMul(diffAcc, diffs[i])
+            }
+        }
         var lagrangeAtTau = [Fr](repeating: .zero, count: domainN)
         for i in 0..<domainN {
-            let diff = frSub(tau, omegaPow[i])  // tau - omega^i
-            if diff.isZero {
-                // tau happens to equal omega^i (vanishingly unlikely with random tau)
+            if diffs[i].isZero {
                 lagrangeAtTau[i] = .one
             } else {
-                // L_i(tau) = omega^i * (tau^n - 1) / (n * (tau - omega^i))
-                lagrangeAtTau[i] = frMul(frMul(zOverN, omegaPow[i]), frInverse(diff))
+                lagrangeAtTau[i] = frMul(frMul(zOverN, omegaPow[i]), diffInvs[i])
             }
         }
 
