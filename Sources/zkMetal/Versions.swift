@@ -153,6 +153,7 @@ public enum Versions {
     public static let gpuInnerProduct   = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let gpuMerkleTree     = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let gpuHornerEval     = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuBatchInverse   = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
 
     /// Print all primitive versions
     public static func printAll() {
@@ -229,6 +230,7 @@ public enum Versions {
             ("Unified Verify",   unifiedVerify),
             ("GPU Merkle Tree",  gpuMerkleTree),
             ("GPU Horner Eval",  gpuHornerEval),
+            ("GPU Batch Inv",    gpuBatchInverse),
         ]
         print("=== zkMetal Primitive Versions ===")
         for (name, v) in entries {

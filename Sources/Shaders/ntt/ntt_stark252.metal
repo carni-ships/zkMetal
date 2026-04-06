@@ -1062,19 +1062,28 @@ kernel void stark252_ntt_column_butterfly_radix4(
     Stark252 a3 = data[addr3];
 
     // Stage s twiddle: applied to pairs (a0,a1) and (a2,a3)
-    Stark252 ws = twiddles[local_idx * (n1 / (2 * h)) * n2];
-    Stark252 ws_a1 = stark252_mul(ws, a1);
-    Stark252 ws_a3 = stark252_mul(ws, a3);
-    Stark252 b0 = stark252_add(a0, ws_a1);
-    Stark252 b1 = stark252_sub(a0, ws_a1);
-    Stark252 b2 = stark252_add(a2, ws_a3);
-    Stark252 b3 = stark252_sub(a2, ws_a3);
+    uint tw_s = local_idx * (n1 / (2 * h)) * n2;
+    Stark252 b0, b1, b2, b3;
+    if (tw_s == 0) {
+        b0 = stark252_add(a0, a1);
+        b1 = stark252_sub(a0, a1);
+        b2 = stark252_add(a2, a3);
+        b3 = stark252_sub(a2, a3);
+    } else {
+        Stark252 ws = twiddles[tw_s];
+        Stark252 ws_a1 = stark252_mul(ws, a1);
+        Stark252 ws_a3 = stark252_mul(ws, a3);
+        b0 = stark252_add(a0, ws_a1);
+        b1 = stark252_sub(a0, ws_a1);
+        b2 = stark252_add(a2, ws_a3);
+        b3 = stark252_sub(a2, ws_a3);
+    }
 
     // Stage s+1 twiddles: cross-combine
-    Stark252 w_lo = twiddles[local_idx * (n1 / block4) * n2];
-    Stark252 w_hi = twiddles[(local_idx + h) * (n1 / block4) * n2];
-    Stark252 wb2 = stark252_mul(w_lo, b2);
-    Stark252 wb3 = stark252_mul(w_hi, b3);
+    uint tw_lo = local_idx * (n1 / block4) * n2;
+    uint tw_hi = (local_idx + h) * (n1 / block4) * n2;
+    Stark252 wb2 = (tw_lo == 0) ? b2 : stark252_mul(twiddles[tw_lo], b2);
+    Stark252 wb3 = (tw_hi == 0) ? b3 : stark252_mul(twiddles[tw_hi], b3);
 
     data[addr0] = stark252_add(b0, wb2);
     data[addr2] = stark252_sub(b0, wb2);
@@ -1185,23 +1194,27 @@ kernel void stark252_intt_column_butterfly_radix4(
     Stark252 diff13 = stark252_sub(a1, a3);
 
     // Twiddle for high stage
-    Stark252 w_hi = twiddles_inv[local_idx * (n1 / block4) * n2];
-    diff02 = stark252_mul(diff02, w_hi);
-    Stark252 w_hi2 = twiddles_inv[(local_idx + h_lo) * (n1 / block4) * n2];
-    diff13 = stark252_mul(diff13, w_hi2);
+    uint tw_hi_idx = local_idx * (n1 / block4) * n2;
+    uint tw_hi2_idx = (local_idx + h_lo) * (n1 / block4) * n2;
+    if (tw_hi_idx != 0) {
+        diff02 = stark252_mul(diff02, twiddles_inv[tw_hi_idx]);
+    }
+    if (tw_hi2_idx != 0) {
+        diff13 = stark252_mul(diff13, twiddles_inv[tw_hi2_idx]);
+    }
 
     // DIF low stage: butterflies (sum02,sum13) and (diff02,diff13)
-    Stark252 w_lo = twiddles_inv[local_idx * (n1 / (2 * h_lo)) * n2];
+    uint tw_lo_idx = local_idx * (n1 / (2 * h_lo)) * n2;
 
     Stark252 out0 = stark252_add(sum02, sum13);
     Stark252 d1 = stark252_sub(sum02, sum13);
     data[addr0] = out0;
-    data[addr1] = stark252_mul(d1, w_lo);
+    data[addr1] = (tw_lo_idx == 0) ? d1 : stark252_mul(d1, twiddles_inv[tw_lo_idx]);
 
     Stark252 out2 = stark252_add(diff02, diff13);
     Stark252 d3 = stark252_sub(diff02, diff13);
     data[addr2] = out2;
-    data[addr3] = stark252_mul(d3, w_lo);
+    data[addr3] = (tw_lo_idx == 0) ? d3 : stark252_mul(d3, twiddles_inv[tw_lo_idx]);
 }
 
 // DIF sub-block column iFFT with 1/N scale on store.
