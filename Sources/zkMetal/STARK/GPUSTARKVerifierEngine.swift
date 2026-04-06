@@ -375,6 +375,9 @@ public class GPUSTARKVerifierEngine {
                 "Final polynomial degree \(fri.finalPoly.count - 1) exceeds max \(config.maxFinalDegree)")
         }
 
+        // Hoist constant inverse out of inner loops
+        let friTwoInv = frInverse(frFromInt(2))
+
         // Verify each query's decommitments across all FRI layers
         for (queryIdx, queryDecommitments) in fri.decommitments.enumerated() {
             guard queryDecommitments.count == numRounds else {
@@ -399,11 +402,9 @@ public class GPUSTARKVerifierEngine {
                     // where y = x^2
                     let fX = prevDecommit.value
                     let fNegX = prevDecommit.siblingValue
-                    let two = frFromInt(2)
-                    let twoInv = frInverse(two)
 
-                    let evenPart = frMul(frAdd(fX, fNegX), twoInv)
-                    let oddPart = frMul(frSub(fX, fNegX), twoInv)
+                    let evenPart = frMul(frAdd(fX, fNegX), friTwoInv)
+                    let oddPart = frMul(frSub(fX, fNegX), friTwoInv)
                     let expected = frAdd(evenPart, frMul(beta, oddPart))
 
                     if !frEqual(expected, decommit.value) {

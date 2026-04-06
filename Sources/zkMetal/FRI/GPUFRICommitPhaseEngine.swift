@@ -711,6 +711,7 @@ public final class GPUFRICommitPhaseEngine {
 
         var even = [Fr](repeating: Fr.zero, count: half)
         var odd = [Fr](repeating: Fr.zero, count: half)
+        let twoInv = frInverse(frFromInt(2))
 
         for i in 0..<half {
             let a = evaluations[i]
@@ -718,7 +719,6 @@ public final class GPUFRICommitPhaseEngine {
             // f_even(omega^{2i}) = (f(omega^i) + f(-omega^i)) / 2
             //                    = (f(omega^i) + f(omega^{i+n/2})) / 2
             let sum = frAdd(a, b)
-            let twoInv = frInverse(frFromInt(2))
             even[i] = frMul(sum, twoInv)
 
             // f_odd(omega^{2i}) = (f(omega^i) - f(-omega^i)) / (2 * omega^i)
