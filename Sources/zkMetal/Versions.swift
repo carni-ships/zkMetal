@@ -244,6 +244,16 @@ public enum Versions {
     public static let gpuGroth16Aggregate = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let gpuBiniusBinaryField = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
 
+    // --- Wave 14 ---
+    public static let gpuHalo2LookupArg = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuSTARKQueryPhase = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuSumcheckProtocol = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuKZGBatchVerify = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuPlonkQuotient = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuIPAProver    = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuMerkleAggregate = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuSpartanLinearize = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+
     /// Print all primitive versions
     public static func printAll() {
         let entries: [(String, PrimitiveVersion)] = [
@@ -405,6 +415,14 @@ public enum Versions {
             ("GPU R1CS WitSol",  gpuR1CSWitnessSolver),
             ("GPU Groth16 Agg",  gpuGroth16Aggregate),
             ("GPU Binius Bin",   gpuBiniusBinaryField),
+            ("GPU Halo2 Look",   gpuHalo2LookupArg),
+            ("GPU STARK Query",  gpuSTARKQueryPhase),
+            ("GPU Sumcheck P",   gpuSumcheckProtocol),
+            ("GPU KZG BatVer",   gpuKZGBatchVerify),
+            ("GPU Plonk Quot",   gpuPlonkQuotient),
+            ("GPU IPA Prover",   gpuIPAProver),
+            ("GPU Merkle Agg",   gpuMerkleAggregate),
+            ("GPU Spartan Lin",  gpuSpartanLinearize),
         ]
         print("=== zkMetal Primitive Versions ===")
         for (name, v) in entries {
