@@ -284,6 +284,16 @@ public enum Versions {
     public static let gpuCairoMemoryArg = PrimitiveVersion(version: "1.0.0", updated: "2026-04-06")
     public static let gpuFflonkProver = PrimitiveVersion(version: "1.0.0", updated: "2026-04-06")
 
+    // --- Wave 18 (partial) ---
+    public static let gpuKZGDegreeBound = PrimitiveVersion(version: "1.0.0", updated: "2026-04-06")
+    public static let gpuR1CSToAIRCompiler = PrimitiveVersion(version: "1.0.0", updated: "2026-04-06")
+    public static let gpuHyperPlonkIOP = PrimitiveVersion(version: "1.0.0", updated: "2026-04-06")
+    public static let gpuNovaDeciderCircuit = PrimitiveVersion(version: "1.0.0", updated: "2026-04-06")
+    public static let gpuFRIGrinding = PrimitiveVersion(version: "1.0.0", updated: "2026-04-06")
+    public static let gpuPlonkCustomGate = PrimitiveVersion(version: "1.0.0", updated: "2026-04-06")
+    public static let gpuBiniusPoly = PrimitiveVersion(version: "1.0.0", updated: "2026-04-06")
+    public static let gpuProofBatchAggregation = PrimitiveVersion(version: "1.0.0", updated: "2026-04-06")
+
     /// Print all primitive versions
     public static func printAll() {
         let entries: [(String, PrimitiveVersion)] = [
@@ -478,6 +488,15 @@ public enum Versions {
             ("GPU Range Proof",  gpuRangeProofProtocol),
             ("GPU Cairo Mem",    gpuCairoMemoryArg),
             ("GPU Fflonk",       gpuFflonkProver),
+            // --- Wave 18 (partial) ---
+            ("GPU KZG DegBnd",   gpuKZGDegreeBound),
+            ("GPU R1CS→AIR",     gpuR1CSToAIRCompiler),
+            ("GPU HyperPlonk",   gpuHyperPlonkIOP),
+            ("GPU Nova Decider", gpuNovaDeciderCircuit),
+            ("GPU FRI Grind",    gpuFRIGrinding),
+            ("GPU Custom Gate",  gpuPlonkCustomGate),
+            ("GPU Binius Poly",  gpuBiniusPoly),
+            ("GPU Proof Agg",    gpuProofBatchAggregation),
         ]
         print("=== zkMetal Primitive Versions ===")
         for (name, v) in entries {
