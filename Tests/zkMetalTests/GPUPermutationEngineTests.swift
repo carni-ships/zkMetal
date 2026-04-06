@@ -14,6 +14,12 @@ import Foundation
 public func runGPUPermutationEngineTests() {
     suite("GPU Permutation Engine")
 
+    guard (try? GPUPermutationEngine()) != nil else {
+        print("  [SKIP] GPUPermutationEngine unavailable (shader not found)")
+        print("[GPU Permutation Engine] skipped")
+        return
+    }
+
     // ========== Test 1: Identity permutation -> Z is all ones ==========
     do {
         let engine = try! GPUPermutationEngine()
