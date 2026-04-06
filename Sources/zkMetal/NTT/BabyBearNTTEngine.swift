@@ -42,6 +42,9 @@ public class BabyBearNTTEngine {
     // 8192 Bb elements * 4 bytes = 32KB threadgroup memory
     public static let maxFusedElements = 8192
     public static let maxFusedLogN = 13  // log2(8192)
+    // Effective max fused stages, capped by GPU threadgroup size limit.
+    // Fused kernels need (1 << fusedStages)/2 threads per group.
+    private var effectiveMaxFusedLogN: Int = 13
     private var fourStepMinGlobalStages: Int { tuning.nttFourStepThreshold }
     // iNTT uses four-step earlier: bit-reversal random access in standard path
     // is slower than four-step's strided column access for large sizes
@@ -104,6 +107,18 @@ public class BabyBearNTTEngine {
         self.invRowFusedTwiddleFunction = try device.makeComputePipelineState(function: invRowFusedTwiddleFn)
         self.invColumnFusedScaleFunction = try device.makeComputePipelineState(function: invColumnFusedScaleFn)
         self.tuning = TuningManager.shared.config(device: device)
+
+        // Cap fused stages by GPU max threads per threadgroup.
+        // Fused kernels dispatch (1 << fusedStages)/2 threads per group.
+        let maxFusedThreads = min(
+            Int(butterflyFusedBitrevFunction.maxTotalThreadsPerThreadgroup),
+            Int(invButterflyFusedFunction.maxTotalThreadsPerThreadgroup)
+        )
+        var cap = BabyBearNTTEngine.maxFusedLogN
+        while cap > 1 && (1 << cap) / 2 > maxFusedThreads {
+            cap -= 1
+        }
+        self.effectiveMaxFusedLogN = cap
     }
 
     private func getScratchBuffer(n: Int) -> MTLBuffer {
@@ -195,7 +210,7 @@ public class BabyBearNTTEngine {
     // MARK: - Forward NTT
 
     public func ntt(data: MTLBuffer, logN: Int) throws {
-        let globalStages = logN - BabyBearNTTEngine.maxFusedLogN
+        let globalStages = logN - effectiveMaxFusedLogN
         if globalStages >= fourStepMinGlobalStages {
             try nttFourStep(data: data, logN: logN)
             return
@@ -212,7 +227,7 @@ public class BabyBearNTTEngine {
         var nVal = n
         var logNVal = UInt32(logN)
 
-        let fusedStages = min(logN, BabyBearNTTEngine.maxFusedLogN)
+        let fusedStages = min(logN, effectiveMaxFusedLogN)
         let hasFused = fusedStages > 1
         let scratch: MTLBuffer? = hasFused ? getScratchBuffer(n: nInt) : nil
         let workBuf = hasFused ? scratch! : data
@@ -295,7 +310,7 @@ public class BabyBearNTTEngine {
     // MARK: - Inverse NTT
 
     public func intt(data: MTLBuffer, logN: Int) throws {
-        let globalStages = logN - BabyBearNTTEngine.maxFusedLogN
+        let globalStages = logN - effectiveMaxFusedLogN
         if globalStages >= fourStepMinGlobalStagesInv {
             try inttFourStep(data: data, logN: logN)
             return
@@ -310,7 +325,7 @@ public class BabyBearNTTEngine {
         }
 
         var nVal = n
-        let fusedStages = min(logN, BabyBearNTTEngine.maxFusedLogN)
+        let fusedStages = min(logN, effectiveMaxFusedLogN)
 
         let enc = cmdBuf.makeComputeCommandEncoder()!
 
