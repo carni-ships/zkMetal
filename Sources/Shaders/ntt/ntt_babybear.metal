@@ -722,9 +722,13 @@ kernel void bb_intt_column_fused(
         Bb b = shared_data[j];
         Bb sum = bb_add(a, b);
         Bb diff = bb_sub(a, b);
-        Bb w = twiddles_inv[twiddle_idx];
         shared_data[i] = sum;
-        shared_data[j] = bb_mul(diff, w);
+        if (twiddle_idx == 0) {
+            shared_data[j] = diff;
+        } else {
+            Bb w = twiddles_inv[twiddle_idx];
+            shared_data[j] = bb_mul(diff, w);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -767,9 +771,13 @@ kernel void bb_intt_row_fused(
         Bb b = shared_data[j];
         Bb sum = bb_add(a, b);
         Bb diff = bb_sub(a, b);
-        Bb w = twiddles_inv[twiddle_idx];
         shared_data[i] = sum;
-        shared_data[j] = bb_mul(diff, w);
+        if (twiddle_idx == 0) {
+            shared_data[j] = diff;
+        } else {
+            Bb w = twiddles_inv[twiddle_idx];
+            shared_data[j] = bb_mul(diff, w);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
@@ -812,9 +820,13 @@ kernel void bb_intt_row_fused_twiddle(
         Bb b = shared_data[j];
         Bb sum = bb_add(a, b);
         Bb diff = bb_sub(a, b);
-        Bb w = twiddles_inv[twiddle_idx];
         shared_data[i] = sum;
-        shared_data[j] = bb_mul(diff, w);
+        if (twiddle_idx == 0) {
+            shared_data[j] = diff;
+        } else {
+            Bb w = twiddles_inv[twiddle_idx];
+            shared_data[j] = bb_mul(diff, w);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 

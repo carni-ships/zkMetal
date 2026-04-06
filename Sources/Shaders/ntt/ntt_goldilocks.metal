@@ -780,10 +780,13 @@ kernel void gl_intt_butterfly_fused(
         Gl b = shared[j];
         Gl sum = gl_add(a, b);
         Gl diff = gl_sub(a, b);
-        Gl w = twiddles_inv[twiddle_idx];
-
         shared[i] = sum;
-        shared[j] = gl_mul(diff, w);
+        if (twiddle_idx == 0) {
+            shared[j] = diff;
+        } else {
+            Gl w = twiddles_inv[twiddle_idx];
+            shared[j] = gl_mul(diff, w);
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 

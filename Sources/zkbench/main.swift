@@ -133,6 +133,8 @@ if cmd == "calibrate" {
     runKeccakBench()
 } else if cmd == "merkle" {
     runMerkleBench()
+} else if cmd == "merkle-tree" || cmd == "mt" || cmd == "gpu-merkle" {
+    runMerkleTreeBench()
 } else if cmd == "imerkle" || cmd == "incremental-merkle" {
     runIncrementalMerkleBench()
 } else if cmd == "poly" {

@@ -1062,19 +1062,28 @@ kernel void bls377_ntt_column_butterfly_radix4(
     Fr377 a3 = data[addr3];
 
     // Stage s twiddle: applied to pairs (a0,a1) and (a2,a3)
-    Fr377 ws = twiddles[local_idx * (n1 / (2 * h)) * n2];
-    Fr377 ws_a1 = fr377_mul(ws, a1);
-    Fr377 ws_a3 = fr377_mul(ws, a3);
-    Fr377 b0 = fr377_add(a0, ws_a1);
-    Fr377 b1 = fr377_sub(a0, ws_a1);
-    Fr377 b2 = fr377_add(a2, ws_a3);
-    Fr377 b3 = fr377_sub(a2, ws_a3);
+    uint tw_s = local_idx * (n1 / (2 * h)) * n2;
+    Fr377 b0, b1, b2, b3;
+    if (tw_s == 0) {
+        b0 = fr377_add(a0, a1);
+        b1 = fr377_sub(a0, a1);
+        b2 = fr377_add(a2, a3);
+        b3 = fr377_sub(a2, a3);
+    } else {
+        Fr377 ws = twiddles[tw_s];
+        Fr377 ws_a1 = fr377_mul(ws, a1);
+        Fr377 ws_a3 = fr377_mul(ws, a3);
+        b0 = fr377_add(a0, ws_a1);
+        b1 = fr377_sub(a0, ws_a1);
+        b2 = fr377_add(a2, ws_a3);
+        b3 = fr377_sub(a2, ws_a3);
+    }
 
     // Stage s+1 twiddles: cross-combine
-    Fr377 w_lo = twiddles[local_idx * (n1 / block4) * n2];
-    Fr377 w_hi = twiddles[(local_idx + h) * (n1 / block4) * n2];
-    Fr377 wb2 = fr377_mul(w_lo, b2);
-    Fr377 wb3 = fr377_mul(w_hi, b3);
+    uint tw_lo = local_idx * (n1 / block4) * n2;
+    uint tw_hi = (local_idx + h) * (n1 / block4) * n2;
+    Fr377 wb2 = (tw_lo == 0) ? b2 : fr377_mul(twiddles[tw_lo], b2);
+    Fr377 wb3 = (tw_hi == 0) ? b3 : fr377_mul(twiddles[tw_hi], b3);
 
     data[addr0] = fr377_add(b0, wb2);
     data[addr2] = fr377_sub(b0, wb2);
@@ -1185,23 +1194,27 @@ kernel void bls377_intt_column_butterfly_radix4(
     Fr377 diff13 = fr377_sub(a1, a3);
 
     // Twiddle for high stage
-    Fr377 w_hi = twiddles_inv[local_idx * (n1 / block4) * n2];
-    diff02 = fr377_mul(diff02, w_hi);
-    Fr377 w_hi2 = twiddles_inv[(local_idx + h_lo) * (n1 / block4) * n2];
-    diff13 = fr377_mul(diff13, w_hi2);
+    uint tw_hi_idx = local_idx * (n1 / block4) * n2;
+    uint tw_hi2_idx = (local_idx + h_lo) * (n1 / block4) * n2;
+    if (tw_hi_idx != 0) {
+        diff02 = fr377_mul(diff02, twiddles_inv[tw_hi_idx]);
+    }
+    if (tw_hi2_idx != 0) {
+        diff13 = fr377_mul(diff13, twiddles_inv[tw_hi2_idx]);
+    }
 
     // DIF low stage: butterflies (sum02,sum13) and (diff02,diff13)
-    Fr377 w_lo = twiddles_inv[local_idx * (n1 / (2 * h_lo)) * n2];
+    uint tw_lo_idx = local_idx * (n1 / (2 * h_lo)) * n2;
 
     Fr377 out0 = fr377_add(sum02, sum13);
     Fr377 d1 = fr377_sub(sum02, sum13);
     data[addr0] = out0;
-    data[addr1] = fr377_mul(d1, w_lo);
+    data[addr1] = (tw_lo_idx == 0) ? d1 : fr377_mul(d1, twiddles_inv[tw_lo_idx]);
 
     Fr377 out2 = fr377_add(diff02, diff13);
     Fr377 d3 = fr377_sub(diff02, diff13);
     data[addr2] = out2;
-    data[addr3] = fr377_mul(d3, w_lo);
+    data[addr3] = (tw_lo_idx == 0) ? d3 : fr377_mul(d3, twiddles_inv[tw_lo_idx]);
 }
 
 // DIF sub-block column iFFT with 1/N scale on store.
