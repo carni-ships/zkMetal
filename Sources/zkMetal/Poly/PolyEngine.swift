@@ -285,8 +285,8 @@ public class PolyEngine {
 
         let outN = n - 1
 
-        // For small polynomials, use CPU path (GPU overhead dominates below ~2^17)
-        if n <= 131072 {
+        // For small polynomials, use CPU path (GPU overhead dominates below ~2^18)
+        if n <= 262144 {
             return divideByLinearCPU(coeffs, z: z)
         }
 

@@ -269,7 +269,6 @@ public class BasefoldEngine {
         if let foldErr = foldCB.error {
             throw MSMError.gpuError("Fold: \(foldErr.localizedDescription)")
         }
-
         // Phase 2: Extract layers from tree buffers (zero-copy read) and set up for Merkle trees.
         currentN = n
         for round in 0..<numVars {
@@ -309,8 +308,11 @@ public class BasefoldEngine {
             if sz >= 8192 { largeIdxs.append(idx) } else { smallIdxs.append(idx) }
         }
 
+        // Submit each tree as a separate command buffer for maximum GPU pipelining.
+        // Trees use independent buffers so no cross-tree barriers are needed.
         var allCBs: [(Int, MTLCommandBuffer)] = []
-        for idx in largeIdxs {
+        let allIdxs = largeIdxs + smallIdxs
+        for idx in allIdxs {
             guard let cb = commandQueue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
             let e = cb.makeComputeCommandEncoder()!
             merkleEngine.encodeMerkleRoot(encoder: e, treeBuf: treeBufPtrs[idx]!, treeOffset: 0, n: treeSizesArr[idx])
@@ -318,27 +320,13 @@ public class BasefoldEngine {
             cb.commit()
             allCBs.append((idx, cb))
         }
-        if !smallIdxs.isEmpty {
-            guard let cb = commandQueue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
-            let e = cb.makeComputeCommandEncoder()!
-            for (j, idx) in smallIdxs.enumerated() {
-                if j > 0 { e.memoryBarrier(scope: .buffers) }
-                merkleEngine.encodeMerkleRoot(encoder: e, treeBuf: treeBufPtrs[idx]!, treeOffset: 0, n: treeSizesArr[idx])
-            }
-            e.endEncoding()
-            cb.commit()
-            allCBs.append((-1, cb))
-        }
 
         for (idx, cb) in allCBs {
             cb.waitUntilCompleted()
             if let err = cb.error { throw MSMError.gpuError("Merkle[\(idx)]: \(err.localizedDescription)") }
-            let readIdxs = idx == -1 ? smallIdxs : [idx]
-            for ri in readIdxs {
-                let tsz = treeNodeCounts[ri]
-                let ptr = treeBufPtrs[ri]!.contents().bindMemory(to: Fr.self, capacity: tsz)
-                roots[ri] = ptr[tsz - 1]
-            }
+            let tsz = treeNodeCounts[idx]
+            let ptr = treeBufPtrs[idx]!.contents().bindMemory(to: Fr.self, capacity: tsz)
+            roots[idx] = ptr[tsz - 1]
         }
 
         // Final value
