@@ -175,6 +175,14 @@ public enum Versions {
     public static let gpuPermutation   = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let gpuRangeProof    = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let gpuBatchTranscript = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuCosetFFT      = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuProofComposition = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuPolyDivision  = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuWitnessGen    = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuPlonkGate     = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuSumcheckProver = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuLogUp         = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuR1CSSolver    = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
 
     /// Print all primitive versions
     public static func printAll() {
@@ -197,6 +205,7 @@ public enum Versions {
             ("MSM Ed25519",       msmEd25519),
             ("MSM Grumpkin",      msmGrumpkin),
             ("MSM BN254 G2",     msmBN254G2),
+            ("MSM BLS12-381",    msmBLS12381),
             ("EdDSA Ed25519",    eddsa),
             ("BLS Signature",    blsSignature),
             ("Schnorr BIP340",   schnorr),
@@ -272,6 +281,14 @@ public enum Versions {
             ("GPU Permutation",  gpuPermutation),
             ("GPU Range Proof",  gpuRangeProof),
             ("GPU Batch Txn",    gpuBatchTranscript),
+            ("GPU Coset FFT",    gpuCosetFFT),
+            ("GPU Proof Comp",   gpuProofComposition),
+            ("GPU Poly Div",     gpuPolyDivision),
+            ("GPU Witness Gen",  gpuWitnessGen),
+            ("GPU Plonk Gate",   gpuPlonkGate),
+            ("GPU Sumcheck Pv",  gpuSumcheckProver),
+            ("GPU LogUp",        gpuLogUp),
+            ("GPU R1CS Solver",  gpuR1CSSolver),
         ]
         print("=== zkMetal Primitive Versions ===")
         for (name, v) in entries {
