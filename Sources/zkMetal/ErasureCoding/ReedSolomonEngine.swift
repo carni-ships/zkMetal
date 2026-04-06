@@ -88,30 +88,39 @@ public class ReedSolomonNTTEngine {
         let n = points.count
         var result = [Bb](repeating: .zero, count: n)
 
+        // Precompute all Lagrange denominators prod_{j!=i}(x_i - x_j) and batch-invert
+        var rsDenoms = [Bb](repeating: Bb.one, count: n)
+        var rsBases = [[Bb]](repeating: [Bb](repeating: .zero, count: n), count: n)
         for i in 0..<n {
-            // Compute Lagrange basis polynomial L_i evaluated contribution
-            var basis = [Bb](repeating: .zero, count: n)
-            basis[0] = .one
-
-            var denom = Bb.one
+            rsBases[i][0] = .one
             var basisDeg = 0
-
-            for j in 0..<n {
-                if j == i { continue }
-                // Multiply basis by (x - x_j)
-                denom = bbMul(denom, bbSub(points[i], points[j]))
-                // Shift basis up and subtract x_j * basis
+            for j in 0..<n where j != i {
+                rsDenoms[i] = bbMul(rsDenoms[i], bbSub(points[i], points[j]))
                 basisDeg += 1
                 for d in stride(from: basisDeg, through: 1, by: -1) {
-                    basis[d] = bbSub(basis[d - 1], bbMul(points[j], basis[d]))
+                    rsBases[i][d] = bbSub(rsBases[i][d - 1], bbMul(points[j], rsBases[i][d]))
                 }
-                basis[0] = bbSub(.zero, bbMul(points[j], basis[0]))
+                rsBases[i][0] = bbSub(.zero, bbMul(points[j], rsBases[i][0]))
             }
+        }
+        var rsPrefix = [Bb](repeating: Bb.one, count: n)
+        for i in 1..<n {
+            rsPrefix[i] = rsDenoms[i - 1].v == 0 ? rsPrefix[i - 1] : bbMul(rsPrefix[i - 1], rsDenoms[i - 1])
+        }
+        let rsLast = rsDenoms[n - 1].v == 0 ? rsPrefix[n - 1] : bbMul(rsPrefix[n - 1], rsDenoms[n - 1])
+        var rsInv = bbInverse(rsLast)
+        var rsDenomInvs = [Bb](repeating: Bb.zero, count: n)
+        for i in stride(from: n - 1, through: 0, by: -1) {
+            if rsDenoms[i].v != 0 {
+                rsDenomInvs[i] = bbMul(rsInv, rsPrefix[i])
+                rsInv = bbMul(rsInv, rsDenoms[i])
+            }
+        }
 
-            // Scale by y_i / denom
-            let scale = bbMul(values[i], bbInverse(denom))
+        for i in 0..<n {
+            let scale = bbMul(values[i], rsDenomInvs[i])
             for d in 0..<n {
-                result[d] = bbAdd(result[d], bbMul(scale, basis[d]))
+                result[d] = bbAdd(result[d], bbMul(scale, rsBases[i][d]))
             }
         }
         return result
@@ -606,25 +615,41 @@ public class ReedSolomonBN254Engine {
         let n = points.count
         var result = [Fr](repeating: .zero, count: n)
 
+        // Precompute all Lagrange denominators and basis polynomials
+        var frDenoms = [Fr](repeating: Fr.one, count: n)
+        var frBases = [[Fr]](repeating: [Fr](repeating: .zero, count: n), count: n)
         for i in 0..<n {
-            var basis = [Fr](repeating: .zero, count: n)
-            basis[0] = .one
-            var denom = Fr.one
+            frBases[i][0] = .one
             var basisDeg = 0
-
-            for j in 0..<n {
-                if j == i { continue }
-                denom = frMul(denom, frSub(points[i], points[j]))
+            for j in 0..<n where j != i {
+                frDenoms[i] = frMul(frDenoms[i], frSub(points[i], points[j]))
                 basisDeg += 1
                 for d in stride(from: basisDeg, through: 1, by: -1) {
-                    basis[d] = frSub(basis[d - 1], frMul(points[j], basis[d]))
+                    frBases[i][d] = frSub(frBases[i][d - 1], frMul(points[j], frBases[i][d]))
                 }
-                basis[0] = frSub(.zero, frMul(points[j], basis[0]))
+                frBases[i][0] = frSub(.zero, frMul(points[j], frBases[i][0]))
             }
+        }
 
-            let scale = frMul(values[i], frInverse(denom))
+        // Montgomery batch inversion of all denominators
+        var frPfx = [Fr](repeating: Fr.one, count: n)
+        for i in 1..<n {
+            frPfx[i] = frDenoms[i - 1] == Fr.zero ? frPfx[i - 1] : frMul(frPfx[i - 1], frDenoms[i - 1])
+        }
+        let frLst = frDenoms[n - 1] == Fr.zero ? frPfx[n - 1] : frMul(frPfx[n - 1], frDenoms[n - 1])
+        var frInvR = frInverse(frLst)
+        var frDenomInvs = [Fr](repeating: Fr.zero, count: n)
+        for i in stride(from: n - 1, through: 0, by: -1) {
+            if frDenoms[i] != Fr.zero {
+                frDenomInvs[i] = frMul(frInvR, frPfx[i])
+                frInvR = frMul(frInvR, frDenoms[i])
+            }
+        }
+
+        for i in 0..<n {
+            let scale = frMul(values[i], frDenomInvs[i])
             for d in 0..<n {
-                result[d] = frAdd(result[d], frMul(scale, basis[d]))
+                result[d] = frAdd(result[d], frMul(scale, frBases[i][d]))
             }
         }
         return result
