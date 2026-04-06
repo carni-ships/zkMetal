@@ -57,11 +57,11 @@ kernel void reduce_sum_bn254(
     // Max 32 SIMD groups per threadgroup (1024 / 32)
     threadgroup Fr simd_partials[32];
 
-    // Each thread accumulates strided elements
+    // Each thread loads its tile element
     Fr acc = fr_zero();
-    uint base = tgid * tg_size;
-    for (uint i = base + tid; i < count; i += tg_size) {
-        acc = fr_add(acc, input[i]);
+    uint global_id = tgid * tg_size + tid;
+    if (global_id < count) {
+        acc = input[global_id];
     }
 
     // Phase 1: SIMD shuffle reduction within each 32-lane group
@@ -112,9 +112,9 @@ kernel void reduce_sum_babybear(
     threadgroup Bb simd_partials[32];
 
     Bb acc = bb_zero();
-    uint base = tgid * tg_size;
-    for (uint i = base + tid; i < count; i += tg_size) {
-        acc = bb_add(acc, input[i]);
+    uint global_id = tgid * tg_size + tid;
+    if (global_id < count) {
+        acc = input[global_id];
     }
 
     acc = simd_reduce_sum_bb(acc, simd_lane);
@@ -162,9 +162,9 @@ kernel void reduce_product_bn254(
     threadgroup Fr simd_partials[32];
 
     Fr acc = fr_one();
-    uint base = tgid * tg_size;
-    for (uint i = base + tid; i < count; i += tg_size) {
-        acc = fr_mul(acc, input[i]);
+    uint global_id = tgid * tg_size + tid;
+    if (global_id < count) {
+        acc = input[global_id];
     }
 
     acc = simd_reduce_prod_fr(acc, simd_lane);
@@ -221,11 +221,11 @@ kernel void reduce_min_max_u32(
 
     uint local_min = 0xFFFFFFFFu;
     uint local_max = 0u;
-    uint base = tgid * tg_size;
-    for (uint i = base + tid; i < count; i += tg_size) {
-        uint val = input[i];
-        local_min = min(local_min, val);
-        local_max = max(local_max, val);
+    uint global_id = tgid * tg_size + tid;
+    if (global_id < count) {
+        uint val = input[global_id];
+        local_min = val;
+        local_max = val;
     }
 
     MinMaxResult r = simd_reduce_minmax(local_min, local_max, simd_lane);

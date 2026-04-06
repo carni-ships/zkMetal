@@ -55,14 +55,11 @@ kernel void fr_reduce_sum(
     // Max 32 SIMD groups per threadgroup (1024 / 32)
     threadgroup Fr simd_partials[32];
 
-    // Each thread loads and accumulates strided elements for coalesced access
+    // Each thread loads its tile element (one element per thread in its threadgroup's tile)
     Fr acc = fr_zero();
     uint global_id = tgid * tg_size + tid;
-    uint grid_stride = tg_size * ((count + tg_size - 1) / tg_size);
-    // Only stride within this threadgroup's tile for multi-pass correctness
-    uint base = tgid * tg_size;
-    for (uint i = base + tid; i < count; i += tg_size) {
-        acc = fr_add(acc, input[i]);
+    if (global_id < count) {
+        acc = input[global_id];
     }
 
     // Phase 1: SIMD shuffle reduction within each 32-lane group
@@ -113,9 +110,9 @@ kernel void fr_reduce_product(
     threadgroup Fr simd_partials[32];
 
     Fr acc = fr_one();
-    uint base = tgid * tg_size;
-    for (uint i = base + tid; i < count; i += tg_size) {
-        acc = fr_mul(acc, input[i]);
+    uint global_id = tgid * tg_size + tid;
+    if (global_id < count) {
+        acc = input[global_id];
     }
 
     acc = fr_simd_reduce_prod(acc, simd_lane);
@@ -202,9 +199,9 @@ kernel void generic_reduce(
     threadgroup Fr simd_partials[32];
 
     Fr acc = generic_identity();
-    uint base = tgid * tg_size;
-    for (uint i = base + tid; i < count; i += tg_size) {
-        acc = generic_combine(acc, input[i]);
+    uint global_id = tgid * tg_size + tid;
+    if (global_id < count) {
+        acc = input[global_id];
     }
 
     acc = fr_simd_reduce_generic(acc, simd_lane);
