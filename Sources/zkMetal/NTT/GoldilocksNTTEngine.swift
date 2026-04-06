@@ -18,6 +18,7 @@ public class GoldilocksNTTEngine {
     let invButterflyFusedFunction: MTLComputePipelineState
     let scaleFunction: MTLComputePipelineState
     let bitrevInplaceFunction: MTLComputePipelineState
+    let bitrevScaleFunction: MTLComputePipelineState
     let columnFusedFunction: MTLComputePipelineState
     let rowFusedFunction: MTLComputePipelineState
     let twiddleMultiplyFunction: MTLComputePipelineState
@@ -41,6 +42,7 @@ public class GoldilocksNTTEngine {
     public static let maxFusedElements = 4096
     public static let maxFusedLogN = 12  // log2(4096)
     private var fourStepMinGlobalStages: Int { tuning.nttFourStepThreshold }
+    private var fourStepMinGlobalStagesInv: Int { max(tuning.nttFourStepThreshold - 1, 6) }
 
     private let tuning: TuningConfig
 
@@ -65,6 +67,7 @@ public class GoldilocksNTTEngine {
               let invButterflyFusedFn = library.makeFunction(name: "gl_intt_butterfly_fused"),
               let scaleFn = library.makeFunction(name: "gl_ntt_scale"),
               let bitrevInplaceFn = library.makeFunction(name: "gl_ntt_bitrev_inplace"),
+              let bitrevScaleFn = library.makeFunction(name: "gl_ntt_bitrev_scale"),
               let columnFusedFn = library.makeFunction(name: "gl_ntt_column_fused"),
               let rowFusedFn = library.makeFunction(name: "gl_ntt_row_fused"),
               let twiddleMultiplyFn = library.makeFunction(name: "gl_ntt_twiddle_multiply"),
@@ -86,6 +89,7 @@ public class GoldilocksNTTEngine {
         self.invButterflyFusedFunction = try device.makeComputePipelineState(function: invButterflyFusedFn)
         self.scaleFunction = try device.makeComputePipelineState(function: scaleFn)
         self.bitrevInplaceFunction = try device.makeComputePipelineState(function: bitrevInplaceFn)
+        self.bitrevScaleFunction = try device.makeComputePipelineState(function: bitrevScaleFn)
         self.columnFusedFunction = try device.makeComputePipelineState(function: columnFusedFn)
         self.rowFusedFunction = try device.makeComputePipelineState(function: rowFusedFn)
         self.twiddleMultiplyFunction = try device.makeComputePipelineState(function: twiddleMultiplyFn)
@@ -288,7 +292,7 @@ public class GoldilocksNTTEngine {
 
     public func intt(data: MTLBuffer, logN: Int) throws {
         let globalStages = logN - GoldilocksNTTEngine.maxFusedLogN
-        if globalStages >= fourStepMinGlobalStages {
+        if globalStages >= fourStepMinGlobalStagesInv {
             try inttFourStep(data: data, logN: logN)
             return
         }
@@ -364,26 +368,17 @@ public class GoldilocksNTTEngine {
                                    threadsPerThreadgroup: MTLSize(width: tgThreads, height: 1, depth: 1))
         }
 
-        // Step 3: Bit-reversal
+        // Step 3: Fused bit-reversal + scale by 1/n
         enc.memoryBarrier(scope: .buffers)
         var logNVal = UInt32(logN)
-        enc.setComputePipelineState(bitrevInplaceFunction)
+        enc.setComputePipelineState(bitrevScaleFunction)
         enc.setBuffer(data, offset: 0, index: 0)
         enc.setBytes(&nVal, length: 4, index: 1)
         enc.setBytes(&logNVal, length: 4, index: 2)
-        let tgBR = min(tuning.nttThreadgroupSize, Int(bitrevInplaceFunction.maxTotalThreadsPerThreadgroup))
+        enc.setBuffer(invN, offset: 0, index: 3)
+        let tgBR = min(tuning.nttThreadgroupSize, Int(bitrevScaleFunction.maxTotalThreadsPerThreadgroup))
         enc.dispatchThreads(MTLSize(width: Int(n), height: 1, depth: 1),
                              threadsPerThreadgroup: MTLSize(width: tgBR, height: 1, depth: 1))
-
-        // Step 4: Scale by 1/n
-        enc.memoryBarrier(scope: .buffers)
-        enc.setComputePipelineState(scaleFunction)
-        enc.setBuffer(data, offset: 0, index: 0)
-        enc.setBuffer(invN, offset: 0, index: 1)
-        enc.setBytes(&nVal, length: 4, index: 2)
-        let tgScale = min(tuning.nttThreadgroupSize, Int(scaleFunction.maxTotalThreadsPerThreadgroup))
-        enc.dispatchThreads(MTLSize(width: Int(n), height: 1, depth: 1),
-                                threadsPerThreadgroup: MTLSize(width: tgScale, height: 1, depth: 1))
         enc.endEncoding()
 
         cmdBuf.commit()

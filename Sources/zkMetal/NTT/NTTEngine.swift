@@ -18,6 +18,7 @@ public class NTTEngine {
     let scaleFunction: MTLComputePipelineState
     let bitrevFunction: MTLComputePipelineState
     let bitrevInplaceFunction: MTLComputePipelineState
+    let bitrevScaleFunction: MTLComputePipelineState
     let columnFusedFunction: MTLComputePipelineState
     let rowFusedFunction: MTLComputePipelineState
     let rowFusedTwiddleFunction: MTLComputePipelineState
@@ -80,6 +81,7 @@ public class NTTEngine {
               let scaleFn = library.makeFunction(name: "ntt_scale"),
               let bitrevFn = library.makeFunction(name: "ntt_bitrev"),
               let bitrevInplaceFn = library.makeFunction(name: "ntt_bitrev_inplace"),
+              let bitrevScaleFn = library.makeFunction(name: "ntt_bitrev_scale"),
               let columnFusedFn = library.makeFunction(name: "ntt_column_fused"),
               let rowFusedFn = library.makeFunction(name: "ntt_row_fused"),
               let twiddleMultiplyFn = library.makeFunction(name: "ntt_twiddle_multiply"),
@@ -116,6 +118,7 @@ public class NTTEngine {
         self.scaleFunction = try device.makeComputePipelineState(function: scaleFn)
         self.bitrevFunction = try device.makeComputePipelineState(function: bitrevFn)
         self.bitrevInplaceFunction = try device.makeComputePipelineState(function: bitrevInplaceFn)
+        self.bitrevScaleFunction = try device.makeComputePipelineState(function: bitrevScaleFn)
         self.columnFusedFunction = try device.makeComputePipelineState(function: columnFusedFn)
         self.rowFusedFunction = try device.makeComputePipelineState(function: rowFusedFn)
         self.twiddleMultiplyFunction = try device.makeComputePipelineState(function: twiddleMultiplyFn)
@@ -414,26 +417,17 @@ public class NTTEngine {
                                    threadsPerThreadgroup: MTLSize(width: tgThreads, height: 1, depth: 1))
         }
 
-        // Step 3: In-place bit-reversal permutation
+        // Step 3: Fused bit-reversal + scale by 1/n
         enc.memoryBarrier(scope: .buffers)
         var logNVal = UInt32(logN)
-        enc.setComputePipelineState(bitrevInplaceFunction)
+        enc.setComputePipelineState(bitrevScaleFunction)
         enc.setBuffer(data, offset: 0, index: 0)
         enc.setBytes(&nVal, length: 4, index: 1)
         enc.setBytes(&logNVal, length: 4, index: 2)
-        let tg0 = min(tuning.nttThreadgroupSize, Int(bitrevInplaceFunction.maxTotalThreadsPerThreadgroup))
+        enc.setBuffer(invN, offset: 0, index: 3)
+        let tg0 = min(tuning.nttThreadgroupSize, Int(bitrevScaleFunction.maxTotalThreadsPerThreadgroup))
         enc.dispatchThreads(MTLSize(width: Int(n), height: 1, depth: 1),
                             threadsPerThreadgroup: MTLSize(width: tg0, height: 1, depth: 1))
-
-        // Step 4: Scale by 1/n
-        enc.memoryBarrier(scope: .buffers)
-        enc.setComputePipelineState(scaleFunction)
-        enc.setBuffer(data, offset: 0, index: 0)
-        enc.setBuffer(invN, offset: 0, index: 1)
-        enc.setBytes(&nVal, length: 4, index: 2)
-        let tgScale = min(tuning.nttThreadgroupSize, Int(scaleFunction.maxTotalThreadsPerThreadgroup))
-        enc.dispatchThreads(MTLSize(width: Int(n), height: 1, depth: 1),
-                            threadsPerThreadgroup: MTLSize(width: tgScale, height: 1, depth: 1))
         enc.endEncoding()
 
         cmdBuf.commit()

@@ -430,6 +430,32 @@ kernel void ntt_bitrev_inplace(
     }
 }
 
+// Fused bit-reversal + scale by 1/N (saves one full memory pass in iNTT)
+kernel void ntt_bitrev_scale(
+    device Fr* data                [[buffer(0)]],
+    constant uint& n               [[buffer(1)]],
+    constant uint& log_n           [[buffer(2)]],
+    device const Fr* scale_factor  [[buffer(3)]],
+    uint gid                       [[thread_position_in_grid]]
+) {
+    if (gid >= n) return;
+    Fr s = scale_factor[0];
+    uint rev = 0;
+    uint val = gid;
+    for (uint i = 0; i < log_n; i++) {
+        rev = (rev << 1) | (val & 1);
+        val >>= 1;
+    }
+    if (gid < rev) {
+        Fr a = fr_mul(data[gid], s);
+        Fr b = fr_mul(data[rev], s);
+        data[gid] = b;
+        data[rev] = a;
+    } else if (gid == rev) {
+        data[gid] = fr_mul(data[gid], s);
+    }
+}
+
 // --- Four-step FFT kernels ---
 // Computes N-point DFT as N1×N2 matrix operations:
 //   1. N2 column DIT FFTs of size N1 (with bit-reversed loading)
