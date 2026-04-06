@@ -366,27 +366,41 @@ public class GPUFRIEngine {
         var currentBuf = evals
         var currentLog = logSize
 
+        // Find the first round that falls below CPU threshold
+        var gpuRounds = 0
+        var tmpLog = currentLog
         for i in 0..<challenges.count {
-            let n = 1 << currentLog
+            if (1 << tmpLog) < GPUFRIEngine.cpuFallbackThreshold { break }
+            gpuRounds += 1
+            tmpLog -= 1
+        }
 
-            if n < GPUFRIEngine.cpuFallbackThreshold {
-                // CPU fallback for small layers
-                currentBuf = try cpuFoldLayer(evals: currentBuf, n: n, alpha: challenges[i],
-                                               logSize: currentLog, field: field)
-            } else {
-                // Allocate or reuse ping-pong buffer
+        // Batch all GPU rounds into a single command buffer
+        if gpuRounds > 0 {
+            // Pre-allocate ping-pong buffer for largest output
+            let maxHalf = (1 << currentLog) / 2
+            let neededBytes = maxHalf * elemSize
+            _ = try ensurePingPongBuffer(bytes: neededBytes)
+            // Ensure both buffers exist at max size
+            if foldBufBytes < neededBytes {
+                throw MSMError.gpuError("Failed to allocate ping-pong buffers")
+            }
+
+            let pipeline = foldPipeline(for: field)
+            let tg = min(256, Int(pipeline.maxTotalThreadsPerThreadgroup))
+
+            guard let cmdBuf = commandQueue.makeCommandBuffer(),
+                  let enc = cmdBuf.makeComputeCommandEncoder() else {
+                throw MSMError.noCommandBuffer
+            }
+
+            for i in 0..<gpuRounds {
+                let n = 1 << currentLog
                 let half = n / 2
-                let neededBytes = half * elemSize
-                let outBuf = try ensurePingPongBuffer(bytes: neededBytes)
+                let outBuf = (i % 2 == 0) ? foldBufA! : foldBufB!
 
                 let invTwiddles = getInvTwiddles(logN: currentLog, field: field)
-                let pipeline = foldPipeline(for: field)
 
-                guard let cmdBuf = commandQueue.makeCommandBuffer() else {
-                    throw MSMError.noCommandBuffer
-                }
-
-                let enc = cmdBuf.makeComputeCommandEncoder()!
                 enc.setComputePipelineState(pipeline)
                 enc.setBuffer(currentBuf, offset: 0, index: 0)
                 enc.setBuffer(outBuf, offset: 0, index: 1)
@@ -406,20 +420,30 @@ public class GPUFRIEngine {
                 }
                 enc.setBytes(&nVal, length: 4, index: 4)
 
-                let tg = min(256, Int(pipeline.maxTotalThreadsPerThreadgroup))
                 enc.dispatchThreads(MTLSize(width: half, height: 1, depth: 1),
                                    threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
-                enc.endEncoding()
-
-                cmdBuf.commit()
-                cmdBuf.waitUntilCompleted()
-                if let error = cmdBuf.error {
-                    throw MSMError.gpuError(error.localizedDescription)
-                }
 
                 currentBuf = outBuf
+                currentLog -= 1
+
+                if i < gpuRounds - 1 {
+                    enc.memoryBarrier(scope: .buffers)
+                }
             }
 
+            enc.endEncoding()
+            cmdBuf.commit()
+            cmdBuf.waitUntilCompleted()
+            if let error = cmdBuf.error {
+                throw MSMError.gpuError(error.localizedDescription)
+            }
+        }
+
+        // CPU fallback for remaining small rounds
+        for i in gpuRounds..<challenges.count {
+            let n = 1 << currentLog
+            currentBuf = try cpuFoldLayer(evals: currentBuf, n: n, alpha: challenges[i],
+                                           logSize: currentLog, field: field)
             currentLog -= 1
         }
 

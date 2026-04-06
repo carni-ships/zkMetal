@@ -222,21 +222,30 @@ public class GPUParallelReduceEngine {
         var currentCount = elementCount
         var intermediateBuffers: [MTLBuffer] = []
 
+        // Pre-allocate all intermediate buffers
+        var tempCount = currentCount
+        while tempCount > 1 {
+            let numGroups = (tempCount + threadgroupSize - 1) / threadgroupSize
+            guard let outputBuf = pool.allocate(size: numGroups * elementStride) else {
+                for buf in intermediateBuffers { pool.release(buffer: buf) }
+                return Fr.zero
+            }
+            intermediateBuffers.append(outputBuf)
+            tempCount = numGroups
+        }
+
+        // Single command buffer for all reduction passes
+        guard let cmdBuf = commandQueue.makeCommandBuffer(),
+              let encoder = cmdBuf.makeComputeCommandEncoder() else {
+            for buf in intermediateBuffers { pool.release(buffer: buf) }
+            return Fr.zero
+        }
+
+        let tgSize = MTLSize(width: threadgroupSize, height: 1, depth: 1)
+        var passIdx = 0
         while currentCount > 1 {
             let numGroups = (currentCount + threadgroupSize - 1) / threadgroupSize
-            let outputSize = numGroups * elementStride
-
-            guard let outputBuf = pool.allocate(size: outputSize) else {
-                for buf in intermediateBuffers { pool.release(buffer: buf) }
-                return Fr.zero
-            }
-
-            guard let cmdBuf = commandQueue.makeCommandBuffer(),
-                  let encoder = cmdBuf.makeComputeCommandEncoder() else {
-                pool.release(buffer: outputBuf)
-                for buf in intermediateBuffers { pool.release(buffer: buf) }
-                return Fr.zero
-            }
+            let outputBuf = intermediateBuffers[passIdx]
 
             encoder.setComputePipelineState(pipeline)
             encoder.setBuffer(currentBuf, offset: 0, index: 0)
@@ -244,24 +253,27 @@ public class GPUParallelReduceEngine {
             var count32 = UInt32(currentCount)
             encoder.setBytes(&count32, length: 4, index: 2)
 
-            let tgSize = MTLSize(width: threadgroupSize, height: 1, depth: 1)
             encoder.dispatchThreadgroups(
                 MTLSize(width: numGroups, height: 1, depth: 1),
                 threadsPerThreadgroup: tgSize
             )
-            encoder.endEncoding()
-            cmdBuf.commit()
-            cmdBuf.waitUntilCompleted()
 
-            if cmdBuf.error != nil {
-                for buf in intermediateBuffers { pool.release(buffer: buf) }
-                pool.release(buffer: outputBuf)
-                return Fr.zero
-            }
-
-            intermediateBuffers.append(outputBuf)
             currentBuf = outputBuf
             currentCount = numGroups
+            passIdx += 1
+
+            if currentCount > 1 {
+                encoder.memoryBarrier(scope: .buffers)
+            }
+        }
+
+        encoder.endEncoding()
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+
+        if cmdBuf.error != nil {
+            for buf in intermediateBuffers { pool.release(buffer: buf) }
+            return Fr.zero
         }
 
         // Read back the single result

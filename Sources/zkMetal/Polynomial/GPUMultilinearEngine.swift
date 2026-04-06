@@ -131,22 +131,23 @@ public class GPUMultilinearEngine {
             return evaluateCPU(evals: evals, logSize: logSize, point: point)
         }
 
-        // GPU path: iteratively bind each variable
+        // GPU path: single command buffer, ping-pong buffers across all rounds
+        let maxHalf = 1 << (logSize - 1)
+        guard let bufA = device.makeBuffer(length: maxHalf * stride, options: .storageModeShared),
+              let bufB = device.makeBuffer(length: maxHalf * stride, options: .storageModeShared),
+              let cmdBuf = commandQueue.makeCommandBuffer(),
+              let enc = cmdBuf.makeComputeCommandEncoder() else {
+            return evaluateCPU(evals: evals, logSize: logSize, point: point)
+        }
+
         var currentBuf = evals
         var currentLog = logSize
-        var needsCopy = true  // don't overwrite caller's buffer on first round
+        let tgSize = min(256, Int(bindBN254.maxTotalThreadsPerThreadgroup))
 
         for round in 0..<logSize {
             let halfN = 1 << (currentLog - 1)
-            let outBytes = halfN * stride
+            let outBuf = (round % 2 == 0) ? bufA : bufB
 
-            guard let outBuf = device.makeBuffer(length: outBytes, options: .storageModeShared),
-                  let cmdBuf = commandQueue.makeCommandBuffer() else {
-                // Fall back to CPU on any GPU failure
-                return evaluateCPU(evals: evals, logSize: logSize, point: point)
-            }
-
-            let enc = cmdBuf.makeComputeCommandEncoder()!
             enc.setComputePipelineState(bindBN254)
             enc.setBuffer(currentBuf, offset: 0, index: 0)
             enc.setBuffer(outBuf, offset: 0, index: 1)
@@ -155,18 +156,20 @@ public class GPUMultilinearEngine {
             var halfNVal = UInt32(halfN)
             enc.setBytes(&halfNVal, length: 4, index: 3)
 
-            let tgSize = min(256, Int(bindBN254.maxTotalThreadsPerThreadgroup))
             enc.dispatchThreads(MTLSize(width: halfN, height: 1, depth: 1),
                                threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
-            enc.endEncoding()
-
-            cmdBuf.commit()
-            cmdBuf.waitUntilCompleted()
 
             currentBuf = outBuf
             currentLog -= 1
-            needsCopy = false
+
+            if round < logSize - 1 {
+                enc.memoryBarrier(scope: .buffers)
+            }
         }
+
+        enc.endEncoding()
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
 
         return currentBuf.contents().bindMemory(to: Fr.self, capacity: 1)[0]
     }
