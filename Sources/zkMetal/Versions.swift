@@ -199,6 +199,14 @@ public enum Versions {
     public static let gpuBabyBearSTARKProver = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let gpuGoldilocksSTARKProver = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let gpuSpartanProver = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuzkVM         = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuPoseidon2Chain = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuMerkleBatchProof = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuFieldExtension = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuCircuitOptimizer = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuAIRConstraintCompiler = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuPCSFactory   = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuEVMPrecompile = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
 
     /// Print all primitive versions
     public static func printAll() {
@@ -321,6 +329,14 @@ public enum Versions {
             ("GPU BB STARK Pv",  gpuBabyBearSTARKProver),
             ("GPU GL STARK Pv",  gpuGoldilocksSTARKProver),
             ("GPU Spartan Pv",   gpuSpartanProver),
+            ("GPU zkVM",         gpuzkVM),
+            ("GPU P2 Chain",     gpuPoseidon2Chain),
+            ("GPU Merkle Batch", gpuMerkleBatchProof),
+            ("GPU Field Ext",    gpuFieldExtension),
+            ("GPU Circuit Opt",  gpuCircuitOptimizer),
+            ("GPU AIR Compile",  gpuAIRConstraintCompiler),
+            ("GPU PCS Factory",  gpuPCSFactory),
+            ("GPU EVM Precomp",  gpuEVMPrecompile),
         ]
         print("=== zkMetal Primitive Versions ===")
         for (name, v) in entries {
