@@ -808,6 +808,26 @@ public class GoldilocksSTARKVerifier {
 
             let omega = glRootOfUnity(logN: currentLogN)
 
+            // Precompute omega^qi for all queries and batch-invert
+            let glQc = round.queryOpenings.count
+            var glOmVals = [Gl](repeating: Gl.zero, count: glQc)
+            for qIdx in 0..<glQc {
+                glOmVals[qIdx] = glPow(omega, UInt64(proof.queryIndices[qIdx] % half))
+            }
+            var glOmPrefix = [Gl](repeating: Gl.one, count: glQc)
+            for i in 1..<glQc {
+                glOmPrefix[i] = glOmVals[i - 1].v == 0 ? glOmPrefix[i - 1] : glMul(glOmPrefix[i - 1], glOmVals[i - 1])
+            }
+            let glOmLast = glOmVals[glQc - 1].v == 0 ? glOmPrefix[glQc - 1] : glMul(glOmPrefix[glQc - 1], glOmVals[glQc - 1])
+            var glOmInv = glInverse(glOmLast)
+            var glOmegaInvs = [Gl](repeating: Gl.zero, count: glQc)
+            for i in stride(from: glQc - 1, through: 0, by: -1) {
+                if glOmVals[i].v != 0 {
+                    glOmegaInvs[i] = glMul(glOmInv, glOmPrefix[i])
+                    glOmInv = glMul(glOmInv, glOmVals[i])
+                }
+            }
+
             // Verify each query opening in this round
             for (qIdx, opening) in round.queryOpenings.enumerated() {
                 let qi = proof.queryIndices[qIdx] % half
@@ -828,9 +848,8 @@ public class GoldilocksSTARKVerifier {
                 // Verify folding consistency
                 let f0 = opening.value
                 let f1 = opening.siblingValue
-                let omegaI = glPow(omega, UInt64(qi))
                 let even = glMul(glAdd(f0, f1), inv2)
-                let odd = glMul(glSub(f0, f1), glMul(inv2, glInverse(omegaI)))
+                let odd = glMul(glSub(f0, f1), glMul(inv2, glOmegaInvs[qIdx]))
                 let _ = glAdd(even, glMul(beta, odd))
 
                 // The folded value should match the next round's evaluation at qi.

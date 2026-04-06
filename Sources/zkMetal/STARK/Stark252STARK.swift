@@ -887,6 +887,27 @@ public class Stark252STARKVerifier {
 
             let omega = stark252RootOfUnity(logN: currentLogN)
 
+            // Precompute omega^qi for all queries and batch-invert
+            let qc = round.queryOpenings.count
+            var friOmegaVals = [Stark252](repeating: Stark252.zero, count: qc)
+            for qIdx in 0..<qc {
+                let qi = proof.queryIndices[qIdx] % half
+                friOmegaVals[qIdx] = stark252Pow(omega, UInt64(qi))
+            }
+            var friOmPrefix = [Stark252](repeating: Stark252.one, count: qc)
+            for i in 1..<qc {
+                friOmPrefix[i] = friOmegaVals[i - 1].isZero ? friOmPrefix[i - 1] : stark252Mul(friOmPrefix[i - 1], friOmegaVals[i - 1])
+            }
+            let friOmLast = friOmegaVals[qc - 1].isZero ? friOmPrefix[qc - 1] : stark252Mul(friOmPrefix[qc - 1], friOmegaVals[qc - 1])
+            var friOmInv = stark252Inverse(friOmLast)
+            var friOmegaInvs = [Stark252](repeating: Stark252.zero, count: qc)
+            for i in stride(from: qc - 1, through: 0, by: -1) {
+                if !friOmegaVals[i].isZero {
+                    friOmegaInvs[i] = stark252Mul(friOmInv, friOmPrefix[i])
+                    friOmInv = stark252Mul(friOmInv, friOmegaVals[i])
+                }
+            }
+
             // Verify each query opening in this round
             for (qIdx, opening) in round.queryOpenings.enumerated() {
                 let qi = proof.queryIndices[qIdx] % half
@@ -907,9 +928,8 @@ public class Stark252STARKVerifier {
                 // Verify folding consistency
                 let f0 = opening.value
                 let f1 = opening.siblingValue
-                let omegaI = stark252Pow(omega, UInt64(qi))
                 let even = stark252Mul(stark252Add(f0, f1), inv2)
-                let odd = stark252Mul(stark252Sub(f0, f1), stark252Mul(inv2, stark252Inverse(omegaI)))
+                let odd = stark252Mul(stark252Sub(f0, f1), stark252Mul(inv2, friOmegaInvs[qIdx]))
                 let _ = stark252Add(even, stark252Mul(beta, odd))
 
                 // Cross-round consistency is enforced via the Merkle commitments.

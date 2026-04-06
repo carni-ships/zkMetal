@@ -688,12 +688,29 @@ public final class GPUPlonkWireAssignEngine {
         // Divide by vanishing polynomial on coset: Z_H(k * omega^i) = (k*omega^i)^n - 1
         let omega = frRootOfUnity(logN: Int(log2(Double(n))))
         var cosetPoint = cosetGen
+        var zhVals = [Fr](repeating: Fr.zero, count: n)
         for i in 0..<n {
-            let zh = vanishingPolyEval(point: cosetPoint, domainSize: n)
-            if !zh.isZero {
-                quotient[i] = frMul(quotient[i], frInverse(zh))
-            }
+            zhVals[i] = vanishingPolyEval(point: cosetPoint, domainSize: n)
             cosetPoint = frMul(cosetPoint, omega)
+        }
+        // Montgomery batch inversion of vanishing poly values
+        var zhPfx = [Fr](repeating: Fr.one, count: n)
+        for i in 1..<n {
+            zhPfx[i] = zhVals[i - 1] == Fr.zero ? zhPfx[i - 1] : frMul(zhPfx[i - 1], zhVals[i - 1])
+        }
+        let zhL = zhVals[n - 1] == Fr.zero ? zhPfx[n - 1] : frMul(zhPfx[n - 1], zhVals[n - 1])
+        var zhI = frInverse(zhL)
+        var zhInvs = [Fr](repeating: Fr.zero, count: n)
+        for i in stride(from: n - 1, through: 0, by: -1) {
+            if zhVals[i] != Fr.zero {
+                zhInvs[i] = frMul(zhI, zhPfx[i])
+                zhI = frMul(zhI, zhVals[i])
+            }
+        }
+        for i in 0..<n {
+            if zhVals[i] != Fr.zero {
+                quotient[i] = frMul(quotient[i], zhInvs[i])
+            }
         }
 
         return quotient
