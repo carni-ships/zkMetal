@@ -267,13 +267,27 @@ public final class GPUSTARKDeepCompositionEngine {
                 "\(label): columnEvals.count (\(m)) != domainPoints.count (\(domainPoints.count))")
         }
 
-        var quotientEvals = [Fr](repeating: Fr.zero, count: m)
+        // Compute denominators and batch-invert (Montgomery's trick)
+        var denoms = [Fr](repeating: Fr.zero, count: m)
+        for i in 0..<m { denoms[i] = frSub(domainPoints[i], oodPoint) }
+        var denomPrefix = [Fr](repeating: Fr.one, count: m)
+        for i in 1..<m {
+            denomPrefix[i] = denoms[i - 1] == Fr.zero ? denomPrefix[i - 1] : frMul(denomPrefix[i - 1], denoms[i - 1])
+        }
+        let denomLast = denoms[m - 1] == Fr.zero ? denomPrefix[m - 1] : frMul(denomPrefix[m - 1], denoms[m - 1])
+        var denomInvRunning = frInverse(denomLast)
+        var denomInvs = [Fr](repeating: Fr.zero, count: m)
+        for i in stride(from: m - 1, through: 0, by: -1) {
+            if denoms[i] != Fr.zero {
+                denomInvs[i] = frMul(denomInvRunning, denomPrefix[i])
+                denomInvRunning = frMul(denomInvRunning, denoms[i])
+            }
+        }
 
+        var quotientEvals = [Fr](repeating: Fr.zero, count: m)
         for i in 0..<m {
             let numerator = frSub(columnEvals[i], oodEval)
-            let denominator = frSub(domainPoints[i], oodPoint)
-            // denominator should never be zero since zeta is outside the evaluation domain
-            quotientEvals[i] = frMul(numerator, frInverse(denominator))
+            quotientEvals[i] = frMul(numerator, denomInvs[i])
         }
 
         return DEEPQuotient(label: label, evaluations: quotientEvals)
