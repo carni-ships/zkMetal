@@ -1247,16 +1247,13 @@ private func testIPA() {
             for i in 0..<n { a.append(frFromInt(UInt64(i + 1))); bv.append(frFromInt(UInt64(n - i))) }
             let v = IPAEngine.innerProduct(a, bv)
             let C = try engine.commit(a)
-            let vQ = pointScalarMul(pointFromAffine(Q), v)
-            let Cbound = pointAdd(C, vQ)
 
             let proof = try engine.createProof(a: a, b: bv)
-            let valid = engine.verify(commitment: Cbound, b: bv, innerProductValue: v, proof: proof)
+            let valid = engine.verify(commitment: C, b: bv, innerProductValue: v, proof: proof)
             check("IPA prove/verify n=\(n)", valid)
 
             let wrongV = frFromInt(999)
-            let CboundWrong = pointAdd(C, pointScalarMul(pointFromAffine(Q), wrongV))
-            let rejected = !engine.verify(commitment: CboundWrong, b: bv, innerProductValue: wrongV, proof: proof)
+            let rejected = !engine.verify(commitment: C, b: bv, innerProductValue: wrongV, proof: proof)
             check("IPA reject wrong v n=\(n)", rejected)
         } catch {
             print("  [FAIL] IPA n=\(n) error: \(error)")

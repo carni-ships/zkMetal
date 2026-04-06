@@ -161,12 +161,9 @@ public final class IPAUnifiedPCS: PCSBatchProtocol {
         let n = params.generators.count
         let b = evaluationBasis(point: point, size: n)
 
-        // Reconstruct bound commitment: C + v*Q
-        let qProj = pointFromAffine(params.Q)
-        let vQ = cPointScalarMul(qProj, evaluation)
-        let Cbound = pointAdd(commitment, vQ)
-
-        return engine.verify(commitment: Cbound, b: b,
+        // Pass raw commitment — engine.verify computes Cbound = C + v*Q internally
+        // to ensure identical projective representation for transcript consistency.
+        return engine.verify(commitment: commitment, b: b,
                              innerProductValue: evaluation, proof: opening)
     }
 

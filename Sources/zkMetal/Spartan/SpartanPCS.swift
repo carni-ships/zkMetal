@@ -151,12 +151,8 @@ public struct IPAPCSAdapter: SpartanPCSBackend {
 
         let b = cEqPolyExpand(point: point)
 
-        // Reconstruct bound commitment: C + v*Q
-        let qProj = pointFromAffine(engine.Q)
-        let vQ = cPointScalarMul(qProj, value)
-        let Cbound = pointAdd(commitment.point, vQ)
-
-        return engine.verify(commitment: Cbound, b: b,
+        // Pass raw commitment — engine.verify computes Cbound = C + v*Q internally
+        return engine.verify(commitment: commitment.point, b: b,
                              innerProductValue: value, proof: proof.inner)
     }
 

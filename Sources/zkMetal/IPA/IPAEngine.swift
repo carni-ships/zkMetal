@@ -516,10 +516,11 @@ public class IPAEngine {
     }
 
     /// Verify an IPA proof.
-    /// Given commitment C (= MSM(G, a) + v*Q), evaluation vector b, inner product value v,
-    /// and proof (L[], R[], final_a), checks:
-    ///   1. Reconstruct folded commitment using challenges
-    ///   2. Check: C_final == final_a * G_final + (final_a * b_final) * Q
+    /// Given raw commitment C (= MSM(G, a), WITHOUT v*Q), evaluation vector b,
+    /// inner product value v, and proof (L[], R[], final_a), checks:
+    ///   1. Reconstruct bound commitment Cbound = C + v*Q (same as prover)
+    ///   2. Reconstruct folded commitment using challenges
+    ///   3. Check: C_final == final_a * G_final + (final_a * b_final) * Q
     public func verify(commitment C: PointProjective, b inputB: [Fr],
                        innerProductValue v: Fr, proof: IPAProof) -> Bool {
         let n = generators.count
@@ -531,9 +532,14 @@ public class IPAEngine {
 
         let qProj = pointFromAffine(Q)
 
+        // Compute bound commitment exactly as the prover does, ensuring
+        // identical projective representation for transcript consistency.
+        let vQ = cPointScalarMul(qProj, v)
+        let Cbound = pointAdd(C, vQ)
+
         // Reconstruct challenges from transcript
         var transcript = [UInt8]()
-        appendPoint(&transcript, C)
+        appendPoint(&transcript, Cbound)
         appendFr(&transcript, v)
 
         var challenges = [Fr]()
@@ -558,8 +564,8 @@ public class IPAEngine {
             }
         }
 
-        // Fold commitment: C' = C + sum(x_i^2 * L_i + x_i^(-2) * R_i)
-        var Cprime = C
+        // Fold commitment: C' = Cbound + sum(x_i^2 * L_i + x_i^(-2) * R_i)
+        var Cprime = Cbound
         for round in 0..<logN {
             let x = challenges[round]
             let x2 = frMul(x, x)

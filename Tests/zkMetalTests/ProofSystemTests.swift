@@ -15,12 +15,10 @@ func runProofSystemTests() {
             for i in 0..<n { a.append(frFromInt(UInt64(i + 1))); bv.append(frFromInt(UInt64(n - i))) }
             let v = IPAEngine.innerProduct(a, bv)
             let C = try engine.commit(a)
-            let Cbound = pointAdd(C, pointScalarMul(pointFromAffine(Q), v))
             let proof = try engine.createProof(a: a, b: bv)
-            expect(engine.verify(commitment: Cbound, b: bv, innerProductValue: v, proof: proof), "IPA n=\(n)")
+            expect(engine.verify(commitment: C, b: bv, innerProductValue: v, proof: proof), "IPA n=\(n)")
             let wrongV = frFromInt(999)
-            let Cwrong = pointAdd(C, pointScalarMul(pointFromAffine(Q), wrongV))
-            expect(!engine.verify(commitment: Cwrong, b: bv, innerProductValue: wrongV, proof: proof), "IPA reject n=\(n)")
+            expect(!engine.verify(commitment: C, b: bv, innerProductValue: wrongV, proof: proof), "IPA reject n=\(n)")
         } catch { expect(false, "IPA n=\(n) error: \(error)") }
     }
 

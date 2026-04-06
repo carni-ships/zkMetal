@@ -370,8 +370,6 @@ public class PCSComparisonEngine {
 
             let v = IPAEngine.innerProduct(a, b)
             let C = try engine.commit(a)
-            let vQ = cPointScalarMul(pointFromAffine(Q), v)
-            let Cbound = pointAdd(C, vQ)
 
             // Warmup
             let _ = try engine.createProof(a: a, b: b)
@@ -387,7 +385,7 @@ public class PCSComparisonEngine {
             // Verify
             let proof = try engine.createProof(a: a, b: b)
             let verifyMs = medianTime(iterations) {
-                let _ = engine.verify(commitment: Cbound, b: b,
+                let _ = engine.verify(commitment: C, b: b,
                                       innerProductValue: v, proof: proof)
             }
 

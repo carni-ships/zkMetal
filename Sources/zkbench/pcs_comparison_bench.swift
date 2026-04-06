@@ -139,8 +139,6 @@ private func benchIPA(logN: Int, rng: inout SimpleRNG) -> PCSResult? {
 
         let v = IPAEngine.innerProduct(a, b)
         let C = try engine.commit(a)
-        let vQ = cPointScalarMul(pointFromAffine(Q), v)
-        let Cbound = pointAdd(C, vQ)
 
         // Warmup
         let _ = try engine.createProof(a: a, b: b)
@@ -166,7 +164,7 @@ private func benchIPA(logN: Int, rng: inout SimpleRNG) -> PCSResult? {
         var verifyTimes = [Double]()
         for _ in 0..<5 {
             let t = CFAbsoluteTimeGetCurrent()
-            let _ = engine.verify(commitment: Cbound, b: b, innerProductValue: v, proof: proof)
+            let _ = engine.verify(commitment: C, b: b, innerProductValue: v, proof: proof)
             verifyTimes.append((CFAbsoluteTimeGetCurrent() - t) * 1000)
         }
 

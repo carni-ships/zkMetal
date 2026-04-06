@@ -51,8 +51,6 @@ public func runIPABench() {
 
             let v = IPAEngine.innerProduct(a, b)
             let C = try engine.commit(a)
-            let vQ = cPointScalarMul(pointFromAffine(Q), v)
-            let Cbound = pointAdd(C, vQ)
 
             let t0 = CFAbsoluteTimeGetCurrent()
             let proof = try engine.createProof(a: a, b: b)
@@ -60,15 +58,14 @@ public func runIPABench() {
             fputs("  Prove: \(String(format: "%.1f", proveTime)) ms (\(proof.L.count) rounds)\n", stderr)
 
             let t1 = CFAbsoluteTimeGetCurrent()
-            let valid = engine.verify(commitment: Cbound, b: b, innerProductValue: v, proof: proof)
+            let valid = engine.verify(commitment: C, b: b, innerProductValue: v, proof: proof)
             let verifyTime = (CFAbsoluteTimeGetCurrent() - t1) * 1000
             fputs("  Verify: \(String(format: "%.1f", verifyTime)) ms — \(valid ? "PASS" : "FAIL")\n", stderr)
 
             // Wrong value test
             let wrongV = frFromInt(999)
-            let CboundWrong = pointAdd(C, cPointScalarMul(pointFromAffine(Q), wrongV))
             engine.profileIPA = false  // don't profile wrong-value check
-            let rejected = !engine.verify(commitment: CboundWrong, b: b, innerProductValue: wrongV, proof: proof)
+            let rejected = !engine.verify(commitment: C, b: b, innerProductValue: wrongV, proof: proof)
             fputs("  Reject wrong v: \(rejected ? "PASS" : "FAIL")\n", stderr)
 
         } catch {
