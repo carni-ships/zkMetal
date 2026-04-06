@@ -357,26 +357,29 @@ public final class GPUSTARKTraceLDEEngine {
             omegaMpowers[i] = w
         }
 
-        // Vanishing poly Z_H(x_i) = (g * omega_M^i)^N - 1 = g^N * (omega_M^i)^N - 1
-        // Since omega_M^(m) = 1 and m = blowup*n, (omega_M^i)^N = omega_M^(i*N)
+        // Vanishing poly Z_H(x_i) = (g * omega_M^i)^N - 1 = g^N * (omega_M^(i*N)) - 1
+        // omega_M^N is a (m/N)-th root of unity; chain multiply for efficiency
+        let omegaMN = frPow(omegaM, UInt64(n))
         var vanishing = [Fr](repeating: Fr.zero, count: m)
+        var omegaMNpow = Fr.one
         for i in 0..<m {
-            // (omega_M^i)^N
-            let idx = (i * n) % m
-            let wN = idx == 0 ? Fr.one : {
-                // Compute omega_M^(idx) via repeated squaring
-                var result = Fr.one
-                var base = omegaM
-                var exp = idx
-                while exp > 0 {
-                    if exp & 1 == 1 { result = frMul(result, base) }
-                    base = frMul(base, base)
-                    exp >>= 1
-                }
-                return result
-            }()
-            let zVal = frSub(frMul(gN, wN), Fr.one)
-            vanishing[i] = zVal
+            vanishing[i] = frSub(frMul(gN, omegaMNpow), Fr.one)
+            omegaMNpow = frMul(omegaMNpow, omegaMN)
+        }
+
+        // Batch-invert vanishing poly: 3(m-1) muls + 1 inverse
+        var vanishingInv = [Fr](repeating: Fr.zero, count: m)
+        var vPrefix = [Fr](repeating: Fr.one, count: m)
+        for i in 1..<m {
+            vPrefix[i] = vanishing[i - 1] == Fr.zero ? vPrefix[i - 1] : frMul(vPrefix[i - 1], vanishing[i - 1])
+        }
+        let vLast = vanishing[m - 1] == Fr.zero ? vPrefix[m - 1] : frMul(vPrefix[m - 1], vanishing[m - 1])
+        var vInv = frInverse(vLast)
+        for i in stride(from: m - 1, through: 0, by: -1) {
+            if vanishing[i] != Fr.zero {
+                vanishingInv[i] = frMul(vInv, vPrefix[i])
+                vInv = frMul(vInv, vanishing[i])
+            }
         }
 
         // Evaluate constraints at each LDE point and divide by vanishing poly
@@ -406,8 +409,7 @@ public final class GPUSTARKTraceLDEEngine {
             }
 
             // Divide by Z_H(x_i)
-            let zInv = frInverse(vanishing[i])
-            composition[i] = frMul(mixed, zInv)
+            composition[i] = frMul(mixed, vanishingInv[i])
         }
 
         // Build Merkle commitment for composition polynomial
@@ -467,12 +469,27 @@ public final class GPUSTARKTraceLDEEngine {
             }
 
             // B(x_i) = (trace_col(x_i) - val) / (x_i - omega_N^row)
+            // Batch-invert denominators
+            var bcDenoms = [Fr](repeating: Fr.zero, count: m)
+            for i in 0..<m { bcDenoms[i] = frSub(domainPoints[i], omegaRow) }
+            var bcPrefix = [Fr](repeating: Fr.one, count: m)
+            for i in 1..<m {
+                bcPrefix[i] = bcDenoms[i - 1] == Fr.zero ? bcPrefix[i - 1] : frMul(bcPrefix[i - 1], bcDenoms[i - 1])
+            }
+            let bcLast = bcDenoms[m - 1] == Fr.zero ? bcPrefix[m - 1] : frMul(bcPrefix[m - 1], bcDenoms[m - 1])
+            var bcInvRunning = frInverse(bcLast)
+            var bcDenomInvs = [Fr](repeating: Fr.zero, count: m)
+            for i in stride(from: m - 1, through: 0, by: -1) {
+                if bcDenoms[i] != Fr.zero {
+                    bcDenomInvs[i] = frMul(bcInvRunning, bcPrefix[i])
+                    bcInvRunning = frMul(bcInvRunning, bcDenoms[i])
+                }
+            }
             var quotient = [Fr](repeating: Fr.zero, count: m)
             for i in 0..<m {
                 let traceVal = ldeResult.ldeColumns[bc.column][i]
                 let numerator = frSub(traceVal, bc.value)
-                let denominator = frSub(domainPoints[i], omegaRow)
-                quotient[i] = frMul(numerator, frInverse(denominator))
+                quotient[i] = frMul(numerator, bcDenomInvs[i])
             }
             quotients.append(quotient)
         }
