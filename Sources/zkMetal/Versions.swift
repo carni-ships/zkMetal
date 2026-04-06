@@ -76,6 +76,7 @@ public enum Versions {
     public static let ipa            = PrimitiveVersion(version: "1.1.0", updated: "2026-04-03")
     public static let zeromorph      = PrimitiveVersion(version: "2.0.0", updated: "2026-04-05")
     public static let pedersenCommit = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuVectorCommit = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
 
     // --- GKR ---
     public static let gkr            = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
@@ -115,6 +116,7 @@ public enum Versions {
     public static let varuna         = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let spartan           = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let multilinearPoly   = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuMultilinear    = PrimitiveVersion(version: "2.0.0", updated: "2026-04-05")
     public static let hyraxPCS          = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let tensorCompressor  = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let joltVM            = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
@@ -167,6 +169,12 @@ public enum Versions {
     public static let gpuMatrixTranspose = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let gpuPolyComposition = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let gpuTraceGen      = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuPolyArith     = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuBatchPCSVerify = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuSparsePoly    = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuPermutation   = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuRangeProof    = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuBatchTranscript = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
 
     /// Print all primitive versions
     public static func printAll() {
@@ -211,6 +219,7 @@ public enum Versions {
             ("KZG",               kzg),
             ("IPA",               ipa),
             ("Zeromorph",         zeromorph),
+            ("GPU Vec Commit",   gpuVectorCommit),
             ("ECDSA",             ecdsa),
             ("Radix Sort",        radixSort),
             ("Verkle Tree",       verkle),
@@ -256,6 +265,13 @@ public enum Versions {
             ("GPU Transpose",    gpuMatrixTranspose),
             ("GPU Poly Compose", gpuPolyComposition),
             ("GPU Trace Gen",    gpuTraceGen),
+            ("GPU Poly Arith",   gpuPolyArith),
+            ("GPU Batch PCS",    gpuBatchPCSVerify),
+            ("GPU Multilinear",  gpuMultilinear),
+            ("GPU Sparse Poly",  gpuSparsePoly),
+            ("GPU Permutation",  gpuPermutation),
+            ("GPU Range Proof",  gpuRangeProof),
+            ("GPU Batch Txn",    gpuBatchTranscript),
         ]
         print("=== zkMetal Primitive Versions ===")
         for (name, v) in entries {

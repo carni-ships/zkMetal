@@ -123,6 +123,12 @@ runGPUMatrixTransposeTests()
 runGPUPlookupTests()
 runGPUTraceGeneratorTests()
 runGPUCosetNTTEngineTests()
+runGPUPolyArithTests()
+runGPUVectorCommitTests()
+runGPUBatchPCSVerifierTests()
+runGPUPermutationEngineTests()
+runGPUSparsePolyEngineTests()
+runGPURangeProofTests()
 
 let elapsed = CFAbsoluteTimeGetCurrent() - t0
 print(String(format: "\nCompleted in %.1fs", elapsed))

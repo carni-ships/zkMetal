@@ -231,6 +231,8 @@ if cmd == "calibrate" {
     runCircleFRIBench()
 } else if cmd == "transcript" || cmd == "ts" {
     runTranscriptBench()
+} else if cmd == "batch-transcript" || cmd == "bts" {
+    runBatchTranscriptBench()
 } else if cmd == "serial" || cmd == "serialize" {
     runSerializationBench()
 } else if cmd == "pcs" || cmd == "pcs-compare" || cmd == "pcs-comparison" {
@@ -336,6 +338,7 @@ if cmd == "calibrate" {
     runCircleBench()
     runCircleFRIBench()
     runTranscriptBench()
+    runBatchTranscriptBench()
     runBasefoldBench()
     runGKRBench()
     runPlonkBench()

@@ -100,6 +100,85 @@ kernel void mle_tensor_product_bn254(
 }
 
 
+// --- MLE Partial Evaluate (fix arbitrary variable) ---
+// Given 2^n evaluations, fix variable at position `var_index` to value `r`:
+//   For each output index, compute the pair of indices that differ only in bit `var_index`,
+//   then interpolate: out[j] = lo + r * (hi - lo)
+// where lo = evals[j with bit var_index=0], hi = evals[j with bit var_index=1].
+//
+// The variable index uses MSB=0 convention: variable i corresponds to bit (n-1-i).
+// stride_bit = n - 1 - var_index  (the actual bit position in the index)
+// block_size = 1 << stride_bit
+// For output index gid:
+//   block = gid >> stride_bit
+//   offset = gid & (block_size - 1)
+//   lo_idx = (block * 2 * block_size) + offset
+//   hi_idx = lo_idx + block_size
+kernel void mle_partial_eval_bn254(
+    device const Fr* evals          [[buffer(0)]],
+    device Fr* out                  [[buffer(1)]],
+    constant Fr* challenge          [[buffer(2)]],
+    constant uint& half_n           [[buffer(3)]],
+    constant uint& stride_bit       [[buffer(4)]],
+    uint gid                        [[thread_position_in_grid]]
+) {
+    if (gid >= half_n) return;
+
+    Fr r = challenge[0];
+    uint block_size = 1u << stride_bit;
+    uint block = gid >> stride_bit;
+    uint offset = gid & (block_size - 1u);
+    uint lo_idx = (block * 2u * block_size) + offset;
+    uint hi_idx = lo_idx + block_size;
+
+    Fr lo = evals[lo_idx];
+    Fr hi = evals[hi_idx];
+    Fr diff = fr_sub(hi, lo);
+    out[gid] = fr_add(lo, fr_mul(r, diff));
+}
+
+// --- MLE Batch Inner Product ---
+// Given evaluation table `evals` (2^n elements) and eq polynomial `eq` (2^n elements),
+// compute their inner product: sum_i evals[i] * eq[i].
+// Uses threadgroup reduction. Each threadgroup produces a partial sum.
+// A second pass (or CPU) reduces the partial sums.
+kernel void mle_inner_product_bn254(
+    device const Fr* evals          [[buffer(0)]],
+    device const Fr* eq             [[buffer(1)]],
+    device Fr* partials             [[buffer(2)]],
+    constant uint& count            [[buffer(3)]],
+    uint gid                        [[thread_position_in_grid]],
+    uint lid                        [[thread_position_in_threadgroup]],
+    uint group_id                   [[threadgroup_position_in_grid]],
+    uint tg_size                    [[threads_per_threadgroup]]
+) {
+    // Each thread computes one multiply, then reduce within threadgroup
+    threadgroup Fr shared_mem[256];
+
+    Fr val;
+    if (gid < count) {
+        val = fr_mul(evals[gid], eq[gid]);
+    } else {
+        val = fr_zero();
+    }
+    shared_mem[lid] = val;
+
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Tree reduction within threadgroup
+    for (uint s = tg_size / 2; s > 0; s >>= 1) {
+        if (lid < s) {
+            shared_mem[lid] = fr_add(shared_mem[lid], shared_mem[lid + s]);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    if (lid == 0) {
+        partials[group_id] = shared_mem[0];
+    }
+}
+
+
 // ============================================================================
 // BabyBear field (single uint32, p = 0x78000001)
 // ============================================================================

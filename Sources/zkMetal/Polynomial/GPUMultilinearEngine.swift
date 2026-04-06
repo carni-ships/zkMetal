@@ -20,6 +20,8 @@ public class GPUMultilinearEngine {
     private let bindBN254: MTLComputePipelineState
     private let eqBN254: MTLComputePipelineState
     private let tensorBN254: MTLComputePipelineState
+    private let partialEvalBN254: MTLComputePipelineState
+    private let innerProductBN254: MTLComputePipelineState
 
     // BabyBear pipelines
     private let bindBabyBear: MTLComputePipelineState
@@ -44,6 +46,8 @@ public class GPUMultilinearEngine {
         guard let bindBN = library.makeFunction(name: "mle_bind_bn254"),
               let eqBN = library.makeFunction(name: "mle_eq_bn254"),
               let tensorBN = library.makeFunction(name: "mle_tensor_product_bn254"),
+              let partialEvalBN = library.makeFunction(name: "mle_partial_eval_bn254"),
+              let innerProductBN = library.makeFunction(name: "mle_inner_product_bn254"),
               let bindBB = library.makeFunction(name: "mle_bind_babybear"),
               let eqBB = library.makeFunction(name: "mle_eq_babybear") else {
             throw MSMError.missingKernel
@@ -52,6 +56,8 @@ public class GPUMultilinearEngine {
         self.bindBN254 = try device.makeComputePipelineState(function: bindBN)
         self.eqBN254 = try device.makeComputePipelineState(function: eqBN)
         self.tensorBN254 = try device.makeComputePipelineState(function: tensorBN)
+        self.partialEvalBN254 = try device.makeComputePipelineState(function: partialEvalBN)
+        self.innerProductBN254 = try device.makeComputePipelineState(function: innerProductBN)
         self.bindBabyBear = try device.makeComputePipelineState(function: bindBB)
         self.eqBabyBear = try device.makeComputePipelineState(function: eqBB)
     }
@@ -373,6 +379,183 @@ public class GPUMultilinearEngine {
         return tensorProductCPUArray(a: a, b: b)
     }
 
+    // MARK: - BN254 Partial Evaluate (arbitrary variable)
+
+    /// Fix an arbitrary variable in an MLE at a given value. Halves the table from 2^logSize to 2^(logSize-1).
+    /// Variable index uses MSB=0 convention (variable 0 is the most significant bit).
+    /// This generalizes `bind` which always fixes variable 0.
+    public func partialEvaluate(evals: MTLBuffer, logSize: Int, variable: Int, value: Fr) -> MTLBuffer? {
+        precondition(logSize > 0, "Cannot partial-evaluate a 0-variable polynomial")
+        precondition(variable >= 0 && variable < logSize, "Variable \(variable) out of range [0, \(logSize))")
+
+        // If fixing variable 0, delegate to the simpler bind kernel
+        if variable == 0 {
+            return bind(evals: evals, logSize: logSize, value: value)
+        }
+
+        let halfN = 1 << (logSize - 1)
+        let stride = MemoryLayout<Fr>.stride
+
+        if (1 << logSize) < GPUMultilinearEngine.gpuThreshold {
+            return partialEvaluateCPU(evals: evals, logSize: logSize, variable: variable, value: value)
+        }
+
+        let outBytes = halfN * stride
+        guard let outBuf = device.makeBuffer(length: outBytes, options: .storageModeShared),
+              let cmdBuf = commandQueue.makeCommandBuffer() else {
+            return partialEvaluateCPU(evals: evals, logSize: logSize, variable: variable, value: value)
+        }
+
+        let enc = cmdBuf.makeComputeCommandEncoder()!
+        enc.setComputePipelineState(partialEvalBN254)
+        enc.setBuffer(evals, offset: 0, index: 0)
+        enc.setBuffer(outBuf, offset: 0, index: 1)
+        var chal = value
+        enc.setBytes(&chal, length: stride, index: 2)
+        var halfNVal = UInt32(halfN)
+        enc.setBytes(&halfNVal, length: 4, index: 3)
+        // stride_bit = n - 1 - variable (the actual bit position)
+        var strideBit = UInt32(logSize - 1 - variable)
+        enc.setBytes(&strideBit, length: 4, index: 4)
+
+        let tgSize = min(256, Int(partialEvalBN254.maxTotalThreadsPerThreadgroup))
+        enc.dispatchThreads(MTLSize(width: halfN, height: 1, depth: 1),
+                           threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
+        enc.endEncoding()
+
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+
+        if cmdBuf.error != nil {
+            return partialEvaluateCPU(evals: evals, logSize: logSize, variable: variable, value: value)
+        }
+
+        return outBuf
+    }
+
+    /// Partial evaluate from a Swift array, returning a Swift array (convenience).
+    public func partialEvaluateArray(evals: [Fr], logSize: Int, variable: Int, value: Fr) -> [Fr] {
+        let n = 1 << logSize
+        precondition(evals.count == n, "Table size \(evals.count) != 2^\(logSize)")
+        let stride = MemoryLayout<Fr>.stride
+        guard let buf = device.makeBuffer(length: n * stride, options: .storageModeShared) else {
+            return partialEvaluateCPUArray(evals: evals, logSize: logSize, variable: variable, value: value)
+        }
+        evals.withUnsafeBytes { src in
+            memcpy(buf.contents(), src.baseAddress!, n * stride)
+        }
+        if let outBuf = partialEvaluate(evals: buf, logSize: logSize, variable: variable, value: value) {
+            let halfN = 1 << (logSize - 1)
+            let ptr = outBuf.contents().bindMemory(to: Fr.self, capacity: halfN)
+            return Array(UnsafeBufferPointer(start: ptr, count: halfN))
+        }
+        return partialEvaluateCPUArray(evals: evals, logSize: logSize, variable: variable, value: value)
+    }
+
+    // MARK: - BN254 Batch Evaluate (multiple points)
+
+    /// Evaluate an MLE at multiple points. For k points, this computes k evaluations.
+    /// Uses GPU eq polynomial + inner product for each point.
+    /// More efficient than k independent `evaluate` calls when k > 1 because
+    /// the eq polynomial computation is embarrassingly parallel.
+    public func batchEvaluate(evals: [Fr], points: [[Fr]]) -> [Fr] {
+        guard !points.isEmpty else { return [] }
+        let logSize = points[0].count
+        precondition(evals.count == (1 << logSize), "Table size \(evals.count) != 2^\(logSize)")
+        for pt in points {
+            precondition(pt.count == logSize, "All points must have dimension \(logSize)")
+        }
+
+        // For a single point, just use regular evaluate
+        if points.count == 1 {
+            return [evaluate(evals: evals, point: points[0])]
+        }
+
+        let n = evals.count
+        let stride = MemoryLayout<Fr>.stride
+
+        // Upload evals once
+        guard let evalsBuf = device.makeBuffer(length: n * stride, options: .storageModeShared) else {
+            return points.map { evaluateCPUArray(evals: evals, point: $0) }
+        }
+        evals.withUnsafeBytes { src in
+            memcpy(evalsBuf.contents(), src.baseAddress!, n * stride)
+        }
+
+        // For small inputs, use CPU for everything
+        if n < GPUMultilinearEngine.gpuThreshold {
+            return points.map { evaluateCPUArray(evals: evals, point: $0) }
+        }
+
+        var results = [Fr](repeating: Fr.zero, count: points.count)
+
+        for (idx, point) in points.enumerated() {
+            // Compute eq polynomial on GPU
+            guard let eqBuf = eqPoly(point: point) else {
+                results[idx] = evaluateCPUArray(evals: evals, point: point)
+                continue
+            }
+
+            // GPU inner product: <evals, eq>
+            if let result = gpuInnerProduct(a: evalsBuf, b: eqBuf, count: n) {
+                results[idx] = result
+            } else {
+                results[idx] = evaluateCPUArray(evals: evals, point: point)
+            }
+        }
+
+        return results
+    }
+
+    // MARK: - BN254 Eq Polynomial (renamed convenience)
+
+    /// Compute eq(x, r) = prod(x_i*r_i + (1-x_i)*(1-r_i)) for all x in {0,1}^n.
+    /// Returns a Swift array of 2^n Fr evaluations.
+    /// This is a convenience alias for `eqPolyArray`.
+    public func eqPolynomial(point: [Fr]) -> [Fr] {
+        return eqPolyArray(point: point)
+    }
+
+    // MARK: - GPU Inner Product (helper for batch evaluate)
+
+    /// Compute the inner product <a, b> = sum_i a[i] * b[i] using GPU reduction.
+    /// Returns nil on GPU failure.
+    private func gpuInnerProduct(a: MTLBuffer, b: MTLBuffer, count: Int) -> Fr? {
+        let stride = MemoryLayout<Fr>.stride
+        let tgSize = min(256, Int(innerProductBN254.maxTotalThreadsPerThreadgroup))
+        let numGroups = (count + tgSize - 1) / tgSize
+
+        guard let partialBuf = device.makeBuffer(length: numGroups * stride, options: .storageModeShared),
+              let cmdBuf = commandQueue.makeCommandBuffer() else {
+            return nil
+        }
+
+        let enc = cmdBuf.makeComputeCommandEncoder()!
+        enc.setComputePipelineState(innerProductBN254)
+        enc.setBuffer(a, offset: 0, index: 0)
+        enc.setBuffer(b, offset: 0, index: 1)
+        enc.setBuffer(partialBuf, offset: 0, index: 2)
+        var countVal = UInt32(count)
+        enc.setBytes(&countVal, length: 4, index: 3)
+
+        enc.dispatchThreads(MTLSize(width: count, height: 1, depth: 1),
+                           threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
+        enc.endEncoding()
+
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+
+        if cmdBuf.error != nil { return nil }
+
+        // CPU-reduce the partial sums (typically < 1024 groups)
+        let ptr = partialBuf.contents().bindMemory(to: Fr.self, capacity: numGroups)
+        var sum = Fr.zero
+        for i in 0..<numGroups {
+            sum = frAdd(sum, ptr[i])
+        }
+        return sum
+    }
+
     // MARK: - CPU Fallbacks (BN254)
 
     private func evaluateCPU(evals: MTLBuffer, logSize: Int, point: [Fr]) -> Fr {
@@ -464,6 +647,51 @@ public class GPUMultilinearEngine {
             let diff = frSub(b, a)
             result[i] = frAdd(a, frMul(value, diff))
         }
+        return result
+    }
+
+    private func partialEvaluateCPU(evals: MTLBuffer, logSize: Int, variable: Int, value: Fr) -> MTLBuffer? {
+        let n = 1 << logSize
+        let ptr = evals.contents().bindMemory(to: Fr.self, capacity: n)
+        let arr = Array(UnsafeBufferPointer(start: ptr, count: n))
+        let result = partialEvaluateCPUArray(evals: arr, logSize: logSize, variable: variable, value: value)
+        let stride = MemoryLayout<Fr>.stride
+        guard let outBuf = device.makeBuffer(length: result.count * stride, options: .storageModeShared) else {
+            return nil
+        }
+        result.withUnsafeBytes { src in
+            memcpy(outBuf.contents(), src.baseAddress!, result.count * stride)
+        }
+        return outBuf
+    }
+
+    private func partialEvaluateCPUArray(evals: [Fr], logSize: Int, variable: Int, value: Fr) -> [Fr] {
+        let n = logSize
+        let halfN = 1 << (n - 1)
+        let oneMinusV = frSub(Fr.one, value)
+
+        if variable == 0 {
+            // Standard bind: variable 0 (MSB)
+            return bindCPUArray(evals: evals, value: value)
+        }
+
+        // General case: fix variable at position `variable`
+        let strideBit = n - 1 - variable
+        let blockSize = 1 << strideBit
+
+        var result = [Fr](repeating: Fr.zero, count: halfN)
+        var outIdx = 0
+        let numBlocks = evals.count / (2 * blockSize)
+        for block in 0..<numBlocks {
+            let base = block * 2 * blockSize
+            for i in 0..<blockSize {
+                let lo = evals[base + i]
+                let hi = evals[base + blockSize + i]
+                result[outIdx] = frAdd(frMul(oneMinusV, lo), frMul(value, hi))
+                outIdx += 1
+            }
+        }
+
         return result
     }
 

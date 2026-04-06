@@ -372,6 +372,260 @@ public func runGPUMultilinearTests() {
             expect(true, "Performance measured for eq poly 2^16")
         }
 
+        // =========================================================================
+        // SECTION 7: Partial Evaluate (arbitrary variable)
+        // =========================================================================
+
+        suite("GPU MLE Partial Evaluate")
+
+        // Test: partialEvaluate at variable 0 matches bind
+        do {
+            let logSize = 10
+            let evals = randomEvals(logSize)
+            var valSeed: UInt64 = 0xAAAA_1234
+            let val = pseudoRandomFr(seed: &valSeed)
+
+            let bindResult = engine.bindArray(evals: evals, logSize: logSize, value: val)
+            let partialResult = engine.partialEvaluateArray(evals: evals, logSize: logSize, variable: 0, value: val)
+
+            var allMatch = true
+            for i in 0..<bindResult.count {
+                if !frEqual(bindResult[i], partialResult[i]) {
+                    allMatch = false
+                    break
+                }
+            }
+            expect(allMatch,
+                   "partialEvaluate(var=0) matches bind (logSize=10)")
+        }
+
+        // Test: partialEvaluate at last variable
+        do {
+            // 2-variable polynomial: f(x0, x1) with evals [f(0,0), f(0,1), f(1,0), f(1,1)]
+            let evals: [Fr] = [frFromInt(10), frFromInt(20), frFromInt(30), frFromInt(40)]
+            let logSize = 2
+
+            // Fix variable 1 (LSB) at 0: should give [f(0,0), f(1,0)] = [10, 30]
+            let result0 = engine.partialEvaluateArray(evals: evals, logSize: logSize, variable: 1, value: Fr.zero)
+            expect(frEqual(result0[0], frFromInt(10)), "partialEval(var=1, val=0)[0] = 10")
+            expect(frEqual(result0[1], frFromInt(30)), "partialEval(var=1, val=0)[1] = 30")
+
+            // Fix variable 1 (LSB) at 1: should give [f(0,1), f(1,1)] = [20, 40]
+            let result1 = engine.partialEvaluateArray(evals: evals, logSize: logSize, variable: 1, value: Fr.one)
+            expect(frEqual(result1[0], frFromInt(20)), "partialEval(var=1, val=1)[0] = 20")
+            expect(frEqual(result1[1], frFromInt(40)), "partialEval(var=1, val=1)[1] = 40")
+        }
+
+        // Test: partialEvaluate consistency — fixing vars in any order gives same final result
+        do {
+            let logSize = 8
+            let evals = randomEvals(logSize, seed: 0xDEAD_BEEF_1234_5678)
+            let point = randomPoint(logSize, seed: 0x5678_ABCD_EF01_2345)
+
+            // Path 1: fix all variables in order 0, 1, 2, ..., n-1 using partialEvaluate at var 0
+            var table1 = evals
+            for round in 0..<logSize {
+                table1 = engine.partialEvaluateArray(evals: table1, logSize: logSize - round, variable: 0, value: point[round])
+            }
+
+            // Path 2: evaluate directly
+            let directResult = engine.evaluate(evals: evals, point: point)
+
+            expect(frEqual(table1[0], directResult),
+                   "partialEvaluate sequential matches evaluate (logSize=8)")
+        }
+
+        // Test: partialEvaluate at middle variable, then evaluate the rest
+        do {
+            let logSize = 6
+            let evals = randomEvals(logSize, seed: 0x1111_2222_3333_4444)
+            let point = randomPoint(logSize, seed: 0x5555_6666_7777_8888)
+
+            // Fix variable 3 (middle) at point[3]
+            let afterFix3 = engine.partialEvaluateArray(evals: evals, logSize: logSize, variable: 3, value: point[3])
+            // Now we have a (logSize-1)-variable polynomial
+            // The remaining point is: [point[0], point[1], point[2], point[4], point[5]]
+            let remainingPoint = [point[0], point[1], point[2], point[4], point[5]]
+
+            let partialResult = engine.evaluate(evals: afterFix3, point: remainingPoint)
+
+            // Compare with direct evaluation
+            let directResult = engine.evaluate(evals: evals, point: point)
+
+            expect(frEqual(partialResult, directResult),
+                   "partialEvaluate(var=3) + evaluate matches direct evaluate")
+        }
+
+        // Test: GPU partial evaluate for larger input (logSize=14, GPU path)
+        do {
+            let logSize = 14
+            let evals = randomEvals(logSize, seed: 0xCAFE_BABE_DEAD_BEEF)
+            let val = frFromInt(42)
+
+            // Fix variable 5
+            let gpuResult = engine.partialEvaluateArray(evals: evals, logSize: logSize, variable: 5, value: val)
+            expectEqual(gpuResult.count, 1 << (logSize - 1),
+                        "partialEvaluate(var=5) halves the table (logSize=14)")
+
+            // Verify: evaluating the partial result at remaining point matches full eval
+            let point = randomPoint(logSize, seed: 0xFEED_FACE_1234_5678)
+            var fullPoint = point
+            fullPoint[5] = val  // override variable 5 with val
+
+            let afterFix = engine.partialEvaluateArray(evals: evals, logSize: logSize, variable: 5, value: val)
+            let remainingPoint = Array(point[0..<5]) + Array(point[6..<logSize])
+            let partialEvalResult = engine.evaluate(evals: afterFix, point: remainingPoint)
+            let directResult = engine.evaluate(evals: evals, point: fullPoint)
+
+            expect(frEqual(partialEvalResult, directResult),
+                   "GPU partialEvaluate(var=5) consistency (logSize=14)")
+        }
+
+        // =========================================================================
+        // SECTION 8: Batch Evaluate
+        // =========================================================================
+
+        suite("GPU MLE Batch Evaluate")
+
+        // Test: single point matches regular evaluate
+        do {
+            let logSize = 10
+            let evals = randomEvals(logSize, seed: 0xAAAA_BBBB_CCCC_DDDD)
+            let point = randomPoint(logSize, seed: 0x1111_2222_3333_4444)
+
+            let singleResult = engine.evaluate(evals: evals, point: point)
+            let batchResults = engine.batchEvaluate(evals: evals, points: [point])
+
+            expectEqual(batchResults.count, 1, "batchEvaluate returns 1 result for 1 point")
+            expect(frEqual(batchResults[0], singleResult),
+                   "batchEvaluate single point matches evaluate")
+        }
+
+        // Test: multiple points
+        do {
+            let logSize = 12
+            let evals = randomEvals(logSize, seed: 0x5555_6666_7777_8888)
+
+            var points = [[Fr]]()
+            for i in 0..<5 {
+                points.append(randomPoint(logSize, seed: 0x1234_5678 + UInt64(i) * 0x1111))
+            }
+
+            let batchResults = engine.batchEvaluate(evals: evals, points: points)
+            expectEqual(batchResults.count, 5, "batchEvaluate returns 5 results for 5 points")
+
+            var allMatch = true
+            for i in 0..<5 {
+                let individual = engine.evaluate(evals: evals, point: points[i])
+                if !frEqual(batchResults[i], individual) {
+                    allMatch = false
+                    break
+                }
+            }
+            expect(allMatch,
+                   "batchEvaluate matches individual evaluations (5 points, logSize=12)")
+        }
+
+        // Test: batch evaluate at boolean points recovers table entries
+        do {
+            let evals: [Fr] = [frFromInt(10), frFromInt(20), frFromInt(30), frFromInt(40)]
+            let points: [[Fr]] = [
+                [Fr.zero, Fr.zero],  // index 0 -> 10
+                [Fr.zero, Fr.one],   // index 1 -> 20
+                [Fr.one, Fr.zero],   // index 2 -> 30
+                [Fr.one, Fr.one],    // index 3 -> 40
+            ]
+            let results = engine.batchEvaluate(evals: evals, points: points)
+            expect(frEqual(results[0], frFromInt(10)), "batch at (0,0) = 10")
+            expect(frEqual(results[1], frFromInt(20)), "batch at (0,1) = 20")
+            expect(frEqual(results[2], frFromInt(30)), "batch at (1,0) = 30")
+            expect(frEqual(results[3], frFromInt(40)), "batch at (1,1) = 40")
+        }
+
+        // Test: empty points
+        do {
+            let evals = randomEvals(4)
+            let results = engine.batchEvaluate(evals: evals, points: [])
+            expectEqual(results.count, 0, "batchEvaluate returns empty for empty points")
+        }
+
+        // =========================================================================
+        // SECTION 9: Eq Polynomial convenience
+        // =========================================================================
+
+        suite("GPU MLE eqPolynomial")
+
+        do {
+            let point = randomPoint(6, seed: 0xFACE_CAFE_BEEF_1234)
+            let eqArray = engine.eqPolyArray(point: point)
+            let eqPoly = engine.eqPolynomial(point: point)
+
+            var allMatch = true
+            for i in 0..<eqArray.count {
+                if !frEqual(eqArray[i], eqPoly[i]) {
+                    allMatch = false
+                    break
+                }
+            }
+            expect(allMatch, "eqPolynomial matches eqPolyArray")
+        }
+
+        // =========================================================================
+        // SECTION 10: Performance — Partial Evaluate & Batch Evaluate
+        // =========================================================================
+
+        suite("GPU MLE Extended Performance")
+
+        // Partial evaluate performance
+        do {
+            let logSize = 20
+            let evals = randomEvals(logSize)
+            let val = frFromInt(999)
+
+            // Warmup
+            let _ = engine.partialEvaluateArray(evals: evals, logSize: logSize, variable: logSize / 2, value: val)
+
+            let iters = 3
+            var total: Double = 0
+            for _ in 0..<iters {
+                let t0 = CFAbsoluteTimeGetCurrent()
+                let _ = engine.partialEvaluateArray(evals: evals, logSize: logSize, variable: logSize / 2, value: val)
+                let t1 = CFAbsoluteTimeGetCurrent()
+                total += t1 - t0
+            }
+            let avgMs = (total / Double(iters)) * 1000.0
+            print(String(format: "  [PERF] partialEvaluate 2^20 (var=%d): %.2fms",
+                         logSize / 2, avgMs))
+            expect(true, "Performance measured for partialEvaluate 2^20")
+        }
+
+        // Batch evaluate performance
+        do {
+            let logSize = 16
+            let evals = randomEvals(logSize, seed: 0xDEAD_F00D)
+            let numPoints = 8
+            var points = [[Fr]]()
+            for i in 0..<numPoints {
+                points.append(randomPoint(logSize, seed: 0x1234 + UInt64(i) * 0x100))
+            }
+
+            // Warmup
+            let _ = engine.batchEvaluate(evals: evals, points: [points[0]])
+
+            let iters = 3
+            var total: Double = 0
+            for _ in 0..<iters {
+                let t0 = CFAbsoluteTimeGetCurrent()
+                let _ = engine.batchEvaluate(evals: evals, points: points)
+                let t1 = CFAbsoluteTimeGetCurrent()
+                total += t1 - t0
+            }
+            let avgMs = (total / Double(iters)) * 1000.0
+            print(String(format: "  [PERF] batchEvaluate 2^%d x %d points: %.2fms",
+                         logSize, numPoints, avgMs))
+            expect(true, "Performance measured for batchEvaluate")
+        }
+
     } catch {
         expect(false, "GPU Multilinear Engine threw: \(error)")
     }
