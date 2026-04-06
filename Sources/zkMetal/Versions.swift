@@ -234,6 +234,16 @@ public enum Versions {
     public static let gpuBabyBearExtension = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let gpuGoldilocksExtension = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
 
+    // --- Wave 13 ---
+    public static let gpuFiatShamir   = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuPolyCommitOpen = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuNovaVerifier = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuPlonkWireAssign = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuFRICommitPhase = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuR1CSWitnessSolver = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuGroth16Aggregate = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuBiniusBinaryField = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+
     /// Print all primitive versions
     public static func printAll() {
         let entries: [(String, PrimitiveVersion)] = [
@@ -387,6 +397,14 @@ public enum Versions {
             ("GPU Ped Chain",    gpuPedersenChain),
             ("GPU BB Ext",       gpuBabyBearExtension),
             ("GPU GL Ext",       gpuGoldilocksExtension),
+            ("GPU Fiat-Shamir",  gpuFiatShamir),
+            ("GPU PolyCommOpen", gpuPolyCommitOpen),
+            ("GPU Nova Verify",  gpuNovaVerifier),
+            ("GPU Plonk Wire",   gpuPlonkWireAssign),
+            ("GPU FRI Commit",   gpuFRICommitPhase),
+            ("GPU R1CS WitSol",  gpuR1CSWitnessSolver),
+            ("GPU Groth16 Agg",  gpuGroth16Aggregate),
+            ("GPU Binius Bin",   gpuBiniusBinaryField),
         ]
         print("=== zkMetal Primitive Versions ===")
         for (name, v) in entries {
