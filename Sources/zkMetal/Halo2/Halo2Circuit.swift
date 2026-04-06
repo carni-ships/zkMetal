@@ -467,7 +467,7 @@ public class Halo2Assignment {
         self.selectorValues = Array(repeating: Array(repeating: nil, count: numRows), count: numSelectors)
     }
 
-    func ensureRows(_ needed: Int) {
+    public func ensureRows(_ needed: Int) {
         if needed <= numRows { return }
         let oldRows = numRows
         numRows = needed
@@ -485,27 +485,27 @@ public class Halo2Assignment {
         }
     }
 
-    func setAdvice(column: Int, row: Int, value: Fr) {
+    public func setAdvice(column: Int, row: Int, value: Fr) {
         ensureRows(row + 1)
         advice[column][row] = value
     }
 
-    func setFixed(column: Int, row: Int, value: Fr) {
+    public func setFixed(column: Int, row: Int, value: Fr) {
         ensureRows(row + 1)
         fixed[column][row] = value
     }
 
-    func setSelector(index: Int, row: Int, value: Fr) {
+    public func setSelector(index: Int, row: Int, value: Fr) {
         ensureRows(row + 1)
         selectorValues[index][row] = value
     }
 
-    func addCopyConstraint(lhsColumn: Halo2Column, lhsRow: Int,
-                           rhsColumn: Halo2Column, rhsRow: Int) {
+    public func addCopyConstraint(lhsColumn: Halo2Column, lhsRow: Int,
+                                  rhsColumn: Halo2Column, rhsRow: Int) {
         copyConstraints.append((lhsColumn, lhsRow, rhsColumn, rhsRow))
     }
 
-    func addConstantConstraint(column: Halo2Column, row: Int, value: Fr) {
+    public func addConstantConstraint(column: Halo2Column, row: Int, value: Fr) {
         constantConstraints.append((column, row, value))
     }
 }

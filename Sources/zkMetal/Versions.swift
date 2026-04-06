@@ -182,6 +182,9 @@ public enum Versions {
     public static let gpuPlonkGate     = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let gpuSumcheckProver = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let gpuLogUp         = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuRecursiveSNARK = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuProofAggregation = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuPlonky2      = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let gpuR1CSSolver    = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let gpuGroth16Prover = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let gpuIPAEngine     = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
@@ -191,6 +194,11 @@ public enum Versions {
     public static let gpuFRIProver     = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let gpuSTARKVerifier = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let gpuNovaFold      = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuHalo2Backend  = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuBiniusTower   = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuBabyBearSTARKProver = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuGoldilocksSTARKProver = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuSpartanProver = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
 
     /// Print all primitive versions
     public static func printAll() {
@@ -305,6 +313,14 @@ public enum Versions {
             ("GPU FRI Prover",   gpuFRIProver),
             ("GPU STARK Verify", gpuSTARKVerifier),
             ("GPU Nova Fold",    gpuNovaFold),
+            ("GPU Recursive",    gpuRecursiveSNARK),
+            ("GPU Proof Agg",    gpuProofAggregation),
+            ("GPU Plonky2",      gpuPlonky2),
+            ("GPU Halo2",        gpuHalo2Backend),
+            ("GPU Binius",       gpuBiniusTower),
+            ("GPU BB STARK Pv",  gpuBabyBearSTARKProver),
+            ("GPU GL STARK Pv",  gpuGoldilocksSTARKProver),
+            ("GPU Spartan Pv",   gpuSpartanProver),
         ]
         print("=== zkMetal Primitive Versions ===")
         for (name, v) in entries {
