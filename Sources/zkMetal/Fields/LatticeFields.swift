@@ -280,7 +280,7 @@ public func kyberInvNTTCPU(_ poly: inout [KyberField]) {
             for j in start..<(start + len) {
                 let t = poly[j]
                 poly[j] = kyberAdd(t, poly[j + len])
-                poly[j + len] = kyberMul(tw, kyberSub(poly[j + len], t))
+                poly[j + len] = kyberMul(tw, kyberSub(t, poly[j + len]))
             }
             start += 2 * len
         }
@@ -329,7 +329,7 @@ public func dilithiumInvNTTCPU(_ poly: inout [DilithiumField]) {
             for j in start..<(start + len) {
                 let t = poly[j]
                 poly[j] = dilithiumAdd(t, poly[j + len])
-                poly[j + len] = dilithiumMul(tw, dilithiumSub(poly[j + len], t))
+                poly[j + len] = dilithiumMul(tw, dilithiumSub(t, poly[j + len]))
             }
             start += 2 * len
         }

@@ -151,7 +151,7 @@ kernel void kyber_intt_batch(
             uint i1 = i0 + len;
             ushort t = shared_poly[i0];
             shared_poly[i0] = kyber_add(t, shared_poly[i1]);
-            shared_poly[i1] = kyber_mul(tw, kyber_sub(shared_poly[i1], t));
+            shared_poly[i1] = kyber_mul(tw, kyber_sub(t, shared_poly[i1]));
         }
         k -= num_blocks;
         threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -247,7 +247,7 @@ kernel void dilithium_intt_batch(
             uint i1 = i0 + len;
             uint t = shared_poly[i0];
             shared_poly[i0] = dil_add(t, shared_poly[i1]);
-            shared_poly[i1] = dil_mul(tw, dil_sub(shared_poly[i1], t));
+            shared_poly[i1] = dil_mul(tw, dil_sub(t, shared_poly[i1]));
         }
         k -= num_blocks;
         threadgroup_barrier(mem_flags::mem_threadgroup);

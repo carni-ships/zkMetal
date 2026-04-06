@@ -193,10 +193,10 @@ static inline void kyber_ct_butterfly_neon(uint32x4_t *u, uint32x4_t *v, uint32x
 
 // Gentleman-Sande (DIF) butterfly for INTT:
 //   sum = u + v
-//   diff = (v - u) * tw   (note: v - u, matching reference Kyber INTT)
+//   diff = (u - v) * tw   (note: u - v, matching reference Kyber INTT)
 static inline void kyber_gs_butterfly_neon(uint32x4_t *u, uint32x4_t *v, uint32x4_t tw) {
     uint32x4_t sum = kyber_add_neon(*u, *v);
-    uint32x4_t diff = kyber_sub_neon(*v, *u);
+    uint32x4_t diff = kyber_sub_neon(*u, *v);
     *u = sum;
     *v = kyber_mul_neon(diff, tw);
 }
@@ -306,7 +306,7 @@ void lattice_intt_kyber_neon(uint32_t *poly) {
                 for (; j < start + len; j++) {
                     uint32_t t = poly[j];
                     uint32_t s = kyber_add(t, poly[j + len]);
-                    uint32_t d = kyber_mul(tw, kyber_sub(poly[j + len], t));
+                    uint32_t d = kyber_mul(tw, kyber_sub(t, poly[j + len]));
                     poly[j] = s;
                     poly[j + len] = d;
                 }
@@ -314,7 +314,7 @@ void lattice_intt_kyber_neon(uint32_t *poly) {
                 for (int j = start; j < start + len; j++) {
                     uint32_t t = poly[j];
                     poly[j] = kyber_add(t, poly[j + len]);
-                    poly[j + len] = kyber_mul(tw, kyber_sub(poly[j + len], t));
+                    poly[j + len] = kyber_mul(tw, kyber_sub(t, poly[j + len]));
                 }
             }
             start += 2 * len;
@@ -412,10 +412,10 @@ static inline void dil_ct_butterfly_neon(uint32x4_t *u, uint32x4_t *v, uint32x4_
 }
 
 // Dilithium GS butterfly (inverse NTT)
-// diff = v - u (matching reference: poly[j+len] - t where t = poly[j])
+// diff = u - v (matching reference Kyber/Dilithium INTT: t - poly[j+len])
 static inline void dil_gs_butterfly_neon(uint32x4_t *u, uint32x4_t *v, uint32x4_t tw) {
     uint32x4_t sum = dil_add_neon(*u, *v);
-    uint32x4_t diff = dil_sub_neon(*v, *u);
+    uint32x4_t diff = dil_sub_neon(*u, *v);
     *u = sum;
     *v = dil_mul_neon(diff, tw);
 }
@@ -493,13 +493,13 @@ void lattice_intt_dilithium_neon(uint32_t *poly) {
                 for (; j < start + len; j++) {
                     uint32_t t = poly[j];
                     poly[j] = dil_add(t, poly[j + len]);
-                    poly[j + len] = dil_mul(tw, dil_sub(poly[j + len], t));
+                    poly[j + len] = dil_mul(tw, dil_sub(t, poly[j + len]));
                 }
             } else {
                 for (int j = start; j < start + len; j++) {
                     uint32_t t = poly[j];
                     poly[j] = dil_add(t, poly[j + len]);
-                    poly[j + len] = dil_mul(tw, dil_sub(poly[j + len], t));
+                    poly[j + len] = dil_mul(tw, dil_sub(t, poly[j + len]));
                 }
             }
             start += 2 * len;

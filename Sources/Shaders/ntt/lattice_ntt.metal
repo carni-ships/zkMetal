@@ -174,7 +174,7 @@ kernel void lattice_intt_kyber(
             uint i1 = i0 + len;
             ushort t = shared_poly[i0];
             shared_poly[i0] = lntt_kyber_add(t, shared_poly[i1]);
-            shared_poly[i1] = lntt_kyber_mul(tw, lntt_kyber_sub(shared_poly[i1], t));
+            shared_poly[i1] = lntt_kyber_mul(tw, lntt_kyber_sub(t, shared_poly[i1]));
         }
         k -= num_blocks;
         threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -268,7 +268,7 @@ kernel void lattice_intt_dilithium(
             uint i1 = i0 + len;
             uint t = shared_poly[i0];
             shared_poly[i0] = lntt_dil_add(t, shared_poly[i1]);
-            shared_poly[i1] = lntt_dil_mul(tw, lntt_dil_sub(shared_poly[i1], t));
+            shared_poly[i1] = lntt_dil_mul(tw, lntt_dil_sub(t, shared_poly[i1]));
         }
         k -= num_blocks;
         threadgroup_barrier(mem_flags::mem_threadgroup);
