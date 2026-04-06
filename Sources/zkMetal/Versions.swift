@@ -207,6 +207,14 @@ public enum Versions {
     public static let gpuAIRConstraintCompiler = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let gpuPCSFactory   = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let gpuEVMPrecompile = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuFRIVerifier  = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuPolyInterpolation = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuProofSerializer = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuWitnessReduction = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuGrandProductProver = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuR1CSToQAP   = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuBLSAggregate = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let gpuCommitmentBatch = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
 
     /// Print all primitive versions
     public static func printAll() {
@@ -337,6 +345,14 @@ public enum Versions {
             ("GPU AIR Compile",  gpuAIRConstraintCompiler),
             ("GPU PCS Factory",  gpuPCSFactory),
             ("GPU EVM Precomp",  gpuEVMPrecompile),
+            ("GPU FRI Verify",   gpuFRIVerifier),
+            ("GPU Poly Interp",  gpuPolyInterpolation),
+            ("GPU Proof Serial", gpuProofSerializer),
+            ("GPU Witness Red",  gpuWitnessReduction),
+            ("GPU Grand Prod",   gpuGrandProductProver),
+            ("GPU R1CS->QAP",    gpuR1CSToQAP),
+            ("GPU BLS Agg",      gpuBLSAggregate),
+            ("GPU Commit Batch", gpuCommitmentBatch),
         ]
         print("=== zkMetal Primitive Versions ===")
         for (name, v) in entries {
