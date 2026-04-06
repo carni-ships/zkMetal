@@ -2,14 +2,16 @@
 
 GPU-accelerated zero-knowledge proof library for Apple Silicon. Metal compute shaders + C/NEON field arithmetic + Swift orchestration.
 
-**211 primitives** across 18 fields and 10 elliptic curves:
+**211 primitives** across 18 fields and 10 elliptic curves. 479 source files, 105 Metal shaders, 33 C/NEON files, 234 test files (229 test suites).
 
 - **Core:** MSM (Pippenger+GLV), NTT (four-step FFT), Poseidon2/Keccak/Blake3/SHA-256, Merkle trees
-- **Proof systems:** Plonk, Groth16, STARK (Circle/BabyBear/Goldilocks/Stark252), Spartan, Marlin, GKR
-- **Commitments:** KZG, IPA, Basefold, Brakedown, Zeromorph, Verkle, Pedersen
-- **Folding/IVC:** HyperNova, Protogalaxy, Nova/SuperNova
-- **zkVM:** Jolt (RV32I, Lasso lookups, RISC-V decoder)
-- **Tooling:** Circom R1CS parser, AIR constraint DSL, Solidity verifier gen, proof serialization
+- **Proof systems:** Plonk, HyperPlonk, Fflonk, Groth16, STARK (Circle/BabyBear/Goldilocks/Stark252), Spartan, Marlin, GKR
+- **Commitments:** KZG (+ degree bounds, batch verify, multi-open), IPA, Basefold, Brakedown, Zeromorph, Verkle (+ multiproofs), Pedersen
+- **Folding/IVC:** HyperNova, Protogalaxy (+ decider), Nova/SuperNova (+ decider circuit, relaxation, verifier)
+- **Lookup arguments:** LogUp, Lasso, CQ (cached quotients), Plookup, grand product
+- **zkVM:** Jolt (RV32I instruction decomposition, Lasso lookups, RISC-V decoder), Cairo (memory argument, trace)
+- **STARK pipeline:** AIR constraint compiler, R1CS-to-AIR, Plonky3 AIR, FRI (commit/query/grind), STIR, trace LDE, deep composition
+- **Tooling:** Circom R1CS parser, AIR constraint DSL, Solidity verifier gen, proof serialization, proof aggregation
 
 ## Contents
 
@@ -31,103 +33,132 @@ GPU-accelerated zero-knowledge proof library for Apple Silicon. Metal compute sh
 
 ## Primitives
 
+### Core Arithmetic
+
 | Primitive | Platform | Description |
 |-----------|----------|-------------|
-| **MSM** | GPU/CPU | Multi-scalar multiplication (Pippenger + signed-digit + GLV) -- BN254, BLS12-377, secp256k1, Pallas, Vesta, Ed25519, Grumpkin |
-| **NTT** | GPU/CPU | Number theoretic transform (four-step FFT, fused bitrev+butterfly, twiddle fusion) -- BN254, BLS12-377, Goldilocks, BabyBear, Stark252 |
-| **Poseidon2** | GPU | Algebraic hash (t=3 BN254 Fr; t=16 M31) |
-| **Keccak-256** | GPU/CPU | SHA-3 hash (fused subtree Merkle) |
-| **Blake3** | GPU/CPU | BLAKE3 hash (batch + Merkle trees) |
-| **Merkle Trees** | GPU | Poseidon2, Keccak-256, Blake3 backends |
-| **FRI** | GPU | Fast Reed-Solomon IOP (fold-by-2/4/8, commit, query, verify) |
-| **Circle FRI** | GPU | FRI adapted for circle domain over M31 |
-| **Sumcheck** | GPU | Interactive sumcheck (fused round+reduce, sparse O(nnz), univariate) |
-| **KZG** | GPU | Polynomial commitment (commit + open + batch) |
-| **IPA** | GPU/CPU | Inner product argument (Bulletproofs-style, GPU batch fold, BGMW precomputed tables) |
-| **Verkle Trees** | CPU | Width-N tree with Pedersen commitments + IPA opening proofs |
-| **LogUp / Lasso / cq** | GPU | Lookup arguments (logarithmic derivatives, tensor decomposition, cached quotients) |
-| **Range Proofs** | GPU | [0, R) via LogUp with limb decomposition |
-| **ECDSA** | CPU | secp256k1 batch verification (Shamir's trick, probabilistic + individual) |
-| **Circle STARK** | GPU | Full STARK prover/verifier over M31 circle domain |
-| **Plonk** | GPU | Preprocessed polynomial IOP with KZG commitments |
-| **Groth16** | GPU | zk-SNARK with BN254 pairings (R1CS, trusted setup, prove, verify) |
-| **GKR** | GPU | Goldwasser-Kalai-Rothblum interactive proof for layered circuits |
-| **Basefold / Brakedown / Zeromorph** | GPU | Polynomial commitment schemes (NTT-free, expander-based, multilinear-to-univariate) |
-| **HyperNova** | GPU | CCS folding scheme for incremental verifiable computation |
-| **BLS12-381** | CPU | Full tower (Fp/Fp2/Fp6/Fp12), G1/G2, Miller loop, pairings, hash-to-curve G2 (RFC 9380) |
-| **Pasta Curves** | GPU/CPU | Pallas/Vesta cycle (recursive proof composition ready) |
-| **Binius** | GPU/CPU | Binary tower GF(2^8)->GF(2^128), additive FFT |
+| **MSM** | GPU/CPU | Multi-scalar multiplication (Pippenger + signed-digit + GLV) — BN254, BLS12-377, secp256k1, Pallas, Vesta, Ed25519, Grumpkin, BLS12-381, BN254 G2 |
+| **NTT** | GPU/CPU | Number theoretic transform (four-step FFT, fused bitrev+butterfly) — BN254, BLS12-377, Goldilocks, BabyBear, Stark252, Circle M31 |
+| **Batch Field Ops** | GPU/CPU | Vectorized add/mul/sub/inverse across all fields, C CIOS Montgomery |
+| **Radix Sort** | GPU | 32-bit LSD radix sort (4-pass, 8-bit radix) |
+| **Prefix Scan** | GPU | GPU prefix product for grand product arguments |
+| **Parallel Reduction** | GPU | SIMD shuffle + shared memory for field elements |
+
+### Hashing & Merkle Trees
+
+| Primitive | Platform | Description |
+|-----------|----------|-------------|
+| **Poseidon2** | GPU | Algebraic hash — BN254 (t=3), M31 (t=16), BabyBear (width-16, SP1 config). Duplex sponge mode |
+| **Keccak-256** | GPU/CPU | SHA-3 hash with NEON acceleration, fused Merkle subtree |
+| **Blake3** | GPU/CPU | BLAKE3 hash with NEON acceleration, batch + Merkle trees |
+| **SHA-256** | GPU | Batch hash + fused Merkle subtree |
+| **Merkle Trees** | GPU | Poseidon2/Keccak/Blake3 backends + incremental append/update |
+| **Pedersen Hash** | CPU | Multi-curve Pedersen commitment + IPA vector commitments |
+
+### Polynomial & IOP Protocols
+
+| Primitive | Platform | Description |
+|-----------|----------|-------------|
+| **FRI** | GPU | Fast Reed-Solomon IOP — fold-by-2/4/8, commit phase, query phase, grinding (GPU nonce search) |
+| **STIR** | GPU | Shift-based proximity testing (FRI alternative) |
+| **Sumcheck** | GPU | Interactive sumcheck — dense, sparse O(nnz), univariate, multilinear |
+| **Polynomial Ops** | GPU | NTT multiply, Horner multi-eval, division, interpolation, vanishing polynomial |
+| **Coset LDE** | GPU | Fused zero-pad + coset-shift for BabyBear/Goldilocks/BN254 |
+| **Reed-Solomon** | GPU | Erasure coding for data availability sampling |
+
+### Polynomial Commitment Schemes
+
+| Primitive | Platform | Description |
+|-----------|----------|-------------|
+| **KZG** | GPU | Commit, open, batch open, multi-open, degree bound proofs, batch verify, trusted setup |
+| **IPA** | GPU/CPU | Bulletproofs-style inner product argument, BGMW precomputed tables |
+| **Basefold** | GPU | NTT-free multilinear PCS via recursive sumcheck folding |
+| **Brakedown** | GPU | Expander-based multilinear PCS |
+| **Zeromorph** | GPU | Multilinear-to-univariate PCS reduction |
+| **Verkle Trees** | CPU | Width-N tree with Pedersen + IPA, multiproof generation/verification |
 | **Tensor / WHIR** | GPU | Multilinear proof compression, RS proximity testing |
-| **Transcript** | CPU | Fiat-Shamir duplex sponge (Poseidon2 + Keccak backends) |
-| **Witness Gen** | GPU | GPU witness trace evaluation (instruction-stream architecture) |
-| **Constraint IR** | GPU | Runtime constraint compilation (IR -> Metal source -> GPU pipeline) |
-| **IPA Accumulation** | CPU | Halo-style accumulation (Pallas curve, batch decide) |
+
+### Proof Systems
+
+| Primitive | Platform | Description |
+|-----------|----------|-------------|
+| **Plonk** | GPU | Preprocessed polynomial IOP with KZG — wire assignment, permutation, quotient, linearization, custom gates |
+| **HyperPlonk** | GPU | Multilinear Plonk variant with sumcheck-based IOP, zero-check, LogUp lookups |
+| **Fflonk** | GPU | Combined polynomial commitment Plonk variant |
+| **Groth16** | GPU | zk-SNARK with BN254 pairings — R1CS, trusted setup, prove, verify, aggregate, recursive verifier, Solidity export |
+| **STARK** | GPU | Full pipeline — Circle/BabyBear/Goldilocks/Stark252, Plonky3 AIR, trace LDE, deep composition, query phase |
+| **GKR** | GPU | Goldwasser-Kalai-Rothblum interactive proof for layered circuits, data-parallel mode |
+| **Spartan** | GPU | Transparent SNARK via multilinear extensions + sumcheck, linearization |
+| **Marlin** | GPU | Preprocessed SNARK with algebraic holographic proof + KZG poly IOP |
+
+### Lookup Arguments
+
+| Primitive | Platform | Description |
+|-----------|----------|-------------|
+| **LogUp** | GPU | Logarithmic derivative lookup with GKR-enhanced grand product |
+| **Lasso** | GPU | Tensor decomposition structured lookups |
+| **CQ** | GPU | Cached quotients lookup with KZG commitments |
+| **Range Proofs** | GPU | Bulletproofs-style range proof protocol |
+| **Unified Lookup** | GPU | LogUp/Lasso/CQ with auto-strategy selection |
+
+### Folding & IVC
+
+| Primitive | Platform | Description |
+|-----------|----------|-------------|
+| **Nova/SuperNova** | GPU/CPU | IVC with cross-term folding — relaxation, verifier, decider circuit |
+| **HyperNova** | GPU | CCS folding scheme for incremental verifiable computation |
+| **Protogalaxy** | GPU/CPU | Plonk-native folding with O(k log k) per step, decider |
+| **Proof Aggregation** | GPU | SnarkPack-style multi-proof batch aggregation |
+
+### Curves & Signatures
+
+| Primitive | Platform | Description |
+|-----------|----------|-------------|
+| **BN254** | GPU/CPU | Full pairing engine (Fp/Fp2/Fp6/Fp12 tower, Miller loop, final exp) |
+| **BLS12-381** | CPU | Full tower, G1/G2, pairings, hash-to-curve G2 (RFC 9380), BLS signatures |
+| **BLS12-377** | GPU/CPU | Scalar + base field, G1 MSM, NTT |
+| **Pasta (Pallas/Vesta)** | GPU/CPU | Curve cycle for recursive proof composition |
+| **secp256k1** | GPU/CPU | ECDSA batch verification (Shamir's trick) |
+| **Ed25519** | GPU/CPU | Curve25519 field, twisted Edwards, EdDSA, GPU MSM |
+| **BabyJubjub** | GPU/CPU | Twisted Edwards over BN254 Fr, Pedersen hash, EdDSA |
+| **Grumpkin** | GPU | BN254 inner curve, GPU MSM |
+| **Jubjub** | CPU | Twisted Edwards over BLS12-381 Fr (Zcash Sapling) |
+| **Schnorr** | CPU | BIP 340 Bitcoin Taproot signatures |
+| **Binius** | GPU/CPU | Binary tower GF(2^8)→GF(2^128), additive FFT, multilinear polynomial ops |
+
+### zkVM
+
+| Primitive | Platform | Description |
+|-----------|----------|-------------|
+| **Jolt** | GPU | Instruction decomposition, Lasso subtable lookups, consistency checking |
+| **RISC-V Decoder** | CPU | All 40 RV32I opcodes + M extension, execution trace |
+| **Cairo** | GPU/CPU | Memory argument (permutation + continuity), trace generation |
+| **Witness Gen** | GPU | GPU instruction-stream witness trace evaluation |
+| **Memory Checking** | CPU | GKR-based grand product for read/write consistency |
+
+### Constraint Systems & Compilation
+
+| Primitive | Platform | Description |
+|-----------|----------|-------------|
+| **R1CS** | GPU | R1CS witness solver, constraint evaluation, R1CS-to-QAP, R1CS-to-AIR compiler |
+| **CCS** | CPU | Customizable constraint system (unified R1CS/Plonk/AIR for folding) |
+| **AIR** | GPU/CPU | Constraint DSL, constraint compiler, trace validation, composition |
+| **Plonk Gates** | GPU | Custom gate engine (range, EC, Poseidon, boolean, XOR), Halo2-compatible |
+| **Constraint Optimizer** | CPU | Dead elimination, constant fold, CSE, R1CS reduce |
+| **Circom Parser** | CPU | Binary .r1cs/.wtns format parser for Groth16 proving |
+
+### Infrastructure
+
+| Primitive | Platform | Description |
+|-----------|----------|-------------|
+| **Transcript** | CPU | Fiat-Shamir duplex sponge — Poseidon2 + Keccak backends, Merlin STROBE-128 |
+| **Proof Serialization** | CPU | BN254/BLS12-381 point compression, snarkjs JSON, EIP-4844, binary/JSON universal format |
+| **GPU Buffer Pool** | GPU | Power-of-2 size-class recycling with scoped contexts |
+| **Shader Cache** | GPU | MTLBinaryArchive persistent cache + background precompilation |
+| **Constraint IR** | GPU | Runtime IR → Metal source → GPU pipeline |
+| **Data Availability** | GPU | EIP-4844 blob extension + cell proofs + Reed-Solomon |
 | **Kyber / Dilithium** | GPU | Post-quantum lattice crypto (GPU-accelerated NTT) |
 | **HE NTT** | GPU | RNS-based NTT for homomorphic encryption (CKKS/BFV) |
-| **Reed-Solomon** | GPU | Erasure coding for data availability sampling |
-| **Serialization** | CPU | Proof serialization/deserialization (ProofWriter/ProofReader) |
-| **Radix Sort** | GPU | 32-bit LSD radix sort (4-pass, 8-bit radix) |
-| **Streaming Verify** | GPU/CPU | Task-queue streaming proof verification |
-| **Incremental Merkle** | GPU | Append/update without full rebuild |
-| **Batch Field Ops** | CPU | C-optimized vectorized field arithmetic |
-| **STIR** | GPU | Shift-based proximity testing (FRI alternative) |
-| **Marlin** | GPU | Preprocessed SNARK with algebraic holographic proof + KZG |
-| **Spartan** | GPU | Transparent SNARK (no trusted setup) via multilinear extensions + sumcheck |
-| **Jolt** | GPU | zkVM via Lasso structured lookups (40 RV32I opcodes, byte-decomposable tables) |
-| **SHA-256** | GPU | SHA-256 hash (batch + fused Merkle subtree) |
-| **Ed25519** | GPU/CPU | Curve25519 field (Solinas reduction), twisted Edwards curve, EdDSA, GPU MSM |
-| **BabyJubjub** | GPU/CPU | Twisted Edwards over BN254 Fr, C windowed scalar mul, Pedersen hash, EdDSA |
-| **Grumpkin** | GPU | BN254 inner curve (y²=x³-17), GPU MSM with signed-digit |
-| **Stark252** | GPU/CPU | StarkNet/Cairo native field (p=2^251+17·2^192+1), TWO_ADICITY=192, NTT |
-| **Schnorr** | CPU | BIP 340 Bitcoin Taproot signatures (x-only pubkeys, tagged hashing) |
-| **Poseidon2 BB** | GPU | Poseidon2 BabyBear width-16 (SP1/Plonky3 config, x^7 S-box) |
-| **Jubjub** | CPU | Twisted Edwards over BLS12-381 Fr (Zcash Sapling compatible) |
-| **Protogalaxy** | CPU | Plonk-native folding with O(k log k) per step |
-| **Recursive Proofs** | CPU | Groth16 verifier circuit + Nova IVC + BN254/Grumpkin & Pallas/Vesta curve cycles |
-| **CCS** | CPU | Customizable constraint system (unified R1CS/Plonk/AIR for folding) |
-| **Memory Checking** | CPU | GKR-based grand product for zkVM read/write consistency |
-| **Plonky3 AIR** | GPU | SP1-compatible BabyBear Poseidon2 config, trace commitment, duplex challenger |
-| **Plonk Custom Gates** | CPU | Halo2-compatible rotations, BoolCheck/RangeCheck/Lookup/Poseidon gates, Plookup |
-| **Proof Serialization** | CPU | BN254/BLS12-381 point compression, snarkjs JSON, EIP-4844 KZG, STARK binary |
-| **Shader Cache** | GPU | MTLBinaryArchive persistent cache + background parallel precompilation |
-| **Varuna** | CPU | Marlin/Varuna verifier with batched multi-pairing |
-| **Data-Parallel** | CPU | Repeated sub-circuit proving via GKR (O(\|C\| + N log N)) |
-| **Circom R1CS Parser** | CPU | Binary .r1cs/.wtns format parser for Groth16 proving |
-| **Plonk Constraint Compiler** | CPU | Gates to wire polynomials + sigma permutations |
-| **Protogalaxy Decider** | CPU | Plonk/Groth16 backend + IVC chain verification |
-| **Nova/SuperNova IVC** | CPU | Incremental verifiable computation with cross-term folding (2-circuit) |
-| **AIR Constraint DSL** | CPU/GPU | Fluent builder for CircleAIR STARK proving |
-| **Unified Lookup** | GPU | LogUp/Lasso/cq with auto-strategy selection |
-| **Fiat-Shamir Transcript** | CPU | TranscriptEngine protocol + Merlin STROBE-128 |
-| **GPU Buffer Pool** | GPU | Power-of-2 size-class recycling with scoped contexts |
-| **Coset LDE** | GPU | Fused zero-pad + coset-shift for BabyBear/Goldilocks/BN254 |
-| **Batch Field Ops** | GPU/CPU | Vectorized batch add/mul/sub/inverse across 12 fields |
-| **Parallel Reduction** | GPU | SIMD shuffle + shared memory for BN254/BabyBear |
-| **Prefix Scan** | GPU | GPU prefix product for Plonk grand product argument |
-| **Poseidon2 Sponge** | GPU | Duplex mode for BN254/BabyBear + batch + transcript integration |
-| **Data Availability Sampling** | GPU | EIP-4844 blob extension + cell proofs |
-| **RISC-V Decoder** | CPU | All 40 RV32I opcodes + execution trace for Jolt zkVM |
-| **Verkle Tree Proofs** | CPU | Banderwagon curve + IPA opening proofs |
-| **Multilinear Polynomial** | CPU | C-accelerated MLE + Hyrax/Gemini/Basefold PCS adapters |
-| **Groth16 Solidity Verifier** | CPU | Contract generation, snarkjs JSON, ABI calldata encoding |
-| **Universal Proof Format** | CPU | Binary/JSON serialization + extensible registry |
-| **Plonk Permutation Argument** | GPU | Grand product + GPU prefix product |
-| **STARK Trace Compression** | CPU/GPU | Algebraic/interleave/ZK + column analysis |
-| **Custom Gate Library** | CPU | ECC, hash, and binary operation gates (Halo2-compatible) |
-| **Pedersen Commitment** | CPU | Multi-curve engine + IPA vector commitments |
-| **Constraint Optimizer** | CPU | Dead elimination, constant fold, CSE, R1CS reduce |
-| **Plonky2 Recursive Verifier** | CPU | Proof composition bridge for Plonky2 circuits |
-| **Structured GKR** | CPU | Optimized GKR for structured/repeated sub-circuits |
-| **Grand Product GKR** | CPU | GKR-based grand product for memory checking |
-| **Memory Checking** | CPU | GKR-based read/write consistency for zkVM |
-| **Hyrax PCS** | CPU | Multilinear polynomial commitment via inner products |
-| **Fused NTT+Constraint** | GPU | Runtime IR to Metal source to GPU pipeline |
-| **BabyBear STARK** | GPU | SP1-compatible BabyBear Poseidon2 trace commitment |
-| **Proof Aggregation** | CPU | Multi-proof batching and recursive aggregation |
-| **SP1 Bridge** | CPU | SP1 proving system compatibility layer |
-| **Batch Verify** | CPU/GPU | Multi-proof batched verification (2.0) |
-| **Stream Verify** | GPU/CPU | Task-queue streaming proof verification (1.1) |
-| **Unified Verify** | CPU | Cross-system verification dispatcher |
 
 ## Performance
 
@@ -651,7 +682,7 @@ swift build -c release
 
 ## Correctness & Testing
 
-Run `swift build && .build/debug/zkMetalTests`. 154 test files, 157 test suites. All GPU kernels verified against CPU reference implementations.
+Run `swift build -c release && .build/release/zkMetalTests`. 234 test files, 229 test suites. All GPU kernels verified against CPU reference implementations.
 
 | Category | Primitives | Verification |
 |----------|------------|-------------|
