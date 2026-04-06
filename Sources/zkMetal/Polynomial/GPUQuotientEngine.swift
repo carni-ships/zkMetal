@@ -517,18 +517,33 @@ public class GPUQuotientEngine {
             let cpPtr = cosetPoints.contents().bindMemory(to: UInt32.self, capacity: domainSize * 8)
             let outPtr = outBuf.contents().bindMemory(to: UInt32.self, capacity: domainSize * 8)
 
+            // Compute all vanishing poly values, then batch-invert
+            var qZhVals = [Fr](repeating: Fr.zero, count: domainSize)
+            for i in 0..<domainSize {
+                let base = i * 8
+                var x = Fr(v: (cpPtr[base], cpPtr[base+1], cpPtr[base+2], cpPtr[base+3],
+                               cpPtr[base+4], cpPtr[base+5], cpPtr[base+6], cpPtr[base+7]))
+                for _ in 0..<logTraceLen { x = frSqr(x) }
+                qZhVals[i] = frSub(x, Fr.one)
+            }
+            var qFrPfx = [Fr](repeating: Fr.one, count: domainSize)
+            for i in 1..<domainSize {
+                qFrPfx[i] = qZhVals[i - 1] == Fr.zero ? qFrPfx[i - 1] : frMul(qFrPfx[i - 1], qZhVals[i - 1])
+            }
+            let qFrLst = qZhVals[domainSize - 1] == Fr.zero ? qFrPfx[domainSize - 1] : frMul(qFrPfx[domainSize - 1], qZhVals[domainSize - 1])
+            var qFrInvR = frInverse(qFrLst)
+            var qFrInvs = [Fr](repeating: Fr.zero, count: domainSize)
+            for i in Swift.stride(from: domainSize - 1, through: 0, by: -1) {
+                if qZhVals[i] != Fr.zero {
+                    qFrInvs[i] = frMul(qFrInvR, qFrPfx[i])
+                    qFrInvR = frMul(qFrInvR, qZhVals[i])
+                }
+            }
             for i in 0..<domainSize {
                 let base = i * 8
                 let eval = Fr(v: (inPtr[base], inPtr[base+1], inPtr[base+2], inPtr[base+3],
                                   inPtr[base+4], inPtr[base+5], inPtr[base+6], inPtr[base+7]))
-                var x = Fr(v: (cpPtr[base], cpPtr[base+1], cpPtr[base+2], cpPtr[base+3],
-                               cpPtr[base+4], cpPtr[base+5], cpPtr[base+6], cpPtr[base+7]))
-                for _ in 0..<logTraceLen {
-                    x = frSqr(x)
-                }
-                let zh = frSub(x, Fr.one)
-                let zhInv = frInverse(zh)
-                let result = frMul(eval, zhInv)
+                let result = frMul(eval, qFrInvs[i])
                 outPtr[base]   = result.v.0; outPtr[base+1] = result.v.1
                 outPtr[base+2] = result.v.2; outPtr[base+3] = result.v.3
                 outPtr[base+4] = result.v.4; outPtr[base+5] = result.v.5
@@ -540,15 +555,28 @@ public class GPUQuotientEngine {
             let cpPtr = cosetPoints.contents().bindMemory(to: UInt32.self, capacity: domainSize)
             let outPtr = outBuf.contents().bindMemory(to: UInt32.self, capacity: domainSize)
 
+            // Compute all vanishing poly values, then batch-invert
+            var qBbVals = [Bb](repeating: Bb.zero, count: domainSize)
             for i in 0..<domainSize {
-                let eval = Bb(v: inPtr[i])
                 var x = Bb(v: cpPtr[i])
-                for _ in 0..<logTraceLen {
-                    x = bbSqr(x)
+                for _ in 0..<logTraceLen { x = bbSqr(x) }
+                qBbVals[i] = bbSub(x, Bb.one)
+            }
+            var qBbPfx = [Bb](repeating: Bb.one, count: domainSize)
+            for i in 1..<domainSize {
+                qBbPfx[i] = qBbVals[i - 1].v == 0 ? qBbPfx[i - 1] : bbMul(qBbPfx[i - 1], qBbVals[i - 1])
+            }
+            let qBbLst = qBbVals[domainSize - 1].v == 0 ? qBbPfx[domainSize - 1] : bbMul(qBbPfx[domainSize - 1], qBbVals[domainSize - 1])
+            var qBbInvR = bbInverse(qBbLst)
+            var qBbInvs = [Bb](repeating: Bb.zero, count: domainSize)
+            for i in Swift.stride(from: domainSize - 1, through: 0, by: -1) {
+                if qBbVals[i].v != 0 {
+                    qBbInvs[i] = bbMul(qBbInvR, qBbPfx[i])
+                    qBbInvR = bbMul(qBbInvR, qBbVals[i])
                 }
-                let zh = bbSub(x, Bb.one)
-                let zhInv = bbInverse(zh)
-                outPtr[i] = bbMul(eval, zhInv).v
+            }
+            for i in 0..<domainSize {
+                outPtr[i] = bbMul(Bb(v: inPtr[i]), qBbInvs[i]).v
             }
 
         case .goldilocks:
@@ -615,15 +643,28 @@ public class GPUQuotientEngine {
             let cpPtr = cosetPoints.contents().bindMemory(to: UInt32.self, capacity: domainSize * 8)
             let outPtr = outBuf.contents().bindMemory(to: UInt32.self, capacity: domainSize * 8)
 
+            // Compute all zh values, then batch-invert
+            var viZhFr = [Fr](repeating: Fr.zero, count: domainSize)
             for i in 0..<domainSize {
                 let base = i * 8
                 var x = Fr(v: (cpPtr[base], cpPtr[base+1], cpPtr[base+2], cpPtr[base+3],
                                cpPtr[base+4], cpPtr[base+5], cpPtr[base+6], cpPtr[base+7]))
-                for _ in 0..<logTraceLen {
-                    x = frSqr(x)
+                for _ in 0..<logTraceLen { x = frSqr(x) }
+                viZhFr[i] = frSub(x, Fr.one)
+            }
+            var viFrPfx = [Fr](repeating: Fr.one, count: domainSize)
+            for i in 1..<domainSize {
+                viFrPfx[i] = viZhFr[i - 1] == Fr.zero ? viFrPfx[i - 1] : frMul(viFrPfx[i - 1], viZhFr[i - 1])
+            }
+            let viFrLst = viZhFr[domainSize - 1] == Fr.zero ? viFrPfx[domainSize - 1] : frMul(viFrPfx[domainSize - 1], viZhFr[domainSize - 1])
+            var viFrInvR = frInverse(viFrLst)
+            for i in Swift.stride(from: domainSize - 1, through: 0, by: -1) {
+                var inv = Fr.zero
+                if viZhFr[i] != Fr.zero {
+                    inv = frMul(viFrInvR, viFrPfx[i])
+                    viFrInvR = frMul(viFrInvR, viZhFr[i])
                 }
-                let zh = frSub(x, Fr.one)
-                let inv = frInverse(zh)
+                let base = i * 8
                 outPtr[base]   = inv.v.0; outPtr[base+1] = inv.v.1
                 outPtr[base+2] = inv.v.2; outPtr[base+3] = inv.v.3
                 outPtr[base+4] = inv.v.4; outPtr[base+5] = inv.v.5
@@ -634,13 +675,25 @@ public class GPUQuotientEngine {
             let cpPtr = cosetPoints.contents().bindMemory(to: UInt32.self, capacity: domainSize)
             let outPtr = outBuf.contents().bindMemory(to: UInt32.self, capacity: domainSize)
 
+            var viBbVals = [Bb](repeating: Bb.zero, count: domainSize)
             for i in 0..<domainSize {
                 var x = Bb(v: cpPtr[i])
-                for _ in 0..<logTraceLen {
-                    x = bbSqr(x)
+                for _ in 0..<logTraceLen { x = bbSqr(x) }
+                viBbVals[i] = bbSub(x, Bb.one)
+            }
+            var viBbPfx = [Bb](repeating: Bb.one, count: domainSize)
+            for i in 1..<domainSize {
+                viBbPfx[i] = viBbVals[i - 1].v == 0 ? viBbPfx[i - 1] : bbMul(viBbPfx[i - 1], viBbVals[i - 1])
+            }
+            let viBbLst = viBbVals[domainSize - 1].v == 0 ? viBbPfx[domainSize - 1] : bbMul(viBbPfx[domainSize - 1], viBbVals[domainSize - 1])
+            var viBbInvR = bbInverse(viBbLst)
+            for i in Swift.stride(from: domainSize - 1, through: 0, by: -1) {
+                if viBbVals[i].v != 0 {
+                    outPtr[i] = bbMul(viBbInvR, viBbPfx[i]).v
+                    viBbInvR = bbMul(viBbInvR, viBbVals[i])
+                } else {
+                    outPtr[i] = 0
                 }
-                let zh = bbSub(x, Bb.one)
-                outPtr[i] = bbInverse(zh).v
             }
 
         case .goldilocks:
