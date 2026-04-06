@@ -533,11 +533,13 @@ uint16_t bt_gf16_mul(uint16_t a, uint16_t b) {
     // 16x16 clmul: max bit 30, fits in lo
 
     // Reduce by x^16 + x^5 + x^3 + x + 1 (standard irreducible for GF(2^16))
+    // For each bit i >= 16: x^i = x^{i-16} * (x^5 + x^3 + x + 1)
+    // Must XOR out the original high bits (high << 16) as well as fold them down.
     uint64_t r = lo;
     uint64_t high = r >> 16;
-    r ^= (high << 5) ^ (high << 3) ^ (high << 1) ^ high;
+    r ^= (high << 16) ^ (high << 5) ^ (high << 3) ^ (high << 1) ^ high;
     high = r >> 16;
-    r ^= (high << 5) ^ (high << 3) ^ (high << 1) ^ high;
+    r ^= (high << 16) ^ (high << 5) ^ (high << 3) ^ (high << 1) ^ high;
 
     return (uint16_t)(r & 0xFFFF);
 }
