@@ -254,26 +254,20 @@ public class PCSComparisonEngine {
         var out = ""
         let sep = String(repeating: "-", count: 110)
         out += sep + "\n"
-        out += String(format: "%-10s | %-13s | %-12s | %-13s | %-10s | %-8s | %s\n",
-                      "Scheme" as NSString, "Poly Type" as NSString,
-                      "Proof Size" as NSString, "Verify" as NSString,
-                      "Prover" as NSString, "PQ Safe" as NSString,
-                      "Setup" as NSString)
+        out += "Scheme     | Poly Type     | Proof Size   | Verify        | Prover     | PQ Safe  | Setup\n"
         out += sep + "\n"
 
         for scheme in PCSScheme.allCases {
             let pq = PCSTradeoffAnalysis.isPostQuantum(scheme: scheme) ? "yes" : "no"
             let setup = scheme.requiresTrustedSetup ? "trusted" : "transparent"
             let impl = scheme.isImplemented ? "" : " (N/A)"
-            out += String(format: "%-10s | %-13s | %-12s | %-13s | %-10s | %-8s | %s%s\n",
-                          (scheme.rawValue as NSString),
-                          (scheme.polynomialType as NSString),
-                          (scheme.proofSizeComplexity as NSString),
-                          (scheme.verifierComplexity as NSString),
-                          (scheme.proverComplexity as NSString),
-                          (pq as NSString),
-                          (setup as NSString),
-                          (impl as NSString))
+            let s = scheme.rawValue.padding(toLength: 10, withPad: " ", startingAt: 0)
+            let pt = scheme.polynomialType.padding(toLength: 13, withPad: " ", startingAt: 0)
+            let ps = scheme.proofSizeComplexity.padding(toLength: 12, withPad: " ", startingAt: 0)
+            let vc = scheme.verifierComplexity.padding(toLength: 13, withPad: " ", startingAt: 0)
+            let pc = scheme.proverComplexity.padding(toLength: 10, withPad: " ", startingAt: 0)
+            let pqs = pq.padding(toLength: 8, withPad: " ", startingAt: 0)
+            out += "\(s) | \(pt) | \(ps) | \(vc) | \(pc) | \(pqs) | \(setup)\(impl)\n"
         }
         out += sep
         return out
@@ -878,11 +872,7 @@ extension PCSComparisonEngine {
         let sep = String(repeating: "-", count: 120)
 
         out += "\(sep)\n"
-        out += String(format: "%-12s | %5s | %10s | %10s | %10s | %10s | %12s | %s\n",
-                      "Scheme" as NSString, "Size" as NSString,
-                      "Commit" as NSString, "Open" as NSString,
-                      "Verify" as NSString, "Total" as NSString,
-                      "Proof Size" as NSString, "Setup" as NSString)
+        out += "Scheme       |  Size |     Commit |       Open |     Verify |      Total |   Proof Size | Setup\n"
         out += "\(sep)\n"
 
         for r in results {
@@ -896,10 +886,14 @@ extension PCSComparisonEngine {
                 setupStr = "\(kind) \(PCSTradeoffAnalysis.formatBytesPublic(r.setupSizeBytes))"
             }
 
-            out += String(format: "%-12s | %5s | %8.2f ms | %8.2f ms | %8.2f ms | %8.2f ms | %12s | %s\n",
-                          (r.scheme.rawValue as NSString), (sizeStr as NSString),
-                          r.commitTimeMs, r.openTimeMs, r.verifyTimeMs, r.totalTimeMs,
-                          (proofStr as NSString), (setupStr as NSString))
+            let scheme = r.scheme.rawValue.padding(toLength: 12, withPad: " ", startingAt: 0)
+            let size = sizeStr.padding(toLength: 5, withPad: " ", startingAt: 0)
+            let commit = String(format: "%8.2f ms", r.commitTimeMs)
+            let open = String(format: "%8.2f ms", r.openTimeMs)
+            let verify = String(format: "%8.2f ms", r.verifyTimeMs)
+            let total = String(format: "%8.2f ms", r.totalTimeMs)
+            let proof = proofStr.padding(toLength: 12, withPad: " ", startingAt: 0)
+            out += "\(scheme) | \(size) | \(commit) | \(open) | \(verify) | \(total) | \(proof) | \(setupStr)\n"
         }
         out += sep
         return out
@@ -918,19 +912,19 @@ extension PCSComparisonEngine {
             out += formatComparisonTable(group)
 
             if let fastest = group.min(by: { $0.commitTimeMs < $1.commitTimeMs }) {
-                out += String(format: "\n  Fastest commit: %s (%.2f ms)",
+                out += String(format: "\n  Fastest commit: %@ (%.2f ms)",
                               fastest.scheme.rawValue, fastest.commitTimeMs)
             }
             if let fastest = group.min(by: { $0.openTimeMs < $1.openTimeMs }) {
-                out += String(format: "\n  Fastest open:   %s (%.2f ms)",
+                out += String(format: "\n  Fastest open:   %@ (%.2f ms)",
                               fastest.scheme.rawValue, fastest.openTimeMs)
             }
             if let fastest = group.min(by: { $0.verifyTimeMs < $1.verifyTimeMs }) {
-                out += String(format: "\n  Fastest verify: %s (%.2f ms)",
+                out += String(format: "\n  Fastest verify: %@ (%.2f ms)",
                               fastest.scheme.rawValue, fastest.verifyTimeMs)
             }
             if let smallest = group.min(by: { $0.proofSizeBytes < $1.proofSizeBytes }) {
-                out += String(format: "\n  Smallest proof: %s (%d bytes)",
+                out += String(format: "\n  Smallest proof: %@ (%d bytes)",
                               smallest.scheme.rawValue, smallest.proofSizeBytes)
             }
             out += "\n"
@@ -958,10 +952,10 @@ extension PCSComparisonEngine {
 
         for (i, (r, s)) in ranked.enumerated() {
             let marker = i == 0 ? " <-- RECOMMENDED" : ""
-            out += String(format: "  #%d %s (score: %.3f)%s\n",
+            out += String(format: "  #%d %@ (score: %.3f)%@\n",
                           i + 1, r.scheme.rawValue, s, marker)
             out += "     \(r.scheme.summary)\n"
-            out += String(format: "     commit=%.2fms open=%.2fms verify=%.2fms proof=%s\n",
+            out += String(format: "     commit=%.2fms open=%.2fms verify=%.2fms proof=%@\n",
                           r.commitTimeMs, r.openTimeMs, r.verifyTimeMs,
                           PCSTradeoffAnalysis.formatBytesPublic(r.proofSizeBytes))
             let pq = PCSTradeoffAnalysis.isPostQuantum(scheme: r.scheme) ? "yes" : "no"
