@@ -60,3 +60,30 @@ kernel void basefold_fold_fused2(
     // out = mid0 + alpha1 * (mid1 - mid0)
     output[gid] = fr_add(mid0, fr_mul(alpha1, fr_sub(mid1, mid0)));
 }
+
+// Reed-Solomon linear extrapolation: extend evaluations by blowup factor 2.
+// For each pair (f(0,...), f(1,...)) with indices (i, i+halfN):
+//   extended[i]        = 2*f(1,...) - f(0,...)           i.e. f(2,...)
+//   extended[i+halfN]  = 2*extended[i] - f(1,...)        i.e. f(3,...)
+// Input:  evals[0..n), where n = 2*halfN
+// Output: extended[0..n), the second half of the RS-encoded vector
+kernel void basefold_rs_extend(
+    device const Fr* evals           [[buffer(0)]],
+    device Fr* extended              [[buffer(1)]],
+    constant Fr& two                 [[buffer(2)]],
+    constant uint& half_n            [[buffer(3)]],
+    uint gid                         [[thread_position_in_grid]]
+) {
+    if (gid >= half_n) return;
+
+    Fr f0 = evals[gid];                // f(0,...)
+    Fr f1 = evals[gid + half_n];       // f(1,...)
+
+    // f(2,...) = 2*f(1,...) - f(0,...)
+    Fr ext0 = fr_sub(fr_mul(two, f1), f0);
+    // f(3,...) = 2*f(2,...) - f(1,...)
+    Fr ext1 = fr_sub(fr_mul(two, ext0), f1);
+
+    extended[gid] = ext0;
+    extended[gid + half_n] = ext1;
+}

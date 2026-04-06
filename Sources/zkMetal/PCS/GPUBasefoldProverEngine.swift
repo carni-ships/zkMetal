@@ -191,11 +191,20 @@ public class GPUBasefoldProverEngine {
             return evaluations
         }
 
-        // For blowup = 2: extend by linear extrapolation along each evaluation pair.
-        // encoded[i] = evals[i] for i < n
-        // encoded[n + i] = 2 * evals[i] - evals[mirror(i)] where mirror flips the MSB
-        // This gives rate 1/2 RS code.
+        // For blowup = 2: use GPU-accelerated RS extension for large inputs
         if blowup == 2 {
+            // GPU threshold: below this, CPU is faster due to dispatch overhead
+            let gpuRSThreshold = 256
+
+            if n >= gpuRSThreshold {
+                // GPU path: basefold.rsExtend handles the full encoding
+                if let encoded = try? basefold.rsExtend(evaluations: evaluations) {
+                    return encoded
+                }
+                // Fall through to CPU path on GPU error
+            }
+
+            // CPU path for small inputs or GPU fallback
             var encoded = [Fr](repeating: Fr.zero, count: 2 * n)
 
             // Copy original evaluations

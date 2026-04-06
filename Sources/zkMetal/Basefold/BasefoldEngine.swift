@@ -49,6 +49,7 @@ public class BasefoldEngine {
     public let commandQueue: MTLCommandQueue
     let foldFunction: MTLComputePipelineState
     let foldFused2Function: MTLComputePipelineState
+    let rsExtendFunction: MTLComputePipelineState
 
     private lazy var merkleEngine: Poseidon2MerkleEngine = {
         try! Poseidon2MerkleEngine()
@@ -86,12 +87,14 @@ public class BasefoldEngine {
         let library = try BasefoldEngine.compileShaders(device: device)
 
         guard let foldFn = library.makeFunction(name: "basefold_fold"),
-              let foldFused2Fn = library.makeFunction(name: "basefold_fold_fused2") else {
+              let foldFused2Fn = library.makeFunction(name: "basefold_fold_fused2"),
+              let rsExtendFn = library.makeFunction(name: "basefold_rs_extend") else {
             throw MSMError.missingKernel
         }
 
         self.foldFunction = try device.makeComputePipelineState(function: foldFn)
         self.foldFused2Function = try device.makeComputePipelineState(function: foldFused2Fn)
+        self.rsExtendFunction = try device.makeComputePipelineState(function: rsExtendFn)
         self.tuning = TuningManager.shared.config(device: device)
     }
 
@@ -792,6 +795,62 @@ public class BasefoldEngine {
 
         let ptr = currentBuf.contents().bindMemory(to: Fr.self, capacity: currentN)
         return Array(UnsafeBufferPointer(start: ptr, count: currentN))
+    }
+
+    // MARK: - GPU RS Encode
+
+    /// GPU-accelerated Reed-Solomon extension for blowup=2.
+    /// Extends n evaluations to 2n by linear extrapolation on GPU.
+    /// Returns the full 2n encoded vector: [original evaluations | extended evaluations].
+    public func rsExtend(evaluations: [Fr]) throws -> [Fr] {
+        let n = evaluations.count
+        precondition(n >= 2 && (n & (n - 1)) == 0, "Evaluation count must be power of 2")
+        let halfN = n / 2
+        let stride = MemoryLayout<Fr>.stride
+
+        // Upload evaluations
+        if n > inputBufElements {
+            guard let buf = device.makeBuffer(length: n * stride, options: .storageModeShared) else {
+                throw MSMError.gpuError("Failed to create RS input buffer")
+            }
+            inputBuf = buf
+            inputBufElements = n
+        }
+        evaluations.withUnsafeBytes { src in
+            memcpy(inputBuf!.contents(), src.baseAddress!, n * stride)
+        }
+
+        // Allocate output buffer for the extended part (n elements)
+        guard let extBuf = device.makeBuffer(length: n * stride, options: .storageModeShared),
+              let cmdBuf = commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
+        }
+
+        var twoVal = frFromInt(2)
+        var hnVal = UInt32(halfN)
+        let enc = cmdBuf.makeComputeCommandEncoder()!
+        enc.setComputePipelineState(rsExtendFunction)
+        enc.setBuffer(inputBuf!, offset: 0, index: 0)
+        enc.setBuffer(extBuf, offset: 0, index: 1)
+        enc.setBytes(&twoVal, length: stride, index: 2)
+        enc.setBytes(&hnVal, length: 4, index: 3)
+        let tg = min(tuning.friThreadgroupSize, Int(rsExtendFunction.maxTotalThreadsPerThreadgroup))
+        enc.dispatchThreads(MTLSize(width: halfN, height: 1, depth: 1),
+                           threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+        enc.endEncoding()
+
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+        if let error = cmdBuf.error {
+            throw MSMError.gpuError("RS extend: \(error.localizedDescription)")
+        }
+
+        // Assemble result: [original | extended]
+        var result = evaluations
+        result.reserveCapacity(2 * n)
+        let extPtr = extBuf.contents().bindMemory(to: Fr.self, capacity: n)
+        result.append(contentsOf: UnsafeBufferPointer(start: extPtr, count: n))
+        return result
     }
 
     // MARK: - Internal Helpers
