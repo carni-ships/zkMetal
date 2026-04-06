@@ -69,7 +69,7 @@ inline void groestl_shift_bytes_P(thread uchar state[64]) {
 
 // ShiftBytes for Q permutation: shift amounts [1,3,5,7,0,2,4,6]
 inline void groestl_shift_bytes_Q(thread uchar state[64]) {
-    constant uint shifts[8] = {1, 3, 5, 7, 0, 2, 4, 6};
+    const uint shifts[8] = {1, 3, 5, 7, 0, 2, 4, 6};
     for (uint row = 0; row < 8; row++) {
         uint shift = shifts[row];
         if (shift == 0) continue;
