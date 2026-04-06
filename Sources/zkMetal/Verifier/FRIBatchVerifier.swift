@@ -117,8 +117,10 @@ public class FRIBatchVerifier {
 
     /// Verify fold consistency for a single FRI proof.
     /// Checks that each layer's evaluations are consistent with the folding operation.
+    private static let inv2 = frInverse(frFromInt(2))
     private func verifyFoldConsistency(commitment: FRICommitment, queries: [FRIQueryProof]) -> Bool {
         let numLayers = commitment.layers.count - 1
+        let inv2 = Self.inv2
 
         for query in queries {
             var idx = query.initialIndex
@@ -133,8 +135,8 @@ public class FRIBatchVerifier {
 
                 // Check: folded value should match next layer
                 // fold(f_left, f_right, beta, twiddle) = (f_left + f_right)/2 + beta * twiddle * (f_left - f_right)/2
-                let sum = frMul(frAdd(evalLeft, evalRight), frInverse(frFromInt(2)))
-                let diff = frMul(frSub(evalLeft, evalRight), frInverse(frFromInt(2)))
+                let sum = frMul(frAdd(evalLeft, evalRight), inv2)
+                let diff = frMul(frSub(evalLeft, evalRight), inv2)
 
                 // Twiddle factor depends on the domain and index
                 // For standard FRI, twiddle_k = omega^(-k) where omega is the domain generator

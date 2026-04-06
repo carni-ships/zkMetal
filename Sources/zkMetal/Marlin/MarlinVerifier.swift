@@ -1092,12 +1092,13 @@ public class MarlinTestProver {
         return polys
     }
 
+    private static let inv2Cached = frInverse(frFromInt(2))
     private func evaluateDeg2PolyHelper(_ coeffs: [Fr], at r: Fr) -> Fr {
         guard coeffs.count >= 3 else { return Fr.zero }
         let f0 = coeffs[0], f1 = coeffs[1], f2 = coeffs[2]
         let rM1 = frSub(r, Fr.one)
         let rM2 = frSub(r, frFromInt(2))
-        let inv2 = frInverse(frFromInt(2))
+        let inv2 = Self.inv2Cached
         let t0 = frMul(f0, frMul(frMul(rM1, rM2), inv2))
         let t1 = frMul(frNeg(f1), frMul(r, rM2))
         let t2 = frMul(f2, frMul(frMul(r, rM1), inv2))

@@ -778,13 +778,25 @@ public class GPUPolyCommitOpenEngine {
         guard k > 0 else { return [] }
         if k == 1 { return [values[0]] }
 
+        // Precompute all Lagrange denominators and batch-invert
+        var denoms = [Fr](repeating: Fr.one, count: k)
+        for i in 0..<k {
+            for j in 0..<k where j != i {
+                denoms[i] = frMul(denoms[i], frSub(points[i], points[j]))
+            }
+        }
+        var dPfx = [Fr](repeating: Fr.one, count: k)
+        for i in 1..<k { dPfx[i] = frMul(dPfx[i - 1], denoms[i - 1]) }
+        var dAcc = frInverse(frMul(dPfx[k - 1], denoms[k - 1]))
+        var denomInvs = [Fr](repeating: Fr.zero, count: k)
+        for i in Swift.stride(from: k - 1, through: 0, by: -1) {
+            denomInvs[i] = frMul(dAcc, dPfx[i])
+            dAcc = frMul(dAcc, denoms[i])
+        }
+
         var result = [Fr](repeating: Fr.zero, count: k)
         for i in 0..<k {
-            var denom = Fr.one
-            for j in 0..<k {
-                if j != i { denom = frMul(denom, frSub(points[i], points[j])) }
-            }
-            let scalar = frMul(values[i], frInverse(denom))
+            let scalar = frMul(values[i], denomInvs[i])
 
             var basis: [Fr] = [Fr.one]
             for j in 0..<k {

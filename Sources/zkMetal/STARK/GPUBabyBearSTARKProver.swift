@@ -408,6 +408,7 @@ public class GPUBabyBearSTARKProver {
         var currentEvals = evaluations
         var currentLogN = logN
         var rounds = [BabyBearFRIRound]()
+        let bbInv2 = bbInverse(Bb(v: 2))  // hoist constant inverse
 
         let numQueries = config.base.numQueries
         var queryIndices = [Int]()
@@ -442,7 +443,7 @@ public class GPUBabyBearSTARKProver {
 
             // GPU-parallel FRI fold
             let omega = bbRootOfUnity(logN: currentLogN)
-            let inv2 = bbInverse(Bb(v: 2))
+            let inv2 = bbInv2
 
             // Precompute omega powers: omega^0, omega^1, ..., omega^(half-1)
             var omegaPows = [Bb](repeating: Bb.one, count: half)
