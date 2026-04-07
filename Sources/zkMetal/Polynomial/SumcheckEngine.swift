@@ -644,16 +644,17 @@ public class SumcheckEngine {
     public static func cpuRoundPoly(evals: [Fr]) -> (Fr, Fr, Fr) {
         let n = evals.count
         let halfN = n / 2
-        var s0 = Fr.zero, s1 = Fr.zero, s2 = Fr.zero
-        for i in 0..<halfN {
-            let a = evals[i]
-            let b = evals[i + halfN]
-            s0 = frAdd(s0, a)
-            s1 = frAdd(s1, b)
-            let twoB = frAdd(b, b)
-            let f2 = frSub(twoB, a)
-            s2 = frAdd(s2, f2)
+        var s0Limbs = [UInt64](repeating: 0, count: 4)
+        var s1Limbs = [UInt64](repeating: 0, count: 4)
+        evals.withUnsafeBytes { buf in
+            let p = buf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+            bn254_fr_vector_sum(p, Int32(halfN), &s0Limbs)
+            bn254_fr_vector_sum(p + halfN * 4, Int32(halfN), &s1Limbs)
         }
+        let s0 = Fr.from64(s0Limbs)
+        let s1 = Fr.from64(s1Limbs)
+        // s2 = sum(2*b - a) = 2*s1 - s0
+        let s2 = frSub(frAdd(s1, s1), s0)
         return (s0, s1, s2)
     }
 
@@ -830,12 +831,18 @@ public class SumcheckEngine {
         let n = polynomials[0].count
         let halfN = n / 2
         var result = [[Fr]](repeating: [Fr](repeating: Fr.zero, count: halfN), count: k)
-        for j in 0..<k {
-            for i in 0..<halfN {
-                let a = polynomials[j][i]
-                let b = polynomials[j][i + halfN]
-                let diff = frSub(b, a)
-                result[j][i] = frAdd(a, frMul(challenge, diff))
+        withUnsafeBytes(of: challenge) { cPtr in
+            let cP = cPtr.baseAddress!.assumingMemoryBound(to: UInt64.self)
+            for j in 0..<k {
+                polynomials[j].withUnsafeBytes { pBuf in
+                    result[j].withUnsafeMutableBytes { rBuf in
+                        bn254_fr_sumcheck_reduce(
+                            pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            cP,
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(halfN))
+                    }
+                }
             }
         }
         return result

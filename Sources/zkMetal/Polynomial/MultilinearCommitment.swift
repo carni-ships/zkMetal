@@ -166,17 +166,31 @@ public class HyraxPCS: MultilinearPCS {
         for i in 0..<numRows {
             if eqL.evals[i].isZero { continue }
             let rowStart = i * numCols
-            for j in 0..<numCols {
-                innerVector[j] = frAdd(innerVector[j], frMul(eqL.evals[i], poly.evals[rowStart + j]))
+            withUnsafeBytes(of: eqL.evals[i]) { sPtr in
+                poly.evals.withUnsafeBytes { pBuf in
+                    innerVector.withUnsafeMutableBytes { rBuf in
+                        bn254_fr_batch_mac_neon(
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self) + rowStart * 4,
+                            sPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(numCols))
+                    }
+                }
             }
         }
 
         // Compute evaluation: value = <v_R, eq(r_R, .)>
         let eqR = MultilinearPoly.eqPolyC(point: rR)
-        var computedValue = Fr.zero
-        for j in 0..<numCols {
-            computedValue = frAdd(computedValue, frMul(innerVector[j], eqR.evals[j]))
+        var resultLimbs = [UInt64](repeating: 0, count: 4)
+        innerVector.withUnsafeBytes { aBuf in
+            eqR.evals.withUnsafeBytes { bBuf in
+                bn254_fr_inner_product(
+                    aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(numCols), &resultLimbs)
+            }
         }
+        let computedValue = Fr.from64(resultLimbs)
 
         // Sanity check if value provided
         if let v = value {
