@@ -69,7 +69,110 @@ static inline void fp_mul(const uint64_t a[6], const uint64_t b[6], uint64_t r[6
     if (!borrow) memcpy(r, tmp, 48); else memcpy(r, t, 48);
 }
 
-static inline void fp_sqr(const uint64_t a[6], uint64_t r[6]) { fp_mul(a, a, r); }
+static inline void fp_sqr(const uint64_t a[6], uint64_t r[6]) {
+    // Dedicated squaring: 21 mul instead of 36 (6 diagonal + 15 off-diagonal doubled)
+    uint128_t w, acc;
+    uint64_t t[12];
+
+    // 15 off-diagonal products: a[i]*a[j] for i<j
+    uint64_t lo[15], hi[15];
+    int k = 0;
+    for (int i = 0; i < 5; i++) {
+        for (int j = i + 1; j < 6; j++) {
+            w = (uint128_t)a[i] * a[j];
+            lo[k] = (uint64_t)w;
+            hi[k] = (uint64_t)(w >> 64);
+            k++;
+        }
+    }
+    // Index: (0,1)=0 (0,2)=1 (0,3)=2 (0,4)=3 (0,5)=4
+    //        (1,2)=5 (1,3)=6 (1,4)=7 (1,5)=8
+    //        (2,3)=9 (2,4)=10 (2,5)=11
+    //        (3,4)=12 (3,5)=13
+    //        (4,5)=14
+
+    // Assemble off-diagonal columns (before doubling)
+    t[0] = 0;
+    t[1] = lo[0];
+    acc = (uint128_t)lo[1] + hi[0];
+    t[2] = (uint64_t)acc;
+    acc = (acc >> 64) + (uint128_t)lo[2] + hi[1] + lo[5];
+    t[3] = (uint64_t)acc;
+    acc = (acc >> 64) + (uint128_t)lo[3] + hi[2] + lo[6] + hi[5];
+    t[4] = (uint64_t)acc;
+    acc = (acc >> 64) + (uint128_t)lo[4] + hi[3] + lo[7] + hi[6] + lo[9];
+    t[5] = (uint64_t)acc;
+    acc = (acc >> 64) + (uint128_t)hi[4] + lo[8] + hi[7] + lo[10] + hi[9];
+    t[6] = (uint64_t)acc;
+    acc = (acc >> 64) + (uint128_t)hi[8] + lo[11] + hi[10] + lo[12];
+    t[7] = (uint64_t)acc;
+    acc = (acc >> 64) + (uint128_t)hi[11] + lo[13] + hi[12];
+    t[8] = (uint64_t)acc;
+    acc = (acc >> 64) + (uint128_t)hi[13] + lo[14];
+    t[9] = (uint64_t)acc;
+    acc = (acc >> 64) + hi[14];
+    t[10] = (uint64_t)acc;
+    t[11] = (uint64_t)(acc >> 64);
+
+    // Double the off-diagonal (shift left by 1)
+    t[11] = (t[11] << 1) | (t[10] >> 63);
+    t[10] = (t[10] << 1) | (t[9] >> 63);
+    t[9]  = (t[9]  << 1) | (t[8] >> 63);
+    t[8]  = (t[8]  << 1) | (t[7] >> 63);
+    t[7]  = (t[7]  << 1) | (t[6] >> 63);
+    t[6]  = (t[6]  << 1) | (t[5] >> 63);
+    t[5]  = (t[5]  << 1) | (t[4] >> 63);
+    t[4]  = (t[4]  << 1) | (t[3] >> 63);
+    t[3]  = (t[3]  << 1) | (t[2] >> 63);
+    t[2]  = (t[2]  << 1) | (t[1] >> 63);
+    t[1]  = t[1] << 1;
+
+    // Add diagonal products: a[i]^2 at positions 2*i, 2*i+1
+    uint64_t carry = 0;
+    for (int i = 0; i < 6; i++) {
+        w = (uint128_t)a[i] * a[i];
+        acc = (uint128_t)(uint64_t)w + t[2*i] + carry;
+        t[2*i] = (uint64_t)acc; carry = (uint64_t)(acc >> 64);
+        acc = (uint128_t)(uint64_t)(w >> 64) + t[2*i+1] + carry;
+        t[2*i+1] = (uint64_t)acc; carry = (uint64_t)(acc >> 64);
+    }
+
+    // Montgomery reduction (6 iterations)
+    {
+        uint64_t u[13];
+        for (int j = 0; j < 12; j++) u[j] = t[j];
+        u[12] = 0;
+        for (int i = 0; i < 6; i++) {
+            uint64_t m = u[0] * P_INV;
+            uint128_t c2 = (uint128_t)m * P[0] + u[0]; c2 >>= 64;
+            c2 += (uint128_t)m * P[1] + u[1]; u[0] = (uint64_t)c2; c2 >>= 64;
+            c2 += (uint128_t)m * P[2] + u[2]; u[1] = (uint64_t)c2; c2 >>= 64;
+            c2 += (uint128_t)m * P[3] + u[3]; u[2] = (uint64_t)c2; c2 >>= 64;
+            c2 += (uint128_t)m * P[4] + u[4]; u[3] = (uint64_t)c2; c2 >>= 64;
+            c2 += (uint128_t)m * P[5] + u[5]; u[4] = (uint64_t)c2; c2 >>= 64;
+            c2 += u[6]; u[5] = (uint64_t)c2; c2 >>= 64;
+            c2 += u[7]; u[6] = (uint64_t)c2; c2 >>= 64;
+            c2 += u[8]; u[7] = (uint64_t)c2; c2 >>= 64;
+            c2 += u[9]; u[8] = (uint64_t)c2; c2 >>= 64;
+            c2 += u[10]; u[9] = (uint64_t)c2; c2 >>= 64;
+            c2 += u[11]; u[10] = (uint64_t)c2; c2 >>= 64;
+            c2 += u[12]; u[11] = (uint64_t)c2;
+            u[12] = (uint64_t)(c2 >> 64);
+        }
+        for (int j = 0; j < 6; j++) t[j] = u[j];
+    }
+
+    // Final conditional subtraction
+    uint64_t borrow = 0, tmp[6];
+    uint128_t d;
+    d = (uint128_t)t[0] - P[0]; tmp[0] = (uint64_t)d; borrow = (d >> 127) & 1;
+    d = (uint128_t)t[1] - P[1] - borrow; tmp[1] = (uint64_t)d; borrow = (d >> 127) & 1;
+    d = (uint128_t)t[2] - P[2] - borrow; tmp[2] = (uint64_t)d; borrow = (d >> 127) & 1;
+    d = (uint128_t)t[3] - P[3] - borrow; tmp[3] = (uint64_t)d; borrow = (d >> 127) & 1;
+    d = (uint128_t)t[4] - P[4] - borrow; tmp[4] = (uint64_t)d; borrow = (d >> 127) & 1;
+    d = (uint128_t)t[5] - P[5] - borrow; tmp[5] = (uint64_t)d; borrow = (d >> 127) & 1;
+    if (!borrow) memcpy(r, tmp, 48); else memcpy(r, t, 48);
+}
 
 static inline void fp_add(const uint64_t a[6], const uint64_t b[6], uint64_t r[6]) {
     uint128_t w; uint64_t c = 0;
@@ -825,46 +928,97 @@ static void g2_aff_add(uint64_t t[G2AFF], const uint64_t q[G2AFF], uint64_t lamb
 // Tower positions: 1 = c0.c0, v = c0.c1, v*w = c1.c1
 // ============================================================
 
+// Full line evaluation (for testing/fallback)
 static void line_eval(const uint64_t lambda[FP2], const uint64_t xT[FP2], const uint64_t yT[FP2],
                       const uint64_t px[FP], const uint64_t py[FP],
                       uint64_t line[FP12]) {
-    // ell_0 = lambda*xT - yT  (at position c0.c0)
-    uint64_t ell_0[12], ell_v[12], ell_vw[12], t1[12];
-
+    uint64_t t1[12];
     fp2_mul(lambda, xT, t1);
-    fp2_sub(t1, yT, ell_0);
-
-    // ell_v = -lambda*xP  (at position c0.c1)
+    uint64_t ell_0[12]; fp2_sub(t1, yT, ell_0);
     fp2_mul_fp(lambda, px, t1);
-    fp2_neg(t1, ell_v);
-
-    // ell_vw = yP  (at position c1.c1) -- yP as Fp2 with c1=0
-    fp_copy(ell_vw, py);
-    memset(ell_vw+6, 0, 48);
-
-    // Build Fp12: c0 = (ell_0, ell_v, 0), c1 = (0, ell_vw, 0)
-    fp2_copy(line, ell_0);          // c0.c0
-    fp2_copy(line+12, ell_v);       // c0.c1
-    fp2_zero(line+24);              // c0.c2
-    fp2_zero(line+36);              // c1.c0
-    fp2_copy(line+48, ell_vw);      // c1.c1
-    fp2_zero(line+60);              // c1.c2
+    uint64_t ell_v[12]; fp2_neg(t1, ell_v);
+    uint64_t ell_vw[12]; fp_copy(ell_vw, py); memset(ell_vw+6, 0, 48);
+    fp2_copy(line, ell_0); fp2_copy(line+12, ell_v); fp2_zero(line+24);
+    fp2_zero(line+36); fp2_copy(line+48, ell_vw); fp2_zero(line+60);
 }
 
-// Sparse multiplication: f * line where line has only 3 nonzero Fp2 components
-// Positions: c0.c0 (=l0), c0.c1 (=l1), c1.c1 (=l4)
-// This is significantly cheaper than full Fp12 mul
-static void fp12_mul_by_line(const uint64_t f[FP12], const uint64_t line[FP12], uint64_t r[FP12]) {
-    // Extract line coefficients
-    const uint64_t *l0 = line;        // c0.c0
-    const uint64_t *l1 = line + 12;   // c0.c1
-    const uint64_t *l4 = line + 48;   // c1.c1
+// Sparse line evaluation: outputs 3 nonzero Fp2 components
+static void line_eval_sparse(const uint64_t lambda[FP2], const uint64_t xT[FP2], const uint64_t yT[FP2],
+                             const uint64_t px[FP], const uint64_t py[FP],
+                             uint64_t l0[FP2], uint64_t l1[FP2], uint64_t l4[FP2]) {
+    // l0 = lambda*xT - yT  (position c0.c0)
+    uint64_t t1[12];
+    fp2_mul(lambda, xT, t1);
+    fp2_sub(t1, yT, l0);
 
-    // f = f0 + f1*w, line = (l0 + l1*v) + l4*v*w
-    // Product = (f0*(l0+l1*v) + f1*l4*v*v) + (f1*(l0+l1*v) + f0*l4*v)*w
-    // But v^2*... gets complicated. Let's use full mul for correctness first,
-    // then optimize if needed.
-    fp12_mul(f, line, r);
+    // l1 = -lambda*xP  (position c0.c1)
+    fp2_mul_fp(lambda, px, t1);
+    fp2_neg(t1, l1);
+
+    // l4 = yP as Fp2  (position c1.c1)
+    fp_copy(l4, py);
+    memset(l4+6, 0, 48);
+}
+
+// Sparse Fp12 multiplication by a line evaluation.
+// BLS12-381 line has 3 nonzero Fp2 at: c0.c0 (l0), c0.c1 (l1), c1.c1 (l4)
+// line_c0 = (l0, l1, 0) in Fp6, line_c1 = (0, l4, 0) in Fp6
+//
+// d0 = f0 * (l0,l1,0): 5 Fp2 muls (sparse Fp6 Karatsuba)
+// d1 = f1 * (0,l4,0): 3 Fp2 muls (only 1 nonzero component)
+// cross = (f0+f1)*(l0,l1+l4,0): 5 Fp2 muls (same sparse pattern as d0)
+// Total: 13 Fp2 muls vs 18 generic (28% reduction)
+static void fp12_mul_by_line_sparse(uint64_t f[FP12],
+                                    const uint64_t l0[FP2],
+                                    const uint64_t l1[FP2],
+                                    const uint64_t l4[FP2],
+                                    uint64_t r[FP12]) {
+    const uint64_t *a0 = f, *a1 = f+12, *a2 = f+24;
+    const uint64_t *b0 = f+36, *b1 = f+48, *b2 = f+60;
+
+    // d0 = f0 * (l0,l1,0) — sparse Fp6 Karatsuba with c2=0
+    // p0 = a0*l0, p1 = a1*l1
+    // d0.c0 = p0 + xi*(a2*l1)
+    // d0.c1 = (a0+a1)*(l0+l1) - p0 - p1
+    // d0.c2 = a2*l0 + p1
+    uint64_t p0[12], p1[12], d0[36], t[12], t2[12];
+    fp2_mul(a0, l0, p0);
+    fp2_mul(a1, l1, p1);
+    fp2_mul(a2, l1, t); fp2_mul_nr(t, d0); fp2_add(d0, p0, d0);
+    fp2_add(a0, a1, t); fp2_add(l0, l1, t2);
+    fp2_mul(t, t2, d0+12); fp2_sub(d0+12, p0, d0+12); fp2_sub(d0+12, p1, d0+12);
+    fp2_mul(a2, l0, t); fp2_add(t, p1, d0+24);
+
+    // d1 = f1 * (0,l4,0)
+    // p0' = b0*0 = 0, p1' = b1*l4
+    // d1.c0 = xi*(b2*l4)
+    // d1.c1 = b0*l4  (from (b0+b1)*(0+l4) - 0 - b1*l4 = b0*l4)
+    // d1.c2 = b1*l4  (= p1')
+    uint64_t q1[12], d1[36];
+    fp2_mul(b1, l4, q1);
+    fp2_mul(b2, l4, t); fp2_mul_nr(t, d1);
+    fp2_mul(b0, l4, d1+12);
+    fp2_copy(d1+24, q1);
+
+    // r.c0 = d0 + v*d1
+    uint64_t d1v[36];
+    fp6_mul_by_v(d1, d1v);
+    fp6_add(d0, d1v, r);
+
+    // cross = (f0+f1) * (l0, l1+l4, 0) — sparse with c2=0
+    uint64_t sl[12], ab0[12], ab1[12], ab2[12], e0[12], e1[12], cr[36];
+    fp2_add(l1, l4, sl);
+    fp2_add(a0, b0, ab0); fp2_add(a1, b1, ab1); fp2_add(a2, b2, ab2);
+    fp2_mul(ab0, l0, e0);
+    fp2_mul(ab1, sl, e1);
+    fp2_mul(ab2, sl, t); fp2_mul_nr(t, cr); fp2_add(cr, e0, cr);
+    fp2_add(ab0, ab1, t); fp2_add(l0, sl, t2);
+    fp2_mul(t, t2, cr+12); fp2_sub(cr+12, e0, cr+12); fp2_sub(cr+12, e1, cr+12);
+    fp2_mul(ab2, l0, t); fp2_add(t, e1, cr+24);
+
+    // r.c1 = cross - d0 - d1
+    fp6_sub(cr, d0, r+36);
+    fp6_sub(r+36, d1, r+36);
 }
 
 // ============================================================
@@ -897,6 +1051,7 @@ static void miller_loop(const uint64_t p_aff[12], const uint64_t q_aff[24], uint
     uint64_t line[72], tmp[72];
     uint64_t lam[12];
     uint64_t oldTx[12], oldTy[12];
+    uint64_t ll0[12], ll1[12], ll4[12]; // sparse line components
 
     for (int i = 0; i < 63; i++) {
         // Square f
@@ -907,10 +1062,10 @@ static void miller_loop(const uint64_t p_aff[12], const uint64_t q_aff[24], uint
         fp2_copy(oldTx, T);
         fp2_copy(oldTy, T+12);
 
-        // Doubling step
+        // Doubling step — sparse line eval + sparse mul
         g2_aff_double(T, lam);
-        line_eval(lam, oldTx, oldTy, px, py, line);
-        fp12_mul_by_line(f, line, tmp);
+        line_eval_sparse(lam, oldTx, oldTy, px, py, ll0, ll1, ll4);
+        fp12_mul_by_line_sparse(f, ll0, ll1, ll4, tmp);
         fp12_copy(f, tmp);
 
         // Addition step if bit is 1
@@ -918,8 +1073,8 @@ static void miller_loop(const uint64_t p_aff[12], const uint64_t q_aff[24], uint
             fp2_copy(oldTx, T);
             fp2_copy(oldTy, T+12);
             g2_aff_add(T, q_aff, lam);
-            line_eval(lam, oldTx, oldTy, px, py, line);
-            fp12_mul_by_line(f, line, tmp);
+            line_eval_sparse(lam, oldTx, oldTy, px, py, ll0, ll1, ll4);
+            fp12_mul_by_line_sparse(f, ll0, ll1, ll4, tmp);
             fp12_copy(f, tmp);
         }
     }
