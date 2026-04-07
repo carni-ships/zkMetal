@@ -408,8 +408,13 @@ C CIOS Montgomery acceleration: pre-computed wiring topology, cached buffers, eq
 | Goldilocks NTT (C) | 2^20 | 53ms | 25ms | **2.1x** | `__uint128_t` pipelining |
 | Keccak NEON | 2^16 | 38ms | 1.5ms (GPU) | **25x** | NEON 0.63 us/hash, GPU overtakes at 2^12 |
 | Blake3 NEON | 2^18 | 17ms | 1.4ms (GPU) | **12x** | NEON 0.10 us/hash, GPU overtakes at 2^14 |
+| BN254 Fr mul (C CIOS) | single | 2500ns | 16ns | **156x** | Zero-copy Swift↔C bridge, `__uint128_t` |
+| BN254 Fr add (C) | single | ~50ns | 4.5ns | **11x** | Branchless modular add |
 | BN254 batch add (C) | 100K | 16ms | 264 us | **60x** | 2.6 ns/op vectorized |
 | BN254 batch mul (C) | 100K | -- | 1.3ms | -- | 13.4 ns/op CIOS |
+| BN254 batch MAC (C) | 100K | -- | -- | -- | Fused scalar*vec + accumulate |
+| Sumcheck reduce (C) | 2^20 | -- | -- | -- | Single C call per round |
+| IPA s-vector | 2^20 | O(n·logN) | O(n) | **20x** | Butterfly construction |
 | ECDSA batch 64 (CPU) | 64 sigs | -- | 1.7ms | **57x** | 0.03ms/sig, C CIOS Fr + batch prepare |
 
 ### Supporting Primitives
@@ -677,7 +682,8 @@ swift build -c release
 - **Fused kernels**: Multi-round FRI folding and Poseidon2 full permutations avoid intermediate buffer round-trips. NTT uses fused bitrev+butterfly and twiddle fusion for 30-47% improvement.
 - **Signed-digit MSM**: Scalar recoding halves bucket count, reducing bucket accumulation work.
 - **GLV endomorphism**: BN254's efficient endomorphism splits 256-bit scalar muls into two 128-bit half-width muls.
-- **C CIOS field arithmetic**: Hot-path 256-bit Montgomery multiplication uses C `__uint128_t` compiled with `-O3`, which is 29-30x faster than Swift for BN254 Fr carry chains.
+- **C CIOS field arithmetic**: Hot-path 256-bit Montgomery multiplication uses C `__uint128_t` compiled with `-O3`, which is 156x faster than Swift for BN254 Fr (16ns vs 2500ns). All 10 field types (BN254/BLS12-381/BLS12-377/Ed25519/Secp256k1/Pallas/Vesta/Stark252 Fr/Fp) use zero-copy C bridge.
+- **Zero-copy Swift↔C bridge**: Field elements (8×UInt32 or 4×UInt64 tuples) share memory layout with C `uint64_t[4]`. `UnsafeRawPointer` cast avoids all heap allocation. Batch kernels (MAC, scalar_sub, sumcheck_reduce, pointwise_mul, inner_product, vector_sum, batch_inverse) eliminate per-element call overhead.
 - **Small-input fast path**: MSM automatically routes to multi-threaded C Pippenger for small inputs (BN254 n<=2048, secp256k1 n<=1024) to avoid GPU dispatch overhead.
 
 ## Correctness & Testing
