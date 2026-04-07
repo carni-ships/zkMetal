@@ -1115,40 +1115,40 @@ static const int MILLER_BITS[63] = {
 };
 
 // Full Miller loop: f_{|x|,Q}(P) using projective G2 coordinates (no inversions)
+// Uses double-buffering to eliminate fp12_copy overhead in the hot loop.
 static void miller_loop(const uint64_t p_aff[12], const uint64_t q_aff[24], uint64_t f[FP12]) {
     const uint64_t *px = p_aff;
     const uint64_t *py = p_aff + 6;
 
     // T = Q in Jacobian projective (Z=1)
-    uint64_t T[36]; // G2PROJ: X[12], Y[12], Z[12]
-    memcpy(T, q_aff, 192);     // X = qx, Y = qy
-    fp2_one(T+24);             // Z = 1
+    uint64_t T[36];
+    memcpy(T, q_aff, 192);
+    fp2_one(T+24);
 
-    fp12_one(f);
+    // Double-buffer: cur/alt swap to avoid copies
+    uint64_t buf0[72], buf1[72];
+    fp12_one(buf0);
+    uint64_t *cur = buf0, *alt = buf1;
 
-    uint64_t tmp[72];
     uint64_t ll0[12], ll1[12], ll4[12];
 
     for (int i = 0; i < 63; i++) {
-        fp12_sqr(f, tmp);
-        fp12_copy(f, tmp);
+        fp12_sqr(cur, alt);
+        { uint64_t *t = cur; cur = alt; alt = t; }
 
-        // Projective doubling — line coefficients computed inline, no inversion
         g2_proj_double(T, px, py, ll0, ll1, ll4);
-        fp12_mul_by_line_sparse(f, ll0, ll1, ll4, tmp);
-        fp12_copy(f, tmp);
+        fp12_mul_by_line_sparse(cur, ll0, ll1, ll4, alt);
+        { uint64_t *t = cur; cur = alt; alt = t; }
 
         if (MILLER_BITS[i]) {
-            // Projective mixed addition (Q is affine)
             g2_proj_add_mixed(T, q_aff, px, py, ll0, ll1, ll4);
-            fp12_mul_by_line_sparse(f, ll0, ll1, ll4, tmp);
-            fp12_copy(f, tmp);
+            fp12_mul_by_line_sparse(cur, ll0, ll1, ll4, alt);
+            { uint64_t *t = cur; cur = alt; alt = t; }
         }
     }
 
     // x is negative => conjugate
-    fp12_conj(f, tmp);
-    fp12_copy(f, tmp);
+    fp12_conj(cur, f);
 }
 
 // ============================================================

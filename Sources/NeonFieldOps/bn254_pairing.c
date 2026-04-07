@@ -851,34 +851,33 @@ static void miller_loop(const uint64_t p_aff[8], const uint64_t q_aff[16], uint6
     fp2_copy(negQ, q_aff);
     fp2_neg(q_aff+8, negQ+8);
 
-    fp12_one(f);
+    // Double-buffer: cur/alt swap to eliminate fp12_copy in hot loop
+    uint64_t buf0[48], buf1[48];
+    fp12_one(buf0);
+    uint64_t *cur = buf0, *alt = buf1;
 
-    uint64_t tmp[48];
-    uint64_t c0[8], c3[8], c4[8]; // sparse line components (projective)
+    uint64_t c0[8], c3[8], c4[8];
 
     for (int i = 1; i < 66; i++) {
-        fp12_sqr(f, tmp);
-        fp12_copy(f, tmp);
+        fp12_sqr(cur, alt);
+        { uint64_t *t = cur; cur = alt; alt = t; }
 
-        // Projective doubling — no fp2_inv
         g2_proj_double(T, px, py, c0, c3, c4);
-        fp12_mul_by_line(f, c0, c3, c4, tmp);
-        fp12_copy(f, tmp);
+        fp12_mul_by_line(cur, c0, c3, c4, alt);
+        { uint64_t *t = cur; cur = alt; alt = t; }
 
         if (SIX_X_PLUS_2_NAF[i] == 1) {
-            // Mixed projective + affine addition — no fp2_inv
             g2_proj_add_mixed(T, q_aff, px, py, c0, c3, c4);
-            fp12_mul_by_line(f, c0, c3, c4, tmp);
-            fp12_copy(f, tmp);
+            fp12_mul_by_line(cur, c0, c3, c4, alt);
+            { uint64_t *t = cur; cur = alt; alt = t; }
         } else if (SIX_X_PLUS_2_NAF[i] == -1) {
             g2_proj_add_mixed(T, negQ, px, py, c0, c3, c4);
-            fp12_mul_by_line(f, c0, c3, c4, tmp);
-            fp12_copy(f, tmp);
+            fp12_mul_by_line(cur, c0, c3, c4, alt);
+            { uint64_t *t = cur; cur = alt; alt = t; }
         }
     }
 
-    // Frobenius correction: Q1 = pi(Q), Q2 = -pi^2(Q)
-    // These use affine points added to projective T via mixed addition.
+    // Frobenius correction
     uint64_t q1[G2AFF];
     fp2_conj(q_aff, q1);
     fp2_mul(q1, GAMMA_1_2, q1);
@@ -886,8 +885,8 @@ static void miller_loop(const uint64_t p_aff[8], const uint64_t q_aff[16], uint6
     fp2_mul(q1+8, GAMMA_1_3, q1+8);
 
     g2_proj_add_mixed(T, q1, px, py, c0, c3, c4);
-    fp12_mul_by_line(f, c0, c3, c4, tmp);
-    fp12_copy(f, tmp);
+    fp12_mul_by_line(cur, c0, c3, c4, alt);
+    { uint64_t *t = cur; cur = alt; alt = t; }
 
     uint64_t q2[G2AFF];
     fp2_mul_fp(q_aff, GAMMA_2_2, q2);
@@ -895,8 +894,11 @@ static void miller_loop(const uint64_t p_aff[8], const uint64_t q_aff[16], uint6
     fp2_neg(q2+8, q2+8);
 
     g2_proj_add_mixed(T, q2, px, py, c0, c3, c4);
-    fp12_mul_by_line(f, c0, c3, c4, tmp);
-    fp12_copy(f, tmp);
+    fp12_mul_by_line(cur, c0, c3, c4, alt);
+    { uint64_t *t = cur; cur = alt; alt = t; }
+
+    // Copy result to output
+    fp12_copy(f, cur);
 }
 
 // ============================================================
