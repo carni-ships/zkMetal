@@ -204,7 +204,9 @@ public struct UInt128: Equatable {
 
     public static func * (lhs: UInt128, rhs: UInt128) -> UInt128 {
         // Only need low 128 bits of the product
-        let (loLo, loHi) = lhs.lo.multipliedFullWidth(by: rhs.lo)
+        let fullWidth = lhs.lo.multipliedFullWidth(by: rhs.lo)
+        let loLo = fullWidth.low
+        let loHi = fullWidth.high
         let cross1 = lhs.lo &* rhs.hi
         let cross2 = lhs.hi &* rhs.lo
         let hi = loHi &+ cross1 &+ cross2

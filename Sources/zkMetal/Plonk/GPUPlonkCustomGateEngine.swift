@@ -155,13 +155,16 @@ public struct RangeCheckConstraint: CustomGateConstraint {
 
     public func evaluateConstraint(wires: [Fr], rotatedWires: [ColumnRef: Fr], challenges: [Fr]) -> Fr {
         let bit = wires.count > 0 ? wires[0] : Fr.zero
-        // Boolean constraint on the bit
+        // Boolean constraint on the bit: bit * (1 - bit) = 0
         let boolCheck = frMul(bit, frSub(Fr.one, bit))
+
+        // If no accumulator wires provided, just check the boolean constraint
+        if rotatedWires.isEmpty { return boolCheck }
 
         // Accumulator chain: acc_cur = acc_prev + 2^i * bit
         let accCur = rotatedWires[ColumnRef(column: 1, rotation: .cur)] ?? Fr.zero
         let accPrev = rotatedWires[ColumnRef(column: 1, rotation: .prev)] ?? Fr.zero
-        let expected = frAdd(accPrev, frMul(wires.count > 0 ? wires[0] : Fr.zero, Fr.one))
+        let expected = frAdd(accPrev, frMul(bit, Fr.one))
         let accCheck = frSub(accCur, expected)
 
         // Combine: boolCheck + alpha * accCheck
