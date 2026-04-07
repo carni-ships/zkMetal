@@ -15,6 +15,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 public class GPUPolyArithEngine {
     public static let version = Versions.gpuPolyArith
@@ -135,12 +136,12 @@ public class GPUPolyArithEngine {
 
     private func cpuAdd(a: MTLBuffer, b: MTLBuffer, n: Int) -> MTLBuffer {
         let out = outputBuffer(n: n)
-        let ap = a.contents().bindMemory(to: Fr.self, capacity: n)
-        let bp = b.contents().bindMemory(to: Fr.self, capacity: n)
-        let cp = out.contents().bindMemory(to: Fr.self, capacity: n)
-        for i in 0..<n {
-            cp[i] = frAdd(ap[i], bp[i])
-        }
+        bn254_fr_batch_add_parallel(
+            out.contents().assumingMemoryBound(to: UInt64.self),
+            a.contents().assumingMemoryBound(to: UInt64.self),
+            b.contents().assumingMemoryBound(to: UInt64.self),
+            Int32(n)
+        )
         return out
     }
 
@@ -166,12 +167,12 @@ public class GPUPolyArithEngine {
 
     private func cpuSub(a: MTLBuffer, b: MTLBuffer, n: Int) -> MTLBuffer {
         let out = outputBuffer(n: n)
-        let ap = a.contents().bindMemory(to: Fr.self, capacity: n)
-        let bp = b.contents().bindMemory(to: Fr.self, capacity: n)
-        let cp = out.contents().bindMemory(to: Fr.self, capacity: n)
-        for i in 0..<n {
-            cp[i] = frSub(ap[i], bp[i])
-        }
+        bn254_fr_batch_sub_parallel(
+            out.contents().assumingMemoryBound(to: UInt64.self),
+            a.contents().assumingMemoryBound(to: UInt64.self),
+            b.contents().assumingMemoryBound(to: UInt64.self),
+            Int32(n)
+        )
         return out
     }
 
@@ -197,10 +198,14 @@ public class GPUPolyArithEngine {
 
     private func cpuScale(a: MTLBuffer, scalar: Fr, n: Int) -> MTLBuffer {
         let out = outputBuffer(n: n)
-        let ap = a.contents().bindMemory(to: Fr.self, capacity: n)
-        let cp = out.contents().bindMemory(to: Fr.self, capacity: n)
-        for i in 0..<n {
-            cp[i] = frMul(ap[i], scalar)
+        var s = scalar
+        withUnsafeBytes(of: &s) { sBuf in
+            bn254_fr_batch_mul_scalar_parallel(
+                out.contents().assumingMemoryBound(to: UInt64.self),
+                a.contents().assumingMemoryBound(to: UInt64.self),
+                sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                Int32(n)
+            )
         }
         return out
     }
@@ -276,18 +281,22 @@ public class GPUPolyArithEngine {
     private func cpuMul(a: MTLBuffer, b: MTLBuffer, na: Int, nb: Int) -> MTLBuffer {
         let resultLen = na + nb - 1
         let out = outputBuffer(n: resultLen)
-        let ap = a.contents().bindMemory(to: Fr.self, capacity: na)
-        let bp = b.contents().bindMemory(to: Fr.self, capacity: nb)
-        let cp = out.contents().bindMemory(to: Fr.self, capacity: resultLen)
+        let aPtr = a.contents().assumingMemoryBound(to: UInt64.self)
+        let bPtr = b.contents().assumingMemoryBound(to: UInt64.self)
+        let cPtr = out.contents().assumingMemoryBound(to: UInt64.self)
 
         // Zero-initialize output
         memset(out.contents(), 0, resultLen * MemoryLayout<Fr>.stride)
 
-        // Schoolbook multiplication
+        // Schoolbook multiplication using batch MAC: cp[i..] += ap[i] * bp[0..<nb]
+        let limbs = MemoryLayout<Fr>.stride / MemoryLayout<UInt64>.stride  // 4 limbs per Fr
         for i in 0..<na {
-            for j in 0..<nb {
-                cp[i + j] = frAdd(cp[i + j], frMul(ap[i], bp[j]))
-            }
+            bn254_fr_batch_mac_neon(
+                cPtr.advanced(by: i * limbs),
+                bPtr,
+                aPtr.advanced(by: i * limbs),
+                Int32(nb)
+            )
         }
         return out
     }

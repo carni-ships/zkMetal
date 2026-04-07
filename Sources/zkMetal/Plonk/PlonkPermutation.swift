@@ -259,12 +259,26 @@ public struct PermutationArgument {
             }
         }
 
-        // Step 3: Running product
+        // Step 3: Batch multiply numerators * invDenominators to get ratios
+        var ratios = [Fr](repeating: Fr.zero, count: n)
+        numerators.withUnsafeBytes { numBuf in
+            invDenominators.withUnsafeBytes { invBuf in
+                ratios.withUnsafeMutableBytes { ratBuf in
+                    bn254_fr_batch_mul_parallel(
+                        ratBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        numBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        invBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n)
+                    )
+                }
+            }
+        }
+
+        // Step 4: Running product (sequential dependency, cannot batch)
         var zEvals = [Fr](repeating: Fr.zero, count: n)
         zEvals[0] = Fr.one
         for i in 0..<(n - 1) {
-            let ratio = frMul(numerators[i], invDenominators[i])
-            zEvals[i + 1] = frMul(zEvals[i], ratio)
+            zEvals[i + 1] = frMul(zEvals[i], ratios[i])
         }
 
         return zEvals
@@ -437,12 +451,22 @@ public func buildPermutationFromCopyConstraints(
         col == 0 ? Fr.one : generators[col - 1]
     }
 
-    // Initialize identity permutation
+    // Initialize identity permutation using batch C calls
     var sigma = [[Fr]](repeating: [Fr](repeating: Fr.zero, count: n), count: numWires)
-    for col in 0..<numWires {
-        let km = cosetMul(col)
-        for i in 0..<n {
-            sigma[col][i] = frMul(km, domain[i])
+    domain.withUnsafeBytes { domBuf in
+        let domPtr = domBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+        for col in 0..<numWires {
+            var km = cosetMul(col)
+            sigma[col].withUnsafeMutableBytes { sigBuf in
+                withUnsafeBytes(of: &km) { kmBuf in
+                    bn254_fr_batch_mul_scalar_parallel(
+                        sigBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        domPtr,
+                        kmBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n)
+                    )
+                }
+            }
         }
     }
 
@@ -542,12 +566,22 @@ public func buildPermutationFromVariables(
         col == 0 ? Fr.one : generators[col - 1]
     }
 
-    // Initialize identity permutation
+    // Initialize identity permutation using batch C calls
     var sigma = [[Fr]](repeating: [Fr](repeating: Fr.zero, count: n), count: numWires)
-    for col in 0..<numWires {
-        let km = cosetMul(col)
-        for i in 0..<n {
-            sigma[col][i] = frMul(km, domain[i])
+    domain.withUnsafeBytes { domBuf in
+        let domPtr = domBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+        for col in 0..<numWires {
+            var km = cosetMul(col)
+            sigma[col].withUnsafeMutableBytes { sigBuf in
+                withUnsafeBytes(of: &km) { kmBuf in
+                    bn254_fr_batch_mul_scalar_parallel(
+                        sigBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        domPtr,
+                        kmBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n)
+                    )
+                }
+            }
         }
     }
 
