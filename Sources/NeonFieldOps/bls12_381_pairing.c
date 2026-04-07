@@ -729,83 +729,81 @@ static void fp12_frobenius3(const uint64_t a[FP12], uint64_t r[FP12]) {
 }
 
 // ============================================================
-// Granger-Scott cyclotomic squaring (2010)
-// For f in cyclotomic subgroup GΦ6(Fp2), exploit the norm-1 constraint.
-// Uses 3 "Fp4 squarings" (each = 2 Fp2 sqr + 1 Fp2 mul_nr + adds)
-// instead of full Fp6 mul + Fp6 sqr (~30% fewer Fp2 muls).
-//
-// Fp12 = c0 + c1*w, c0 = (a0, a1, a2), c1 = (b0, b1, b2) in Fp6.
-// Decompose into: A=a0, B=b0, C=a1, D=b1, E=a2, F=b2
-// Three Fp4 squarings on pairs: (A,D), (C,F), (E,B)
-// Reference: Algorithm 5.5.4, Guide to Pairing-Based Cryptography
+// Granger-Scott cyclotomic squaring for BLS12-381
+// Uses 9 fp2_sqr + 3 fp2_mul_nr (no fp2_mul!)
+// Reference: Algorithm 5.5.4, Aranha et al. / gnark-crypto
 // ============================================================
 
-// Fp4 squaring: given (x,y) in Fp2×Fp2 viewed as Fp4 = Fp2[u]/(u^2-xi),
-// returns (x',y') = (x+y*u)^2 = (x^2 + xi*y^2) + 2xy*u
-// Uses Karatsuba: 2 Fp2 sqr + 1 Fp2 mul_nr + 2 Fp2 add/sub
-static inline void fp4_sqr(const uint64_t x[FP2], const uint64_t y[FP2],
-                           uint64_t rx[FP2], uint64_t ry[FP2]) {
-    uint64_t t1[12], t2[12], t3[12];
-    fp2_sqr(x, t1);              // x^2
-    fp2_sqr(y, t2);              // y^2
-    fp2_mul_nr(t2, t3);          // xi*y^2
-    fp2_add(t1, t3, rx);         // rx = x^2 + xi*y^2
-
-    // ry = 2*x*y via Karatsuba: (x+y)^2 - x^2 - y^2
-    fp2_add(x, y, t3);
-    fp2_sqr(t3, ry);
-    fp2_sub(ry, t1, ry);
-    fp2_sub(ry, t2, ry);         // ry = 2*x*y
-}
-
 static void fp12_cyc_sqr(const uint64_t f[FP12], uint64_t r[FP12]) {
-    const uint64_t *A = f;        // c0.c0 = a0
-    const uint64_t *C = f + 12;   // c0.c1 = a1
-    const uint64_t *E = f + 24;   // c0.c2 = a2
-    const uint64_t *B = f + 36;   // c1.c0 = b0
-    const uint64_t *D = f + 48;   // c1.c1 = b1
-    const uint64_t *F = f + 60;   // c1.c2 = b2
+    // Components: c0 = (a0, a1, a2), c1 = (a3, a4, a5)
+    const uint64_t *a0 = f, *a1 = f+12, *a2 = f+24;
+    const uint64_t *a3 = f+36, *a4 = f+48, *a5 = f+60;
 
-    uint64_t t0r[12], t0i[12];   // Fp4 sqr of (A, D)
-    uint64_t t1r[12], t1i[12];   // Fp4 sqr of (C, F)
-    uint64_t t2r[12], t2i[12];   // Fp4 sqr of (E, B)
+    uint64_t t[9][12];
 
-    fp4_sqr(A, D, t0r, t0i);
-    fp4_sqr(C, F, t1r, t1i);
-    fp4_sqr(E, B, t2r, t2i);
+    // 6 individual Fp2 squarings
+    fp2_sqr(a4, t[0]);  // t0 = a4²
+    fp2_sqr(a0, t[1]);  // t1 = a0²
+    fp2_sqr(a2, t[2]);  // t2 = a2²
+    fp2_sqr(a3, t[3]);  // t3 = a3²
+    fp2_sqr(a5, t[4]);  // t4 = a5²
+    fp2_sqr(a1, t[5]);  // t5 = a1²
 
-    // Update A (c0.c0): A' = 3*t0r - 2*A
-    fp2_sub(t0r, A, r);
+    // 3 cross-products via Karatsuba: 2ab = (a+b)² - a² - b²
+    uint64_t s[12], nr[12];
+
+    fp2_add(a4, a0, s);
+    fp2_sqr(s, t[6]);
+    fp2_sub(t[6], t[0], t[6]);
+    fp2_sub(t[6], t[1], t[6]);  // t6 = 2·a4·a0
+
+    fp2_add(a2, a3, s);
+    fp2_sqr(s, t[7]);
+    fp2_sub(t[7], t[2], t[7]);
+    fp2_sub(t[7], t[3], t[7]);  // t7 = 2·a2·a3
+
+    fp2_add(a5, a1, s);
+    fp2_sqr(s, t[8]);
+    fp2_sub(t[8], t[4], t[8]);
+    fp2_sub(t[8], t[5], t[8]);
+    fp2_mul_nr(t[8], nr);
+    memcpy(t[8], nr, sizeof(nr)); // t8 = 2·a5·a1·ξ
+
+    // Combine: ξ·(higher²) + (lower²)
+    fp2_mul_nr(t[0], nr);
+    fp2_add(nr, t[1], t[0]);    // t0 = ξ·a4² + a0²
+
+    fp2_mul_nr(t[2], nr);
+    fp2_add(nr, t[3], t[2]);    // t2 = ξ·a2² + a3²
+
+    fp2_mul_nr(t[4], nr);
+    fp2_add(nr, t[5], t[4]);    // t4 = ξ·a5² + a1²
+
+    // C0 components: 3·A - 2·old = 2·(A - old) + A
+    fp2_sub(t[0], a0, r);
     fp2_dbl(r, r);
-    fp2_add(r, t0r, r);
+    fp2_add(r, t[0], r);        // a0' = 3·(ξ·a4² + a0²) - 2·a0
 
-    // Update C (c0.c1): C' = 3*(xi*t1i) + 2*C
-    // Note: t1 came from pair (C,F), and the "imaginary" part wraps with xi
-    uint64_t tmp[12];
-    fp2_mul_nr(t1i, tmp);        // xi * t1i (wrap-around from v^3 = xi)
-    fp2_add(tmp, C, r+12);
+    fp2_sub(t[2], a1, r+12);
     fp2_dbl(r+12, r+12);
-    fp2_add(r+12, tmp, r+12);
+    fp2_add(r+12, t[2], r+12);  // a1' = 3·(ξ·a2² + a3²) - 2·a1
 
-    // Update E (c0.c2): E' = 3*t2r - 2*E
-    fp2_sub(t2r, E, r+24);
+    fp2_sub(t[4], a2, r+24);
     fp2_dbl(r+24, r+24);
-    fp2_add(r+24, t2r, r+24);
+    fp2_add(r+24, t[4], r+24);  // a2' = 3·(ξ·a5² + a1²) - 2·a2
 
-    // Update B (c1.c0): B' = 3*t0i + 2*B
-    fp2_add(t0i, B, r+36);
+    // C1 components: 3·A + 2·old = 2·(A + old) + A
+    fp2_add(t[8], a3, r+36);
     fp2_dbl(r+36, r+36);
-    fp2_add(r+36, t0i, r+36);
+    fp2_add(r+36, t[8], r+36);  // a3' = 3·(2·a5·a1·ξ) + 2·a3
 
-    // Update D (c1.c1): D' = 3*t1r - 2*D
-    fp2_sub(t1r, D, r+48);
+    fp2_add(t[6], a4, r+48);
     fp2_dbl(r+48, r+48);
-    fp2_add(r+48, t1r, r+48);
+    fp2_add(r+48, t[6], r+48);  // a4' = 3·(2·a4·a0) + 2·a4
 
-    // Update F (c1.c2): F' = 3*t2i + 2*F
-    fp2_add(t2i, F, r+60);
+    fp2_add(t[7], a5, r+60);
     fp2_dbl(r+60, r+60);
-    fp2_add(r+60, t2i, r+60);
+    fp2_add(r+60, t[7], r+60);  // a5' = 3·(2·a2·a3) + 2·a5
 }
 
 // ============================================================

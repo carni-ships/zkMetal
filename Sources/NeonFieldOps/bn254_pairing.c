@@ -903,21 +903,80 @@ static void miller_loop(const uint64_t p_aff[8], const uint64_t q_aff[16], uint6
 
 // ============================================================
 // Granger-Scott cyclotomic squaring for BN254
-// For f = c0 + c1*w in GΦ₆ where w²=v and norm(f) = c0² - v*c1² = 1:
-//   c0_new = 1 + 2*v*c1²
-//   c1_new = 2*c0*c1
+// Uses 9 fp2_sqr + 3 fp2_mul_nr (no fp2_mul!)
+// Reference: Algorithm 5.5.4, Aranha et al. / gnark-crypto
 // ============================================================
 
 static void fp12_cyc_sqr(const uint64_t f[FP12], uint64_t r[FP12]) {
-    uint64_t c1sq[24], vc1sq[24], c0c1[24];
+    // Components: c0 = (a0, a1, a2), c1 = (a3, a4, a5)
+    const uint64_t *a0 = f, *a1 = f+8, *a2 = f+16;
+    const uint64_t *a3 = f+24, *a4 = f+32, *a5 = f+40;
 
-    fp6_sqr(f+24, c1sq);              // c1²
-    fp6_mul_by_v(c1sq, vc1sq);        // v·c1²
-    fp6_add(vc1sq, vc1sq, r);         // 2·v·c1² → r[0..23] = new c0
-    fp_add(r, FP_ONE, r);             // +1 (add 1 to c0.c0.c0)
+    uint64_t t[9][8];
 
-    fp6_mul(f, f+24, c0c1);           // c0·c1
-    fp6_add(c0c1, c0c1, r+24);       // 2·c0·c1 → r[24..47] = new c1
+    // 6 individual Fp2 squarings
+    fp2_sqr(a4, t[0]);  // t0 = a4²
+    fp2_sqr(a0, t[1]);  // t1 = a0²
+    fp2_sqr(a2, t[2]);  // t2 = a2²
+    fp2_sqr(a3, t[3]);  // t3 = a3²
+    fp2_sqr(a5, t[4]);  // t4 = a5²
+    fp2_sqr(a1, t[5]);  // t5 = a1²
+
+    // 3 cross-products via Karatsuba: 2ab = (a+b)² - a² - b²
+    uint64_t s[8], nr[8];
+
+    fp2_add(a4, a0, s);
+    fp2_sqr(s, t[6]);
+    fp2_sub(t[6], t[0], t[6]);
+    fp2_sub(t[6], t[1], t[6]);  // t6 = 2·a4·a0
+
+    fp2_add(a2, a3, s);
+    fp2_sqr(s, t[7]);
+    fp2_sub(t[7], t[2], t[7]);
+    fp2_sub(t[7], t[3], t[7]);  // t7 = 2·a2·a3
+
+    fp2_add(a5, a1, s);
+    fp2_sqr(s, t[8]);
+    fp2_sub(t[8], t[4], t[8]);
+    fp2_sub(t[8], t[5], t[8]);
+    fp2_mul_nr(t[8], nr);
+    memcpy(t[8], nr, 64);       // t8 = 2·a5·a1·ξ
+
+    // Combine: ξ·(higher²) + (lower²)  (use nr temp to avoid aliasing)
+    fp2_mul_nr(t[0], nr);
+    fp2_add(nr, t[1], t[0]);    // t0 = ξ·a4² + a0²
+
+    fp2_mul_nr(t[2], nr);
+    fp2_add(nr, t[3], t[2]);    // t2 = ξ·a2² + a3²
+
+    fp2_mul_nr(t[4], nr);
+    fp2_add(nr, t[5], t[4]);    // t4 = ξ·a5² + a1²
+
+    // C0 components: 3·A - 2·old = 2·(A - old) + A
+    fp2_sub(t[0], a0, r);
+    fp2_dbl(r, r);
+    fp2_add(r, t[0], r);        // a0' = 3·(ξ·a4² + a0²) - 2·a0
+
+    fp2_sub(t[2], a1, r+8);
+    fp2_dbl(r+8, r+8);
+    fp2_add(r+8, t[2], r+8);    // a1' = 3·(ξ·a2² + a3²) - 2·a1
+
+    fp2_sub(t[4], a2, r+16);
+    fp2_dbl(r+16, r+16);
+    fp2_add(r+16, t[4], r+16);  // a2' = 3·(ξ·a5² + a1²) - 2·a2
+
+    // C1 components: 3·A + 2·old = 2·(A + old) + A
+    fp2_add(t[8], a3, r+24);
+    fp2_dbl(r+24, r+24);
+    fp2_add(r+24, t[8], r+24);  // a3' = 3·(2·a5·a1·ξ) + 2·a3
+
+    fp2_add(t[6], a4, r+32);
+    fp2_dbl(r+32, r+32);
+    fp2_add(r+32, t[6], r+32);  // a4' = 3·(2·a4·a0) + 2·a4
+
+    fp2_add(t[7], a5, r+40);
+    fp2_dbl(r+40, r+40);
+    fp2_add(r+40, t[7], r+40);  // a5' = 3·(2·a2·a3) + 2·a5
 }
 
 // ============================================================

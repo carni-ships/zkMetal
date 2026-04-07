@@ -90,15 +90,16 @@ func runProofSystemTests() {
         expect(cqValid1, "cq simple lookup")
 
         // Test 2: Repeated lookups (N=8, |T|=8)
+        let cqTable2: [Fr] = (0..<8).map { frFromInt(UInt64($0 + 1)) }
+        let cqTc2: CQTableCommitment
+        let cqLookups2: [Fr] = [1, 1, 3, 3, 5, 5, 7, 7].map { frFromInt($0) }
         do {
-            let cqTable2: [Fr] = (0..<8).map { frFromInt(UInt64($0 + 1)) }
-            let cqTc2 = try cqEngine.preprocessTable(table: cqTable2)
-            let cqLookups2: [Fr] = [1, 1, 3, 3, 5, 5, 7, 7].map { frFromInt($0) }
+            cqTc2 = try cqEngine.preprocessTable(table: cqTable2)
             let cqProof2 = try cqEngine.prove(lookups: cqLookups2, table: cqTc2)
             let cqValid2 = cqEngine.verify(proof: cqProof2, table: cqTc2, numLookups: 8, srsSecret: cqSrsSecret)
             expect(cqValid2, "cq repeated lookups")
             expect(cqTc2.cachedQuotientCommitments.count == 8, "cq cached quotients count 8")
-        } catch { print("  cq test2 error: \(error)"); expect(false, "cq test2: \(error)") }
+        } catch { print("  cq test2 error: \(error)"); expect(false, "cq test2: \(error)"); return }
 
         // Test 3: Cached quotients exist and have correct count
         expect(cqTc1.cachedQuotientCommitments.count == 4, "cq cached quotients count")
