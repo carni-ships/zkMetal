@@ -177,59 +177,39 @@ public class LogUpGKRProver {
     }
 
     /// Compute multiplicities: m[j] = number of times T[j] appears in witness.
+    /// Uses hash table for O(n+N) expected time (was O(N log N + n log N) with sorted binary search).
     private func computeMultiplicities(table: [Fr], witness: [Fr]) -> [Fr] {
         let N = table.count
-        // Build a lookup from table value -> index using sorted binary search
-        var indexed = [(limbs: [UInt64], idx: Int)]()
-        indexed.reserveCapacity(N)
+        // Build hash table from table value → index
+        var tableIndex = [Fr: Int](minimumCapacity: N)
         for j in 0..<N {
-            indexed.append((frToInt(table[j]), j))
+            tableIndex[table[j]] = j
         }
-        indexed.sort { a, b in
-            for k in stride(from: 3, through: 0, by: -1) {
-                if a.limbs[k] != b.limbs[k] { return a.limbs[k] < b.limbs[k] }
-            }
-            return false
-        }
-        let sortedKeys = indexed.map { $0.limbs }
-        let sortedIndices = indexed.map { $0.idx }
-
         var counts = [UInt64](repeating: 0, count: N)
         for w in witness {
-            let wLimbs = frToInt(w)
-            // Binary search
-            var lo = 0, hi = N - 1
-            while lo <= hi {
-                let mid = (lo + hi) / 2
-                let cmp = compareLimbs(sortedKeys[mid], wLimbs)
-                if cmp == 0 {
-                    counts[sortedIndices[mid]] += 1
-                    break
-                } else if cmp < 0 {
-                    lo = mid + 1
-                } else {
-                    hi = mid - 1
-                }
+            if let idx = tableIndex[w] {
+                counts[idx] += 1
             }
         }
         return counts.map { frFromInt($0) }
     }
 
     /// Compare two 4-limb values. Returns -1, 0, or 1.
-    private func compareLimbs(_ a: [UInt64], _ b: [UInt64]) -> Int {
-        for k in stride(from: 3, through: 0, by: -1) {
-            if a[k] < b[k] { return -1 }
-            if a[k] > b[k] { return 1 }
-        }
-        return 0
-    }
-
     /// Compute hf[i] = 1 / (gamma - W[i]).
     private func computeWitnessInverses(witness: [Fr], gamma: Fr) -> [Fr] {
         let n = witness.count
         var diffs = [Fr](repeating: Fr.zero, count: n)
-        for i in 0..<n {
-            diffs[i] = frSub(gamma, witness[i])
+        var gammaVal = gamma
+        withUnsafeBytes(of: &gammaVal) { gBuf in
+            witness.withUnsafeBytes { wBuf in
+                diffs.withUnsafeMutableBytes { dBuf in
+                    bn254_fr_batch_scalar_sub_neon(
+                        dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        gBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        wBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
         }
         return batchInverse(diffs)
     }
