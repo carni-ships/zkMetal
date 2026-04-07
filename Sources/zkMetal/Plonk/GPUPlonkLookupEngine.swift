@@ -343,42 +343,40 @@ public final class GPUPlonkLookupEngine {
             return false
         }
 
-        // Check 3: accumulator structure
+        // Check 3: accumulator structure (GW20: n+N-1 steps → n+N elements)
+        let numSteps = n + N - 1
         let accZ = proof.accumulatorZ
-        guard accZ.count == n + 1 else { return false }
+        guard accZ.count == numSteps + 1 else { return false }
         guard frEqual(accZ[0], Fr.one) else { return false }
 
         // Check 4: accumulator closes
         guard frEqual(proof.finalAccumulator, Fr.one) else { return false }
 
-        // Check 5: verify each accumulator transition
+        // Check 5: verify each accumulator transition (GW20 h₁/h₂ split)
         let onePlusBeta = frAdd(Fr.one, beta)
         let gammaOnePlusBeta = frMul(gamma, onePlusBeta)
 
-        for i in 0..<n {
-            // Numerator: (1+beta) * (gamma + f[i]) * (gamma(1+beta) + t[i%N] + beta*t[(i+1)%N])
-            let fTerm = frAdd(gamma, queries[i])
-            let tIdx = i % N
-            let tIdxNext = (i + 1) % N
-            let tTerm = frAdd(gammaOnePlusBeta,
-                              frAdd(table[tIdx], frMul(beta, table[tIdxNext])))
-            let num = frMul(fTerm, tTerm)
+        for k in 0..<numSteps {
+            var num = Fr.one
+            var den = Fr.one
 
-            // Denominator: (gamma(1+beta) + s[2i] + beta*s[2i+1])
-            //            * (gamma(1+beta) + s[2i+1] + beta*s[2i+2])
-            let s2i = 2 * i
-            let sTerm1 = frAdd(gammaOnePlusBeta,
-                               frAdd(s[s2i], frMul(beta, s[s2i + 1])))
-            let s2i1 = 2 * i + 1
-            let sIdx2 = min(s2i1 + 1, s.count - 1)
-            let sTerm2 = frAdd(gammaOnePlusBeta,
-                               frAdd(s[s2i1], frMul(beta, s[sIdx2])))
-            let den = frMul(sTerm1, sTerm2)
+            if k < n {
+                num = frMul(onePlusBeta, frAdd(gamma, queries[k]))
+                den = frAdd(gammaOnePlusBeta,
+                            frAdd(s[k], frMul(beta, s[k + 1])))
+            }
 
-            // Z[i+1] * den == Z[i] * (1+beta) * num
-            let lhs = frMul(accZ[i + 1], den)
-            let rhs = frMul(frMul(accZ[i], num), onePlusBeta)
+            if k < N - 1 {
+                let tTerm = frAdd(gammaOnePlusBeta,
+                                  frAdd(table[k], frMul(beta, table[k + 1])))
+                num = frMul(num, tTerm)
+                let h2Term = frAdd(gammaOnePlusBeta,
+                                   frAdd(s[n + k], frMul(beta, s[n + k + 1])))
+                den = frMul(den, h2Term)
+            }
 
+            let lhs = frMul(accZ[k + 1], den)
+            let rhs = frMul(accZ[k], num)
             if !frEqual(lhs, rhs) { return false }
         }
 
@@ -533,40 +531,41 @@ public final class GPUPlonkLookupEngine {
     ) -> [Fr] {
         let n = queries.count
         let N = table.count
+        let numSteps = n + N - 1
         let onePlusBeta = frAdd(Fr.one, beta)
         let gammaOnePlusBeta = frMul(gamma, onePlusBeta)
 
-        var numerators = [Fr](repeating: Fr.zero, count: n)
-        var denominators = [Fr](repeating: Fr.zero, count: n)
+        // GW20 identity: split sorted into h₁ = s[0..n], h₂ = s[n..n+N-1]
+        // LHS: ∏_{k<n} (1+β)(γ+f[k]) · ∏_{k<N-1} (γ(1+β)+t[k]+β·t[k+1])
+        // RHS: ∏_{k<n} (γ(1+β)+h₁[k]+β·h₁[k+1]) · ∏_{k<N-1} (γ(1+β)+h₂[k]+β·h₂[k+1])
+        var numerators = [Fr](repeating: Fr.one, count: numSteps)
+        var denominators = [Fr](repeating: Fr.one, count: numSteps)
 
-        for i in 0..<n {
-            // Numerator: (1+beta) * (gamma + f[i]) * (gamma(1+beta) + t[i%N] + beta*t[(i+1)%N])
-            let fTerm = frAdd(gamma, queries[i])
-            let tIdx = i % N
-            let tIdxNext = (i + 1) % N
-            let tTerm = frAdd(gammaOnePlusBeta,
-                              frAdd(table[tIdx], frMul(beta, table[tIdxNext])))
-            numerators[i] = frMul(onePlusBeta, frMul(fTerm, tTerm))
+        for k in 0..<numSteps {
+            var num = Fr.one
+            var den = Fr.one
 
-            // Denominator: (gamma(1+beta) + s[2i] + beta*s[2i+1])
-            //            * (gamma(1+beta) + s[2i+1] + beta*s[2i+2])
-            let s2i = 2 * i
-            let sTerm1 = frAdd(gammaOnePlusBeta,
-                               frAdd(sorted[s2i], frMul(beta, sorted[s2i + 1])))
-            let s2i1 = 2 * i + 1
-            let sIdx2 = min(s2i1 + 1, sorted.count - 1)
-            let sTerm2 = frAdd(gammaOnePlusBeta,
-                               frAdd(sorted[s2i1], frMul(beta, sorted[sIdx2])))
-            denominators[i] = frMul(sTerm1, sTerm2)
+            if k < n {
+                num = frMul(onePlusBeta, frAdd(gamma, queries[k]))
+                den = frAdd(gammaOnePlusBeta,
+                            frAdd(sorted[k], frMul(beta, sorted[k + 1])))
+            }
+
+            if k < N - 1 {
+                let tTerm = frAdd(gammaOnePlusBeta,
+                                  frAdd(table[k], frMul(beta, table[k + 1])))
+                num = frMul(num, tTerm)
+                let h2Term = frAdd(gammaOnePlusBeta,
+                                   frAdd(sorted[n + k], frMul(beta, sorted[n + k + 1])))
+                den = frMul(den, h2Term)
+            }
+
+            numerators[k] = num
+            denominators[k] = den
         }
 
-        // Use GPU grand product engine if available, otherwise CPU prefix product
-        if let gpEngine = grandProductEngine, n >= GPUPlonkLookupEngine.gpuThreshold {
-            return gpEngine.permutationProduct(
-                numerators: numerators, denominators: denominators)
-        } else {
-            return cpuPrefixProduct(numerators: numerators, denominators: denominators)
-        }
+        // Build prefix product: Z[0] = 1, Z[k+1] = Z[k] * num[k] / den[k]
+        return cpuPrefixProduct(numerators: numerators, denominators: denominators)
     }
 
     /// CPU fallback: compute prefix product of numerator/denominator ratios.

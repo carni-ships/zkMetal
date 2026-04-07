@@ -97,7 +97,7 @@ func testSingleTableProveVerify() {
         queries: queries, table: table, beta: beta, gamma: gamma)
 
     expect(proof.sortedVector.count == 8, "Proof sorted vector length = 8")
-    expect(proof.accumulatorZ.count == 5, "Proof accumulator length = n+1 = 5")
+    expect(proof.accumulatorZ.count == 8, "Proof accumulator length = n+N = 8")
     expect(frEqual(proof.accumulatorZ[0], Fr.one), "Accumulator Z[0] = 1")
 
     let valid = engine.verifySingleTable(
