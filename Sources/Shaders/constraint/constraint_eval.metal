@@ -357,5 +357,3 @@ kernel void fused_constraint_quotient_kernel(
 
     quotient[row] = fr_mul(acc, vanishing_inv[row]);
 }
-
-#endif // constraint_eval included

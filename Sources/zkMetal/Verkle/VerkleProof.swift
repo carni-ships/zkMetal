@@ -115,6 +115,8 @@ public class VerkleNode {
     public var value: Fr381?
     /// The stem associated with this node (for leaf/extension nodes).
     public var stem: [UInt8]?
+    /// The suffix index for this leaf (last byte of the original key).
+    public var suffix: UInt8?
 
     public init(nodeType: NodeType, width: Int = 256) {
         self.nodeType = nodeType
@@ -128,10 +130,11 @@ public class VerkleNode {
     }
 
     /// Create a leaf node.
-    public static func leaf(value: Fr381, stem: [UInt8]) -> VerkleNode {
+    public static func leaf(value: Fr381, stem: [UInt8], suffix: UInt8 = 0) -> VerkleNode {
         let node = VerkleNode(nodeType: .leaf, width: 0)
         node.value = value
         node.stem = stem
+        node.suffix = suffix
         return node
     }
 
@@ -474,17 +477,13 @@ public class VerkleTree {
         var ipaProofs = [BanderwagonIPAProof]()
         var status = VerkleExtensionStatus.absent
         var depth = 0
+        var proofStem = stem  // for .otherStem, this will be the OTHER stem
 
         var node = root
         var currentDepth = 0
 
         while true {
-            let childIndex: Int
-            if currentDepth < 31 {
-                childIndex = Int(stem[currentDepth]) % width
-            } else {
-                childIndex = Int(suffix) % width
-            }
+            let childIndex = childIndexForKey(stem: stem, suffix: suffix, depth: currentDepth)
 
             if let commitment = node.commitment {
                 commitments.append(commitment)
@@ -504,10 +503,15 @@ public class VerkleTree {
             case .branch:
                 if let child = node.children[childIndex] {
                     if child.nodeType == .leaf {
-                        if child.stem == stem {
+                        if child.stem == stem && child.suffix == suffix {
                             status = .present
                         } else {
                             status = .otherStem
+                            proofStem = child.stem!
+                        }
+                        // Append the leaf commitment so verifier can compute vQ
+                        if let leafC = child.commitment {
+                            commitments.append(leafC)
                         }
                         break
                     } else if child.nodeType == .empty {
@@ -522,10 +526,11 @@ public class VerkleTree {
                     break
                 }
             case .leaf:
-                if node.stem == stem {
+                if node.stem == stem && node.suffix == suffix {
                     status = .present
                 } else {
                     status = .otherStem
+                    proofStem = node.stem!
                 }
                 break
             case .empty:
@@ -539,7 +544,7 @@ public class VerkleTree {
             commitments: commitments,
             ipaProofs: ipaProofs,
             extensionStatus: status,
-            stem: stem,
+            stem: proofStem,
             suffixIndex: suffix,
             depth: depth)
     }
@@ -572,12 +577,7 @@ public class VerkleTree {
             var status = VerkleExtensionStatus.absent
 
             while true {
-                let childIndex: Int
-                if currentDepth < 31 {
-                    childIndex = Int(stem[currentDepth]) % width
-                } else {
-                    childIndex = Int(suffix) % width
-                }
+                let childIndex = childIndexForKey(stem: stem, suffix: suffix, depth: currentDepth)
 
                 if let commitment = node.commitment {
                     allCommitments.append(commitment)
@@ -589,7 +589,7 @@ public class VerkleTree {
                 case .branch:
                     if let child = node.children[childIndex] {
                         if child.nodeType == .leaf {
-                            status = child.stem == stem ? .present : .otherStem
+                            status = (child.stem == stem && child.suffix == suffix) ? .present : .otherStem
                             currentDepth += 1
                             break
                         } else if child.nodeType == .empty {
@@ -606,7 +606,7 @@ public class VerkleTree {
                         break
                     }
                 case .leaf:
-                    status = node.stem == stem ? .present : .otherStem
+                    status = (node.stem == stem && node.suffix == suffix) ? .present : .otherStem
                     currentDepth += 1
                     break
                 case .empty:
@@ -691,7 +691,10 @@ public class VerkleTree {
     ) -> Bool {
         precondition(key.count == 32)
         guard !proof.commitments.isEmpty else { return false }
-        guard proof.commitments.count == proof.ipaProofs.count else { return false }
+        // commitments.count == ipaProofs.count for absent (no leaf commitment appended)
+        // commitments.count == ipaProofs.count + 1 for present/otherStem (leaf commitment appended)
+        guard proof.commitments.count == proof.ipaProofs.count ||
+              proof.commitments.count == proof.ipaProofs.count + 1 else { return false }
 
         // Verify the root commitment matches
         guard bwEqual(proof.commitments[0], root) else { return false }
@@ -700,13 +703,17 @@ public class VerkleTree {
         let suffix = key[31]
         let w = ipaEngine.n
 
+        let bitsPerLevel = Int(log2(Double(w)))
+
         // Verify each IPA proof along the path
         for i in 0..<proof.ipaProofs.count {
             let childIndex: Int
             if i < 31 {
                 childIndex = Int(stem[i]) % w
             } else {
-                childIndex = Int(suffix) % w
+                let suffixLevel = i - 31
+                let bitShift = max(0, 8 - bitsPerLevel * (suffixLevel + 1))
+                childIndex = (Int(suffix) >> bitShift) & (w - 1)
             }
 
             // Evaluation vector: e_childIndex
@@ -717,14 +724,13 @@ public class VerkleTree {
             let C = proof.commitments[i]
 
             // The value at the child index is the mapping of the next commitment
-            // (or the leaf value for the last level).
+            // (or zero for absent keys with no child).
             let vQ: BwScalar
-            if i < proof.commitments.count - 1 {
+            if i + 1 < proof.commitments.count {
+                // Next commitment exists (either intermediate node or terminal leaf)
                 vQ = bwScalarFromFr381(bwMapToField(proof.commitments[i + 1]))
-            } else if proof.extensionStatus == .present, let val = value {
-                vQ = bwScalarFromFr381(val)
             } else {
-                vQ = .zero  // absent or other-stem
+                vQ = .zero  // absent: empty slot
             }
 
             // The bound commitment: Cbound = C + v*Q
@@ -740,7 +746,14 @@ public class VerkleTree {
         // Extension status checks
         switch proof.extensionStatus {
         case .present:
-            return value != nil
+            guard let val = value else { return false }
+            // Verify the leaf commitment matches the claimed value
+            if proof.commitments.count == proof.ipaProofs.count + 1 {
+                let leafC = proof.commitments.last!
+                let expectedLeafC = bwScalarMul(bwFromAffine(banderwagonGenerator), val)
+                return bwEqual(leafC, expectedLeafC)
+            }
+            return true
         case .absent:
             return true
         case .otherStem:
@@ -762,6 +775,7 @@ public class VerkleTree {
 
         // Reconstruct the combined vectors from the proof data
         let w = ipaEngine.n
+        let bitsPerLevel = Int(log2(Double(w)))
         let evalPointQ = bwScalarFromFr381(proof.evaluationPoint)
         var combinedB = [BwScalar](repeating: .zero, count: w)
         var rPower = BwScalar.one
@@ -771,11 +785,14 @@ public class VerkleTree {
             let stem = Array(keys[i].prefix(31))
             let suffix = keys[i][31]
 
+            let depthIdx = proof.depths[i] - 1
             let childIndex: Int
-            if proof.depths[i] <= 31 {
-                childIndex = (proof.depths[i] > 0 ? Int(stem[proof.depths[i] - 1]) : 0) % w
+            if depthIdx < 31 {
+                childIndex = (depthIdx >= 0 ? Int(stem[depthIdx]) : 0) % w
             } else {
-                childIndex = Int(suffix) % w
+                let suffixLevel = depthIdx - 31
+                let bitShift = max(0, 8 - bitsPerLevel * (suffixLevel + 1))
+                childIndex = (Int(suffix) >> bitShift) & (w - 1)
             }
 
             combinedB[childIndex] = bwScalarAdd(combinedB[childIndex], rPower)
@@ -808,42 +825,58 @@ public class VerkleTree {
 
     // MARK: - Private Helpers
 
+    /// Compute the child index at a given tree depth from a 32-byte key.
+    /// For depth 0..30, uses the stem byte at that position.
+    /// For depth >= 31, uses sub-bits of the suffix byte to provide additional branching.
+    private func childIndexForKey(stem: [UInt8], suffix: UInt8, depth: Int) -> Int {
+        if depth < 31 {
+            return Int(stem[depth]) % width
+        }
+        // For depth >= 31, extract sub-bits from the suffix byte.
+        // With width w, each level uses log2(w) bits. Extract bits from MSB to LSB.
+        let bitsPerLevel = Int(log2(Double(width)))
+        let suffixLevel = depth - 31
+        let bitShift = max(0, 8 - bitsPerLevel * (suffixLevel + 1))
+        let mask = width - 1
+        return (Int(suffix) >> bitShift) & mask
+    }
+
+    /// Maximum depth for the tree (stem levels + suffix bit levels).
+    private var maxDepth: Int {
+        let bitsPerLevel = Int(log2(Double(width)))
+        let suffixLevels = (8 + bitsPerLevel - 1) / bitsPerLevel  // ceil(8 / bitsPerLevel)
+        return 31 + suffixLevels
+    }
+
     /// Insert a key-value pair at a node.
     private func insertAtNode(_ node: inout VerkleNode, stem: [UInt8], suffix: UInt8,
                                value: Fr381, depth: Int) {
-        if depth >= 31 {
-            // We've traversed the entire stem; store at suffix position
-            node.children[Int(suffix) % width] = VerkleNode.leaf(value: value, stem: stem)
-            node.commitment = nil  // invalidate cached commitment
+        if depth >= maxDepth {
+            // All key bits exhausted; this must be the same key — overwrite
+            node.children[0] = VerkleNode.leaf(value: value, stem: stem, suffix: suffix)
+            node.commitment = nil
             return
         }
 
-        let childIndex = Int(stem[depth]) % width
+        let childIndex = childIndexForKey(stem: stem, suffix: suffix, depth: depth)
 
         if node.children[childIndex] == nil {
-            // Create new branch or leaf
-            if depth == 30 {
-                // Next level is the suffix level
-                var child = VerkleNode(nodeType: .branch, width: width)
-                child.children[Int(suffix) % width] = VerkleNode.leaf(value: value, stem: stem)
-                node.children[childIndex] = child
-            } else {
-                // We can place a leaf directly (EIP-6800 style: extension nodes)
-                let leaf = VerkleNode.leaf(value: value, stem: stem)
-                node.children[childIndex] = leaf
-            }
+            // Place a leaf directly (extension-style shortcut)
+            let leaf = VerkleNode.leaf(value: value, stem: stem, suffix: suffix)
+            node.children[childIndex] = leaf
         } else if let child = node.children[childIndex] {
             if child.nodeType == .leaf {
                 // Collision: split the leaf
-                if child.stem == stem {
-                    // Same stem, just update value
+                if child.stem == stem && child.suffix == suffix {
+                    // Same key, just update value
                     child.value = value
                     child.commitment = nil
                 } else {
-                    // Different stem: create intermediate branch nodes
+                    // Different key: create intermediate branch nodes
                     var branch = VerkleNode(nodeType: .branch, width: width)
-                    // Re-insert the existing leaf
-                    insertAtNode(&branch, stem: child.stem!, suffix: suffix,
+                    // Re-insert the existing leaf using its ORIGINAL suffix
+                    let oldSuffix = child.suffix ?? 0
+                    insertAtNode(&branch, stem: child.stem!, suffix: oldSuffix,
                                  value: child.value!, depth: depth + 1)
                     // Insert the new value
                     insertAtNode(&branch, stem: stem, suffix: suffix,
@@ -863,22 +896,17 @@ public class VerkleTree {
     /// Look up a value from a node.
     private func getFromNode(_ node: VerkleNode, stem: [UInt8], suffix: UInt8, depth: Int) -> Fr381? {
         if node.nodeType == .leaf {
-            if node.stem == stem { return node.value }
+            if node.stem == stem && node.suffix == suffix { return node.value }
             return nil
         }
         if node.nodeType == .empty { return nil }
 
-        let childIndex: Int
-        if depth < 31 {
-            childIndex = Int(stem[depth]) % width
-        } else {
-            childIndex = Int(suffix) % width
-        }
+        let childIndex = childIndexForKey(stem: stem, suffix: suffix, depth: depth)
 
         guard let child = node.children[childIndex] else { return nil }
 
         if child.nodeType == .leaf {
-            return child.stem == stem ? child.value : nil
+            return (child.stem == stem && child.suffix == suffix) ? child.value : nil
         }
         return getFromNode(child, stem: stem, suffix: suffix, depth: depth + 1)
     }

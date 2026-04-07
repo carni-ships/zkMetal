@@ -67,12 +67,12 @@ private func testComposeLinear() {
 
         // f(x) = 2 + 3x, g(x) = 4 + 5x
         // h(x) = f(g(x)) = 2 + 3*(4 + 5x) = 2 + 12 + 15x = 14 + 15x
-        let two = Fr.from64([2, 0, 0, 0])
-        let three = Fr.from64([3, 0, 0, 0])
-        let four = Fr.from64([4, 0, 0, 0])
-        let five = Fr.from64([5, 0, 0, 0])
-        let fourteen = Fr.from64([14, 0, 0, 0])
-        let fifteen = Fr.from64([15, 0, 0, 0])
+        let two = frFromInt(2)
+        let three = frFromInt(3)
+        let four = frFromInt(4)
+        let five = frFromInt(5)
+        let fourteen = frFromInt(14)
+        let fifteen = frFromInt(15)
 
         let f = [two, three]
         let g = [four, five]
@@ -103,10 +103,10 @@ private func testComposeQuadratic() {
 
         // f(x) = 1 + x + x^2, g(x) = 2 + x
         // h(x) = f(g(x)) = 1 + (2+x) + (2+x)^2 = 1 + 2 + x + 4 + 4x + x^2 = 7 + 5x + x^2
-        let one = Fr.from64([1, 0, 0, 0])
-        let two = Fr.from64([2, 0, 0, 0])
-        let five = Fr.from64([5, 0, 0, 0])
-        let seven = Fr.from64([7, 0, 0, 0])
+        let one = frFromInt(1)
+        let two = frFromInt(2)
+        let five = frFromInt(5)
+        let seven = frFromInt(7)
 
         let f = [one, one, one]  // 1 + x + x^2
         let g = [two, one]       // 2 + x
@@ -141,7 +141,7 @@ private func testComposeIdentity() {
         // f(x) = x (identity), g(x) = arbitrary
         // h(x) = f(g(x)) = g(x)
         let zero = Fr.zero
-        let one = Fr.from64([1, 0, 0, 0])
+        let one = frFromInt(1)
 
         var rng = CompRNG(state: 0xC0DE0003)
         let g = (0..<5).map { _ in rng.nextFr() }
@@ -170,7 +170,7 @@ private func testComposeConstant() {
 
         // f(x) = 42 (constant), g(x) = anything
         // h(x) = f(g(x)) = 42
-        let c = Fr.from64([42, 0, 0, 0])
+        let c = frFromInt(42)
 
         var rng = CompRNG(state: 0xC0DE0004)
         let g = (0..<4).map { _ in rng.nextFr() }
@@ -197,9 +197,9 @@ private func testEvaluateCompositionCPU() {
         var rng = CompRNG(state: 0xC0DE0005)
 
         // f(x) = 1 + 2x + 3x^2
-        let one = Fr.from64([1, 0, 0, 0])
-        let two = Fr.from64([2, 0, 0, 0])
-        let three = Fr.from64([3, 0, 0, 0])
+        let one = frFromInt(1)
+        let two = frFromInt(2)
+        let three = frFromInt(3)
         let f = [one, two, three]
 
         // Generate random g-evaluations

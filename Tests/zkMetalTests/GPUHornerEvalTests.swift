@@ -52,9 +52,9 @@ private func testEvaluateSingleCPU() {
 
         // Known polynomial: p(x) = 1 + 2x + 3x^2 in Montgomery form
         // Use Fr.one for coefficient 1, etc.
-        let one = Fr.from64([1, 0, 0, 0])  // toMontgomery(1)
-        let two = Fr.from64([2, 0, 0, 0])
-        let three = Fr.from64([3, 0, 0, 0])
+        let one = Fr.one  // Montgomery form of 1
+        let two = frAdd(one, one)
+        let three = frAdd(two, one)
         let coeffs = [one, two, three]
 
         // Evaluate at x=0: should give a_0 = 1
@@ -62,9 +62,8 @@ private func testEvaluateSingleCPU() {
         expectEqual(r0, one, "p(0) = 1")
 
         // Evaluate at x=1 (Montgomery form of 1): p(1) = 1+2+3 = 6
-        let oneM = Fr.from64([1, 0, 0, 0])
-        let r1 = engine.evaluateSingle(coeffs: coeffs, point: oneM)
-        let six = Fr.from64([6, 0, 0, 0])
+        let r1 = engine.evaluateSingle(coeffs: coeffs, point: one)
+        let six = frAdd(three, three)
         expectEqual(r1, six, "p(1) = 6")
 
         // Random polynomial, random point -- compare against CPU reference

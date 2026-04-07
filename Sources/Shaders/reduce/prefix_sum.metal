@@ -221,15 +221,13 @@ kernel void segmented_scan_fr(
             uint ai_idx = offset * (2 * tid + 1) - 1;
             uint bi_idx = offset * (2 * tid + 2) - 1;
             if (shared_flag[bi_idx]) {
-                // Segment boundary at bi: don't add ai's contribution
-                // Flag stays set (propagate upward)
-            } else if (shared_flag[ai_idx]) {
-                // Segment boundary at ai: bi takes only ai's value
-                shared_val[bi_idx] = shared_val[ai_idx];
-                shared_flag[bi_idx] = 1;
+                // Segment boundary in right (bi) range: bi already holds
+                // the sum from that boundary to end. Keep val, propagate flag.
             } else {
-                // No boundary: normal addition
+                // No boundary in right range: add left (ai) contribution
                 shared_val[bi_idx] = fr_add(shared_val[bi_idx], shared_val[ai_idx]);
+                // Propagate flag from left range if present
+                shared_flag[bi_idx] = shared_flag[ai_idx];
             }
         }
         offset <<= 1;
@@ -255,30 +253,32 @@ kernel void segmented_scan_fr(
             Fr temp_val = shared_val[ai_idx];
             uint temp_flag = shared_flag[ai_idx];
 
+            // Left child gets incoming prefix (stored in bi)
             shared_val[ai_idx] = shared_val[bi_idx];
             shared_flag[ai_idx] = shared_flag[bi_idx];
 
+            // Right child gets: prefix ⊕ left_sum
+            // (v_prefix, f_prefix) ⊕ (v_left, f_left)
+            //   = (f_left ? v_left : v_prefix + v_left, f_prefix | f_left)
             if (temp_flag) {
-                // Segment boundary: reset, take temp_val as the new prefix
                 shared_val[bi_idx] = temp_val;
-                shared_flag[bi_idx] = 1;
-            } else if (shared_flag[bi_idx]) {
-                // bi has a flag already: keep bi's value unchanged
-                shared_flag[bi_idx] = 1;
             } else {
-                // Normal: add
                 shared_val[bi_idx] = fr_add(shared_val[bi_idx], temp_val);
             }
+            shared_flag[bi_idx] = shared_flag[bi_idx] | temp_flag;
         }
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    // Convert to inclusive: add input value
+    // Convert to inclusive: at segment boundaries, reset prefix to zero;
+    // otherwise add the exclusive prefix to the input value.
     if (global_ai < count) {
-        output[global_ai] = fr_add(shared_val[ai], input[global_ai]);
+        Fr prefix_ai = flags[global_ai] ? fr_zero() : shared_val[ai];
+        output[global_ai] = fr_add(prefix_ai, input[global_ai]);
     }
     if (global_bi < count) {
-        output[global_bi] = fr_add(shared_val[bi], input[global_bi]);
+        Fr prefix_bi = flags[global_bi] ? fr_zero() : shared_val[bi];
+        output[global_bi] = fr_add(prefix_bi, input[global_bi]);
     }
 }
 
