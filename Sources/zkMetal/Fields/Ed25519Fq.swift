@@ -4,6 +4,7 @@
 // Field elements as 4x64-bit limbs in Montgomery form (little-endian).
 
 import Foundation
+import NeonFieldOps
 
 public struct Ed25519Fq: Equatable {
     public var v: (UInt64, UInt64, UInt64, UInt64)
@@ -83,85 +84,51 @@ public struct Ed25519Fq: Equatable {
     }
 }
 
-// MARK: - Field Operations
+// MARK: - Field Operations (zero-copy C CIOS)
 
-/// Montgomery multiplication: (a * b * R^-1) mod q
+@inline(__always)
+private func withFqPtr<T>(_ a: Ed25519Fq, _ body: (UnsafePointer<UInt64>) -> T) -> T {
+    var v = a.v
+    return withUnsafePointer(to: &v) { p in
+        body(UnsafeRawPointer(p).assumingMemoryBound(to: UInt64.self))
+    }
+}
+
+@inline(__always)
+private func fqFromRaw(_ body: (UnsafeMutablePointer<UInt64>) -> Void) -> Ed25519Fq {
+    var rv: (UInt64, UInt64, UInt64, UInt64) = (0, 0, 0, 0)
+    withUnsafeMutablePointer(to: &rv) { p in
+        body(UnsafeMutableRawPointer(p).assumingMemoryBound(to: UInt64.self))
+    }
+    return Ed25519Fq(v: rv)
+}
+
+@inline(__always)
 public func ed25519FqMul(_ a: Ed25519Fq, _ b: Ed25519Fq) -> Ed25519Fq {
-    let al = a.toLimbs(), bl = b.toLimbs()
-    var t = [UInt64](repeating: 0, count: 6)
-
-    for i in 0..<4 {
-        var carry: UInt64 = 0
-        for j in 0..<4 {
-            let (hi, lo) = al[i].multipliedFullWidth(by: bl[j])
-            let (s1, c1) = t[j].addingReportingOverflow(lo)
-            let (s2, c2) = s1.addingReportingOverflow(carry)
-            t[j] = s2
-            carry = hi &+ (c1 ? 1 : 0) &+ (c2 ? 1 : 0)
-        }
-        let (s4, c4) = t[4].addingReportingOverflow(carry)
-        t[4] = s4
-        t[5] = t[5] &+ (c4 ? 1 : 0)
-
-        let m = t[0] &* Ed25519Fq.INV
-        carry = 0
-        for j in 0..<4 {
-            let (hi, lo) = m.multipliedFullWidth(by: Ed25519Fq.Q[j])
-            let (s1, c1) = t[j].addingReportingOverflow(lo)
-            let (s2, c2) = s1.addingReportingOverflow(carry)
-            t[j] = s2
-            carry = hi &+ (c1 ? 1 : 0) &+ (c2 ? 1 : 0)
-        }
-        let (s4r, c4r) = t[4].addingReportingOverflow(carry)
-        t[4] = s4r
-        t[5] = t[5] &+ (c4r ? 1 : 0)
-
-        t[0] = t[1]; t[1] = t[2]; t[2] = t[3]; t[3] = t[4]; t[4] = t[5]; t[5] = 0
-    }
-
-    var r = Array(t[0..<4])
-    if t[4] != 0 || ed25519FqGte(r, Ed25519Fq.Q) {
-        r = ed25519FqSub256(r, Ed25519Fq.Q).0
-    }
-    return Ed25519Fq.fromLimbs(r)
+    withFqPtr(a) { ap in withFqPtr(b) { bp in
+        fqFromRaw { rp in ed25519_fq_mul(ap, bp, rp) }
+    }}
 }
 
+@inline(__always)
 public func ed25519FqAdd(_ a: Ed25519Fq, _ b: Ed25519Fq) -> Ed25519Fq {
-    var r = [UInt64](repeating: 0, count: 4)
-    var carry: UInt64 = 0
-    let al = a.toLimbs(), bl = b.toLimbs()
-    for i in 0..<4 {
-        let (s1, c1) = al[i].addingReportingOverflow(bl[i])
-        let (s2, c2) = s1.addingReportingOverflow(carry)
-        r[i] = s2
-        carry = (c1 ? 1 : 0) + (c2 ? 1 : 0)
-    }
-    if carry != 0 || ed25519FqGte(r, Ed25519Fq.Q) {
-        r = ed25519FqSub256(r, Ed25519Fq.Q).0
-    }
-    return Ed25519Fq.fromLimbs(r)
+    withFqPtr(a) { ap in withFqPtr(b) { bp in
+        fqFromRaw { rp in ed25519_fq_add(ap, bp, rp) }
+    }}
 }
 
+@inline(__always)
 public func ed25519FqSub(_ a: Ed25519Fq, _ b: Ed25519Fq) -> Ed25519Fq {
-    let (r, borrow) = ed25519FqSub256(a.toLimbs(), b.toLimbs())
-    if borrow {
-        var result = [UInt64](repeating: 0, count: 4)
-        var carry: UInt64 = 0
-        for i in 0..<4 {
-            let (s1, c1) = r[i].addingReportingOverflow(Ed25519Fq.Q[i])
-            let (s2, c2) = s1.addingReportingOverflow(carry)
-            result[i] = s2
-            carry = (c1 ? 1 : 0) + (c2 ? 1 : 0)
-        }
-        return Ed25519Fq.fromLimbs(result)
-    }
-    return Ed25519Fq.fromLimbs(r)
+    withFqPtr(a) { ap in withFqPtr(b) { bp in
+        fqFromRaw { rp in ed25519_fq_sub(ap, bp, rp) }
+    }}
 }
 
+@inline(__always)
 public func ed25519FqSqr(_ a: Ed25519Fq) -> Ed25519Fq { ed25519FqMul(a, a) }
 public func ed25519FqNeg(_ a: Ed25519Fq) -> Ed25519Fq {
     if a.isZero { return a }
-    return Ed25519Fq.fromLimbs(ed25519FqSub256(Ed25519Fq.Q, a.toLimbs()).0)
+    return ed25519FqSub(Ed25519Fq(v: (Ed25519Fq.Q[0], Ed25519Fq.Q[1], Ed25519Fq.Q[2], Ed25519Fq.Q[3])), a)
 }
 
 /// Convert raw integer to Montgomery form

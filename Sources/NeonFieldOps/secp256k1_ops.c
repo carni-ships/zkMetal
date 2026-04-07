@@ -796,6 +796,25 @@ static inline void secp_fr_add(const uint64_t a[4], const uint64_t b[4], uint64_
     }
 }
 
+static inline void secp_fr_sub(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]) {
+    uint128_t borrow;
+    borrow = (uint128_t)a[0] - b[0]; r[0] = (uint64_t)borrow;
+    uint64_t bw1 = (uint64_t)(borrow >> 64) & 1;
+    borrow = (uint128_t)a[1] - b[1] - bw1; r[1] = (uint64_t)borrow;
+    uint64_t bw2 = (uint64_t)(borrow >> 64) & 1;
+    borrow = (uint128_t)a[2] - b[2] - bw2; r[2] = (uint64_t)borrow;
+    uint64_t bw3 = (uint64_t)(borrow >> 64) & 1;
+    borrow = (uint128_t)a[3] - b[3] - bw3; r[3] = (uint64_t)borrow;
+    if ((uint64_t)(borrow >> 64) & 1) {
+        // Underflow: add N back
+        uint128_t s;
+        s = (uint128_t)r[0] + SECP_N[0]; r[0] = (uint64_t)s;
+        s = (uint128_t)r[1] + SECP_N[1] + (uint64_t)(s >> 64); r[1] = (uint64_t)s;
+        s = (uint128_t)r[2] + SECP_N[2] + (uint64_t)(s >> 64); r[2] = (uint64_t)s;
+        r[3] = r[3] + SECP_N[3] + (uint64_t)(s >> 64);
+    }
+}
+
 static inline void secp_fr_neg(const uint64_t a[4], uint64_t r[4]) {
     if (a[0] == 0 && a[1] == 0 && a[2] == 0 && a[3] == 0) {
         r[0] = 0; r[1] = 0; r[2] = 0; r[3] = 0; return;
@@ -1008,4 +1027,21 @@ int secp256k1_ecdsa_batch_prepare(
 
 void secp256k1_fr_inverse(const uint64_t a[4], uint64_t r[4]) { secp_fr_inv(a, r); }
 void secp256k1_fr_mul(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]) { secp_fr_mul(a, b, r); }
+void secp256k1_fr_add(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]) { secp_fr_add(a, b, r); }
+void secp256k1_fr_sub(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]) { secp_fr_sub(a, b, r); }
+void secp256k1_fr_neg(const uint64_t a[4], uint64_t r[4]) { secp_fr_neg(a, r); }
 void secp256k1_fr_batch_inverse(const uint64_t *a, int n, uint64_t *out) { secp_fr_batch_inv(a, n, out); }
+
+// secp256k1 Fp (base field) public wrappers
+void secp256k1_fp_mul(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]) { secp_fp_mul(a, b, r); }
+void secp256k1_fp_sqr(const uint64_t a[4], uint64_t r[4]) { secp_fp_sqr(a, r); }
+void secp256k1_fp_add(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]) { secp_fp_add(a, b, r); }
+void secp256k1_fp_sub(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]) { secp_fp_sub(a, b, r); }
+void secp256k1_fp_neg(const uint64_t a[4], uint64_t r[4]) {
+    if (a[0] == 0 && a[1] == 0 && a[2] == 0 && a[3] == 0) {
+        r[0] = r[1] = r[2] = r[3] = 0;
+    } else {
+        secp_fp_sub((const uint64_t[]){0xfffffffefffffc2f, 0xffffffffffffffff, 0xffffffffffffffff, 0xffffffffffffffff}, a, r);
+    }
+}
+void secp256k1_fp_inv(const uint64_t a[4], uint64_t r[4]) { secp_fp_inv(a, r); }

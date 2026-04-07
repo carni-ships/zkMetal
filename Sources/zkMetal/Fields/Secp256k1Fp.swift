@@ -4,6 +4,7 @@
 // Field elements as 8x32-bit limbs in Montgomery form (little-endian).
 
 import Foundation
+import NeonFieldOps
 
 public struct SecpFp {
     public var v: (UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32)
@@ -66,108 +67,78 @@ public struct SecpFp {
     }
 }
 
-// MARK: - Field Operations
+// MARK: - Field Operations (zero-copy C CIOS)
 
-// Montgomery multiplication: (a * b * R^-1) mod p
-// Uses 6-limb accumulator to handle carries for near-256-bit modulus
+@inline(__always)
+private func withSecpFpPtr<T>(_ a: SecpFp, _ body: (UnsafePointer<UInt64>) -> T) -> T {
+    var v = a.v
+    return withUnsafePointer(to: &v) { p in
+        body(UnsafeRawPointer(p).assumingMemoryBound(to: UInt64.self))
+    }
+}
+
+@inline(__always)
+private func secpFpFromRaw(_ body: (UnsafeMutablePointer<UInt64>) -> Void) -> SecpFp {
+    var rv: (UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32) = (0,0,0,0,0,0,0,0)
+    withUnsafeMutablePointer(to: &rv) { p in
+        body(UnsafeMutableRawPointer(p).assumingMemoryBound(to: UInt64.self))
+    }
+    return SecpFp(v: rv)
+}
+
+@inline(__always)
 public func secpMul(_ a: SecpFp, _ b: SecpFp) -> SecpFp {
-    let al = a.to64(), bl = b.to64()
-    var t = [UInt64](repeating: 0, count: 6)
-
-    for i in 0..<4 {
-        var carry: UInt64 = 0
-        for j in 0..<4 {
-            let (hi, lo) = al[i].multipliedFullWidth(by: bl[j])
-            let (s1, c1) = t[j].addingReportingOverflow(lo)
-            let (s2, c2) = s1.addingReportingOverflow(carry)
-            t[j] = s2
-            carry = hi &+ (c1 ? 1 : 0) &+ (c2 ? 1 : 0)
-        }
-        let (s4, c4) = t[4].addingReportingOverflow(carry)
-        t[4] = s4
-        t[5] = t[5] &+ (c4 ? 1 : 0)
-
-        let m = t[0] &* SecpFp.INV
-        carry = 0
-        for j in 0..<4 {
-            let (hi, lo) = m.multipliedFullWidth(by: SecpFp.P[j])
-            let (s1, c1) = t[j].addingReportingOverflow(lo)
-            let (s2, c2) = s1.addingReportingOverflow(carry)
-            t[j] = s2
-            carry = hi &+ (c1 ? 1 : 0) &+ (c2 ? 1 : 0)
-        }
-        let (s4r, c4r) = t[4].addingReportingOverflow(carry)
-        t[4] = s4r
-        t[5] = t[5] &+ (c4r ? 1 : 0)
-
-        t[0] = t[1]; t[1] = t[2]; t[2] = t[3]; t[3] = t[4]; t[4] = t[5]; t[5] = 0
-    }
-
-    var r = Array(t[0..<4])
-    if t[4] != 0 || gte256(r, SecpFp.P) {
-        (r, _) = sub256(r, SecpFp.P)
-    }
-    return SecpFp.from64(r)
+    withSecpFpPtr(a) { ap in withSecpFpPtr(b) { bp in
+        secpFpFromRaw { rp in secp256k1_fp_mul(ap, bp, rp) }
+    }}
 }
 
+@inline(__always)
 public func secpAdd(_ a: SecpFp, _ b: SecpFp) -> SecpFp {
-    var (r, carry) = add256(a.to64(), b.to64())
-    if carry != 0 || gte256(r, SecpFp.P) {
-        (r, _) = sub256(r, SecpFp.P)
-    }
-    return SecpFp.from64(r)
+    withSecpFpPtr(a) { ap in withSecpFpPtr(b) { bp in
+        secpFpFromRaw { rp in secp256k1_fp_add(ap, bp, rp) }
+    }}
 }
 
+@inline(__always)
 public func secpSub(_ a: SecpFp, _ b: SecpFp) -> SecpFp {
-    var (r, borrow) = sub256(a.to64(), b.to64())
-    if borrow {
-        (r, _) = add256(r, SecpFp.P)
-    }
-    return SecpFp.from64(r)
+    withSecpFpPtr(a) { ap in withSecpFpPtr(b) { bp in
+        secpFpFromRaw { rp in secp256k1_fp_sub(ap, bp, rp) }
+    }}
 }
 
-public func secpSqr(_ a: SecpFp) -> SecpFp { secpMul(a, a) }
+@inline(__always)
+public func secpSqr(_ a: SecpFp) -> SecpFp {
+    withSecpFpPtr(a) { ap in
+        secpFpFromRaw { rp in secp256k1_fp_sqr(ap, rp) }
+    }
+}
+
 public func secpDouble(_ a: SecpFp) -> SecpFp { secpAdd(a, a) }
 
-// Convert integer to Montgomery form: a * R mod p
 public func secpFromInt(_ val: UInt64) -> SecpFp {
     let limbs: [UInt64] = [val, 0, 0, 0]
     let raw = SecpFp.from64(limbs)
     return secpMul(raw, SecpFp.from64(SecpFp.R2_MOD_P))
 }
 
-// Convert from Montgomery form to integer: a * R^-1 mod p
 public func secpToInt(_ a: SecpFp) -> [UInt64] {
     let one: [UInt64] = [1, 0, 0, 0]
     return secpMul(a, SecpFp.from64(one)).to64()
 }
 
-// Field negation: -a mod p
+@inline(__always)
 public func secpNeg(_ a: SecpFp) -> SecpFp {
-    if a.isZero { return a }
-    let (r, _) = sub256(SecpFp.P, a.to64())
-    return SecpFp.from64(r)
+    withSecpFpPtr(a) { ap in
+        secpFpFromRaw { rp in secp256k1_fp_neg(ap, rp) }
+    }
 }
 
-// Field inverse via Fermat's little theorem: a^(p-2) mod p
+@inline(__always)
 public func secpInverse(_ a: SecpFp) -> SecpFp {
-    var result = SecpFp.one
-    var base = a
-    var exp = SecpFp.P.map { $0 }
-    if exp[0] >= 2 { exp[0] -= 2 }
-    else { exp[0] = exp[0] &- 2; exp[1] -= 1 }
-
-    for i in 0..<4 {
-        var word = exp[i]
-        for _ in 0..<64 {
-            if word & 1 == 1 {
-                result = secpMul(result, base)
-            }
-            base = secpSqr(base)
-            word >>= 1
-        }
+    withSecpFpPtr(a) { ap in
+        secpFpFromRaw { rp in secp256k1_fp_inv(ap, rp) }
     }
-    return result
 }
 
 /// Parse a hex string into a SecpFp in Montgomery form.

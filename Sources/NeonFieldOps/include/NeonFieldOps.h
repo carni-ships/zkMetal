@@ -453,12 +453,35 @@ void bn254_sparse_matvec_mle(
 
 /// secp256k1 Fr Montgomery multiplication: r = a * b * R^{-1} mod n.
 void secp256k1_fr_mul(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]);
+/// secp256k1 Fr Montgomery addition: r = (a + b) mod n.
+void secp256k1_fr_add(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]);
+/// secp256k1 Fr Montgomery subtraction: r = (a - b) mod n.
+void secp256k1_fr_sub(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]);
+/// secp256k1 Fr negation: r = -a mod n.
+void secp256k1_fr_neg(const uint64_t a[4], uint64_t r[4]);
 
 /// secp256k1 Fr inverse via Fermat: r = a^{n-2} mod n.
 void secp256k1_fr_inverse(const uint64_t a[4], uint64_t r[4]);
 
 /// secp256k1 Fr batch inverse via Montgomery's trick.
 void secp256k1_fr_batch_inverse(const uint64_t *a, int n, uint64_t *out);
+
+// ============================================================
+// secp256k1 Fp (base field) CIOS Montgomery operations
+// ============================================================
+
+/// secp256k1 Fp Montgomery multiplication: r = a * b * R^{-1} mod p.
+void secp256k1_fp_mul(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]);
+/// secp256k1 Fp Montgomery squaring: r = a^2 * R^{-1} mod p.
+void secp256k1_fp_sqr(const uint64_t a[4], uint64_t r[4]);
+/// secp256k1 Fp Montgomery addition: r = (a + b) mod p.
+void secp256k1_fp_add(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]);
+/// secp256k1 Fp Montgomery subtraction: r = (a - b) mod p.
+void secp256k1_fp_sub(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]);
+/// secp256k1 Fp negation: r = -a mod p.
+void secp256k1_fp_neg(const uint64_t a[4], uint64_t r[4]);
+/// secp256k1 Fp inverse via Fermat: r = a^{p-2} mod p.
+void secp256k1_fp_inv(const uint64_t a[4], uint64_t r[4]);
 
 /// Prepare MSM inputs for probabilistic ECDSA batch verification.
 /// All CPU scalar work (batch inverse, random weights, liftX) done in C.
