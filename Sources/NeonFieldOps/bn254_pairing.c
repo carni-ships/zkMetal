@@ -683,73 +683,139 @@ static void fp12_frobenius3(const uint64_t a[FP12], uint64_t r[FP12]) {
 }
 
 // ============================================================
-// G2 affine point operations for Miller loop
-// G2Affine: [x[8], y[8]] = 16 uint64_t (Fp2 coords)
+// G2 projective point operations for Miller loop (no fp2_inv)
+// G2Proj: [X[8], Y[8], Z[8]] = 24 uint64_t (Fp2 coords, Jacobian)
+// Jacobian: affine (x,y) = (X/Z^2, Y/Z^3)
 // ============================================================
 
-#define G2AFF 16
+#define G2AFF  16
+#define G2PROJ 24
 
-// G2 affine doubling: T = 2T, returns lambda
-static void g2_aff_double(uint64_t t[G2AFF], uint64_t lambda[FP2]) {
-    uint64_t xsq[8], num[8], den[8], dinv[8], x3[8], y3[8], t1[8], t2[8];
-    fp2_sqr(t, xsq);
-    fp2_dbl(xsq, t1);
-    fp2_add(t1, xsq, num);       // 3*x^2
-    fp2_dbl(t+8, den);           // 2*y
-    fp2_inv(den, dinv);
-    fp2_mul(num, dinv, lambda);
-    fp2_sqr(lambda, t1);
-    fp2_dbl(t, t2);
-    fp2_sub(t1, t2, x3);         // x3 = lambda^2 - 2*x
-    fp2_sub(t, x3, t1);
-    fp2_mul(lambda, t1, t2);
-    fp2_sub(t2, t+8, y3);        // y3 = lambda*(x - x3) - y
-    fp2_copy(t, x3);
-    fp2_copy(t+8, y3);
+// Jacobian doubling of T in-place, outputs sparse line coefficients (c0, c3, c4).
+// Tangent line at T=(X,Y,Z) evaluated at affine P=(px,py), scaled by 2*Y*Z^3:
+//   c0 = 2*Y*Z^3 * py
+//   c3 = -(3*X^2 * Z^2) * px
+//   c4 = 3*X^3 - 2*Y^2   (= 3*X^2 * (X/Z^2)*Z^2 - 2*Y^2, i.e. num * affine_x - ...)
+// This scaling factor lies in the kernel of the final exponentiation.
+static void g2_proj_double(uint64_t t[G2PROJ],
+                           const uint64_t px[FP], const uint64_t py[FP],
+                           uint64_t c0[FP2], uint64_t c3[FP2], uint64_t c4[FP2]) {
+    const uint64_t *X = t, *Y = t+8, *Z = t+16;
+    uint64_t A[8], B[8], C[8], D[8], E[8], F[8];
+    uint64_t tmp1[8], tmp2[8];
+
+    fp2_sqr(X, A);                           // A = X^2
+    fp2_sqr(Y, B);                           // B = Y^2
+    fp2_sqr(B, C);                           // C = Y^4
+
+    // D = 4*X*Y^2 = 2*((X+B)^2 - A - C)
+    fp2_add(X, B, tmp1);
+    fp2_sqr(tmp1, tmp2);
+    fp2_add(A, C, tmp1);
+    fp2_sub(tmp2, tmp1, D);
+    fp2_dbl(D, D);                           // D = 4*X*Y^2
+
+    fp2_dbl(A, E);
+    fp2_add(E, A, E);                        // E = 3*X^2
+
+    fp2_sqr(E, F);                           // F = 9*X^4
+
+    // Line coefficients (before updating T)
+    uint64_t zsq[8], zcube[8], twoYZ3[8], Ezsq[8];
+    fp2_sqr(Z, zsq);                         // Z^2
+    fp2_mul(zsq, Z, zcube);                  // Z^3
+    fp2_mul(Y, zcube, twoYZ3);
+    fp2_dbl(twoYZ3, twoYZ3);                 // 2*Y*Z^3
+    fp2_mul_fp(twoYZ3, py, c0);              // c0 = 2*Y*Z^3 * py
+
+    fp2_mul(E, zsq, Ezsq);                   // 3*X^2 * Z^2
+    fp2_mul_fp(Ezsq, px, c3);
+    fp2_neg(c3, c3);                         // c3 = -(3*X^2*Z^2) * px
+
+    fp2_mul(E, X, tmp1);
+    fp2_dbl(B, tmp2);
+    fp2_sub(tmp1, tmp2, c4);                 // c4 = 3*X^3 - 2*Y^2
+
+    // New coordinates
+    uint64_t X3[8], Y3[8], Z3[8], eightC[8];
+    fp2_dbl(D, tmp1);
+    fp2_sub(F, tmp1, X3);                    // X3 = F - 2*D
+
+    fp2_dbl(C, eightC);
+    fp2_dbl(eightC, eightC);
+    fp2_dbl(eightC, eightC);                 // 8*C
+    fp2_sub(D, X3, tmp1);
+    fp2_mul(E, tmp1, tmp2);
+    fp2_sub(tmp2, eightC, Y3);               // Y3 = E*(D - X3) - 8*C
+
+    fp2_add(Y, Z, tmp1);
+    fp2_sqr(tmp1, tmp2);
+    fp2_sqr(Z, tmp1);
+    fp2_add(B, tmp1, tmp1);
+    fp2_sub(tmp2, tmp1, Z3);                 // Z3 = (Y+Z)^2 - B - Z^2
+
+    fp2_copy(t,    X3);
+    fp2_copy(t+8,  Y3);
+    fp2_copy(t+16, Z3);
 }
 
-// G2 affine addition: T = T + Q, returns lambda
-static void g2_aff_add(uint64_t t[G2AFF], const uint64_t q[G2AFF], uint64_t lambda[FP2]) {
-    uint64_t dx[8], dy[8], dinv[8], x3[8], y3[8], t1[8], t2[8];
-    fp2_sub(q, t, dx);
-    fp2_sub(q+8, t+8, dy);
-    fp2_inv(dx, dinv);
-    fp2_mul(dy, dinv, lambda);
-    fp2_sqr(lambda, t1);
-    fp2_sub(t1, t, t1);
-    fp2_sub(t1, q, x3);
-    fp2_sub(t, x3, t1);
-    fp2_mul(lambda, t1, t2);
-    fp2_sub(t2, t+8, y3);
-    fp2_copy(t, x3);
-    fp2_copy(t+8, y3);
-}
+// Mixed Jacobian addition: T = T + Q (Q in affine).
+// Chord line scaled by H*Z1^3 to avoid inversion:
+//   c0 = H*Z1^3 * py
+//   c3 = -(R*Z1^2) * px
+//   c4 = R*X1 - Y1*H
+// where H = xQ*Z1^2 - X1, R = yQ*Z1^3 - Y1.
+static void g2_proj_add_mixed(uint64_t t[G2PROJ], const uint64_t q[G2AFF],
+                               const uint64_t px[FP], const uint64_t py[FP],
+                               uint64_t c0[FP2], uint64_t c3[FP2], uint64_t c4[FP2]) {
+    const uint64_t *X1 = t, *Y1 = t+8, *Z1 = t+16;
+    const uint64_t *xQ = q, *yQ = q+8;
+    uint64_t zsq[8], zcube[8], U2[8], S2[8], H[8], R[8];
+    uint64_t Hsq[8], Hcube[8], V[8];
+    uint64_t HZ3[8], Rzsq[8];
+    uint64_t tmp1[8], tmp2[8];
 
-// ============================================================
-// Line evaluation at G1 point P
-// BN254 M-type twist:
-//   yP at c0.c0, -lam*xP at c1.c0, (lam*xT - yT) at c1.c1
-// Positions: c0.c0 (=l0), c1.c0 (=l3), c1.c1 (=l4)
-// ============================================================
+    fp2_sqr(Z1, zsq);                        // Z1^2
+    fp2_mul(zsq, Z1, zcube);                 // Z1^3
+    fp2_mul(xQ, zsq, U2);                    // xQ * Z1^2
+    fp2_mul(yQ, zcube, S2);                  // yQ * Z1^3
 
-// Sparse line evaluation: outputs only the 3 nonzero Fp2 components
-// l0 = yP (Fp element in Fp2, c1=0), l3 = -lam*xP, l4 = lam*xT - yT
-static void line_eval_sparse(const uint64_t lambda[FP2], const uint64_t xT[FP2], const uint64_t yT[FP2],
-                             const uint64_t px[FP], const uint64_t py[FP],
-                             uint64_t l0[FP2], uint64_t l3[FP2], uint64_t l4[FP2]) {
-    // l0 = yP as Fp2 (c0=py, c1=0)
-    fp_copy(l0, py);
-    memset(l0+4, 0, 32);
+    fp2_sub(U2, X1, H);                      // H = xQ*Z1^2 - X1
+    fp2_sub(S2, Y1, R);                      // R = yQ*Z1^3 - Y1
 
-    // l3 = -lam*xP
-    uint64_t t1[8];
-    fp2_mul_fp(lambda, px, t1);
-    fp2_neg(t1, l3);
+    // Line coefficients
+    fp2_mul(H, zcube, HZ3);                  // H*Z1^3
+    fp2_mul_fp(HZ3, py, c0);                 // c0 = H*Z1^3 * py
 
-    // l4 = lam*xT - yT
-    uint64_t t2[8];
-    fp2_mul(lambda, xT, t2);
-    fp2_sub(t2, yT, l4);
+    fp2_mul(R, zsq, Rzsq);                   // R*Z1^2
+    fp2_mul_fp(Rzsq, px, c3);
+    fp2_neg(c3, c3);                         // c3 = -(R*Z1^2) * px
+
+    fp2_mul(R, X1, tmp1);
+    fp2_mul(Y1, H, tmp2);
+    fp2_sub(tmp1, tmp2, c4);                 // c4 = R*X1 - Y1*H
+
+    // New coordinates (mixed Jacobian addition)
+    fp2_sqr(H, Hsq);                         // H^2
+    fp2_mul(Hsq, H, Hcube);                  // H^3
+    fp2_mul(X1, Hsq, V);                     // V = X1*H^2
+
+    uint64_t X3[8], Y3[8], Z3[8];
+    fp2_sqr(R, tmp1);
+    fp2_dbl(V, tmp2);
+    fp2_sub(tmp1, Hcube, tmp1);
+    fp2_sub(tmp1, tmp2, X3);                 // X3 = R^2 - H^3 - 2*V
+
+    fp2_sub(V, X3, tmp1);
+    fp2_mul(R, tmp1, tmp2);
+    fp2_mul(Y1, Hcube, tmp1);
+    fp2_sub(tmp2, tmp1, Y3);                 // Y3 = R*(V - X3) - Y1*H^3
+
+    fp2_mul(Z1, H, Z3);                      // Z3 = Z1*H
+
+    fp2_copy(t,    X3);
+    fp2_copy(t+8,  Y3);
+    fp2_copy(t+16, Z3);
 }
 
 // ============================================================
@@ -774,72 +840,62 @@ static void miller_loop(const uint64_t p_aff[8], const uint64_t q_aff[16], uint6
     const uint64_t *px = p_aff;
     const uint64_t *py = p_aff + 4;
 
-    uint64_t T[16];
-    memcpy(T, q_aff, 128);
+    // Initialize T in Jacobian projective coordinates (X=Qx, Y=Qy, Z=1)
+    uint64_t T[G2PROJ];
+    fp2_copy(T,    q_aff);      // X = Q.x
+    fp2_copy(T+8,  q_aff+8);   // Y = Q.y
+    fp2_one(T+16);              // Z = 1
 
-    // negQ
-    uint64_t negQ[16];
-    memcpy(negQ, q_aff, 64);        // x
-    fp2_neg(q_aff + 8, negQ + 8);   // -y
+    // negQ (affine, for NAF=-1 steps)
+    uint64_t negQ[G2AFF];
+    fp2_copy(negQ, q_aff);
+    fp2_neg(q_aff+8, negQ+8);
 
     fp12_one(f);
 
     uint64_t tmp[48];
-    uint64_t lam[8];
-    uint64_t oldTx[8], oldTy[8];
-    uint64_t ll0[8], ll3[8], ll4[8]; // sparse line components
+    uint64_t c0[8], c3[8], c4[8]; // sparse line components (projective)
 
     for (int i = 1; i < 66; i++) {
         fp12_sqr(f, tmp);
         fp12_copy(f, tmp);
 
-        fp2_copy(oldTx, T);
-        fp2_copy(oldTy, T+8);
-        g2_aff_double(T, lam);
-        line_eval_sparse(lam, oldTx, oldTy, px, py, ll0, ll3, ll4);
-        fp12_mul_by_line(f, ll0, ll3, ll4, tmp);
+        // Projective doubling — no fp2_inv
+        g2_proj_double(T, px, py, c0, c3, c4);
+        fp12_mul_by_line(f, c0, c3, c4, tmp);
         fp12_copy(f, tmp);
 
         if (SIX_X_PLUS_2_NAF[i] == 1) {
-            fp2_copy(oldTx, T);
-            fp2_copy(oldTy, T+8);
-            g2_aff_add(T, q_aff, lam);
-            line_eval_sparse(lam, oldTx, oldTy, px, py, ll0, ll3, ll4);
-            fp12_mul_by_line(f, ll0, ll3, ll4, tmp);
+            // Mixed projective + affine addition — no fp2_inv
+            g2_proj_add_mixed(T, q_aff, px, py, c0, c3, c4);
+            fp12_mul_by_line(f, c0, c3, c4, tmp);
             fp12_copy(f, tmp);
         } else if (SIX_X_PLUS_2_NAF[i] == -1) {
-            fp2_copy(oldTx, T);
-            fp2_copy(oldTy, T+8);
-            g2_aff_add(T, negQ, lam);
-            line_eval_sparse(lam, oldTx, oldTy, px, py, ll0, ll3, ll4);
-            fp12_mul_by_line(f, ll0, ll3, ll4, tmp);
+            g2_proj_add_mixed(T, negQ, px, py, c0, c3, c4);
+            fp12_mul_by_line(f, c0, c3, c4, tmp);
             fp12_copy(f, tmp);
         }
     }
 
     // Frobenius correction: Q1 = pi(Q), Q2 = -pi^2(Q)
-    uint64_t q1[16];
+    // These use affine points added to projective T via mixed addition.
+    uint64_t q1[G2AFF];
     fp2_conj(q_aff, q1);
     fp2_mul(q1, GAMMA_1_2, q1);
-    fp2_conj(q_aff + 8, q1 + 8);
-    fp2_mul(q1 + 8, GAMMA_1_3, q1 + 8);
+    fp2_conj(q_aff+8, q1+8);
+    fp2_mul(q1+8, GAMMA_1_3, q1+8);
 
-    fp2_copy(oldTx, T); fp2_copy(oldTy, T+8);
-    g2_aff_add(T, q1, lam);
-    line_eval_sparse(lam, oldTx, oldTy, px, py, ll0, ll3, ll4);
-    fp12_mul_by_line(f, ll0, ll3, ll4, tmp);
+    g2_proj_add_mixed(T, q1, px, py, c0, c3, c4);
+    fp12_mul_by_line(f, c0, c3, c4, tmp);
     fp12_copy(f, tmp);
 
-    // Q2.x = Q.x * gamma_{2,2}, Q2.y = -Q.y * gamma_{2,3}
-    uint64_t q2[16];
+    uint64_t q2[G2AFF];
     fp2_mul_fp(q_aff, GAMMA_2_2, q2);
-    fp2_mul_fp(q_aff + 8, GAMMA_2_3, q2 + 8);
-    fp2_neg(q2 + 8, q2 + 8);
+    fp2_mul_fp(q_aff+8, GAMMA_2_3, q2+8);
+    fp2_neg(q2+8, q2+8);
 
-    fp2_copy(oldTx, T); fp2_copy(oldTy, T+8);
-    g2_aff_add(T, q2, lam);
-    line_eval_sparse(lam, oldTx, oldTy, px, py, ll0, ll3, ll4);
-    fp12_mul_by_line(f, ll0, ll3, ll4, tmp);
+    g2_proj_add_mixed(T, q2, px, py, c0, c3, c4);
+    fp12_mul_by_line(f, c0, c3, c4, tmp);
     fp12_copy(f, tmp);
 }
 

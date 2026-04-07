@@ -72,23 +72,33 @@ func runProofSystemTests() {
         let cqSecret: [UInt32] = [0x1234, 0x5678, 0x9ABC, 0xDEF0, 0x1111, 0x2222, 0x3333, 0x0001]
         let cqSrsSecret = frFromLimbs(cqSecret)
         let cqSrs = KZGEngine.generateTestSRS(secret: cqSecret, size: 256, generator: cqGen)
+        print("  SRS generated: \(cqSrs.count) points")
         let cqEngine = try CQEngine(srs: cqSrs)
+        print("  CQEngine initialized")
 
         // Test 1: Simple lookup (N=4, |T|=4)
         let cqTable1: [Fr] = [frFromInt(10), frFromInt(20), frFromInt(30), frFromInt(40)]
+        print("  Preprocessing table...")
         let cqTc1 = try cqEngine.preprocessTable(table: cqTable1)
+        print("  Table preprocessed, cached quotients: \(cqTc1.cachedQuotientCommitments.count)")
         let cqLookups1: [Fr] = [frFromInt(20), frFromInt(10), frFromInt(40), frFromInt(30)]
+        print("  Proving...")
         let cqProof1 = try cqEngine.prove(lookups: cqLookups1, table: cqTc1)
+        print("  Proof generated, verifying...")
         let cqValid1 = cqEngine.verify(proof: cqProof1, table: cqTc1, numLookups: 4, srsSecret: cqSrsSecret)
+        print("  Verify result: \(cqValid1)")
         expect(cqValid1, "cq simple lookup")
 
         // Test 2: Repeated lookups (N=8, |T|=8)
-        let cqTable2: [Fr] = (0..<8).map { frFromInt(UInt64($0 + 1)) }
-        let cqTc2 = try cqEngine.preprocessTable(table: cqTable2)
-        let cqLookups2: [Fr] = [1, 1, 3, 3, 5, 5, 7, 7].map { frFromInt($0) }
-        let cqProof2 = try cqEngine.prove(lookups: cqLookups2, table: cqTc2)
-        let cqValid2 = cqEngine.verify(proof: cqProof2, table: cqTc2, numLookups: 8, srsSecret: cqSrsSecret)
-        expect(cqValid2, "cq repeated lookups")
+        do {
+            let cqTable2: [Fr] = (0..<8).map { frFromInt(UInt64($0 + 1)) }
+            let cqTc2 = try cqEngine.preprocessTable(table: cqTable2)
+            let cqLookups2: [Fr] = [1, 1, 3, 3, 5, 5, 7, 7].map { frFromInt($0) }
+            let cqProof2 = try cqEngine.prove(lookups: cqLookups2, table: cqTc2)
+            let cqValid2 = cqEngine.verify(proof: cqProof2, table: cqTc2, numLookups: 8, srsSecret: cqSrsSecret)
+            expect(cqValid2, "cq repeated lookups")
+            expect(cqTc2.cachedQuotientCommitments.count == 8, "cq cached quotients count 8")
+        } catch { print("  cq test2 error: \(error)"); expect(false, "cq test2: \(error)") }
 
         // Test 3: Cached quotients exist and have correct count
         expect(cqTc1.cachedQuotientCommitments.count == 4, "cq cached quotients count")

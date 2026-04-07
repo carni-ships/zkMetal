@@ -872,53 +872,132 @@ static void fp12_pow_by_x_half(const uint64_t a[FP12], uint64_t r[FP12]) {
 
 #define G2AFF 24
 
-// G2 affine doubling: T = 2T, returns lambda
-// lambda = 3*x^2 / (2*y)  (a=0 for BLS12-381 twist)
-static void g2_aff_double(uint64_t t[G2AFF], uint64_t lambda[FP2]) {
-    uint64_t xsq[12], num[12], den[12], dinv[12], x3[12], y3[12], t1[12], t2[12];
+// G2 projective point: Jacobian (X:Y:Z) represents affine (X/Z², Y/Z³)
+// Layout: [X[12], Y[12], Z[12]] = 36 uint64_t
+#define G2PROJ 36
 
-    fp2_sqr(t, xsq);            // x^2
-    fp2_dbl(xsq, t1);
-    fp2_add(t1, xsq, num);      // 3*x^2
-    fp2_dbl(t+12, den);          // 2*y
-    fp2_inv(den, dinv);
-    fp2_mul(num, dinv, lambda);  // lambda = 3*x^2 / (2*y)
+// Projective doubling: T = 2T, returns sparse line coefficients (l0, l1, l4)
+// No field inversion. Uses Jacobian coordinates with a=0.
+//
+// Tangent line at T=(X,Y,Z) evaluated at affine P=(xP,yP),
+// scaled by 2·Y·Z³ to avoid inversion:
+//   l0 = 3·X³ - 2·Y²
+//   l1 = -(3·X²·Z²) · xP
+//   l4 = 2·Y·Z³ · yP
+static void g2_proj_double(uint64_t T[G2PROJ], const uint64_t px[FP],
+                           const uint64_t py[FP],
+                           uint64_t l0[FP2], uint64_t l1[FP2], uint64_t l4[FP2]) {
+    uint64_t A[12], B[12], C[12], D[12], E[12], F[12];
+    uint64_t t1[12], t2[12];
 
-    // x3 = lambda^2 - 2*x
-    fp2_sqr(lambda, t1);
-    fp2_dbl(t, t2);
-    fp2_sub(t1, t2, x3);
+    fp2_sqr(T, A);                 // X²
+    fp2_sqr(T+12, B);             // Y²
+    fp2_sqr(B, C);                // Y⁴
+    fp2_add(T, B, t1);
+    fp2_sqr(t1, D);
+    fp2_sub(D, A, D);
+    fp2_sub(D, C, D);
+    fp2_dbl(D, D);                // D = 4·X·Y²
+    fp2_dbl(A, E);
+    fp2_add(E, A, E);            // E = 3·X²
+    fp2_sqr(E, F);               // F = 9·X⁴
 
-    // y3 = lambda*(x - x3) - y
-    fp2_sub(t, x3, t1);
-    fp2_mul(lambda, t1, t2);
-    fp2_sub(t2, t+12, y3);
+    // Line coefficients (before updating T)
+    uint64_t zsq[12], zcube[12], twoYZ3[12];
+    fp2_sqr(T+24, zsq);           // Z²
+    fp2_mul(zsq, T+24, zcube);    // Z³
+    fp2_dbl(T+12, t1);            // 2·Y
+    fp2_mul(t1, zcube, twoYZ3);   // 2·Y·Z³
+    fp2_mul_fp(twoYZ3, py, l4);   // l4 = 2·Y·Z³·yP
 
-    fp2_copy(t, x3);
-    fp2_copy(t+12, y3);
+    uint64_t Ezsq[12];
+    fp2_mul(E, zsq, Ezsq);        // 3·X²·Z²
+    fp2_mul_fp(Ezsq, px, t1);
+    fp2_neg(t1, l1);              // l1 = -(3·X²·Z²)·xP
+
+    fp2_mul(E, T, t1);            // E·X = 3·X³
+    fp2_dbl(B, t2);               // 2·Y²
+    fp2_sub(t1, t2, l0);         // l0 = 3·X³ - 2·Y²
+
+    // New point coordinates
+    uint64_t X3[12], Y3[12], Z3[12], eightC[12];
+    fp2_dbl(D, t1);
+    fp2_sub(F, t1, X3);           // X3 = 9·X⁴ - 8·X·Y²
+    fp2_dbl(C, eightC);
+    fp2_dbl(eightC, eightC);
+    fp2_dbl(eightC, eightC);      // 8·Y⁴
+    fp2_sub(D, X3, t1);
+    fp2_mul(E, t1, t2);
+    fp2_sub(t2, eightC, Y3);     // Y3 = 3·X²·(4·X·Y²-X3) - 8·Y⁴
+
+    fp2_add(T+12, T+24, t1);
+    fp2_sqr(t1, Z3);
+    fp2_sub(Z3, B, Z3);
+    fp2_sub(Z3, zsq, Z3);        // Z3 = (Y+Z)²-Y²-Z² = 2·Y·Z
+
+    fp2_copy(T, X3);
+    fp2_copy(T+12, Y3);
+    fp2_copy(T+24, Z3);
 }
 
-// G2 affine addition: T = T + Q, returns lambda
-static void g2_aff_add(uint64_t t[G2AFF], const uint64_t q[G2AFF], uint64_t lambda[FP2]) {
-    uint64_t dx[12], dy[12], dinv[12], x3[12], y3[12], t1[12], t2[12];
+// Projective mixed addition: T = T + Q (Q affine), returns line coefficients.
+// No field inversion.
+//
+// T = (X1:Y1:Z1) Jacobian, Q = (xQ, yQ) affine.
+// Chord line scaled by H·Z1³ to avoid inversion:
+//   l0 = R·X1 - Y1·H
+//   l1 = -(R·Z1²)·xP
+//   l4 = H·Z1³·yP
+// where H = xQ·Z1² - X1, R = yQ·Z1³ - Y1.
+static void g2_proj_add_mixed(uint64_t T[G2PROJ], const uint64_t q[G2AFF],
+                              const uint64_t px[FP], const uint64_t py[FP],
+                              uint64_t l0[FP2], uint64_t l1[FP2], uint64_t l4[FP2]) {
+    uint64_t zsq[12], zcube[12], U2[12], S2[12], H[12], R[12];
+    uint64_t t1[12], t2[12];
 
-    fp2_sub(q, t, dx);          // qx - tx
-    fp2_sub(q+12, t+12, dy);    // qy - ty
-    fp2_inv(dx, dinv);
-    fp2_mul(dy, dinv, lambda);
+    fp2_sqr(T+24, zsq);           // Z1²
+    fp2_mul(zsq, T+24, zcube);    // Z1³
+    fp2_mul(q, zsq, U2);          // xQ·Z1²
+    fp2_mul(q+12, zcube, S2);     // yQ·Z1³
 
-    // x3 = lambda^2 - tx - qx
-    fp2_sqr(lambda, t1);
-    fp2_sub(t1, t, t1);
-    fp2_sub(t1, q, x3);
+    fp2_sub(U2, T, H);           // H = xQ·Z1² - X1
+    fp2_sub(S2, T+12, R);        // R = yQ·Z1³ - Y1
 
-    // y3 = lambda*(tx - x3) - ty
-    fp2_sub(t, x3, t1);
-    fp2_mul(lambda, t1, t2);
-    fp2_sub(t2, t+12, y3);
+    // Line coefficients
+    uint64_t HZ3[12];
+    fp2_mul(H, zcube, HZ3);       // H·Z1³
+    fp2_mul_fp(HZ3, py, l4);     // l4 = H·Z1³·yP
 
-    fp2_copy(t, x3);
-    fp2_copy(t+12, y3);
+    uint64_t Rzsq[12];
+    fp2_mul(R, zsq, Rzsq);        // R·Z1²
+    fp2_mul_fp(Rzsq, px, t1);
+    fp2_neg(t1, l1);             // l1 = -(R·Z1²)·xP
+
+    fp2_mul(R, T, t1);            // R·X1
+    fp2_mul(T+12, H, t2);         // Y1·H
+    fp2_sub(t1, t2, l0);         // l0 = R·X1 - Y1·H
+
+    // New point coordinates (mixed Jacobian addition)
+    uint64_t Hsq[12], Hcube[12], V[12], X3[12], Y3[12], Z3[12];
+    fp2_sqr(H, Hsq);              // H²
+    fp2_mul(Hsq, H, Hcube);       // H³
+    fp2_mul(T, Hsq, V);           // X1·H²
+
+    fp2_sqr(R, t1);               // R²
+    fp2_sub(t1, Hcube, t1);
+    fp2_dbl(V, t2);
+    fp2_sub(t1, t2, X3);         // X3 = R² - H³ - 2·V
+
+    fp2_sub(V, X3, t1);
+    fp2_mul(R, t1, t2);
+    fp2_mul(T+12, Hcube, t1);
+    fp2_sub(t2, t1, Y3);         // Y3 = R·(V-X3) - Y1·H³
+
+    fp2_mul(T+24, H, Z3);        // Z3 = Z1·H
+
+    fp2_copy(T, X3);
+    fp2_copy(T+12, Y3);
+    fp2_copy(T+24, Z3);
 }
 
 // ============================================================
@@ -1035,45 +1114,33 @@ static const int MILLER_BITS[63] = {
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0      // bits 14-0
 };
 
-// Full Miller loop: f_{|x|,Q}(P)
+// Full Miller loop: f_{|x|,Q}(P) using projective G2 coordinates (no inversions)
 static void miller_loop(const uint64_t p_aff[12], const uint64_t q_aff[24], uint64_t f[FP12]) {
-    // p_aff = [px[6], py[6]]  (G1 affine, Fp coords)
-    // q_aff = [qx[12], qy[12]] (G2 affine, Fp2 coords)
     const uint64_t *px = p_aff;
     const uint64_t *py = p_aff + 6;
 
-    // T = Q (working point)
-    uint64_t T[24];
-    memcpy(T, q_aff, 192);
+    // T = Q in Jacobian projective (Z=1)
+    uint64_t T[36]; // G2PROJ: X[12], Y[12], Z[12]
+    memcpy(T, q_aff, 192);     // X = qx, Y = qy
+    fp2_one(T+24);             // Z = 1
 
     fp12_one(f);
 
-    uint64_t line[72], tmp[72];
-    uint64_t lam[12];
-    uint64_t oldTx[12], oldTy[12];
-    uint64_t ll0[12], ll1[12], ll4[12]; // sparse line components
+    uint64_t tmp[72];
+    uint64_t ll0[12], ll1[12], ll4[12];
 
     for (int i = 0; i < 63; i++) {
-        // Square f
         fp12_sqr(f, tmp);
         fp12_copy(f, tmp);
 
-        // Save T before doubling (for line eval)
-        fp2_copy(oldTx, T);
-        fp2_copy(oldTy, T+12);
-
-        // Doubling step — sparse line eval + sparse mul
-        g2_aff_double(T, lam);
-        line_eval_sparse(lam, oldTx, oldTy, px, py, ll0, ll1, ll4);
+        // Projective doubling — line coefficients computed inline, no inversion
+        g2_proj_double(T, px, py, ll0, ll1, ll4);
         fp12_mul_by_line_sparse(f, ll0, ll1, ll4, tmp);
         fp12_copy(f, tmp);
 
-        // Addition step if bit is 1
         if (MILLER_BITS[i]) {
-            fp2_copy(oldTx, T);
-            fp2_copy(oldTy, T+12);
-            g2_aff_add(T, q_aff, lam);
-            line_eval_sparse(lam, oldTx, oldTy, px, py, ll0, ll1, ll4);
+            // Projective mixed addition (Q is affine)
+            g2_proj_add_mixed(T, q_aff, px, py, ll0, ll1, ll4);
             fp12_mul_by_line_sparse(f, ll0, ll1, ll4, tmp);
             fp12_copy(f, tmp);
         }
