@@ -229,8 +229,24 @@ public struct BiniusF256: Equatable, CustomStringConvertible {
     public static let one  = BiniusF256(value: 1)
 
     /// Tower constant beta: chosen so X^2 + X + beta is irreducible over GF(16).
-    /// beta = element 2 in GF(16) (which is alpha in the GF(4) lo position).
-    public static let beta = BiniusF16(value: 0x02)
+    /// beta has trace 1 over GF(2), ensuring irreducibility in characteristic 2.
+    public static let beta: BiniusF16 = {
+        // Find c in GF(16) such that x^2 + x + c = 0 has no solution in GF(16)
+        // (i.e., the absolute trace Tr(c) = c + c^2 + c^4 + c^8 equals 1 in GF(2))
+        for cVal in UInt8(1)..<16 {
+            let c = BiniusF16(value: cVal)
+            var hasRoot = false
+            for xVal in UInt8(0)..<16 {
+                let x = BiniusF16(value: xVal)
+                // x^2 + x + c = 0?
+                let x2 = x * x
+                let sum = x2 + x + c
+                if sum.isZero { hasRoot = true; break }
+            }
+            if !hasRoot { return c }
+        }
+        fatalError("No irreducible polynomial found for GF(256) tower")
+    }()
 
     public init(value: UInt8) {
         self.value = value

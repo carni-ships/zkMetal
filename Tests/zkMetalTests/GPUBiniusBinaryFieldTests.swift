@@ -529,10 +529,10 @@ private func testMultilinearEval256() {
     expectEqual(f00, e00, "MLE256 f(0,0)")
 
     let f10 = engine.multilinearEval256(evals: evals4, at: [.one, .zero])
-    expectEqual(f10, e10, "MLE256 f(1,0)")
+    expectEqual(f10, e01, "MLE256 f(1,0) — LSB-first: index=1")
 
     let f01 = engine.multilinearEval256(evals: evals4, at: [.zero, .one])
-    expectEqual(f01, e01, "MLE256 f(0,1)")
+    expectEqual(f01, e10, "MLE256 f(0,1) — LSB-first: index=2")
 
     let f11 = engine.multilinearEval256(evals: evals4, at: [.one, .one])
     expectEqual(f11, e11, "MLE256 f(1,1)")
