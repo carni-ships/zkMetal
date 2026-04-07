@@ -109,10 +109,23 @@ public class PlonkPreprocessor {
         // 6. Build permutation from copy constraints
         //    Initial identity permutation: sigma[k][i] = omega^i * {1, k1, k2}
         var sigma = [[Fr]](repeating: [Fr](repeating: Fr.zero, count: n), count: 3)
-        for i in 0..<n {
-            sigma[0][i] = domain[i]                          // omega^i
-            sigma[1][i] = frMul(k1, domain[i])               // k1 * omega^i
-            sigma[2][i] = frMul(k2, domain[i])               // k2 * omega^i
+        sigma[0] = domain
+        domain.withUnsafeBytes { dBuf in
+            let dP = dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+            withUnsafeBytes(of: k1) { k1Ptr in
+                sigma[1].withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_mul_scalar_parallel(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        dP, k1Ptr.baseAddress!.assumingMemoryBound(to: UInt64.self), Int32(n))
+                }
+            }
+            withUnsafeBytes(of: k2) { k2Ptr in
+                sigma[2].withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_mul_scalar_parallel(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        dP, k2Ptr.baseAddress!.assumingMemoryBound(to: UInt64.self), Int32(n))
+                }
+            }
         }
 
         // Apply copy constraints using union-find on variables

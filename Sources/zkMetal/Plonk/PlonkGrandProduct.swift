@@ -181,8 +181,16 @@ public class PlonkGrandProductEngine {
 
         // Element-wise multiply: ratios[i] = numerators[i] * invDenominators[i]
         var ratios = [Fr](repeating: Fr.zero, count: n)
-        for i in 0..<n {
-            ratios[i] = frMul(numerators[i], invDenominators[i])
+        numerators.withUnsafeBytes { nBuf in
+            invDenominators.withUnsafeBytes { iBuf in
+                ratios.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_mul_parallel(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        nBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        iBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
         }
         return ratios
     }
