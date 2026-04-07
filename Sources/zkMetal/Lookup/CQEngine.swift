@@ -32,6 +32,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 // MARK: - Data Structures
 
@@ -194,10 +195,12 @@ public class CQEngine {
         let mult = CQEngine.computeMultiplicities(table: table.table, lookups: lookups)
 
         // Verify sum of multiplicities = N
-        var multSum = Fr.zero
-        for i in 0..<T {
-            multSum = frAdd(multSum, mult[i])
+        var multSumLimbs = [UInt64](repeating: 0, count: 4)
+        mult.withUnsafeBytes { mBuf in
+            bn254_fr_vector_sum(mBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                               Int32(T), &multSumLimbs)
         }
+        let multSum = Fr.from64(multSumLimbs)
         let expectedN = frFromInt(UInt64(N))
         precondition(frEqual(multSum, expectedN),
                      "Sum of multiplicities (\(frToInt(multSum))) != N (\(N))")
@@ -296,7 +299,17 @@ public class CQEngine {
 
         // Batch-invert (z - omega^i) for all non-zero multiplicity entries
         var cqDenoms = [Fr](repeating: Fr.zero, count: T)
-        for i in 0..<T { cqDenoms[i] = frSub(z, table.roots[i]) }
+        withUnsafeBytes(of: z) { zPtr in
+            table.roots.withUnsafeBytes { rBuf in
+                cqDenoms.withUnsafeMutableBytes { dBuf in
+                    bn254_fr_batch_scalar_sub_neon(
+                        dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        zPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(T))
+                }
+            }
+        }
         var cqPrefix = [Fr](repeating: Fr.one, count: T)
         for i in 1..<T {
             cqPrefix[i] = cqDenoms[i - 1] == Fr.zero ? cqPrefix[i - 1] : frMul(cqPrefix[i - 1], cqDenoms[i - 1])
@@ -310,12 +323,16 @@ public class CQEngine {
                 cqInvRunning = frMul(cqInvRunning, cqDenoms[i])
             }
         }
-        var rhs = Fr.zero
-        for i in 0..<T {
-            let mi = proof.multiplicities[i]
-            if frEqual(mi, Fr.zero) { continue }
-            rhs = frAdd(rhs, frMul(mi, cqDenomInvs[i]))
+        var rhsLimbs = [UInt64](repeating: 0, count: 4)
+        proof.multiplicities.withUnsafeBytes { mBuf in
+            cqDenomInvs.withUnsafeBytes { iBuf in
+                bn254_fr_inner_product(
+                    mBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    iBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(T), &rhsLimbs)
+            }
         }
+        let rhs = Fr.from64(rhsLimbs)
 
         guard frEqual(lhs, rhs) else { return false }
 
@@ -393,7 +410,17 @@ public class CQEngine {
 
         // Batch-invert (z - omega^i)
         var cq2Denoms = [Fr](repeating: Fr.zero, count: T)
-        for i in 0..<T { cq2Denoms[i] = frSub(z, table.roots[i]) }
+        withUnsafeBytes(of: z) { zPtr in
+            table.roots.withUnsafeBytes { rBuf in
+                cq2Denoms.withUnsafeMutableBytes { dBuf in
+                    bn254_fr_batch_scalar_sub_neon(
+                        dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        zPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(T))
+                }
+            }
+        }
         var cq2Prefix = [Fr](repeating: Fr.one, count: T)
         for i in 1..<T {
             cq2Prefix[i] = cq2Denoms[i - 1] == Fr.zero ? cq2Prefix[i - 1] : frMul(cq2Prefix[i - 1], cq2Denoms[i - 1])
@@ -407,12 +434,16 @@ public class CQEngine {
                 cq2InvRunning = frMul(cq2InvRunning, cq2Denoms[i])
             }
         }
-        var rhs = Fr.zero
-        for i in 0..<T {
-            let mi = proof.multiplicities[i]
-            if frEqual(mi, Fr.zero) { continue }
-            rhs = frAdd(rhs, frMul(mi, cq2DenomInvs[i]))
+        var rhs2Limbs = [UInt64](repeating: 0, count: 4)
+        proof.multiplicities.withUnsafeBytes { mBuf in
+            cq2DenomInvs.withUnsafeBytes { iBuf in
+                bn254_fr_inner_product(
+                    mBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    iBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(T), &rhs2Limbs)
+            }
         }
+        let rhs = Fr.from64(rhs2Limbs)
         guard frEqual(lhs, rhs) else { return false }
 
         // Check 4: Quotient commitment consistency
