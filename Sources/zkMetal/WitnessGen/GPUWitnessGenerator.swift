@@ -84,46 +84,83 @@ public struct WaveScheduler {
     ///     plus public inputs and any pre-assigned witness variables)
     ///   - numVariables: Total number of variables in the system
     public init(constraints: [R1CSConstraint], knownVariables: Set<Int>, numVariables: Int) {
-        var known = knownVariables
-        var produced = [Int?](repeating: nil, count: constraints.count)
-        var scheduled = [Bool](repeating: false, count: constraints.count)
+        let n = constraints.count
+        var produced = [Int?](repeating: nil, count: n)
+
+        // Precompute: variable indices per constraint, unknown counts
+        var constraintVars = [[Int]](repeating: [], count: n)
+        var unknownCount = [Int](repeating: 0, count: n)
+        var isKnown = [Bool](repeating: false, count: numVariables)
+        for v in knownVariables { if v < numVariables { isKnown[v] = true } }
+
+        // Build reverse map: variable -> constraints that use it
+        var varToConstraints = [[Int]](repeating: [], count: numVariables)
+        for (ci, constraint) in constraints.enumerated() {
+            var vars = [Int]()
+            var unk = 0
+            for (idx, _) in constraint.a.terms {
+                if !vars.contains(idx) { vars.append(idx) }
+            }
+            for (idx, _) in constraint.b.terms {
+                if !vars.contains(idx) { vars.append(idx) }
+            }
+            for (idx, _) in constraint.c.terms {
+                if !vars.contains(idx) { vars.append(idx) }
+            }
+            for v in vars {
+                if !isKnown[v] { unk += 1 }
+                varToConstraints[v].append(ci)
+            }
+            constraintVars[ci] = vars
+            unknownCount[ci] = unk
+        }
+
+        // Worklist: constraints ready to solve (0 or 1 unknown)
+        var worklist = [Int]()
+        var scheduled = [Bool](repeating: false, count: n)
+        for ci in 0..<n {
+            if unknownCount[ci] <= 1 { worklist.append(ci) }
+        }
+
         var waves = [[Int]]()
-
-        // Build a map: variable -> constraints that might produce it
-        // For each constraint, determine which variable it can produce:
-        // the single unknown variable in the constraint (if exactly one is unknown).
-        var progress = true
-        while progress {
-            progress = false
+        while !worklist.isEmpty {
             var wave = [Int]()
+            var newlyKnown = [Int]()
 
-            for (ci, constraint) in constraints.enumerated() {
+            for ci in worklist {
                 if scheduled[ci] { continue }
+                scheduled[ci] = true
 
-                // Find unknown variables in this constraint
-                let allVars = constraint.allVariables
-                let unknowns = allVars.subtracting(known)
-
-                if unknowns.count == 0 {
-                    // Constraint is fully determined -- can verify but produces nothing new
+                if unknownCount[ci] == 0 {
                     wave.append(ci)
                     produced[ci] = nil
-                    scheduled[ci] = true
-                    progress = true
-                } else if unknowns.count == 1 {
-                    // Exactly one unknown -- we can solve for it
-                    let target = unknowns.first!
-                    wave.append(ci)
-                    produced[ci] = target
-                    known.insert(target)
-                    scheduled[ci] = true
-                    progress = true
+                } else {
+                    // Find the single unknown variable
+                    var target = -1
+                    for v in constraintVars[ci] {
+                        if !isKnown[v] { target = v; break }
+                    }
+                    if target >= 0 {
+                        wave.append(ci)
+                        produced[ci] = target
+                        isKnown[target] = true
+                        newlyKnown.append(target)
+                    }
                 }
-                // If unknowns.count > 1, skip this constraint for now
             }
 
-            if !wave.isEmpty {
-                waves.append(wave)
+            if !wave.isEmpty { waves.append(wave) }
+
+            // Update unknown counts for constraints affected by newly known variables
+            worklist = []
+            for v in newlyKnown {
+                for ci in varToConstraints[v] {
+                    if scheduled[ci] { continue }
+                    unknownCount[ci] -= 1
+                    if unknownCount[ci] <= 1 {
+                        worklist.append(ci)
+                    }
+                }
             }
         }
 
