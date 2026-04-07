@@ -583,7 +583,7 @@ func polyMulNTT(_ a: [Fr], _ b: [Fr], ntt: NTTEngine) throws -> [Fr] {
     aEvals.withUnsafeBytes { aBuf in
         bEvals.withUnsafeBytes { bBuf in
             cEvals.withUnsafeMutableBytes { rBuf in
-                bn254_fr_batch_mul_neon(
+                bn254_fr_batch_mul_parallel(
                     rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
                     aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
                     bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),

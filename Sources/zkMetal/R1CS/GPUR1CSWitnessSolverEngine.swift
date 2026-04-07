@@ -872,7 +872,7 @@ public final class GPUR1CSWitnessSolverEngine {
         a.withUnsafeBytes { aBuf in
             b.withUnsafeBytes { bBuf in
                 result.withUnsafeMutableBytes { rBuf in
-                    bn254_fr_batch_mul_neon(
+                    bn254_fr_batch_mul_parallel(
                         rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
                         aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
                         bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),

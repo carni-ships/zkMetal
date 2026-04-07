@@ -545,7 +545,7 @@ public class LogUpGKRVerifier {
         multiplicities.withUnsafeBytes { aBuf in
             invs.withUnsafeBytes { bBuf in
                 result.withUnsafeMutableBytes { rBuf in
-                    bn254_fr_batch_mul_neon(
+                    bn254_fr_batch_mul_parallel(
                         rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
                         aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
                         bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
