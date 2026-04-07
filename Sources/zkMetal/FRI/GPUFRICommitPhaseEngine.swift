@@ -19,6 +19,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 // MARK: - FRI Domain Types
 
@@ -454,10 +455,18 @@ public final class GPUFRICommitPhaseEngine {
         // Combine: combined[i] = sum_j (batchCoeffs[j] * polynomials[j][i])
         var combined = [Fr](repeating: Fr.zero, count: n)
         for j in 0..<polynomials.count {
-            let coeff = batchCoeffs[j]
+            var coeff = batchCoeffs[j]
             let poly = polynomials[j]
-            for i in 0..<n {
-                combined[i] = frAdd(combined[i], frMul(coeff, poly[i]))
+            combined.withUnsafeMutableBytes { cBuf in
+                poly.withUnsafeBytes { pBuf in
+                    withUnsafeBytes(of: &coeff) { sBuf in
+                        bn254_fr_batch_mac_neon(
+                            cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
             }
         }
 

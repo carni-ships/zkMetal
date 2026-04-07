@@ -12,6 +12,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 // MARK: - LDE Configuration
 
@@ -234,10 +235,17 @@ public final class GPUSTARKTraceLDEEngine {
 
         // Step 2+3: Zero-pad and apply coset shift
         var padded = [Fr](repeating: Fr.zero, count: m)
-        var gPower = Fr.one
-        for i in 0..<n {
-            padded[i] = frMul(coeffs[i], gPower)
-            gPower = frMul(gPower, cosetShift)
+        var cs = cosetShift
+        coeffs.withUnsafeBytes { cBuf in
+            padded.withUnsafeMutableBytes { pBuf in
+                withUnsafeBytes(of: &cs) { bBuf in
+                    bn254_fr_batch_mul_powers(
+                        pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
         }
         // Remaining entries stay zero (zero-padded)
 
@@ -271,10 +279,17 @@ public final class GPUSTARKTraceLDEEngine {
 
             // Zero-pad + coset shift
             var padded = [Fr](repeating: Fr.zero, count: m)
-            var gPower = Fr.one
-            for i in 0..<n {
-                padded[i] = frMul(coeffs[i], gPower)
-                gPower = frMul(gPower, config.cosetShift)
+            var cs = config.cosetShift
+            coeffs.withUnsafeBytes { cBuf in
+                padded.withUnsafeMutableBytes { pBuf in
+                    withUnsafeBytes(of: &cs) { bBuf in
+                        bn254_fr_batch_mul_powers(
+                            pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
             }
 
             // Forward NTT on extended domain

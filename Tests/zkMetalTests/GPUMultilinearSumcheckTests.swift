@@ -554,12 +554,12 @@ public func runGPUMultilinearSumcheckTests() {
             let mleVal = mle.evaluate(at: evalPoint)
             expect(frEqual(mleVal, finalEval), "GPU single \(logSize)-var: MLE(r) == finalEval")
 
-            // Also verify GPU result matches CPU result
-            let cpuProverT = Transcript(label: "cpu-single-12var")
+            // Also verify GPU result matches CPU result (same transcript label = same challenges)
+            let cpuProverT = Transcript(label: "gpu-single-12var")
             let cpuProof = engine.proveSingle(
                 evals: evals, claimedSum: claimedSum, transcript: cpuProverT)
 
-            // Final evals should match
+            // Final evals should match (both use identical Fiat-Shamir challenges)
             expect(frEqual(proof.finalEval, cpuProof.finalEval),
                    "GPU single: GPU finalEval == CPU finalEval")
         } catch {

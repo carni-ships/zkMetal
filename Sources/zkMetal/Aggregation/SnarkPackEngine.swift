@@ -18,6 +18,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 // MARK: - SnarkPack SRS
 
@@ -748,10 +749,29 @@ public class SnarkPackEngine {
             challenges.append(x)
 
             // Fold scalars: s' = s_L + x * s_R
-            var newS = [Fr]()
-            newS.reserveCapacity(half)
-            for i in 0..<half {
-                newS.append(frAdd(sL[i], frMul(x, sR[i])))
+            var temp = [Fr](repeating: Fr.zero, count: half)
+            var newS = [Fr](repeating: Fr.zero, count: half)
+            sR.withUnsafeBytes { srBuf in
+                withUnsafeBytes(of: x) { xBuf in
+                    temp.withUnsafeMutableBytes { tBuf in
+                        bn254_fr_batch_mul_scalar_parallel(
+                            tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            srBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            xBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(half))
+                    }
+                }
+            }
+            sL.withUnsafeBytes { slBuf in
+                temp.withUnsafeBytes { tBuf in
+                    newS.withUnsafeMutableBytes { rBuf in
+                        bn254_fr_batch_add_parallel(
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            slBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(half))
+                    }
+                }
             }
 
             // Fold points: p' = p_L + x^{-1} * p_R
@@ -823,10 +843,29 @@ public class SnarkPackEngine {
             let xInv = frInverse(x)
 
             // Fold
-            var newS = [Fr]()
-            newS.reserveCapacity(half)
-            for i in 0..<half {
-                newS.append(frAdd(sL[i], frMul(x, sR[i])))
+            var temp = [Fr](repeating: Fr.zero, count: half)
+            var newS = [Fr](repeating: Fr.zero, count: half)
+            sR.withUnsafeBytes { srBuf in
+                withUnsafeBytes(of: x) { xBuf in
+                    temp.withUnsafeMutableBytes { tBuf in
+                        bn254_fr_batch_mul_scalar_parallel(
+                            tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            srBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            xBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(half))
+                    }
+                }
+            }
+            sL.withUnsafeBytes { slBuf in
+                temp.withUnsafeBytes { tBuf in
+                    newS.withUnsafeMutableBytes { rBuf in
+                        bn254_fr_batch_add_parallel(
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            slBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(half))
+                    }
+                }
             }
 
             var newP = [PointProjective]()

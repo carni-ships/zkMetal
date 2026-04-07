@@ -16,6 +16,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 // MARK: - Configuration
 
@@ -523,12 +524,11 @@ public class GPUWitnessCommitEngine {
         let omegaInv = frInverse(omega)
         let nInv = frInverse(frFromInt(UInt64(n)))
 
-        // DIF butterfly with inverse twiddles
+        // DIF butterfly with inverse twiddles (large blocks → small)
         var data = input
-        var step = 1
-        while step < n {
-            let halfStep = step
-            step *= 2
+        var step = n
+        while step >= 2 {
+            let halfStep = step / 2
             var w = Fr.one
             let wStep = frPow(omegaInv, UInt64(n / step))
             for j in 0..<halfStep {
@@ -542,11 +542,18 @@ public class GPUWitnessCommitEngine {
                 }
                 w = frMul(w, wStep)
             }
+            step /= 2
         }
 
         // Scale by 1/n
-        for i in 0..<n {
-            data[i] = frMul(data[i], nInv)
+        var inv = nInv
+        data.withUnsafeMutableBytes { dBuf in
+            let ptr = dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+            withUnsafeBytes(of: &inv) { sBuf in
+                bn254_fr_batch_mul_scalar_parallel(ptr, ptr,
+                    sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(n))
+            }
         }
 
         // Bit-reversal permutation

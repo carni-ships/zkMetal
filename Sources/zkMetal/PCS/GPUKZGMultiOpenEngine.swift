@@ -365,14 +365,29 @@ public class GPUKZGMultiOpenEngine {
 
         for root in roots {
             // Multiply by (X - root): shift up and subtract root * current
-            var newResult = [Fr](repeating: Fr.zero, count: result.count + 1)
-            // X * result
-            for i in 0..<result.count {
-                newResult[i + 1] = frAdd(newResult[i + 1], result[i])
+            let count = result.count
+            var newResult = [Fr](repeating: Fr.zero, count: count + 1)
+            // X * result: newResult[1..count] = result[0..count-1]
+            newResult.withUnsafeMutableBytes { nBuf in
+                result.withUnsafeBytes { rBuf in
+                    let nPtr = nBuf.baseAddress!.assumingMemoryBound(to: UInt8.self)
+                    let rPtr = rBuf.baseAddress!.assumingMemoryBound(to: UInt8.self)
+                    // Copy result into newResult offset by one element (32 bytes per Fr)
+                    nPtr.advanced(by: 32).update(from: rPtr, count: count * 32)
+                }
             }
-            // -root * result
-            for i in 0..<result.count {
-                newResult[i] = frSub(newResult[i], frMul(root, result[i]))
+            // -root * result: newResult[i] += (-root) * result[i]
+            var negRoot = frSub(Fr.zero, root)
+            newResult.withUnsafeMutableBytes { nBuf in
+                result.withUnsafeBytes { rBuf in
+                    withUnsafeBytes(of: &negRoot) { sBuf in
+                        bn254_fr_batch_mac_neon(
+                            nBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(count))
+                    }
+                }
             }
             result = newResult
         }

@@ -784,3 +784,28 @@ void bn254_fr_gp_sumcheck_round(
     // Final reduce to [0, p)
     for (int k = 0; k < 4; k++) { s0[k] = acc0[k]; s1[k] = acc1[k]; s2[k] = acc2[k]; s3[k] = acc3[k]; }
 }
+
+// ============================================================
+// Multiply by successive powers: result[i] = a[i] * base^i
+// Used for coset shift in NTT: shifted[i] = coeffs[i] * g^i
+// ============================================================
+void bn254_fr_batch_mul_powers(uint64_t *result, const uint64_t *a,
+                               const uint64_t *base, int n)
+{
+    // current = base^0 = 1 (Montgomery form)
+    uint64_t current[4] = {
+        0xac96341c4ffffffbULL, 0x36fc76959f60cd29ULL,
+        0x666ea36f7879462eULL, 0x0e0a77c19a07df2fULL
+    };
+    const uint64_t *aPtr = a;
+    uint64_t *rPtr = result;
+    for (int i = 0; i < n; i++) {
+        fr_mont_mul(aPtr, current, rPtr);
+        uint64_t next[4];
+        fr_mont_mul(current, base, next);
+        current[0] = next[0]; current[1] = next[1];
+        current[2] = next[2]; current[3] = next[3];
+        aPtr += 4;
+        rPtr += 4;
+    }
+}

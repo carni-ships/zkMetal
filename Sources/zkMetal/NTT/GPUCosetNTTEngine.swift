@@ -15,6 +15,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 public class GPUCosetNTTEngine {
     public static let version = Versions.gpuCosetNTT
@@ -516,10 +517,17 @@ public class GPUCosetNTTEngine {
         let n = coeffs.count
         let logN = Int(log2(Double(n)))
         var shifted = [Fr](repeating: Fr.zero, count: n)
-        var sPow = Fr.one
-        for i in 0..<n {
-            shifted[i] = frMul(coeffs[i], sPow)
-            sPow = frMul(sPow, shift)
+        var s = shift
+        coeffs.withUnsafeBytes { cBuf in
+            shifted.withUnsafeMutableBytes { sBuf in
+                withUnsafeBytes(of: &s) { bBuf in
+                    bn254_fr_batch_mul_powers(
+                        sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
         }
         return NTTEngine.cpuNTT(shifted, logN: logN)
     }
@@ -529,12 +537,18 @@ public class GPUCosetNTTEngine {
         let n = evals.count
         let logN = Int(log2(Double(n)))
         let coeffs = NTTEngine.cpuINTT(evals, logN: logN)
-        let shiftInv = frInverse(shift)
+        var shiftInv = frInverse(shift)
         var result = [Fr](repeating: Fr.zero, count: n)
-        var sPow = Fr.one
-        for i in 0..<n {
-            result[i] = frMul(coeffs[i], sPow)
-            sPow = frMul(sPow, shiftInv)
+        coeffs.withUnsafeBytes { cBuf in
+            result.withUnsafeMutableBytes { rBuf in
+                withUnsafeBytes(of: &shiftInv) { bBuf in
+                    bn254_fr_batch_mul_powers(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
         }
         return result
     }
@@ -579,10 +593,14 @@ public class GPUCosetNTTEngine {
         var padded = [Fr](repeating: Fr.zero, count: m)
         for i in 0..<n { padded[i] = coeffs[i] }
 
-        var sPow = Fr.one
-        for i in 0..<m {
-            padded[i] = frMul(padded[i], sPow)
-            sPow = frMul(sPow, shift)
+        var s = shift
+        padded.withUnsafeMutableBytes { pBuf in
+            let ptr = pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+            withUnsafeBytes(of: &s) { bBuf in
+                bn254_fr_batch_mul_powers(ptr, ptr,
+                    bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(m))
+            }
         }
 
         return NTTEngine.cpuNTT(padded, logN: logM)

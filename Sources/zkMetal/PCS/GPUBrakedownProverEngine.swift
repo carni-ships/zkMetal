@@ -21,6 +21,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 // MARK: - Configuration
 
@@ -490,8 +491,16 @@ public class GPUBrakedownProverEngine {
 
             // <tensorRows, column>
             var columnDot = Fr.zero
-            for i in 0..<numRows {
-                columnDot = frAdd(columnDot, frMul(tensorRows[i], column[i]))
+            tensorRows.withUnsafeBytes { trBuf in
+                column.withUnsafeBytes { cBuf in
+                    withUnsafeMutableBytes(of: &columnDot) { rBuf in
+                        bn254_fr_inner_product(
+                            trBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(numRows),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                    }
+                }
             }
 
             // Must equal encodedT[colIdx]
@@ -582,12 +591,23 @@ public class GPUBrakedownProverEngine {
     private func computeTransposeMatvec(matrix: [Fr], vector: [Fr],
                                          numRows: Int, numCols: Int) -> [Fr] {
         var result = [Fr](repeating: Fr.zero, count: numCols)
-        for j in 0..<numCols {
-            var acc = Fr.zero
-            for i in 0..<numRows {
-                acc = frAdd(acc, frMul(vector[i], matrix[i * numCols + j]))
+        // Accumulate row-by-row: result += v[i] * M[i*numCols ..< i*numCols + numCols]
+        result.withUnsafeMutableBytes { rBuf in
+            let rPtr = rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+            matrix.withUnsafeBytes { mBuf in
+                let mPtr = mBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                vector.withUnsafeBytes { vBuf in
+                    let vPtr = vBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    for i in 0..<numRows {
+                        // result[0..<numCols] += v[i] * M[i*numCols..<(i+1)*numCols]
+                        bn254_fr_batch_mac_neon(
+                            rPtr,
+                            mPtr.advanced(by: i * numCols * 4),
+                            vPtr.advanced(by: i * 4),
+                            Int32(numCols))
+                    }
+                }
             }
-            result[j] = acc
         }
         return result
     }
@@ -605,11 +625,17 @@ public class GPUBrakedownProverEngine {
         for i in 0..<logN {
             let half = evals.count / 2
             var folded = [Fr](repeating: Fr.zero, count: half)
-            for j in 0..<half {
-                let low = evals[j]
-                let high = evals[j + half]
-                let diff = frSub(high, low)
-                folded[j] = frAdd(low, frMul(point[i], diff))
+            // folded[j] = evals[j] + point[i] * (evals[j+half] - evals[j])
+            evals.withUnsafeBytes { eBuf in
+                withUnsafeBytes(of: point[i]) { cBuf in
+                    folded.withUnsafeMutableBytes { rBuf in
+                        bn254_fr_sumcheck_reduce(
+                            eBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(half))
+                    }
+                }
             }
             evals = folded
         }
@@ -700,8 +726,16 @@ public class GPUBrakedownProverEngine {
             let column = proof.columnOpenings[q]
 
             var columnDot = Fr.zero
-            for i in 0..<numRows {
-                columnDot = frAdd(columnDot, frMul(tensorRows[i], column[i]))
+            tensorRows.withUnsafeBytes { trBuf in
+                column.withUnsafeBytes { cBuf in
+                    withUnsafeMutableBytes(of: &columnDot) { rBuf in
+                        bn254_fr_inner_product(
+                            trBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(numRows),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                    }
+                }
             }
 
             if !frEqual(columnDot, encodedT[colIdx]) {

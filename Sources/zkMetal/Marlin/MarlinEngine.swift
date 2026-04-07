@@ -178,8 +178,25 @@ public class MarlinEngine {
 
         // Compute numerator evals: z_A*z_B - z_C on 2x domain
         var numEvals2 = [Fr](repeating: .zero, count: doubleH)
-        for i in 0..<doubleH {
-            numEvals2[i] = frSub(frMul(zAEvals2[i], zBEvals2[i]), zCEvals2[i])
+        zAEvals2.withUnsafeBytes { aBuf in
+            zBEvals2.withUnsafeBytes { bBuf in
+                numEvals2.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_mul_parallel(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(doubleH))
+                }
+            }
+        }
+        numEvals2.withUnsafeMutableBytes { rBuf in
+            zCEvals2.withUnsafeBytes { cBuf in
+                bn254_fr_batch_sub_parallel(
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(doubleH))
+            }
         }
         // Convert numerator to coefficient form
         var numCoeffs = try ntt.intt(numEvals2)

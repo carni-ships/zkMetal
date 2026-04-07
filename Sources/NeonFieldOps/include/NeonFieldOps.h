@@ -88,6 +88,14 @@ void bn254_projective_to_affine(const uint64_t *p, uint64_t *affine);
 void bn254_msm_projective(const uint64_t *points, const uint32_t *scalars,
                            int n, uint64_t *result);
 
+/// Multiply by successive powers: result[i] = a[i] * base^i.
+/// @param result Output Fr array (4 uint64_t per element).
+/// @param a      Input Fr array (4 uint64_t per element, Montgomery form).
+/// @param base   Fr element (4 uint64_t, Montgomery form) — the base of powers.
+/// @param n      Number of elements.
+void bn254_fr_batch_mul_powers(uint64_t *result, const uint64_t *a,
+                               const uint64_t *base, int n);
+
 /// Fr inner product: result = sum(a[i] * b[i]).
 /// @param a, b   Arrays of n Fr elements (4 uint64_t each, Montgomery form).
 /// @param n      Number of elements.

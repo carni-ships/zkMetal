@@ -72,9 +72,15 @@ private struct GPUIPATranscript {
     var data = [UInt8]()
 
     mutating func appendPoint(_ p: PointProjective) {
-        withUnsafeBytes(of: p) { buf in
-            let ptr = buf.baseAddress!.assumingMemoryBound(to: UInt8.self)
-            data.append(contentsOf: UnsafeBufferPointer(start: ptr, count: 96))
+        // Normalize to affine to ensure consistent hashing regardless of projective representation
+        if pointIsIdentity(p) {
+            data.append(contentsOf: [UInt8](repeating: 0, count: 64))
+        } else {
+            let aff = batchToAffine([p])[0]
+            withUnsafeBytes(of: aff) { buf in
+                let ptr = buf.baseAddress!.assumingMemoryBound(to: UInt8.self)
+                data.append(contentsOf: UnsafeBufferPointer(start: ptr, count: 64))
+            }
         }
     }
 

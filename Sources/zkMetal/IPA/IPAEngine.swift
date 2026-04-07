@@ -283,8 +283,16 @@ public class IPAEngine {
     public static func innerProduct(_ a: [Fr], _ b: [Fr]) -> Fr {
         precondition(a.count == b.count)
         var result = Fr.zero
-        for i in 0..<a.count {
-            result = frAdd(result, frMul(a[i], b[i]))
+        a.withUnsafeBytes { aBuf in
+            b.withUnsafeBytes { bBuf in
+                withUnsafeMutableBytes(of: &result) { rBuf in
+                    bn254_fr_inner_product(
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(a.count),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                }
+            }
         }
         return result
     }

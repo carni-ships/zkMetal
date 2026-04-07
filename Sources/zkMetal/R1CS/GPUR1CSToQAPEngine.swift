@@ -25,6 +25,7 @@
 //   sparseMatVecBatch(entries:witness:numRows:batchSize:) — batched sparse mat-vec
 
 import Foundation
+import NeonFieldOps
 import Metal
 
 // MARK: - QAP Result Types
@@ -208,8 +209,25 @@ public final class GPUR1CSToQAPEngine {
 
         // Pointwise: numerator = z_A * z_B - z_C
         var numEvals = [Fr](repeating: .zero, count: doubleH)
-        for i in 0..<doubleH {
-            numEvals[i] = frSub(frMul(zAE2[i], zBE2[i]), zCE2[i])
+        zAE2.withUnsafeBytes { aBuf in
+            zBE2.withUnsafeBytes { bBuf in
+                numEvals.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_mul_parallel(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(doubleH))
+                }
+            }
+        }
+        numEvals.withUnsafeMutableBytes { rBuf in
+            zCE2.withUnsafeBytes { cBuf in
+                bn254_fr_batch_sub_parallel(
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(doubleH))
+            }
         }
 
         // INTT back to coefficient form
@@ -274,10 +292,17 @@ public final class GPUR1CSToQAPEngine {
 
         // Multiply coefficients by coset shift powers: c[i] *= g^i
         var shifted = [Fr](repeating: .zero, count: n)
-        var gPow = Fr.one
-        for i in 0..<n {
-            shifted[i] = frMul(coeffs[i], gPow)
-            gPow = frMul(gPow, cosetGen)
+        var cg = cosetGen
+        coeffs.withUnsafeBytes { cBuf in
+            shifted.withUnsafeMutableBytes { sBuf in
+                withUnsafeBytes(of: &cg) { bBuf in
+                    bn254_fr_batch_mul_powers(
+                        sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
         }
 
         // NTT to get evaluations on coset
@@ -303,11 +328,14 @@ public final class GPUR1CSToQAPEngine {
         var coeffs = try performINTT(evals, logN: logN)
 
         // Unshift: c[i] /= g^i
-        let gInv = frInverse(cosetGen)
-        var gInvPow = Fr.one
-        for i in 0..<n {
-            coeffs[i] = frMul(coeffs[i], gInvPow)
-            gInvPow = frMul(gInvPow, gInv)
+        var gInv = frInverse(cosetGen)
+        coeffs.withUnsafeMutableBytes { cBuf in
+            let ptr = cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+            withUnsafeBytes(of: &gInv) { bBuf in
+                bn254_fr_batch_mul_powers(ptr, ptr,
+                    bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(n))
+            }
         }
 
         return coeffs
@@ -538,8 +566,25 @@ public final class GPUR1CSToQAPEngine {
 
         // Step 4: Pointwise: p[i] = a[i]*b[i] - c[i]
         var pE = [Fr](repeating: .zero, count: bigN)
-        for i in 0..<bigN {
-            pE[i] = frSub(frMul(aE[i], bE[i]), cE[i])
+        aE.withUnsafeBytes { aBuf in
+            bE.withUnsafeBytes { bBuf in
+                pE.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_mul_parallel(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(bigN))
+                }
+            }
+        }
+        pE.withUnsafeMutableBytes { rBuf in
+            cE.withUnsafeBytes { cBuf in
+                bn254_fr_batch_sub_parallel(
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(bigN))
+            }
         }
 
         // Step 5: IFFT back to coefficient form

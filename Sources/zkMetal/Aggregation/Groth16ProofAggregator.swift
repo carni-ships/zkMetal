@@ -16,6 +16,7 @@
 // submit 1 aggregated proof on-chain for O(1) verification cost.
 
 import Foundation
+import NeonFieldOps
 
 // MARK: - Aggregated Proof Types
 
@@ -362,10 +363,29 @@ public class Groth16ProofAggregator {
             }
 
             // Fold: s' = sLeft + x^{-1} * sRight
-            var newS = [Fr]()
-            newS.reserveCapacity(half)
-            for i in 0..<half {
-                newS.append(frAdd(sLeft[i], frMul(xInv, sRight[i])))
+            var temp = [Fr](repeating: Fr.zero, count: half)
+            var newS = [Fr](repeating: Fr.zero, count: half)
+            sRight.withUnsafeBytes { srBuf in
+                withUnsafeBytes(of: xInv) { xBuf in
+                    temp.withUnsafeMutableBytes { tBuf in
+                        bn254_fr_batch_mul_scalar_parallel(
+                            tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            srBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            xBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(half))
+                    }
+                }
+            }
+            sLeft.withUnsafeBytes { slBuf in
+                temp.withUnsafeBytes { tBuf in
+                    newS.withUnsafeMutableBytes { rBuf in
+                        bn254_fr_batch_add_parallel(
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            slBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(half))
+                    }
+                }
             }
 
             a = newA
@@ -436,10 +456,29 @@ public class Groth16ProofAggregator {
             for i in 0..<half {
                 newA.append(pointAdd(aLeft[i], cPointScalarMul(aRight[i], x)))
             }
-            var newS = [Fr]()
-            newS.reserveCapacity(half)
-            for i in 0..<half {
-                newS.append(frAdd(sLeft[i], frMul(xInv, sRight[i])))
+            var temp = [Fr](repeating: Fr.zero, count: half)
+            var newS = [Fr](repeating: Fr.zero, count: half)
+            sRight.withUnsafeBytes { srBuf in
+                withUnsafeBytes(of: xInv) { xBuf in
+                    temp.withUnsafeMutableBytes { tBuf in
+                        bn254_fr_batch_mul_scalar_parallel(
+                            tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            srBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            xBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(half))
+                    }
+                }
+            }
+            sLeft.withUnsafeBytes { slBuf in
+                temp.withUnsafeBytes { tBuf in
+                    newS.withUnsafeMutableBytes { rBuf in
+                        bn254_fr_batch_add_parallel(
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            slBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(half))
+                    }
+                }
             }
 
             a = newA
