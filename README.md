@@ -444,9 +444,9 @@ C CIOS Montgomery acceleration: pre-computed wiring topology, cached buffers, eq
 | LogUp 2^12 | 15ms prove, 16ms verify | Optimal for small-medium tables |
 | cq 2^16 | 8ms prove, 2ms verify | O(N log N) independent of table size |
 | Binius FFT 2^16 | 21ms (CPU) | Binary tower GF(2^32) GPU batch: 0.67ms mul at 2^18 |
-| BLS12-381 | Sign 26ms, Verify 82ms, **Pairing 2.4ms** | C tower (Fp→Fp12) + Frobenius endomorphism + Granger-Scott cyclotomic sqr: **33×** (78→2.4ms) |
-| BN254 GPU Pairing (n=16) | 51ms (vs 239ms CPU = **4.7x**) | Projective Miller loop, batched final exp |
-| BN254 C Pairing (n=1) | 2.6ms (vs 78ms vanilla = **30x**) | CIOS Fp2/Fp6/Fp12 tower + Miller loop + final exp |
+| BLS12-381 | Sign 26ms, Verify 82ms, **Pairing 0.9ms** | Projective G2 Miller loop + sparse line mul + dedicated fp_sqr: **87×** (78→0.9ms) |
+| BN254 GPU Pairing (n=16) | 34ms (vs 123ms CPU = **3.6x**) | Projective Miller loop, fused line-line mul, batched final exp |
+| BN254 C Pairing (n=1) | 8.0ms | fp_mul9 + sparse line mul + fp_sqr + addition chains + projective G2 |
 | Schnorr BIP 340 | Sign 0.30ms, Batch verify 0.20ms/sig | x-only pubkeys, SHA-256 tagged hashing |
 | Stark252 NTT 2^20 | 238M elem/s (GPU) | StarkNet/Cairo native field |
 | Poseidon2 BabyBear (width-16) | 104M hash/s (GPU) | SP1/Plonky3 exact config |
@@ -518,7 +518,7 @@ BabyBear/Goldilocks NTT and IPA are near-optimal (within 1-2x of hardware limits
 
 **Systemic**: Command buffer chaining (163 `waitUntilCompleted` sync points → could batch into ~10 chained dispatches, saving 3-8ms scheduling overhead across a full prove). FRI fold-by-4 halves round count, reducing Merkle commit overhead.
 
-**Algorithmic**: Dedicated squaring (37-42% fewer muls for BLS12-381/BLS12-377 Fq). Frobenius precomputation saves ~10 fp_mul per BLS12-381 pairing. Binary tower PMULL intrinsics make GF(2^64) multiply a single instruction (~3ns vs ~50ns).
+**Algorithmic**: Projective G2 Miller loop eliminates all field inversions (BLS12-381 2.4→0.9ms, 62% faster). Sparse line multiplication (13 vs 18 Fp2 muls, 28% reduction). Dedicated fp_sqr (10 vs 16 muls for BN254, 21 vs 36 for BLS12-381). fp_mul9 shift-add chain replaces Montgomery multiply. Addition chains for pow_small exponents (6,12,18,30,36). Frobenius precomputation. Binary tower PMULL intrinsics (~3ns vs ~50ns).
 
 **Near floor** (< 1.5x headroom): BabyBear NTT, Goldilocks NTT, Circle NTT, IPA prove, HyperNova fold, KZG commit, Groth16 prove (cached). These are within noise of hardware limits — further gains require algorithmic breakthroughs.
 
