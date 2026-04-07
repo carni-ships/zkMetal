@@ -151,8 +151,16 @@ public class GPUZeromorphEngine {
         var gammaPow = Fr.one
         for i in 0..<count {
             let evals = evaluationSets[i]
-            for j in 0..<N {
-                combined[j] = frAdd(combined[j], frMul(gammaPow, evals[j]))
+            evals.withUnsafeBytes { pBuf in
+                combined.withUnsafeMutableBytes { cBuf in
+                    withUnsafeBytes(of: gammaPow) { gBuf in
+                        bn254_fr_batch_mac_neon(
+                            cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            gBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(N))
+                    }
+                }
             }
             if i < count - 1 {
                 gammaPow = frMul(gammaPow, gamma)
@@ -281,8 +289,16 @@ public class GPUZeromorphEngine {
         var gammaPow = Fr.one
         for i in 0..<count {
             let evals = evaluationSets[i]
-            for j in 0..<N {
-                combined[j] = frAdd(combined[j], frMul(gammaPow, evals[j]))
+            evals.withUnsafeBytes { pBuf in
+                combined.withUnsafeMutableBytes { cBuf in
+                    withUnsafeBytes(of: gammaPow) { gBuf in
+                        bn254_fr_batch_mac_neon(
+                            cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            gBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(N))
+                    }
+                }
             }
             if i < count - 1 {
                 gammaPow = frMul(gammaPow, gamma)

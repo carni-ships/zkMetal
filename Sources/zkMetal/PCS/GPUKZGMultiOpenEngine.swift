@@ -212,8 +212,16 @@ public class GPUKZGMultiOpenEngine {
         var gammaPow = Fr.one
         for i in 0..<numPolys {
             let wi = witnessPolys[i]
-            for j in 0..<wi.count {
-                combined[j] = frAdd(combined[j], frMul(gammaPow, wi[j]))
+            wi.withUnsafeBytes { pBuf in
+                combined.withUnsafeMutableBytes { cBuf in
+                    withUnsafeBytes(of: gammaPow) { gBuf in
+                        bn254_fr_batch_mac_neon(
+                            cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            gBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(wi.count))
+                    }
+                }
             }
             if i < numPolys - 1 {
                 gammaPow = frMul(gammaPow, gamma)

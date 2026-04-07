@@ -267,8 +267,16 @@ public class KZGEngine {
         var gammaPow = Fr.one
         for i in 0..<n {
             let poly = polynomials[i]
-            for j in 0..<poly.count {
-                combined[j] = frAdd(combined[j], frMul(gammaPow, poly[j]))
+            poly.withUnsafeBytes { pBuf in
+                combined.withUnsafeMutableBytes { cBuf in
+                    withUnsafeBytes(of: gammaPow) { gBuf in
+                        bn254_fr_batch_mac_neon(
+                            cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            gBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(poly.count))
+                    }
+                }
             }
             if i < n - 1 {
                 gammaPow = frMul(gammaPow, gamma)
@@ -446,9 +454,16 @@ public class KZGEngine {
             }
 
             // Accumulate gamma^i * q_i(x)
-            for j in 0..<quotient.count {
-                if j < combined.count {
-                    combined[j] = frAdd(combined[j], frMul(gammaPow, quotient[j]))
+            let macCount = min(quotient.count, combined.count)
+            quotient.withUnsafeBytes { pBuf in
+                combined.withUnsafeMutableBytes { cBuf in
+                    withUnsafeBytes(of: gammaPow) { gBuf in
+                        bn254_fr_batch_mac_neon(
+                            cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            gBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(macCount))
+                    }
                 }
             }
 

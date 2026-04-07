@@ -473,8 +473,16 @@ public class GPUIPAEngine {
         var gammaPow = Fr.one
         for i in 0..<polys.count {
             let poly = polys[i]
-            for j in 0..<poly.count {
-                combined[j] = frAdd(combined[j], frMul(gammaPow, poly[j]))
+            poly.withUnsafeBytes { pBuf in
+                combined.withUnsafeMutableBytes { cBuf in
+                    withUnsafeBytes(of: gammaPow) { gBuf in
+                        bn254_fr_batch_mac_neon(
+                            cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            gBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(poly.count))
+                    }
+                }
             }
             if i < polys.count - 1 {
                 gammaPow = frMul(gammaPow, gamma)

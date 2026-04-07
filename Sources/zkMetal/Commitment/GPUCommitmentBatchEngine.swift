@@ -354,9 +354,16 @@ public final class GPUCommitmentBatchEngine {
             let qi = cSyntheticDiv(shifted, root: point)
 
             // Accumulate gamma^i * q_i(x)
-            for j in 0..<qi.count {
-                if j < combined.count {
-                    combined[j] = frAdd(combined[j], frMul(gammaPow, qi[j]))
+            let macCount = min(qi.count, combined.count)
+            qi.withUnsafeBytes { pBuf in
+                combined.withUnsafeMutableBytes { cBuf in
+                    withUnsafeBytes(of: gammaPow) { gBuf in
+                        bn254_fr_batch_mac_neon(
+                            cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            gBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(macCount))
+                    }
                 }
             }
             if i < n - 1 { gammaPow = frMul(gammaPow, gamma) }

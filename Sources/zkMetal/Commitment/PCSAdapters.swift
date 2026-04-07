@@ -176,8 +176,16 @@ public final class IPAUnifiedPCS: PCSBatchProtocol {
         var combined = [Fr](repeating: Fr.zero, count: maxDeg)
         var gammaPow = Fr.one
         for poly in polys {
-            for j in 0..<poly.count {
-                combined[j] = frAdd(combined[j], frMul(gammaPow, poly[j]))
+            poly.withUnsafeBytes { pBuf in
+                combined.withUnsafeMutableBytes { cBuf in
+                    withUnsafeBytes(of: gammaPow) { gBuf in
+                        bn254_fr_batch_mac_neon(
+                            cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            gBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(poly.count))
+                    }
+                }
             }
             gammaPow = frMul(gammaPow, gamma)
         }
