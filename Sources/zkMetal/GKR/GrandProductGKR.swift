@@ -108,8 +108,13 @@ public class GrandProductEngine {
         for _ in 0..<depth {
             let half = current.count / 2
             var next = [Fr](repeating: Fr.zero, count: half)
-            for j in 0..<half {
-                next[j] = frMul(current[2 * j], current[2 * j + 1])
+            current.withUnsafeBytes { cBuf in
+                next.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_mul_adjacent(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(half))
+                }
             }
             layers.append(next)
             current = next
@@ -219,42 +224,30 @@ public class GrandProductEngine {
         var rightCurrent = rightVals
         var currentSize = gateCount
 
-        let two = frAdd(Fr.one, Fr.one)
-        let three = frAdd(two, Fr.one)
-
         for _ in 0..<gateVars {
             let half = currentSize / 2
 
-            // Compute s(0), s(1), s(2), s(3) for the current variable
-            var s0 = Fr.zero
-            var s1 = Fr.zero
-            var s2 = Fr.zero
-            var s3 = Fr.zero
+            // Compute s(0), s(1), s(2), s(3) via fused C kernel
+            var s0Limbs = [UInt64](repeating: 0, count: 4)
+            var s1Limbs = [UInt64](repeating: 0, count: 4)
+            var s2Limbs = [UInt64](repeating: 0, count: 4)
+            var s3Limbs = [UInt64](repeating: 0, count: 4)
 
-            for j in 0..<half {
-                // Values at t=0 (first half) and t=1 (second half)
-                let eq0 = eqCurrent[j]
-                let l0 = leftCurrent[j]
-                let r0 = rightCurrent[j]
-                let eq1 = eqCurrent[j + half]
-                let l1 = leftCurrent[j + half]
-                let r1 = rightCurrent[j + half]
-
-                s0 = frAdd(s0, frMul(eq0, frMul(l0, r0)))
-                s1 = frAdd(s1, frMul(eq1, frMul(l1, r1)))
-
-                // At t=2: linear extrapolation of each factor
-                let eq2 = frSub(frAdd(eq1, eq1), eq0)
-                let l2 = frSub(frAdd(l1, l1), l0)
-                let r2 = frSub(frAdd(r1, r1), r0)
-                s2 = frAdd(s2, frMul(eq2, frMul(l2, r2)))
-
-                // At t=3: linear extrapolation: f(3) = 3*f(1) - 2*f(0)
-                let eq3 = frSub(frMul(three, eq1), frMul(two, eq0))
-                let l3 = frSub(frMul(three, l1), frMul(two, l0))
-                let r3 = frSub(frMul(three, r1), frMul(two, r0))
-                s3 = frAdd(s3, frMul(eq3, frMul(l3, r3)))
+            eqCurrent.withUnsafeBytes { eqBuf in
+                leftCurrent.withUnsafeBytes { lBuf in
+                    rightCurrent.withUnsafeBytes { rBuf in
+                        bn254_fr_gp_sumcheck_round(
+                            eqBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            lBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(half), &s0Limbs, &s1Limbs, &s2Limbs, &s3Limbs)
+                    }
+                }
             }
+            let s0 = Fr.from64(s0Limbs)
+            let s1 = Fr.from64(s1Limbs)
+            let s2 = Fr.from64(s2Limbs)
+            let s3 = Fr.from64(s3Limbs)
 
             msgs.append(GPSumcheckRoundMsg(s0: s0, s1: s1, s2: s2, s3: s3))
 
@@ -265,19 +258,37 @@ public class GrandProductEngine {
             let challenge = transcript.squeeze()
             challenges.append(challenge)
 
-            // Fold the bookkeeping tables
-            let oneMinusC = frSub(Fr.one, challenge)
+            // Fold the bookkeeping tables: newX[j] = X[j] + c*(X[j+half] - X[j])
             var newEq = [Fr](repeating: Fr.zero, count: half)
             var newLeft = [Fr](repeating: Fr.zero, count: half)
             var newRight = [Fr](repeating: Fr.zero, count: half)
 
-            for j in 0..<half {
-                newEq[j] = frAdd(frMul(oneMinusC, eqCurrent[j]),
-                                 frMul(challenge, eqCurrent[j + half]))
-                newLeft[j] = frAdd(frMul(oneMinusC, leftCurrent[j]),
-                                   frMul(challenge, leftCurrent[j + half]))
-                newRight[j] = frAdd(frMul(oneMinusC, rightCurrent[j]),
-                                    frMul(challenge, rightCurrent[j + half]))
+            withUnsafeBytes(of: challenge) { cPtr in
+                let cP = cPtr.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                eqCurrent.withUnsafeBytes { eqBuf in
+                    newEq.withUnsafeMutableBytes { rBuf in
+                        bn254_fr_sumcheck_reduce(
+                            eqBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            cP, rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(half))
+                    }
+                }
+                leftCurrent.withUnsafeBytes { lBuf in
+                    newLeft.withUnsafeMutableBytes { rBuf in
+                        bn254_fr_sumcheck_reduce(
+                            lBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            cP, rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(half))
+                    }
+                }
+                rightCurrent.withUnsafeBytes { rBuf in
+                    newRight.withUnsafeMutableBytes { oBuf in
+                        bn254_fr_sumcheck_reduce(
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            cP, oBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(half))
+                    }
+                }
             }
 
             eqCurrent = newEq

@@ -1409,4 +1409,14 @@ void dilithium_ntt_neon(int32_t *data, int logN);
 /// Gentleman-Sande DIF + 1/(n/2) scaling.
 void dilithium_intt_neon(int32_t *data, int logN);
 
+/// Pairwise multiply adjacent elements: result[i] = a[2i] * a[2i+1].
+/// Used for binary multiplication tree in grand product GKR.
+void bn254_fr_batch_mul_adjacent(uint64_t *result, const uint64_t *a, int half);
+
+/// Grand product degree-3 sumcheck round.
+/// Computes s0,s1,s2,s3 from eq/left/right arrays of size 2*half.
+void bn254_fr_gp_sumcheck_round(
+    const uint64_t *eq, const uint64_t *left, const uint64_t *right,
+    int half, uint64_t s0[4], uint64_t s1[4], uint64_t s2[4], uint64_t s3[4]);
+
 #endif // NEON_FIELD_OPS_H

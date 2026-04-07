@@ -700,3 +700,87 @@ void bn254_fr_linear_combine(const uint64_t *running, const uint64_t *new_vals,
             }
         });
 }
+
+// ============================================================
+// Pairwise multiply: result[i] = a[2i] * a[2i+1], i=0..half-1
+// Used for binary multiplication tree in grand product GKR.
+// ============================================================
+void bn254_fr_batch_mul_adjacent(uint64_t *result, const uint64_t *a, int half)
+{
+    int i = 0;
+    for (; i + 1 < half; i += 2) {
+        if (i + 3 < half) {
+            __builtin_prefetch(&a[(2 * (i + 2)) * 4], 0, 1);
+            __builtin_prefetch(&a[(2 * (i + 3)) * 4], 0, 1);
+        }
+        fr_mont_mul(&a[(2 * i) * 4], &a[(2 * i + 1) * 4], &result[i * 4]);
+        fr_mont_mul(&a[(2 * (i + 1)) * 4], &a[(2 * (i + 1) + 1) * 4], &result[(i + 1) * 4]);
+    }
+    if (i < half) {
+        fr_mont_mul(&a[(2 * i) * 4], &a[(2 * i + 1) * 4], &result[i * 4]);
+    }
+}
+
+// ============================================================
+// Grand product degree-3 sumcheck round.
+// Given eq[0..2*half-1], left[0..2*half-1], right[0..2*half-1],
+// computes s0,s1,s2,s3 where:
+//   s_t = sum_j eq_t(j) * left_t(j) * right_t(j)
+// with linear extrapolation at t=0,1,2,3.
+// ============================================================
+void bn254_fr_gp_sumcheck_round(
+    const uint64_t *eq, const uint64_t *left, const uint64_t *right,
+    int half, uint64_t s0[4], uint64_t s1[4], uint64_t s2[4], uint64_t s3[4])
+{
+    uint64_t acc0[4] = {0,0,0,0};
+    uint64_t acc1[4] = {0,0,0,0};
+    uint64_t acc2[4] = {0,0,0,0};
+    uint64_t acc3[4] = {0,0,0,0};
+
+    // Constants: 2 and 3 in Montgomery form (computed from R mod p = Montgomery(1))
+    static const uint64_t ONE_MONT[4] = {0xac96341c4ffffffb, 0x36fc76959f60cd29, 0x666ea36f7879462e, 0x0e0a77c19a07df2f};
+    uint64_t TWO[4], THREE[4];
+    fr_add_branchless(ONE_MONT, ONE_MONT, TWO);
+    fr_add_branchless(TWO, ONE_MONT, THREE);
+
+    for (int j = 0; j < half; j++) {
+        const uint64_t *eq0 = &eq[j * 4];
+        const uint64_t *l0  = &left[j * 4];
+        const uint64_t *r0  = &right[j * 4];
+        const uint64_t *eq1 = &eq[(j + half) * 4];
+        const uint64_t *l1  = &left[(j + half) * 4];
+        const uint64_t *r1  = &right[(j + half) * 4];
+
+        // s0 += eq0 * l0 * r0
+        uint64_t tmp[4], prod[4];
+        fr_mont_mul(l0, r0, tmp);
+        fr_mont_mul(eq0, tmp, prod);
+        fr_add_branchless(acc0, prod, acc0);
+
+        // s1 += eq1 * l1 * r1
+        fr_mont_mul(l1, r1, tmp);
+        fr_mont_mul(eq1, tmp, prod);
+        fr_add_branchless(acc1, prod, acc1);
+
+        // t=2: f2 = 2*f1 - f0 for each of eq, left, right
+        uint64_t eq2[4], l2[4], r2[4], dbl[4];
+        fr_add_branchless(eq1, eq1, dbl); fr_sub_branchless(dbl, eq0, eq2);
+        fr_add_branchless(l1, l1, dbl);   fr_sub_branchless(dbl, l0, l2);
+        fr_add_branchless(r1, r1, dbl);   fr_sub_branchless(dbl, r0, r2);
+        fr_mont_mul(l2, r2, tmp);
+        fr_mont_mul(eq2, tmp, prod);
+        fr_add_branchless(acc2, prod, acc2);
+
+        // t=3: f3 = 3*f1 - 2*f0
+        uint64_t eq3[4], l3[4], r3[4], t3a[4], t3b[4];
+        fr_mont_mul(THREE, eq1, t3a); fr_mont_mul(TWO, eq0, t3b); fr_sub_branchless(t3a, t3b, eq3);
+        fr_mont_mul(THREE, l1, t3a);  fr_mont_mul(TWO, l0, t3b);  fr_sub_branchless(t3a, t3b, l3);
+        fr_mont_mul(THREE, r1, t3a);  fr_mont_mul(TWO, r0, t3b);  fr_sub_branchless(t3a, t3b, r3);
+        fr_mont_mul(l3, r3, tmp);
+        fr_mont_mul(eq3, tmp, prod);
+        fr_add_branchless(acc3, prod, acc3);
+    }
+
+    // Final reduce to [0, p)
+    for (int k = 0; k < 4; k++) { s0[k] = acc0[k]; s1[k] = acc1[k]; s2[k] = acc2[k]; s3[k] = acc3[k]; }
+}
