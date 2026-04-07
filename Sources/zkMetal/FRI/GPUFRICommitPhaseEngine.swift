@@ -809,11 +809,10 @@ public final class GPUFRICommitPhaseEngine {
         let invTwiddles = precomputeInverseTwiddles(logN: logN)
         var coeffs = evaluations
 
-        // Cooley-Tukey inverse NTT
-        var m = 1
-        while m < n {
-            let halfM = m
-            m *= 2
+        // Gentleman-Sande inverse NTT (natural order → natural order)
+        var m = n
+        while m > 1 {
+            let halfM = m >> 1
             let twiddleStep = n / m
             for k in Swift.stride(from: 0, to: n, by: m) {
                 for j in 0..<halfM {
@@ -823,6 +822,18 @@ public final class GPUFRICommitPhaseEngine {
                     let diff = frSub(u, v)
                     coeffs[k + j + halfM] = frMul(diff, invTwiddles[j * twiddleStep])
                 }
+            }
+            m = halfM
+        }
+
+        // Bit-reversal permutation
+        for i in 0..<n {
+            var x = i, r = 0
+            for _ in 0..<logN { r = (r << 1) | (x & 1); x >>= 1 }
+            if i < r {
+                let tmp = coeffs[i]
+                coeffs[i] = coeffs[r]
+                coeffs[r] = tmp
             }
         }
 

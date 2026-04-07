@@ -89,7 +89,7 @@ private func testSingleLayerFold() {
         let challenge = rng.nextNonZeroFr()
         let config = FRICommitPhaseConfig(
             foldingFactor: 2, blowupFactor: 2,
-            finalPolyMaxDegree: (n / 2) - 1)
+            finalPolyMaxDegree: (n / 4) - 1)
 
         // commitPhase should produce exactly 2 layers (initial + 1 fold)
         let result = try engine.commitPhase(
