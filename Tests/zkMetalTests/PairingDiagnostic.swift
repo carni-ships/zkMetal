@@ -17,6 +17,10 @@ func runPairingDiagnostic() {
     let ok = cBN254PairingCheck([(twoG1a, g2a), (negG1a, g2a), (negG1a, g2a)])
     print("[pairing] bilinearity check: \(ok ? "PASS" : "FAIL")")
 
+    // Precomputed path: same check using precomputed G2 lines
+    let okPrecomp = cBN254PairingCheckPrecomp([(twoG1a, g2a), (negG1a, g2a), (negG1a, g2a)])
+    print("[pairing] precomputed bilinearity check: \(okPrecomp ? "PASS" : "FAIL")")
+
     // BLS12-381 pairing bilinearity test: e(G1, G2) * e(-G1, G2) = 1
     let g1_381 = bls12381G1Generator()
     let g2_381 = bls12381G2SimplePoint()

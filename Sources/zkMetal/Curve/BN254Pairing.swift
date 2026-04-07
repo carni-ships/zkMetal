@@ -615,6 +615,23 @@ public func cBN254PairingCheck(_ pairs: [(PointAffine, G2AffinePoint)]) -> Bool 
     }
 }
 
+/// C-accelerated BN254 pairing check with precomputed G2 lines
+public func cBN254PairingCheckPrecomp(_ pairs: [(PointAffine, G2AffinePoint)]) -> Bool {
+    let n = pairs.count
+    if n == 0 { return true }
+
+    var buffer = [UInt64]()
+    buffer.reserveCapacity(n * 24)
+    for (p, q) in pairs {
+        buffer.append(contentsOf: packG1Affine(p))
+        buffer.append(contentsOf: packG2Affine(q))
+    }
+
+    return buffer.withUnsafeBufferPointer { ptr in
+        bn254_pairing_check_precomp(ptr.baseAddress!, Int32(n)) == 1
+    }
+}
+
 /// C-accelerated single BN254 pairing: e(P, Q)
 public func cBN254Pairing(_ p: PointAffine, _ q: G2AffinePoint) -> [UInt64] {
     var pBuf = packG1Affine(p)

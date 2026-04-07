@@ -82,7 +82,17 @@ public func runPairingBench() {
         for n in [1, 4, 16] {
             let pairs = makeTestPairs(n: n)
 
-            // CPU benchmark: multi-Miller + single final exp
+            // C pairing check (our optimized C implementation)
+            var cTimes = [Double]()
+            for _ in 0..<10 {
+                let t0 = CFAbsoluteTimeGetCurrent()
+                _ = cBN254PairingCheck(pairs)
+                cTimes.append((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+            }
+            cTimes.sort()
+            let cMedian = cTimes[cTimes.count / 2]
+
+            // Swift benchmark: multi-Miller + single final exp
             let cpuRuns = n <= 4 ? 3 : 1
             var cpuTimes = [Double]()
             for _ in 0..<cpuRuns {
@@ -112,8 +122,8 @@ public func runPairingBench() {
             let gpuMedian = gpuTimes[gpuTimes.count / 2]
 
             let speedup = cpuMedian / gpuMedian
-            fputs(String(format: "  n=%2d: CPU %7.1fms | GPU %7.1fms | %.2fx\n",
-                        n, cpuMedian, gpuMedian, speedup), stderr)
+            fputs(String(format: "  n=%2d: C %5.1fms | Swift %7.1fms | GPU %7.1fms | C/GPU %.1fx\n",
+                        n, cMedian, cpuMedian, gpuMedian, gpuMedian / cMedian), stderr)
         }
 
         // ---- Groth16 Verification scenario ----
@@ -172,6 +182,24 @@ public func runPairingBench() {
         gpuMLTimes.sort()
         fputs(String(format: "  GPU 4x Miller loop: %7.1fms (vs CPU 4x: %.1fms)\n",
                     gpuMLTimes[gpuMLTimes.count / 2], cpuMLTime * 4), stderr)
+
+        // C path comparison: standard vs precomputed
+        let cPairs = [(g1, g2), (g1, g2NegateAffine(g2))]
+        var cStdTimes = [Double]()
+        var cPreTimes = [Double]()
+        for _ in 0..<10 {
+            var t0 = CFAbsoluteTimeGetCurrent()
+            _ = cBN254PairingCheck(cPairs)
+            cStdTimes.append((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+            t0 = CFAbsoluteTimeGetCurrent()
+            _ = cBN254PairingCheckPrecomp(cPairs)
+            cPreTimes.append((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+        }
+        cStdTimes.sort(); cPreTimes.sort()
+        let cStdMed = cStdTimes[cStdTimes.count / 2]
+        let cPreMed = cPreTimes[cPreTimes.count / 2]
+        fputs(String(format: "  C standard (2-pair):  %5.2fms\n", cStdMed), stderr)
+        fputs(String(format: "  C precomp  (2-pair):  %5.2fms (%.1fx)\n", cPreMed, cStdMed / cPreMed), stderr)
 
         // [5] GPU Profiling Breakdown
         fputs("\n[5] GPU Phase Profiling (16 pairings)\n", stderr)

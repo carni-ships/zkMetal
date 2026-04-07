@@ -832,6 +832,179 @@ static const int8_t SIX_X_PLUS_2_NAF[66] = {
      0,  0
 };
 
+// ============================================================
+// Precomputed G2 line tables for fixed-Q pairing
+// Stores raw line coefficients before P-multiplication.
+// Each line = 3 Fp2: (raw0, raw3, c4) where:
+//   c0 = raw0 * py, c3 = -raw3 * px, c4 = c4
+// Max lines: 65 double + 21 add + 2 Frobenius = 88
+// ============================================================
+
+#define MAX_PRECOMP_LINES 90
+
+typedef struct {
+    uint64_t raw0[FP2];   // multiply by py to get c0
+    uint64_t raw3[FP2];   // multiply by px then negate to get c3
+    uint64_t c4[FP2];     // ready to use
+} PrecompLine;
+
+typedef struct {
+    PrecompLine lines[MAX_PRECOMP_LINES];
+    int num_lines;
+} G2Precomp;
+
+// G2 doubling that outputs raw line coefficients (P-independent)
+static void g2_proj_double_precomp(uint64_t t[G2PROJ],
+                                    uint64_t raw0[FP2], uint64_t raw3[FP2], uint64_t c4_out[FP2]) {
+    const uint64_t *X = t, *Y = t+8, *Z = t+16;
+    uint64_t A[8], B[8], C[8], D[8], E[8], F[8];
+    uint64_t tmp1[8], tmp2[8];
+
+    fp2_sqr(X, A);
+    fp2_sqr(Y, B);
+    fp2_sqr(B, C);
+    fp2_add(X, B, tmp1); fp2_sqr(tmp1, tmp2);
+    fp2_add(A, C, tmp1); fp2_sub(tmp2, tmp1, D); fp2_dbl(D, D);
+    fp2_dbl(A, E); fp2_add(E, A, E);
+    fp2_sqr(E, F);
+
+    // Raw line coefficients (before P multiplication)
+    uint64_t zsq[8], zcube[8];
+    fp2_sqr(Z, zsq);
+    fp2_mul(zsq, Z, zcube);
+    fp2_mul(Y, zcube, raw0);
+    fp2_dbl(raw0, raw0);         // raw0 = 2*Y*Z^3
+
+    fp2_mul(E, zsq, raw3);      // raw3 = 3*X^2*Z^2
+
+    fp2_mul(E, X, tmp1);
+    fp2_dbl(B, tmp2);
+    fp2_sub(tmp1, tmp2, c4_out); // c4 = 3*X^3 - 2*Y^2
+
+    // Update T
+    uint64_t X3[8], Y3[8], Z3[8], eightC[8];
+    fp2_dbl(D, tmp1); fp2_sub(F, tmp1, X3);
+    fp2_dbl(C, eightC); fp2_dbl(eightC, eightC); fp2_dbl(eightC, eightC);
+    fp2_sub(D, X3, tmp1); fp2_mul(E, tmp1, tmp2); fp2_sub(tmp2, eightC, Y3);
+    fp2_add(Y, Z, tmp1); fp2_sqr(tmp1, tmp2);
+    fp2_sqr(Z, tmp1); fp2_add(B, tmp1, tmp1); fp2_sub(tmp2, tmp1, Z3);
+
+    fp2_copy(t, X3); fp2_copy(t+8, Y3); fp2_copy(t+16, Z3);
+}
+
+// G2 mixed addition that outputs raw line coefficients (P-independent)
+static void g2_proj_add_mixed_precomp(uint64_t t[G2PROJ], const uint64_t q[G2AFF],
+                                       uint64_t raw0[FP2], uint64_t raw3[FP2], uint64_t c4_out[FP2]) {
+    const uint64_t *X1 = t, *Y1 = t+8, *Z1 = t+16;
+    const uint64_t *xQ = q, *yQ = q+8;
+    uint64_t zsq[8], zcube[8], U2[8], S2[8], H[8], R[8];
+    uint64_t Hsq[8], Hcube[8], V[8];
+    uint64_t tmp1[8], tmp2[8];
+
+    fp2_sqr(Z1, zsq); fp2_mul(zsq, Z1, zcube);
+    fp2_mul(xQ, zsq, U2); fp2_mul(yQ, zcube, S2);
+    fp2_sub(U2, X1, H); fp2_sub(S2, Y1, R);
+
+    // Raw line coefficients
+    fp2_mul(H, zcube, raw0);     // raw0 = H*Z1^3
+    fp2_mul(R, zsq, raw3);       // raw3 = R*Z1^2
+    fp2_mul(R, X1, tmp1);
+    fp2_mul(Y1, H, tmp2);
+    fp2_sub(tmp1, tmp2, c4_out); // c4 = R*X1 - Y1*H
+
+    // Update T
+    fp2_sqr(H, Hsq); fp2_mul(Hsq, H, Hcube); fp2_mul(X1, Hsq, V);
+    uint64_t X3[8], Y3[8], Z3[8];
+    fp2_sqr(R, tmp1); fp2_dbl(V, tmp2);
+    fp2_sub(tmp1, Hcube, tmp1); fp2_sub(tmp1, tmp2, X3);
+    fp2_sub(V, X3, tmp1); fp2_mul(R, tmp1, tmp2);
+    fp2_mul(Y1, Hcube, tmp1); fp2_sub(tmp2, tmp1, Y3);
+    fp2_mul(Z1, H, Z3);
+
+    fp2_copy(t, X3); fp2_copy(t+8, Y3); fp2_copy(t+16, Z3);
+}
+
+// Precompute all G2 line coefficients for a fixed Q
+static void g2_precompute(const uint64_t q_aff[G2AFF], G2Precomp *pc) {
+    uint64_t T[G2PROJ];
+    fp2_copy(T, q_aff); fp2_copy(T+8, q_aff+8); fp2_one(T+16);
+
+    uint64_t negQ[G2AFF];
+    fp2_copy(negQ, q_aff); fp2_neg(q_aff+8, negQ+8);
+
+    int idx = 0;
+    for (int i = 1; i < 66; i++) {
+        g2_proj_double_precomp(T, pc->lines[idx].raw0, pc->lines[idx].raw3, pc->lines[idx].c4);
+        idx++;
+
+        if (SIX_X_PLUS_2_NAF[i] == 1) {
+            g2_proj_add_mixed_precomp(T, q_aff, pc->lines[idx].raw0, pc->lines[idx].raw3, pc->lines[idx].c4);
+            idx++;
+        } else if (SIX_X_PLUS_2_NAF[i] == -1) {
+            g2_proj_add_mixed_precomp(T, negQ, pc->lines[idx].raw0, pc->lines[idx].raw3, pc->lines[idx].c4);
+            idx++;
+        }
+    }
+
+    // Frobenius correction: Q1 and Q2
+    uint64_t q1[G2AFF];
+    fp2_conj(q_aff, q1); fp2_mul(q1, GAMMA_1_2, q1);
+    fp2_conj(q_aff+8, q1+8); fp2_mul(q1+8, GAMMA_1_3, q1+8);
+    g2_proj_add_mixed_precomp(T, q1, pc->lines[idx].raw0, pc->lines[idx].raw3, pc->lines[idx].c4);
+    idx++;
+
+    uint64_t q2[G2AFF];
+    fp2_mul_fp(q_aff, GAMMA_2_2, q2);
+    fp2_mul_fp(q_aff+8, GAMMA_2_3, q2+8); fp2_neg(q2+8, q2+8);
+    g2_proj_add_mixed_precomp(T, q2, pc->lines[idx].raw0, pc->lines[idx].raw3, pc->lines[idx].c4);
+    idx++;
+
+    pc->num_lines = idx;
+}
+
+// Fast Miller loop using precomputed G2 line table
+static void miller_loop_precomputed(const uint64_t p_aff[8], const G2Precomp *pc, uint64_t f[FP12]) {
+    const uint64_t *px = p_aff;
+    const uint64_t *py = p_aff + 4;
+
+    uint64_t buf0[48], buf1[48];
+    fp12_one(buf0);
+    uint64_t *cur = buf0, *alt = buf1;
+    uint64_t c0[8], c3[8];
+    int idx = 0;
+
+    for (int i = 1; i < 66; i++) {
+        fp12_sqr(cur, alt);
+        { uint64_t *t = cur; cur = alt; alt = t; }
+
+        // Evaluate precomputed doubling line at P
+        fp2_mul_fp(pc->lines[idx].raw0, py, c0);
+        fp2_mul_fp(pc->lines[idx].raw3, px, c3); fp2_neg(c3, c3);
+        fp12_mul_by_line(cur, c0, c3, pc->lines[idx].c4, alt);
+        { uint64_t *t = cur; cur = alt; alt = t; }
+        idx++;
+
+        if (SIX_X_PLUS_2_NAF[i] != 0) {
+            fp2_mul_fp(pc->lines[idx].raw0, py, c0);
+            fp2_mul_fp(pc->lines[idx].raw3, px, c3); fp2_neg(c3, c3);
+            fp12_mul_by_line(cur, c0, c3, pc->lines[idx].c4, alt);
+            { uint64_t *t = cur; cur = alt; alt = t; }
+            idx++;
+        }
+    }
+
+    // Frobenius correction lines (last 2)
+    for (int j = 0; j < 2; j++) {
+        fp2_mul_fp(pc->lines[idx].raw0, py, c0);
+        fp2_mul_fp(pc->lines[idx].raw3, px, c3); fp2_neg(c3, c3);
+        fp12_mul_by_line(cur, c0, c3, pc->lines[idx].c4, alt);
+        { uint64_t *t = cur; cur = alt; alt = t; }
+        idx++;
+    }
+
+    fp12_copy(f, cur);
+}
+
 // Frobenius correction constants for Q1, Q2
 // gamma_{1,2} for Q1.x conjugation, gamma_{1,3} for Q1.y conjugation
 // gamma_{2,2} for Q2.x (Fp scalar), gamma_{2,3} for Q2.y (Fp scalar)
@@ -1150,6 +1323,15 @@ void bn254_pairing(const uint64_t p_aff[8], const uint64_t q_aff[16], uint64_t r
     final_exp(ml, result);
 }
 
+// Pairing with precomputed G2 (for fixed-Q use cases like Groth16 VK)
+void bn254_pairing_precomp(const uint64_t p_aff[8], const uint64_t q_aff[16], uint64_t result[48]) {
+    G2Precomp pc;
+    g2_precompute(q_aff, &pc);
+    uint64_t ml[48];
+    miller_loop_precomputed(p_aff, &pc, ml);
+    final_exp(ml, result);
+}
+
 // Pairing check: verify prod_i e(P_i, Q_i) = 1
 // pairs: interleaved [p0[8], q0[16], p1[8], q1[16], ...]
 // n: number of pairs
@@ -1162,6 +1344,29 @@ int bn254_pairing_check(const uint64_t *pairs, int n) {
         const uint64_t *pi = pairs + i * 24;   // 8 (G1) + 16 (G2) = 24
         const uint64_t *qi = pi + 8;
         miller_loop(pi, qi, ml);
+        fp12_mul(f, ml, tmp);
+        fp12_copy(f, tmp);
+    }
+
+    uint64_t result[48];
+    final_exp(f, result);
+
+    uint64_t one[48];
+    fp12_one(one);
+    return memcmp(result, one, 384) == 0;
+}
+
+// Precomputed pairing check (precompute G2 lines per distinct Q)
+int bn254_pairing_check_precomp(const uint64_t *pairs, int n) {
+    uint64_t f[48], ml[48], tmp[48];
+    fp12_one(f);
+
+    for (int i = 0; i < n; i++) {
+        const uint64_t *pi = pairs + i * 24;
+        const uint64_t *qi = pi + 8;
+        G2Precomp pc;
+        g2_precompute(qi, &pc);
+        miller_loop_precomputed(pi, &pc, ml);
         fp12_mul(f, ml, tmp);
         fp12_copy(f, tmp);
     }

@@ -866,7 +866,9 @@ int bls12_381_pairing_check(const uint64_t *pairs, int n);
 void bn254_miller_loop(const uint64_t p_aff[8], const uint64_t q_aff[16], uint64_t result[48]);
 void bn254_final_exp(const uint64_t f[48], uint64_t result[48]);
 void bn254_pairing(const uint64_t p_aff[8], const uint64_t q_aff[16], uint64_t result[48]);
+void bn254_pairing_precomp(const uint64_t p_aff[8], const uint64_t q_aff[16], uint64_t result[48]);
 int bn254_pairing_check(const uint64_t *pairs, int n);
+int bn254_pairing_check_precomp(const uint64_t *pairs, int n);
 
 // ============================================================
 // BLS12-381 hash-to-curve G2 (RFC 9380, SSWU + 3-isogeny)
