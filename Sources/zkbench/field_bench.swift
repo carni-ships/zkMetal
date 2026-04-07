@@ -106,9 +106,19 @@ public func runFieldBench() {
     let bbElapsed = (CFAbsoluteTimeGetCurrent() - bbStart) * 1e9 / Double(bbIters)
     print(String(format: "  BB mul: %.1f ns/op (%.0f M ops/s)", bbElapsed, 1e3 / bbElapsed))
 
+    // BN254 Fr benchmark (C CIOS)
+    let frIters = 1_000_000
+    var fa = frFromInt(42)
+    let fb = frFromInt(137)
+    let frStart = CFAbsoluteTimeGetCurrent()
+    for _ in 0..<frIters { fa = frMul(fa, fb) }
+    let frElapsed = (CFAbsoluteTimeGetCurrent() - frStart) * 1e9 / Double(frIters)
+    _ = fa // prevent dead code elimination
+    print(String(format: "  BN254 Fr mul: %.1f ns/op (%.0f M ops/s)", frElapsed, 1e3 / frElapsed))
+
     // Comparison
     print("\n--- Field Comparison ---")
-    print(String(format: "  BN254 Fr (256-bit): ~2500 ns/mul"))
+    print(String(format: "  BN254 Fr (256-bit): %.0f ns/mul", frElapsed))
     print(String(format: "  Goldilocks (64-bit): %.0f ns/mul", glElapsed))
     print(String(format: "  BabyBear  (31-bit): %.0f ns/mul", bbElapsed))
 

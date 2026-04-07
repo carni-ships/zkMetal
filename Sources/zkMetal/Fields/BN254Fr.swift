@@ -105,52 +105,39 @@ extension Fr: Hashable {
 
 public func frMul(_ a: Fr, _ b: Fr) -> Fr {
     let al = a.to64(), bl = b.to64()
-    var t = [UInt64](repeating: 0, count: 5)
-
-    for i in 0..<4 {
-        var carry: UInt64 = 0
-        for j in 0..<4 {
-            let (hi, lo) = al[i].multipliedFullWidth(by: bl[j])
-            let (s1, c1) = t[j].addingReportingOverflow(lo)
-            let (s2, c2) = s1.addingReportingOverflow(carry)
-            t[j] = s2
-            carry = hi + (c1 ? 1 : 0) + (c2 ? 1 : 0)
+    var r = [UInt64](repeating: 0, count: 4)
+    al.withUnsafeBufferPointer { aPtr in
+        bl.withUnsafeBufferPointer { bPtr in
+            r.withUnsafeMutableBufferPointer { rPtr in
+                bn254_fr_mul(aPtr.baseAddress!, bPtr.baseAddress!, rPtr.baseAddress!)
+            }
         }
-        t[4] = t[4] &+ carry
-
-        let m = t[0] &* Fr.INV
-        carry = 0
-        for j in 0..<4 {
-            let (hi, lo) = m.multipliedFullWidth(by: Fr.P[j])
-            let (s1, c1) = t[j].addingReportingOverflow(lo)
-            let (s2, c2) = s1.addingReportingOverflow(carry)
-            t[j] = s2
-            carry = hi + (c1 ? 1 : 0) + (c2 ? 1 : 0)
-        }
-        t[4] = t[4] &+ carry
-
-        t[0] = t[1]; t[1] = t[2]; t[2] = t[3]; t[3] = t[4]; t[4] = 0
-    }
-
-    var r = Array(t[0..<4])
-    if gte256(r, Fr.P) {
-        (r, _) = sub256(r, Fr.P)
     }
     return Fr.from64(r)
 }
 
 public func frAdd(_ a: Fr, _ b: Fr) -> Fr {
-    var (r, carry) = add256(a.to64(), b.to64())
-    if carry != 0 || gte256(r, Fr.P) {
-        (r, _) = sub256(r, Fr.P)
+    let al = a.to64(), bl = b.to64()
+    var r = [UInt64](repeating: 0, count: 4)
+    al.withUnsafeBufferPointer { aPtr in
+        bl.withUnsafeBufferPointer { bPtr in
+            r.withUnsafeMutableBufferPointer { rPtr in
+                bn254_fr_add(aPtr.baseAddress!, bPtr.baseAddress!, rPtr.baseAddress!)
+            }
+        }
     }
     return Fr.from64(r)
 }
 
 public func frSub(_ a: Fr, _ b: Fr) -> Fr {
-    var (r, borrow) = sub256(a.to64(), b.to64())
-    if borrow {
-        (r, _) = add256(r, Fr.P)
+    let al = a.to64(), bl = b.to64()
+    var r = [UInt64](repeating: 0, count: 4)
+    al.withUnsafeBufferPointer { aPtr in
+        bl.withUnsafeBufferPointer { bPtr in
+            r.withUnsafeMutableBufferPointer { rPtr in
+                bn254_fr_sub(aPtr.baseAddress!, bPtr.baseAddress!, rPtr.baseAddress!)
+            }
+        }
     }
     return Fr.from64(r)
 }
@@ -188,23 +175,14 @@ public func frToUInt64(_ a: Fr) -> UInt64 {
 }
 
 public func frInverse(_ a: Fr) -> Fr {
-    var result = Fr.one
-    var base = a
-    var exp = Fr.P.map { $0 }
-    if exp[0] >= 2 { exp[0] -= 2 }
-    else { exp[0] = exp[0] &- 2; exp[1] -= 1 }
-
-    for i in 0..<4 {
-        var word = exp[i]
-        for _ in 0..<64 {
-            if word & 1 == 1 {
-                result = frMul(result, base)
-            }
-            base = frSqr(base)
-            word >>= 1
+    let al = a.to64()
+    var r = [UInt64](repeating: 0, count: 4)
+    al.withUnsafeBufferPointer { aPtr in
+        r.withUnsafeMutableBufferPointer { rPtr in
+            bn254_fr_inverse(aPtr.baseAddress!, rPtr.baseAddress!)
         }
     }
-    return result
+    return Fr.from64(r)
 }
 
 /// Montgomery batch inversion: compute 1/a[i] for all i using a single frInverse.
