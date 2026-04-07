@@ -580,7 +580,17 @@ func polyMulNTT(_ a: [Fr], _ b: [Fr], ntt: NTTEngine) throws -> [Fr] {
     let bEvals = try ntt.ntt(bPad)
 
     var cEvals = [Fr](repeating: Fr.zero, count: m)
-    for i in 0..<m { cEvals[i] = frMul(aEvals[i], bEvals[i]) }
+    aEvals.withUnsafeBytes { aBuf in
+        bEvals.withUnsafeBytes { bBuf in
+            cEvals.withUnsafeMutableBytes { rBuf in
+                bn254_fr_batch_mul_neon(
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(m))
+            }
+        }
+    }
 
     let result = try ntt.intt(cEvals)
     return Array(result.prefix(resultLen))

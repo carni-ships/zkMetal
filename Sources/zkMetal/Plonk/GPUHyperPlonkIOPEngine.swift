@@ -977,7 +977,17 @@ public final class GPUHyperPlonkIOPEngine {
     private func gpuPointwiseMul(_ a: [Fr], _ b: [Fr], count n: Int) -> [Fr] {
         let cpuFallback: () -> [Fr] = {
             var r = [Fr](repeating: Fr.zero, count: n)
-            for i in 0..<n { r[i] = frMul(a[i], b[i]) }
+            a.withUnsafeBytes { aBuf in
+                b.withUnsafeBytes { bBuf in
+                    r.withUnsafeMutableBytes { rBuf in
+                        bn254_fr_batch_mul_neon(
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
+            }
             return r
         }
         guard let device = device, let queue = commandQueue, let pipeline = evalPipeline else {

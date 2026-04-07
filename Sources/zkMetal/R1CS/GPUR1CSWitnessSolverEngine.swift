@@ -24,6 +24,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 // MARK: - Witness Solver Types
 
@@ -868,7 +869,17 @@ public final class GPUR1CSWitnessSolverEngine {
 
     private func cpuBatchMul(_ a: [Fr], _ b: [Fr], count n: Int) -> [Fr] {
         var result = [Fr](repeating: .zero, count: n)
-        for i in 0..<n { result[i] = frMul(a[i], b[i]) }
+        a.withUnsafeBytes { aBuf in
+            b.withUnsafeBytes { bBuf in
+                result.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_mul_neon(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
+        }
         return result
     }
 

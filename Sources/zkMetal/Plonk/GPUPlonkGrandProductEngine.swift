@@ -525,7 +525,17 @@ public class GPUPlonkGrandProductEngine {
             // Prefix product for this partition
             let invPartDen = frBatchInverse(partDen)
             var partRatios = [Fr](repeating: Fr.zero, count: n)
-            for i in 0..<n { partRatios[i] = frMul(partNum[i], invPartDen[i]) }
+            partNum.withUnsafeBytes { aBuf in
+                invPartDen.withUnsafeBytes { bBuf in
+                    partRatios.withUnsafeMutableBytes { rBuf in
+                        bn254_fr_batch_mul_neon(
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
+            }
 
             subZPolys[p][0] = Fr.one
             for i in 1..<n {

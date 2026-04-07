@@ -512,7 +512,17 @@ public class LogUpGKRVerifier {
         for j in 0..<N { diffs[j] = frSub(gamma, table[j]) }
         let invs = batchInverse(diffs)
         var result = [Fr](repeating: Fr.zero, count: N)
-        for j in 0..<N { result[j] = frMul(multiplicities[j], invs[j]) }
+        multiplicities.withUnsafeBytes { aBuf in
+            invs.withUnsafeBytes { bBuf in
+                result.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_mul_neon(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(N))
+                }
+            }
+        }
         return result
     }
 

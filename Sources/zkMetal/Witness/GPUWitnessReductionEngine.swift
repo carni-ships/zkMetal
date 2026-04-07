@@ -16,6 +16,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 // MARK: - Data Structures
 
@@ -630,13 +631,33 @@ public final class GPUWitnessReductionEngine {
         guard !cpuOnly, let device = self.device, let queue = self.commandQueue else {
             // CPU fallback
             var result = [Fr](repeating: Fr.zero, count: n)
-            for i in 0..<n { result[i] = frMul(a[i], b[i]) }
+            a.withUnsafeBytes { aBuf in
+                b.withUnsafeBytes { bBuf in
+                    result.withUnsafeMutableBytes { rBuf in
+                        bn254_fr_batch_mul_neon(
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
+            }
             return result
         }
 
         if n < gpuThreshold {
             var result = [Fr](repeating: Fr.zero, count: n)
-            for i in 0..<n { result[i] = frMul(a[i], b[i]) }
+            a.withUnsafeBytes { aBuf in
+                b.withUnsafeBytes { bBuf in
+                    result.withUnsafeMutableBytes { rBuf in
+                        bn254_fr_batch_mul_neon(
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
+            }
             return result
         }
 
