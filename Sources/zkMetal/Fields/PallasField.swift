@@ -86,27 +86,47 @@ public struct PallasFp {
     }
 }
 
+// MARK: - Zero-copy pointer helpers
+// PallasFp.v is 8×UInt32 = 32 bytes = same layout as uint64_t[4] on little-endian
+
+@inline(__always)
+private func withPallasPtr<T>(_ a: PallasFp, _ body: (UnsafePointer<UInt64>) -> T) -> T {
+    var v = a.v
+    return withUnsafePointer(to: &v) { p in
+        body(UnsafeRawPointer(p).assumingMemoryBound(to: UInt64.self))
+    }
+}
+
+@inline(__always)
+private func pallasFromRaw(_ body: (UnsafeMutablePointer<UInt64>) -> Void) -> PallasFp {
+    var rv: (UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32) = (0,0,0,0,0,0,0,0)
+    withUnsafeMutablePointer(to: &rv) { p in
+        body(UnsafeMutableRawPointer(p).assumingMemoryBound(to: UInt64.self))
+    }
+    return PallasFp(v: rv)
+}
+
 // MARK: - Field Operations
 
+@inline(__always)
 public func pallasMul(_ a: PallasFp, _ b: PallasFp) -> PallasFp {
-    var al = a.to64(), bl = b.to64()
-    var r = [UInt64](repeating: 0, count: 4)
-    pallas_fp_mul(&al, &bl, &r)
-    return PallasFp.from64(r)
+    withPallasPtr(a) { ap in withPallasPtr(b) { bp in
+        pallasFromRaw { rp in pallas_fp_mul(ap, bp, rp) }
+    }}
 }
 
+@inline(__always)
 public func pallasAdd(_ a: PallasFp, _ b: PallasFp) -> PallasFp {
-    var al = a.to64(), bl = b.to64()
-    var r = [UInt64](repeating: 0, count: 4)
-    pallas_fp_add(&al, &bl, &r)
-    return PallasFp.from64(r)
+    withPallasPtr(a) { ap in withPallasPtr(b) { bp in
+        pallasFromRaw { rp in pallas_fp_add(ap, bp, rp) }
+    }}
 }
 
+@inline(__always)
 public func pallasSub(_ a: PallasFp, _ b: PallasFp) -> PallasFp {
-    var al = a.to64(), bl = b.to64()
-    var r = [UInt64](repeating: 0, count: 4)
-    pallas_fp_sub(&al, &bl, &r)
-    return PallasFp.from64(r)
+    withPallasPtr(a) { ap in withPallasPtr(b) { bp in
+        pallasFromRaw { rp in pallas_fp_sub(ap, bp, rp) }
+    }}
 }
 
 public func pallasSqr(_ a: PallasFp) -> PallasFp { pallasMul(a, a) }
@@ -123,11 +143,11 @@ public func pallasToInt(_ a: PallasFp) -> [UInt64] {
     return pallasMul(a, PallasFp.from64(one)).to64()
 }
 
+@inline(__always)
 public func pallasNeg(_ a: PallasFp) -> PallasFp {
-    var al = a.to64()
-    var r = [UInt64](repeating: 0, count: 4)
-    pallas_fp_neg(&al, &r)
-    return PallasFp.from64(r)
+    withPallasPtr(a) { ap in
+        pallasFromRaw { rp in pallas_fp_neg(ap, rp) }
+    }
 }
 
 public func pallasInverse(_ a: PallasFp) -> PallasFp {

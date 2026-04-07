@@ -80,42 +80,59 @@ public struct Fr381 {
     }
 }
 
-// MARK: - Fr381 Field Operations
+// MARK: - Fr381 Field Operations (zero-copy C CIOS)
 
+@inline(__always)
+private func withFr381Ptr<T>(_ a: Fr381, _ body: (UnsafePointer<UInt64>) -> T) -> T {
+    var v = a.v
+    return withUnsafePointer(to: &v) { p in
+        body(UnsafeRawPointer(p).assumingMemoryBound(to: UInt64.self))
+    }
+}
+
+@inline(__always)
+private func fr381FromRaw(_ body: (UnsafeMutablePointer<UInt64>) -> Void) -> Fr381 {
+    var rv: (UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32) = (0,0,0,0,0,0,0,0)
+    withUnsafeMutablePointer(to: &rv) { p in
+        body(UnsafeMutableRawPointer(p).assumingMemoryBound(to: UInt64.self))
+    }
+    return Fr381(v: rv)
+}
+
+@inline(__always)
 public func fr381Mul(_ a: Fr381, _ b: Fr381) -> Fr381 {
-    var al = a.to64(), bl = b.to64()
-    var r = [UInt64](repeating: 0, count: 4)
-    bls12_381_fr_mul(&al, &bl, &r)
-    return Fr381.from64(r)
+    withFr381Ptr(a) { ap in withFr381Ptr(b) { bp in
+        fr381FromRaw { rp in bls12_381_fr_mul(ap, bp, rp) }
+    }}
 }
 
+@inline(__always)
 public func fr381Add(_ a: Fr381, _ b: Fr381) -> Fr381 {
-    var al = a.to64(), bl = b.to64()
-    var r = [UInt64](repeating: 0, count: 4)
-    bls12_381_fr_add(&al, &bl, &r)
-    return Fr381.from64(r)
+    withFr381Ptr(a) { ap in withFr381Ptr(b) { bp in
+        fr381FromRaw { rp in bls12_381_fr_add(ap, bp, rp) }
+    }}
 }
 
+@inline(__always)
 public func fr381Sub(_ a: Fr381, _ b: Fr381) -> Fr381 {
-    var al = a.to64(), bl = b.to64()
-    var r = [UInt64](repeating: 0, count: 4)
-    bls12_381_fr_sub(&al, &bl, &r)
-    return Fr381.from64(r)
+    withFr381Ptr(a) { ap in withFr381Ptr(b) { bp in
+        fr381FromRaw { rp in bls12_381_fr_sub(ap, bp, rp) }
+    }}
 }
 
+@inline(__always)
 public func fr381Sqr(_ a: Fr381) -> Fr381 {
-    var al = a.to64()
-    var r = [UInt64](repeating: 0, count: 4)
-    bls12_381_fr_sqr(&al, &r)
-    return Fr381.from64(r)
+    withFr381Ptr(a) { ap in
+        fr381FromRaw { rp in bls12_381_fr_sqr(ap, rp) }
+    }
 }
 public func fr381Double(_ a: Fr381) -> Fr381 { fr381Add(a, a) }
 
+@inline(__always)
 public func fr381Neg(_ a: Fr381) -> Fr381 {
-    var al = a.to64()
-    var r = [UInt64](repeating: 0, count: 4)
-    bls12_381_fr_neg(&al, &r)
-    return Fr381.from64(r)
+    withFr381Ptr(a) { ap in
+        fr381FromRaw { rp in bls12_381_fr_neg(ap, rp) }
+    }
 }
 
 public func fr381FromInt(_ val: UInt64) -> Fr381 {

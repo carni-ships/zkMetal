@@ -114,35 +114,56 @@ public func gte384(_ a: [UInt64], _ b: [UInt64]) -> Bool {
     return true
 }
 
+// MARK: - Zero-copy pointer helpers
+// Fq377.v is 12×UInt32 = 48 bytes = same layout as uint64_t[6] on little-endian
+
+@inline(__always)
+private func withFq377Ptr<T>(_ a: Fq377, _ body: (UnsafePointer<UInt64>) -> T) -> T {
+    var v = a.v
+    return withUnsafePointer(to: &v) { p in
+        body(UnsafeRawPointer(p).assumingMemoryBound(to: UInt64.self))
+    }
+}
+
+@inline(__always)
+private func fq377FromRaw(_ body: (UnsafeMutablePointer<UInt64>) -> Void) -> Fq377 {
+    var rv: (UInt32, UInt32, UInt32, UInt32, UInt32, UInt32,
+             UInt32, UInt32, UInt32, UInt32, UInt32, UInt32) = (0,0,0,0,0,0,0,0,0,0,0,0)
+    withUnsafeMutablePointer(to: &rv) { p in
+        body(UnsafeMutableRawPointer(p).assumingMemoryBound(to: UInt64.self))
+    }
+    return Fq377(v: rv)
+}
+
 // MARK: - Field Operations
 
 // Montgomery multiplication: (a * b * R^-1) mod q — C CIOS
+@inline(__always)
 public func fq377Mul(_ a: Fq377, _ b: Fq377) -> Fq377 {
-    var al = a.to64(), bl = b.to64()
-    var r = [UInt64](repeating: 0, count: 6)
-    bls12_377_fq_mul(&al, &bl, &r)
-    return Fq377.from64(r)
+    withFq377Ptr(a) { ap in withFq377Ptr(b) { bp in
+        fq377FromRaw { rp in bls12_377_fq_mul(ap, bp, rp) }
+    }}
 }
 
+@inline(__always)
 public func fq377Add(_ a: Fq377, _ b: Fq377) -> Fq377 {
-    var al = a.to64(), bl = b.to64()
-    var r = [UInt64](repeating: 0, count: 6)
-    bls12_377_fq_add(&al, &bl, &r)
-    return Fq377.from64(r)
+    withFq377Ptr(a) { ap in withFq377Ptr(b) { bp in
+        fq377FromRaw { rp in bls12_377_fq_add(ap, bp, rp) }
+    }}
 }
 
+@inline(__always)
 public func fq377Sub(_ a: Fq377, _ b: Fq377) -> Fq377 {
-    var al = a.to64(), bl = b.to64()
-    var r = [UInt64](repeating: 0, count: 6)
-    bls12_377_fq_sub(&al, &bl, &r)
-    return Fq377.from64(r)
+    withFq377Ptr(a) { ap in withFq377Ptr(b) { bp in
+        fq377FromRaw { rp in bls12_377_fq_sub(ap, bp, rp) }
+    }}
 }
 
+@inline(__always)
 public func fq377Sqr(_ a: Fq377) -> Fq377 {
-    var al = a.to64()
-    var r = [UInt64](repeating: 0, count: 6)
-    bls12_377_fq_sqr(&al, &r)
-    return Fq377.from64(r)
+    withFq377Ptr(a) { ap in
+        fq377FromRaw { rp in bls12_377_fq_sqr(ap, rp) }
+    }
 }
 public func fq377Double(_ a: Fq377) -> Fq377 { fq377Add(a, a) }
 
@@ -160,11 +181,11 @@ public func fq377ToInt(_ a: Fq377) -> [UInt64] {
 }
 
 // Field negation
+@inline(__always)
 public func fq377Neg(_ a: Fq377) -> Fq377 {
-    var al = a.to64()
-    var r = [UInt64](repeating: 0, count: 6)
-    bls12_377_fq_neg(&al, &r)
-    return Fq377.from64(r)
+    withFq377Ptr(a) { ap in
+        fq377FromRaw { rp in bls12_377_fq_neg(ap, rp) }
+    }
 }
 
 // Field inverse via Fermat's little theorem: a^(q-2) mod q

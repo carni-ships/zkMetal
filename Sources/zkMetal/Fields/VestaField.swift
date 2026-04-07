@@ -86,27 +86,47 @@ public struct VestaFp {
     }
 }
 
+// MARK: - Zero-copy pointer helpers
+// VestaFp.v is 8×UInt32 = 32 bytes = same layout as uint64_t[4] on little-endian
+
+@inline(__always)
+private func withVestaPtr<T>(_ a: VestaFp, _ body: (UnsafePointer<UInt64>) -> T) -> T {
+    var v = a.v
+    return withUnsafePointer(to: &v) { p in
+        body(UnsafeRawPointer(p).assumingMemoryBound(to: UInt64.self))
+    }
+}
+
+@inline(__always)
+private func vestaFromRaw(_ body: (UnsafeMutablePointer<UInt64>) -> Void) -> VestaFp {
+    var rv: (UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32) = (0,0,0,0,0,0,0,0)
+    withUnsafeMutablePointer(to: &rv) { p in
+        body(UnsafeMutableRawPointer(p).assumingMemoryBound(to: UInt64.self))
+    }
+    return VestaFp(v: rv)
+}
+
 // MARK: - Field Operations
 
+@inline(__always)
 public func vestaMul(_ a: VestaFp, _ b: VestaFp) -> VestaFp {
-    var al = a.to64(), bl = b.to64()
-    var r = [UInt64](repeating: 0, count: 4)
-    vesta_fp_mul(&al, &bl, &r)
-    return VestaFp.from64(r)
+    withVestaPtr(a) { ap in withVestaPtr(b) { bp in
+        vestaFromRaw { rp in vesta_fp_mul(ap, bp, rp) }
+    }}
 }
 
+@inline(__always)
 public func vestaAdd(_ a: VestaFp, _ b: VestaFp) -> VestaFp {
-    var al = a.to64(), bl = b.to64()
-    var r = [UInt64](repeating: 0, count: 4)
-    vesta_fp_add(&al, &bl, &r)
-    return VestaFp.from64(r)
+    withVestaPtr(a) { ap in withVestaPtr(b) { bp in
+        vestaFromRaw { rp in vesta_fp_add(ap, bp, rp) }
+    }}
 }
 
+@inline(__always)
 public func vestaSub(_ a: VestaFp, _ b: VestaFp) -> VestaFp {
-    var al = a.to64(), bl = b.to64()
-    var r = [UInt64](repeating: 0, count: 4)
-    vesta_fp_sub(&al, &bl, &r)
-    return VestaFp.from64(r)
+    withVestaPtr(a) { ap in withVestaPtr(b) { bp in
+        vestaFromRaw { rp in vesta_fp_sub(ap, bp, rp) }
+    }}
 }
 
 public func vestaSqr(_ a: VestaFp) -> VestaFp { vestaMul(a, a) }
@@ -123,11 +143,11 @@ public func vestaToInt(_ a: VestaFp) -> [UInt64] {
     return vestaMul(a, VestaFp.from64(one)).to64()
 }
 
+@inline(__always)
 public func vestaNeg(_ a: VestaFp) -> VestaFp {
-    var al = a.to64()
-    var r = [UInt64](repeating: 0, count: 4)
-    vesta_fp_neg(&al, &r)
-    return VestaFp.from64(r)
+    withVestaPtr(a) { ap in
+        vestaFromRaw { rp in vesta_fp_neg(ap, rp) }
+    }
 }
 
 public func vestaInverse(_ a: VestaFp) -> VestaFp {
