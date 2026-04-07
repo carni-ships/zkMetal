@@ -55,8 +55,13 @@ public class TensorSumcheckProver {
         // suffixProduct = product of sum(f_j) for j > current factor
         var factorSums: [Fr] = factors.map { factor in
             var sum = Fr.zero
-            for e in factor.evaluations {
-                sum = frAdd(sum, e)
+            factor.evaluations.withUnsafeBytes { eBuf in
+                withUnsafeMutableBytes(of: &sum) { sBuf in
+                    bn254_fr_vector_sum(
+                        eBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(factor.evaluations.count),
+                        sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                }
             }
             return sum
         }
@@ -117,12 +122,24 @@ public class TensorSumcheckProver {
                 challenges.append(r)
 
                 // Fold: fix this variable to r
-                var folded = [Fr](repeating: Fr.zero, count: half)
+                // folded[i] = (1-r)*lo + r*hi = lo + r*(hi - lo)
+                // Deinterleave to contiguous layout for sumcheck_reduce
+                var deinterleaved = [Fr](repeating: Fr.zero, count: currentEvals.count)
                 for i in 0..<half {
-                    let lo = currentEvals[2 * i]
-                    let hi = currentEvals[2 * i + 1]
-                    // folded[i] = (1-r)*lo + r*hi = lo + r*(hi - lo)
-                    folded[i] = frAdd(lo, frMul(r, frSub(hi, lo)))
+                    deinterleaved[i] = currentEvals[2 * i]
+                    deinterleaved[i + half] = currentEvals[2 * i + 1]
+                }
+                var folded = [Fr](repeating: Fr.zero, count: half)
+                deinterleaved.withUnsafeBytes { eBuf in
+                    withUnsafeBytes(of: r) { rBuf in
+                        folded.withUnsafeMutableBytes { fBuf in
+                            bn254_fr_sumcheck_reduce(
+                                eBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                fBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                Int32(half))
+                        }
+                    }
                 }
                 currentEvals = folded
 

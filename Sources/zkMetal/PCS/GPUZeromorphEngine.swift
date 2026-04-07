@@ -419,10 +419,25 @@ public class GPUZeromorphEngine {
         var current = evaluations
         for k in stride(from: point.count - 1, through: 0, by: -1) {
             let half = current.count / 2
-            var folded = [Fr](repeating: Fr.zero, count: half)
-            let uk = point[k]
+            // Deinterleave into even/odd, then folded = even + uk * odd
+            var fEven = [Fr](repeating: Fr.zero, count: half)
+            var fOdd = [Fr](repeating: Fr.zero, count: half)
             for i in 0..<half {
-                folded[i] = frAdd(current[2 * i], frMul(uk, current[2 * i + 1]))
+                fEven[i] = current[2 * i]
+                fOdd[i] = current[2 * i + 1]
+            }
+            var folded = fEven
+            let uk = point[k]
+            fOdd.withUnsafeBytes { oddBuf in
+                folded.withUnsafeMutableBytes { fBuf in
+                    withUnsafeBytes(of: uk) { uBuf in
+                        bn254_fr_batch_mac_neon(
+                            fBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            oddBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            uBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(half))
+                    }
+                }
             }
             current = folded
         }
@@ -430,16 +445,29 @@ public class GPUZeromorphEngine {
     }
 
     /// Standard MLE evaluation: (1-u_k)*f[2i] + u_k*f[2i+1]
+    /// Uses bn254_fr_sumcheck_reduce: result[i] = evals[i] + challenge*(evals[i+half] - evals[i])
     public static func evaluateMLE(evaluations: [Fr], point: [Fr]) -> Fr {
         var current = evaluations
         for k in stride(from: point.count - 1, through: 0, by: -1) {
             let half = current.count / 2
+            // Deinterleave to contiguous [lo0,lo1,...|hi0,hi1,...] for sumcheck_reduce
+            var deinterleaved = [Fr](repeating: Fr.zero, count: current.count)
+            for i in 0..<half {
+                deinterleaved[i] = current[2 * i]
+                deinterleaved[i + half] = current[2 * i + 1]
+            }
             var folded = [Fr](repeating: Fr.zero, count: half)
             let uk = point[k]
-            for i in 0..<half {
-                let lo = current[2 * i]
-                let hi = current[2 * i + 1]
-                folded[i] = frAdd(lo, frMul(uk, frSub(hi, lo)))
+            deinterleaved.withUnsafeBytes { eBuf in
+                withUnsafeBytes(of: uk) { uBuf in
+                    folded.withUnsafeMutableBytes { rBuf in
+                        bn254_fr_sumcheck_reduce(
+                            eBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            uBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(half))
+                    }
+                }
             }
             current = folded
         }
@@ -463,10 +491,19 @@ public class GPUZeromorphEngine {
                 fOdd[i] = f[2 * i + 1]
             }
             stepQuotients.append(fOdd)
+            // folded[i] = fEven[i] + uk * fOdd[i]  =>  start with fEven, MAC with uk
+            var folded = fEven
             let uk = point[k]
-            var folded = [Fr](repeating: Fr.zero, count: halfLen)
-            for i in 0..<halfLen {
-                folded[i] = frAdd(fEven[i], frMul(uk, fOdd[i]))
+            fOdd.withUnsafeBytes { oddBuf in
+                folded.withUnsafeMutableBytes { fBuf in
+                    withUnsafeBytes(of: uk) { uBuf in
+                        bn254_fr_batch_mac_neon(
+                            fBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            oddBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            uBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(halfLen))
+                    }
+                }
             }
             f = folded
         }
@@ -479,8 +516,7 @@ public class GPUZeromorphEngine {
                                             stepQuotients: [[Fr]], zeta: Fr,
                                             N: Int, n: Int) -> [Fr] {
         var zetaPow = zeta
-        var L = [Fr](repeating: Fr.zero, count: N)
-        for i in 0..<N { L[i] = evaluations[i] }
+        var L = evaluations
         L[0] = frSub(L[0], value)
 
         for s in 0..<n {
@@ -488,9 +524,18 @@ public class GPUZeromorphEngine {
             let phi = frSub(zetaPow, point[k])
             zetaPow = frMul(zetaPow, zetaPow)
             let q = stepQuotients[s]
-            for j in 0..<q.count {
-                if j < N {
-                    L[j] = frSub(L[j], frMul(phi, q[j]))
+            let qLen = min(q.count, N)
+            // L[j] -= phi * q[j]  =>  L[j] += (-phi) * q[j]  =>  batch_mac with negPhi
+            let negPhi = frSub(Fr.zero, phi)
+            q.withUnsafeBytes { qBuf in
+                L.withUnsafeMutableBytes { lBuf in
+                    withUnsafeBytes(of: negPhi) { pBuf in
+                        bn254_fr_batch_mac_neon(
+                            lBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            qBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(qLen))
+                    }
                 }
             }
         }
