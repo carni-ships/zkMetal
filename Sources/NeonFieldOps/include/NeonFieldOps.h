@@ -265,6 +265,10 @@ void bn254_fr_batch_neg_neon(uint64_t *result, const uint64_t *a, int n);
 void bn254_fr_batch_mul_scalar_neon(uint64_t *result, const uint64_t *a,
                                      const uint64_t *scalar, int n);
 
+/// Batch scalar-minus-vector: result[i] = scalar - a[i].
+void bn254_fr_batch_scalar_sub_neon(uint64_t *result, const uint64_t *scalar,
+                                     const uint64_t *a, int n);
+
 /// Batch element-wise multiply: result[i] = a[i] * b[i].
 void bn254_fr_batch_mul_neon(uint64_t *result, const uint64_t *a,
                               const uint64_t *b, int n);

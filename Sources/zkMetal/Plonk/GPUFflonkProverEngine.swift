@@ -558,7 +558,16 @@ public class GPUFflonkProverEngine {
         let maxLen = max(a.count, b.count)
         var result = [Fr](repeating: Fr.zero, count: maxLen)
         for i in 0..<a.count { result[i] = a[i] }
-        for i in 0..<b.count { result[i] = frAdd(result[i], b[i]) }
+        let bCount = b.count
+        result.withUnsafeMutableBytes { rBuf in
+            b.withUnsafeBytes { bBuf in
+                bn254_fr_batch_add_neon(
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(bCount))
+            }
+        }
         return result
     }
 
@@ -567,7 +576,16 @@ public class GPUFflonkProverEngine {
         let maxLen = max(a.count, b.count)
         var result = [Fr](repeating: Fr.zero, count: maxLen)
         for i in 0..<a.count { result[i] = a[i] }
-        for i in 0..<b.count { result[i] = frSub(result[i], b[i]) }
+        let bCount = b.count
+        result.withUnsafeMutableBytes { rBuf in
+            b.withUnsafeBytes { bBuf in
+                bn254_fr_batch_sub_neon(
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(bCount))
+            }
+        }
         return result
     }
 

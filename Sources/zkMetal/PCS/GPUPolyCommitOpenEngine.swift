@@ -302,7 +302,16 @@ public class GPUPolyCommitOpenEngine {
         let maxLen = max(polynomial.count, interp.count)
         var numerator = [Fr](repeating: Fr.zero, count: maxLen)
         for i in 0..<polynomial.count { numerator[i] = polynomial[i] }
-        for i in 0..<interp.count { numerator[i] = frSub(numerator[i], interp[i]) }
+        let interpCount = interp.count
+        numerator.withUnsafeMutableBytes { nBuf in
+            interp.withUnsafeBytes { iBuf in
+                bn254_fr_batch_sub_neon(
+                    nBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    nBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    iBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(interpCount))
+            }
+        }
 
         // Exact division: W(X) = numerator / Z_S(X)
         let witnessCoeffs = polyExactDivide(numerator, by: vanishing)
@@ -378,7 +387,16 @@ public class GPUPolyCommitOpenEngine {
             let maxLen = max(poly.count, interp.count)
             var numerator = [Fr](repeating: Fr.zero, count: maxLen)
             for j in 0..<poly.count { numerator[j] = poly[j] }
-            for j in 0..<interp.count { numerator[j] = frSub(numerator[j], interp[j]) }
+            let interpCount = interp.count
+            numerator.withUnsafeMutableBytes { nBuf in
+                interp.withUnsafeBytes { iBuf in
+                    bn254_fr_batch_sub_neon(
+                        nBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        nBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        iBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(interpCount))
+                }
+            }
 
             let wi = polyExactDivide(numerator, by: vanishing)
             witnessPolys.append(wi)

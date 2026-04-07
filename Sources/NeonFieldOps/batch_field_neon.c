@@ -289,6 +289,16 @@ void bn254_fr_batch_mul_scalar_neon(uint64_t *result, const uint64_t *a,
     }
 }
 
+/// Batch scalar-minus-vector: result[i] = scalar - a[i] for i in 0..n-1
+void bn254_fr_batch_scalar_sub_neon(uint64_t *result, const uint64_t *scalar,
+                                     const uint64_t *a, int n)
+{
+    for (int i = 0; i < n; i++) {
+        if (i + 2 < n) __builtin_prefetch(&a[(i + 2) * 4], 0, 1);
+        fr_sub_branchless(scalar, &a[i * 4], &result[i * 4]);
+    }
+}
+
 /// Batch element-wise multiply: result[i] = a[i] * b[i] for i in 0..n-1
 void bn254_fr_batch_mul_neon(uint64_t *result, const uint64_t *a,
                               const uint64_t *b, int n)

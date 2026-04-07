@@ -278,14 +278,36 @@ public class LogUpBatchGKRProver {
     private func computeWitnessInverses(witness: [Fr], gamma: Fr) -> [Fr] {
         let n = witness.count
         var diffs = [Fr](repeating: Fr.zero, count: n)
-        for i in 0..<n { diffs[i] = frSub(gamma, witness[i]) }
+        var gammaVal0 = gamma
+        withUnsafeBytes(of: &gammaVal0) { scalarBuf in
+            witness.withUnsafeBytes { wBuf in
+                diffs.withUnsafeMutableBytes { dBuf in
+                    bn254_fr_batch_scalar_sub_neon(
+                        dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        scalarBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        wBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
+        }
         return batchInverse(diffs)
     }
 
     private func computeTableInverses(table: [Fr], multiplicities: [Fr], gamma: Fr) -> [Fr] {
         let N = table.count
         var diffs = [Fr](repeating: Fr.zero, count: N)
-        for j in 0..<N { diffs[j] = frSub(gamma, table[j]) }
+        var gammaVal1 = gamma
+        withUnsafeBytes(of: &gammaVal1) { scalarBuf in
+            table.withUnsafeBytes { tBuf in
+                diffs.withUnsafeMutableBytes { dBuf in
+                    bn254_fr_batch_scalar_sub_neon(
+                        dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        scalarBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(N))
+                }
+            }
+        }
         let invs = batchInverse(diffs)
         var result = [Fr](repeating: Fr.zero, count: N)
         multiplicities.withUnsafeBytes { aBuf in
@@ -451,13 +473,35 @@ public class LogUpBatchGKRVerifier {
 
             // Recompute sums with batch-inverted denominators
             var bWitDiffs = [Fr](repeating: Fr.zero, count: n)
-            for i in 0..<n { bWitDiffs[i] = frSub(gamma, combinedWitness[i]) }
+            var gammaVal2 = gamma
+            withUnsafeBytes(of: &gammaVal2) { scalarBuf in
+                combinedWitness.withUnsafeBytes { wBuf in
+                    bWitDiffs.withUnsafeMutableBytes { dBuf in
+                        bn254_fr_batch_scalar_sub_neon(
+                            dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            scalarBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            wBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
+            }
             let bWitInvs = batchVerifierInverse(bWitDiffs)
             var witnessSum = Fr.zero
             for i in 0..<n { witnessSum = frAdd(witnessSum, bWitInvs[i]) }
 
             var bTblDiffs = [Fr](repeating: Fr.zero, count: N)
-            for j in 0..<N { bTblDiffs[j] = frSub(gamma, combinedTable[j]) }
+            var gammaVal3 = gamma
+            withUnsafeBytes(of: &gammaVal3) { scalarBuf in
+                combinedTable.withUnsafeBytes { tBuf in
+                    bTblDiffs.withUnsafeMutableBytes { dBuf in
+                        bn254_fr_batch_scalar_sub_neon(
+                            dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            scalarBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(N))
+                    }
+                }
+            }
             let bTblInvs = batchVerifierInverse(bTblDiffs)
             var tableSum = Fr.zero
             for j in 0..<N {
