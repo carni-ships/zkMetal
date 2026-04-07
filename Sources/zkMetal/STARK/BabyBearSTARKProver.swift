@@ -466,6 +466,7 @@ public class BabyBearSTARKProver {
             let qi = Int(challenger.sample().v) % (evaluations.count / 2)
             queryIndices.append(qi)
         }
+        let originalQueryIndices = queryIndices
 
         // Fold until we reach the remainder threshold
         while currentLogN > config.friMaxRemainderLogN {
@@ -541,7 +542,7 @@ public class BabyBearSTARKProver {
         return BabyBearFRIProof(
             rounds: rounds,
             finalPoly: finalPoly,
-            queryIndices: queryIndices
+            queryIndices: originalQueryIndices
         )
     }
 }

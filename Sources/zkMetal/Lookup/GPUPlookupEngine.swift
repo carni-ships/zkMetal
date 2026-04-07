@@ -208,6 +208,7 @@ public class GPUPlookupEngine {
         let n = witness.count
         let N = table.count
         let s = proof.sortedVector
+        let numSteps = n + N - 1
 
         // Check 1: sorted vector length = n + N
         guard s.count == n + N else { return false }
@@ -220,9 +221,9 @@ public class GPUPlookupEngine {
         // Check 3: accumulator closes (final value == 1)
         guard frEqual(proof.finalAccumulator, Fr.one) else { return false }
 
-        // Check 4: verify each accumulator transition
+        // Check 4: verify each accumulator transition using GW20 h₁/h₂ split
         let accZ = proof.accumulatorZ
-        guard accZ.count == n + 1 else { return false }
+        guard accZ.count == numSteps + 1 else { return false }
         guard frEqual(accZ[0], Fr.one) else { return false }
 
         let beta = proof.beta
@@ -230,30 +231,32 @@ public class GPUPlookupEngine {
         let onePlusBeta = frAdd(Fr.one, beta)
         let gammaTimesBetaPlusOne = frMul(gamma, onePlusBeta)
 
-        for i in 0..<n {
-            // Numerator: (gamma + f[i]) * (gamma(1+beta) + t[i] + beta*t[i+1])
-            let fTerm = frAdd(gamma, witness[i])
+        for k in 0..<numSteps {
+            var num = Fr.one
+            var den = Fr.one
 
-            let tIdx = i % N
-            let tIdxNext = (i + 1) % N
-            let tTerm = frAdd(gammaTimesBetaPlusOne,
-                              frAdd(table[tIdx], frMul(beta, table[tIdxNext])))
-            let num = frMul(fTerm, tTerm)
+            // Witness term (k < n)
+            if k < n {
+                num = frMul(onePlusBeta, frAdd(gamma, witness[k]))
+                // h₁ term: h₁[i] = s[i]
+                den = frAdd(gammaTimesBetaPlusOne,
+                            frAdd(s[k], frMul(beta, s[k + 1])))
+            }
 
-            // Denominator: (gamma(1+beta) + s[2i] + beta*s[2i+1]) * (gamma(1+beta) + s[2i+1] + beta*s[2i+2])
-            let s2i = 2 * i
-            let sTerm1 = frAdd(gammaTimesBetaPlusOne,
-                               frAdd(s[s2i], frMul(beta, s[s2i + 1])))
-            let s2i1 = 2 * i + 1
-            let sIdx2 = min(s2i1 + 1, s.count - 1)
-            let sTerm2 = frAdd(gammaTimesBetaPlusOne,
-                               frAdd(s[s2i1], frMul(beta, s[sIdx2])))
-            let den = frMul(sTerm1, sTerm2)
+            // Table transition term (k < N-1)
+            if k < N - 1 {
+                let tTerm = frAdd(gammaTimesBetaPlusOne,
+                                  frAdd(table[k], frMul(beta, table[k + 1])))
+                num = frMul(num, tTerm)
+                // h₂ term: h₂[j] = s[n+j]
+                let h2Term = frAdd(gammaTimesBetaPlusOne,
+                                   frAdd(s[n + k], frMul(beta, s[n + k + 1])))
+                den = frMul(den, h2Term)
+            }
 
-            // Z[i+1] * den == Z[i] * num * (1+beta)
-            let lhs = frMul(accZ[i + 1], den)
-            let rhs = frMul(frMul(accZ[i], num), onePlusBeta)
-
+            // Z[k+1] * den == Z[k] * num
+            let lhs = frMul(accZ[k + 1], den)
+            let rhs = frMul(accZ[k], num)
             if !frEqual(lhs, rhs) { return false }
         }
 
@@ -376,52 +379,64 @@ public class GPUPlookupEngine {
 
     // MARK: - Grand Product Accumulator (GPU-accelerated)
 
-    /// Build the Plookup grand product accumulator Z[0..n].
+    /// Build the Plookup grand product accumulator using the GW20 identity.
     ///
-    /// Z[0] = 1
-    /// Z[i+1] = Z[i] * (1+beta) * (gamma + f[i]) * (gamma(1+beta) + t[i] + beta*t[i+1])
-    ///          / ( (gamma(1+beta) + s[2i] + beta*s[2i+1]) * (gamma(1+beta) + s[2i+1] + beta*s[2i+2]) )
+    /// Sorted vector s (length n+N) is split into:
+    ///   h₁ = s[0..n]   (n+1 elements)
+    ///   h₂ = s[n..n+N-1] (N elements, overlapping with h₁ at s[n])
     ///
-    /// GPU strategy: compute all numerator and denominator terms in parallel,
-    /// then use GPUGrandProductEngine.permutationProduct for the prefix product.
+    /// GW20 identity (n witness terms + N-1 table transition terms = n + N - 1 total):
+    ///   LHS: ∏_{i<n} (1+β)(γ+f[i])  ·  ∏_{j<N-1} (γ(1+β)+t[j]+β·t[j+1])
+    ///   RHS: ∏_{i<n} (γ(1+β)+h₁[i]+β·h₁[i+1])  ·  ∏_{j<N-1} (γ(1+β)+h₂[j]+β·h₂[j+1])
+    ///
+    /// Accumulator: Z[0]=1, Z[k+1] = Z[k] · num[k] / den[k], Z[n+N-1] should equal 1.
     private func buildAccumulator(witness: [Fr], table: [Fr],
                                    sorted: [Fr], beta: Fr, gamma: Fr) throws -> [Fr] {
         let n = witness.count
         let N = table.count
+        let numSteps = n + N - 1
         let onePlusBeta = frAdd(Fr.one, beta)
         let gammaTimesBetaPlusOne = frMul(gamma, onePlusBeta)
 
-        // Build numerator[i] and denominator[i] arrays
-        var numerators = [Fr](repeating: Fr.zero, count: n)
-        var denominators = [Fr](repeating: Fr.zero, count: n)
+        var numerators = [Fr](repeating: Fr.one, count: numSteps)
+        var denominators = [Fr](repeating: Fr.one, count: numSteps)
 
-        for i in 0..<n {
-            // Numerator: (1+beta) * (gamma + f[i]) * (gamma(1+beta) + t[i%N] + beta*t[(i+1)%N])
-            let fTerm = frAdd(gamma, witness[i])
+        for k in 0..<numSteps {
+            var num = Fr.one
+            var den = Fr.one
 
-            let tIdx = i % N
-            let tIdxNext = (i + 1) % N
-            let tTerm = frAdd(gammaTimesBetaPlusOne,
-                              frAdd(table[tIdx], frMul(beta, table[tIdxNext])))
+            // Witness term (k < n): (1+β)(γ+f[k])
+            if k < n {
+                num = frMul(onePlusBeta, frAdd(gamma, witness[k]))
+                // h₁ term: (γ(1+β) + h₁[k] + β·h₁[k+1]) where h₁[i] = sorted[i]
+                den = frAdd(gammaTimesBetaPlusOne,
+                            frAdd(sorted[k], frMul(beta, sorted[k + 1])))
+            }
 
-            numerators[i] = frMul(onePlusBeta, frMul(fTerm, tTerm))
+            // Table transition term (k < N-1): (γ(1+β) + t[k] + β·t[k+1])
+            if k < N - 1 {
+                let tTerm = frAdd(gammaTimesBetaPlusOne,
+                                  frAdd(table[k], frMul(beta, table[k + 1])))
+                num = frMul(num, tTerm)
+                // h₂ term: (γ(1+β) + h₂[k] + β·h₂[k+1]) where h₂[j] = sorted[n+j]
+                let h2Term = frAdd(gammaTimesBetaPlusOne,
+                                   frAdd(sorted[n + k], frMul(beta, sorted[n + k + 1])))
+                den = frMul(den, h2Term)
+            }
 
-            // Denominator: (gamma(1+beta) + s[2i] + beta*s[2i+1]) * (gamma(1+beta) + s[2i+1] + beta*s[2i+2])
-            let s2i = 2 * i
-            let sTerm1 = frAdd(gammaTimesBetaPlusOne,
-                               frAdd(sorted[s2i], frMul(beta, sorted[s2i + 1])))
-
-            let s2i1 = 2 * i + 1
-            let sIdx2 = min(s2i1 + 1, sorted.count - 1)
-            let sTerm2 = frAdd(gammaTimesBetaPlusOne,
-                               frAdd(sorted[s2i1], frMul(beta, sorted[sIdx2])))
-
-            denominators[i] = frMul(sTerm1, sTerm2)
+            numerators[k] = num
+            denominators[k] = den
         }
 
-        // Use GPU grand product engine for the prefix product of ratios
-        return grandProductEngine.permutationProduct(
-            numerators: numerators, denominators: denominators)
+        // Build accumulator: Z[0] = 1, Z[k+1] = Z[k] * num[k] / den[k]
+        var accZ = [Fr](repeating: Fr.zero, count: numSteps + 1)
+        accZ[0] = Fr.one
+        for k in 0..<numSteps {
+            let ratio = frMul(numerators[k], frInverse(denominators[k]))
+            accZ[k + 1] = frMul(accZ[k], ratio)
+        }
+
+        return accZ
     }
 
     // MARK: - Sorted Merge Validation

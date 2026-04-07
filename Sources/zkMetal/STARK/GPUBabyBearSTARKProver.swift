@@ -416,6 +416,7 @@ public class GPUBabyBearSTARKProver {
             let qi = Int(challenger.sample().v) % (evaluations.count / 2)
             queryIndices.append(qi)
         }
+        let originalQueryIndices = queryIndices
 
         while currentLogN > config.base.friMaxRemainderLogN {
             let n = 1 << currentLogN
@@ -506,7 +507,7 @@ public class GPUBabyBearSTARKProver {
         return BabyBearFRIProof(
             rounds: rounds,
             finalPoly: finalPoly,
-            queryIndices: queryIndices
+            queryIndices: originalQueryIndices
         )
     }
 

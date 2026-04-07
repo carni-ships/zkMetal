@@ -321,6 +321,7 @@ public class SP1FRIFolder {
             let qi = Int(challenger.sample().v) % (evaluations.count / SP1ProverConfig.friFoldFactor)
             queryIndices.append(qi)
         }
+        let originalQueryIndices = queryIndices
 
         // Fold-by-4: each round reduces domain by factor of 4 (2 bits of logN)
         while currentLogN > config.friMaxRemainderLogN {
@@ -431,7 +432,7 @@ public class SP1FRIFolder {
         return SP1FRIProof(
             rounds: rounds,
             finalPoly: finalPoly,
-            queryIndices: queryIndices
+            queryIndices: originalQueryIndices
         )
     }
 }

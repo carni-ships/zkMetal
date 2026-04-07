@@ -411,7 +411,16 @@ public class GPUPlonkGrandProductEngine {
 
             // Batch-invert all (x - omega^j) for this coset point
             var diffs = [Fr](repeating: Fr.zero, count: n)
-            for j in 0..<n { diffs[j] = frSub(x, stdDomain[j]) }
+            withUnsafeBytes(of: x) { xBuf in
+                stdDomain.withUnsafeBytes { dBuf in
+                    diffs.withUnsafeMutableBytes { rBuf in
+                        let xp = xBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                        let dp = dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                        let rp = rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                        bn254_fr_batch_scalar_sub_neon(rp, xp, dp, Int32(n))
+                    }
+                }
+            }
 
             var bPrefix = [Fr](repeating: Fr.one, count: n)
             for j in 1..<n {
@@ -429,8 +438,8 @@ public class GPUPlonkGrandProductEngine {
 
             var acc = Fr.zero
             for j in 0..<n {
-                let omegaNegJ = j == 0 ? Fr.one : stdDomain[n - j]
-                let baryWeight = frMul(zhNinv, frMul(omegaNegJ, diffInvs[j]))
+                let omegaJ = stdDomain[j]
+                let baryWeight = frMul(zhNinv, frMul(omegaJ, diffInvs[j]))
                 acc = frAdd(acc, frMul(z[j], baryWeight))
             }
             zCosetEvals[i] = acc

@@ -601,6 +601,7 @@ public class GoldilocksSTARKProver {
             let qi = Int(sample.v % UInt64(evaluations.count / 2))
             queryIndices.append(qi)
         }
+        let originalQueryIndices = queryIndices
 
         // Precompute inverse of 2 (used every round)
         let inv2 = glInverse(Gl(v: 2))
@@ -678,7 +679,7 @@ public class GoldilocksSTARKProver {
         return GoldilocksFRIProof(
             rounds: rounds,
             finalPoly: finalPoly,
-            queryIndices: queryIndices
+            queryIndices: originalQueryIndices
         )
     }
 }

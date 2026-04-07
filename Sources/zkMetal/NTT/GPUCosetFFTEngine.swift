@@ -65,6 +65,7 @@ public class GPUCosetFFTEngine {
     private static func compileShaders(device: MTLDevice) throws -> MTLLibrary {
         let shaderDir = findShaderDir()
         let fieldFr = try String(contentsOfFile: shaderDir + "/fields/bn254_fr.metal", encoding: .utf8)
+        let fieldBb = try String(contentsOfFile: shaderDir + "/fields/babybear.metal", encoding: .utf8)
         let fusedSrc = try String(contentsOfFile: shaderDir + "/ntt/coset_ntt_fused.metal", encoding: .utf8)
         let ldeFusedSrc = try String(contentsOfFile: shaderDir + "/ntt/coset_lde_fused.metal", encoding: .utf8)
 
@@ -75,7 +76,8 @@ public class GPUCosetFFTEngine {
                 .joined(separator: "\n")
         }
 
-        let combined = clean(fieldFr) + "\n" + clean(fusedSrc) + "\n" + clean(ldeFusedSrc)
+        let combined = clean(fieldFr) + "\n" + clean(fieldBb) + "\n" +
+                        clean(fusedSrc) + "\n" + clean(ldeFusedSrc)
         let options = MTLCompileOptions()
         options.fastMathEnabled = true
         return try device.makeLibrary(source: combined, options: options)

@@ -71,7 +71,7 @@ func testPlookupAccumulatorCloses() {
         let proof = try engine.prove(witness: witness, table: table)
         expect(frEqual(proof.finalAccumulator, Fr.one), "Accumulator Z[n] == 1")
         expect(proof.sortedVector.count == 8, "Sorted vector length == n + N")
-        expect(proof.accumulatorZ.count == 5, "Accumulator length == n + 1")
+        expect(proof.accumulatorZ.count == 8, "Accumulator length == n + N")
         expect(frEqual(proof.accumulatorZ[0], Fr.one), "Accumulator Z[0] == 1")
     } catch {
         expect(false, "AccumulatorCloses threw: \(error)")

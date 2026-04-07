@@ -9,6 +9,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 // MARK: - Round Polynomial
 
@@ -214,9 +215,16 @@ public class GPUSumcheckProverEngine {
             // Compute s0 = sum current[0..<halfN], s1 = sum current[halfN...]
             var s0 = Fr.zero
             var s1 = Fr.zero
-            for i in 0..<halfN {
-                s0 = frAdd(s0, current[i])
-                s1 = frAdd(s1, current[i + halfN])
+            current.withUnsafeBytes { buf in
+                let p = buf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                withUnsafeMutableBytes(of: &s0) { r in
+                    bn254_fr_vector_sum(p, Int32(halfN),
+                                        r.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                }
+                withUnsafeMutableBytes(of: &s1) { r in
+                    bn254_fr_vector_sum(p + halfN * 4, Int32(halfN),
+                                        r.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                }
             }
 
             // Build degree-1 round polynomial
@@ -232,10 +240,16 @@ public class GPUSumcheckProverEngine {
 
             // Fold: current[i] = current[i] + r * (current[i+halfN] - current[i])
             var next = [Fr](repeating: Fr.zero, count: halfN)
-            for i in 0..<halfN {
-                let diff = frSub(current[i + halfN], current[i])
-                let rDiff = frMul(challenge, diff)
-                next[i] = frAdd(current[i], rDiff)
+            current.withUnsafeBytes { eBuf in
+                next.withUnsafeMutableBytes { rBuf in
+                    withUnsafeBytes(of: challenge) { cBuf in
+                        bn254_fr_sumcheck_reduce(
+                            eBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(halfN))
+                    }
+                }
             }
             current = next
             currentLogSize -= 1

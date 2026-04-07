@@ -308,6 +308,14 @@ void bn254_fr_batch_neg_parallel(uint64_t *result, const uint64_t *a, int n);
 void bn254_fr_batch_mul_scalar_parallel(uint64_t *result, const uint64_t *a,
                                          const uint64_t *scalar, int n);
 
+/// Batch scalar+vector: result[i] = scalar + a[i] for i in 0..n-1.
+void bn254_fr_batch_add_scalar_neon(uint64_t *result, const uint64_t *scalar,
+                                     const uint64_t *a, int n);
+
+/// Multi-threaded batch scalar add.
+void bn254_fr_batch_add_scalar_parallel(uint64_t *result, const uint64_t *a,
+                                         const uint64_t *scalar, int n);
+
 /// Vector sum: result = sum(a[i]) for i=0..n-1.
 /// a: array of n Fr elements (4 uint64 each, Montgomery form).
 /// result: single Fr element (4 uint64).

@@ -13,6 +13,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 // MARK: - Multilinear Round Polynomial
 
@@ -192,9 +193,16 @@ public final class GPUMultilinearSumcheckEngine {
             // Compute s0 = sum of first half, s1 = sum of second half
             var s0 = Fr.zero
             var s1 = Fr.zero
-            for i in 0..<half {
-                s0 = frAdd(s0, current[i])
-                s1 = frAdd(s1, current[i + half])
+            current.withUnsafeBytes { buf in
+                let p = buf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                withUnsafeMutableBytes(of: &s0) { r in
+                    bn254_fr_vector_sum(p, Int32(half),
+                                        r.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                }
+                withUnsafeMutableBytes(of: &s1) { r in
+                    bn254_fr_vector_sum(p + half * 4, Int32(half),
+                                        r.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                }
             }
 
             // Degree-1 round polynomial: p(X) with p(0)=s0, p(1)=s1
@@ -209,9 +217,15 @@ public final class GPUMultilinearSumcheckEngine {
 
             // Fold table: next[i] = current[i] + r * (current[i+half] - current[i])
             var next = [Fr](repeating: Fr.zero, count: half)
-            for i in 0..<half {
-                let diff = frSub(current[i + half], current[i])
-                next[i] = frAdd(current[i], frMul(challenge, diff))
+            current.withUnsafeBytes { eBuf in
+                next.withUnsafeMutableBytes { rBuf in
+                    withUnsafeBytes(of: challenge) { cBuf in
+                        let ep = eBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                        let rp = rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                        let cp = cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                        bn254_fr_sumcheck_reduce(ep, cp, rp, Int32(half))
+                    }
+                }
             }
             current = next
         }
@@ -267,14 +281,28 @@ public final class GPUMultilinearSumcheckEngine {
 
             // p(0) = sum f_lo[i] * g_lo[i]
             var p0 = Fr.zero
-            for i in 0..<half {
-                p0 = frAdd(p0, frMul(currentF[i], currentG[i]))
+            currentF.withUnsafeBytes { fBuf in
+                currentG.withUnsafeBytes { gBuf in
+                    let fp = fBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    let gp = gBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    withUnsafeMutableBytes(of: &p0) { r in
+                        bn254_fr_inner_product(fp, gp, Int32(half),
+                                               r.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                    }
+                }
             }
 
             // p(1) = sum f_hi[i] * g_hi[i]
             var p1 = Fr.zero
-            for i in 0..<half {
-                p1 = frAdd(p1, frMul(currentF[i + half], currentG[i + half]))
+            currentF.withUnsafeBytes { fBuf in
+                currentG.withUnsafeBytes { gBuf in
+                    let fp = fBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    let gp = gBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    withUnsafeMutableBytes(of: &p1) { r in
+                        bn254_fr_inner_product(fp + half * 4, gp + half * 4, Int32(half),
+                                               r.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                    }
+                }
             }
 
             // p(2) = sum f(2,x)*g(2,x) where f(2,x) = 2*f_hi[x] - f_lo[x]
@@ -300,11 +328,25 @@ public final class GPUMultilinearSumcheckEngine {
             // Fold both tables at challenge r
             var nextF = [Fr](repeating: Fr.zero, count: half)
             var nextG = [Fr](repeating: Fr.zero, count: half)
-            for i in 0..<half {
-                let diffF = frSub(currentF[i + half], currentF[i])
-                nextF[i] = frAdd(currentF[i], frMul(challenge, diffF))
-                let diffG = frSub(currentG[i + half], currentG[i])
-                nextG[i] = frAdd(currentG[i], frMul(challenge, diffG))
+            currentF.withUnsafeBytes { fBuf in
+                nextF.withUnsafeMutableBytes { rBuf in
+                    withUnsafeBytes(of: challenge) { cBuf in
+                        let fp = fBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                        let rp = rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                        let cp = cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                        bn254_fr_sumcheck_reduce(fp, cp, rp, Int32(half))
+                    }
+                }
+            }
+            currentG.withUnsafeBytes { gBuf in
+                nextG.withUnsafeMutableBytes { rBuf in
+                    withUnsafeBytes(of: challenge) { cBuf in
+                        let gp = gBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                        let rp = rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                        let cp = cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                        bn254_fr_sumcheck_reduce(gp, cp, rp, Int32(half))
+                    }
+                }
             }
             currentF = nextF
             currentG = nextG

@@ -64,9 +64,9 @@ private func testSparseEvalSingleCPU() {
         var rng = SparsePolyRNG(state: 0x5BAE5E01)
 
         // Known polynomial: p(x) = 3 + 5*x^3 + 2*x^7
-        let three = Fr.from64([3, 0, 0, 0])
-        let five  = Fr.from64([5, 0, 0, 0])
-        let two   = Fr.from64([2, 0, 0, 0])
+        let three = frFromInt(3)
+        let five  = frFromInt(5)
+        let two   = frFromInt(2)
 
         let poly = SparsePoly(terms: [
             (index: 0, coeff: three),
@@ -79,9 +79,8 @@ private func testSparseEvalSingleCPU() {
         expectEqual(r0, three, "p(0) = 3")
 
         // p(1) = 3 + 5 + 2 = 10
-        let one = Fr.from64([1, 0, 0, 0])
-        let r1 = engine.evaluate(poly: poly, point: one)
-        let ten = Fr.from64([10, 0, 0, 0])
+        let r1 = engine.evaluate(poly: poly, point: Fr.one)
+        let ten = frFromInt(10)
         expectEqual(r1, ten, "p(1) = 10")
 
         // Random sparse poly, random point
@@ -173,9 +172,9 @@ private func testSparseToDense() {
     do {
         let engine = try GPUSparsePolyEngine()
 
-        let one = Fr.from64([1, 0, 0, 0])
-        let two = Fr.from64([2, 0, 0, 0])
-        let three = Fr.from64([3, 0, 0, 0])
+        let one = frFromInt(1)
+        let two = frFromInt(2)
+        let three = frFromInt(3)
 
         let poly = SparsePoly(terms: [
             (index: 0, coeff: one),
@@ -218,7 +217,7 @@ private func testSparseMulDenseGPU() {
         var rng = SparsePolyRNG(state: 0x5BAE5E03)
 
         // Simple known case: (1 + x^2) * (1 + x) = 1 + x + x^2 + x^3
-        let one = Fr.from64([1, 0, 0, 0])
+        let one = frFromInt(1)
         let sparse = SparsePoly(terms: [
             (index: 0, coeff: one),
             (index: 2, coeff: one)
@@ -285,9 +284,9 @@ private func testSparseEdgeCases() {
         expectEqual(multi[0], Fr.zero, "Empty poly multi-eval[0] = 0")
 
         // Single term: p(x) = 5*x^0 = 5
-        let five = Fr.from64([5, 0, 0, 0])
+        let five = frFromInt(5)
         let single = SparsePoly(terms: [(index: 0, coeff: five)], degreeBound: 1)
-        let r1 = engine.evaluate(poly: single, point: Fr.from64([42, 0, 0, 0]))
+        let r1 = engine.evaluate(poly: single, point: frFromInt(42))
         expectEqual(r1, five, "Constant poly = 5 at any point")
 
         // toDense with zero degree

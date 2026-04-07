@@ -12,6 +12,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 // MARK: - Sumcheck Claim
 
@@ -286,9 +287,16 @@ public final class GPUSumcheckProtocolEngine {
             // s0 = sum of first half (x_i = 0), s1 = sum of second half (x_i = 1)
             var s0 = Fr.zero
             var s1 = Fr.zero
-            for i in 0..<half {
-                s0 = frAdd(s0, current[i])
-                s1 = frAdd(s1, current[i + half])
+            current.withUnsafeBytes { buf in
+                let p = buf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                withUnsafeMutableBytes(of: &s0) { r in
+                    bn254_fr_vector_sum(p, Int32(half),
+                                        r.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                }
+                withUnsafeMutableBytes(of: &s1) { r in
+                    bn254_fr_vector_sum(p + half * 4, Int32(half),
+                                        r.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                }
             }
 
             let roundPoly = RoundUnivariate(evals: [s0, s1], degreeBound: max(config.degreeBound, 1))
@@ -736,9 +744,16 @@ public final class GPUSumcheckProtocolEngine {
     private func foldTable(_ table: [Fr], challenge: Fr) -> [Fr] {
         let half = table.count / 2
         var next = [Fr](repeating: Fr.zero, count: half)
-        for i in 0..<half {
-            let diff = frSub(table[i + half], table[i])
-            next[i] = frAdd(table[i], frMul(challenge, diff))
+        table.withUnsafeBytes { eBuf in
+            next.withUnsafeMutableBytes { rBuf in
+                withUnsafeBytes(of: challenge) { cBuf in
+                    bn254_fr_sumcheck_reduce(
+                        eBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(half))
+                }
+            }
         }
         return next
     }
@@ -746,7 +761,13 @@ public final class GPUSumcheckProtocolEngine {
     /// Compute the sum of evaluations in a table.
     public static func computeSum(_ evals: [Fr]) -> Fr {
         var s = Fr.zero
-        for e in evals { s = frAdd(s, e) }
+        evals.withUnsafeBytes { buf in
+            withUnsafeMutableBytes(of: &s) { r in
+                bn254_fr_vector_sum(buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                    Int32(evals.count),
+                                    r.baseAddress!.assumingMemoryBound(to: UInt64.self))
+            }
+        }
         return s
     }
 
@@ -757,9 +778,16 @@ public final class GPUSumcheckProtocolEngine {
         for r in point {
             let half = current.count / 2
             var next = [Fr](repeating: Fr.zero, count: half)
-            for i in 0..<half {
-                let diff = frSub(current[i + half], current[i])
-                next[i] = frAdd(current[i], frMul(r, diff))
+            current.withUnsafeBytes { eBuf in
+                next.withUnsafeMutableBytes { rBuf in
+                    withUnsafeBytes(of: r) { cBuf in
+                        bn254_fr_sumcheck_reduce(
+                            eBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(half))
+                    }
+                }
             }
             current = next
         }

@@ -289,6 +289,24 @@ void bn254_fr_batch_mul_scalar_neon(uint64_t *result, const uint64_t *a,
     }
 }
 
+/// Batch scalar-plus-vector: result[i] = scalar + a[i] for i in 0..n-1
+void bn254_fr_batch_add_scalar_neon(uint64_t *result, const uint64_t *scalar,
+                                     const uint64_t *a, int n)
+{
+    int i = 0;
+    for (; i + 1 < n; i += 2) {
+        if (i + 3 < n) {
+            __builtin_prefetch(&a[(i + 2) * 4], 0, 1);
+            __builtin_prefetch(&a[(i + 3) * 4], 0, 1);
+        }
+        fr_add_branchless(scalar, &a[i * 4], &result[i * 4]);
+        fr_add_branchless(scalar, &a[(i + 1) * 4], &result[(i + 1) * 4]);
+    }
+    if (i < n) {
+        fr_add_branchless(scalar, &a[i * 4], &result[i * 4]);
+    }
+}
+
 /// Batch scalar-minus-vector: result[i] = scalar - a[i] for i in 0..n-1
 void bn254_fr_batch_scalar_sub_neon(uint64_t *result, const uint64_t *scalar,
                                      const uint64_t *a, int n)
@@ -367,6 +385,7 @@ static void batch_parallel(uint64_t *result, const uint64_t *a,
         case 2: bn254_fr_batch_neg_neon(result, a, n); break;
         case 3: bn254_fr_batch_mul_scalar_neon(result, a, scalar, n); break;
         case 4: bn254_fr_batch_mul_neon(result, a, b, n); break;
+        case 5: bn254_fr_batch_add_scalar_neon(result, scalar, a, n); break;
         }
         return;
     }
@@ -410,6 +429,10 @@ static void batch_parallel(uint64_t *result, const uint64_t *a,
                     fr_mont_mul(&ap[i * 4], &bp[i * 4], &res[i * 4]);
                 break;
             }
+            case 5:
+                for (int i = 0; i < count; i++)
+                    fr_add_branchless(scalar, &ap[i * 4], &res[i * 4]);
+                break;
             }
         });
 }
@@ -442,6 +465,12 @@ void bn254_fr_batch_mul_parallel(uint64_t *result, const uint64_t *a,
                                   const uint64_t *b, int n)
 {
     batch_parallel(result, a, b, NULL, n, 4);
+}
+
+void bn254_fr_batch_add_scalar_parallel(uint64_t *result, const uint64_t *a,
+                                         const uint64_t *scalar, int n)
+{
+    batch_parallel(result, a, NULL, scalar, n, 5);
 }
 
 // ============================================================

@@ -12,6 +12,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 /// Proof that all lookups exist in the table
 public struct LookupProof {
@@ -165,14 +166,20 @@ public class LookupEngine {
 
         // Step 4: Compute the claimed sum S = Σ h_f[i]
         var sum = Fr.zero
-        for i in 0..<m {
-            sum = frAdd(sum, hf[i])
+        hf.withUnsafeBytes { buf in
+            withUnsafeMutableBytes(of: &sum) { r in
+                bn254_fr_vector_sum(buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                    Int32(m), r.baseAddress!.assumingMemoryBound(to: UInt64.self))
+            }
         }
 
         // Verify table side matches (sanity check)
         var tableSum = Fr.zero
-        for j in 0..<N {
-            tableSum = frAdd(tableSum, ht[j])
+        ht.withUnsafeBytes { buf in
+            withUnsafeMutableBytes(of: &tableSum) { r in
+                bn254_fr_vector_sum(buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                    Int32(N), r.baseAddress!.assumingMemoryBound(to: UInt64.self))
+            }
         }
         precondition(frEqual(sum, tableSum), "LogUp sum mismatch — lookup values not all in table")
 

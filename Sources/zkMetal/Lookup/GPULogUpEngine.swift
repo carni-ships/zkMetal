@@ -28,6 +28,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 // MARK: - Proof Structure
 
@@ -152,13 +153,26 @@ public class GPULogUpEngine {
 
         // Step 3: Compute denominators beta + f[i] and beta + T[j]
         var lookupDenoms = [Fr](repeating: Fr.zero, count: m)
-        for i in 0..<m {
-            lookupDenoms[i] = frAdd(betaVal, witness[i])
-        }
-
         var tableDenoms = [Fr](repeating: Fr.zero, count: N)
-        for j in 0..<N {
-            tableDenoms[j] = frAdd(betaVal, table[j])
+        witness.withUnsafeBytes { wBuf in
+            lookupDenoms.withUnsafeMutableBytes { rBuf in
+                withUnsafeBytes(of: betaVal) { bBuf in
+                    let w = wBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    let r = rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    let b = bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    bn254_fr_batch_add_scalar_parallel(r, w, b, Int32(m))
+                }
+            }
+        }
+        table.withUnsafeBytes { tBuf in
+            tableDenoms.withUnsafeMutableBytes { rBuf in
+                withUnsafeBytes(of: betaVal) { bBuf in
+                    let t = tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    let r = rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    let b = bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    bn254_fr_batch_add_scalar_parallel(r, t, b, Int32(N))
+                }
+            }
         }
 
         if profile { let _t = CFAbsoluteTimeGetCurrent(); fputs(String(format: "  [logup] denominators: %.2f ms\n", (_t - _tPhase) * 1000), stderr); _tPhase = _t }
@@ -171,19 +185,34 @@ public class GPULogUpEngine {
 
         // Step 5: Compute table terms: h_t[j] = mult[j] * tableInvs[j]
         var tableTerms = [Fr](repeating: Fr.zero, count: N)
-        for j in 0..<N {
-            tableTerms[j] = frMul(mult[j], tableInvs[j])
+        mult.withUnsafeBytes { mBuf in
+            tableInvs.withUnsafeBytes { iBuf in
+                tableTerms.withUnsafeMutableBytes { rBuf in
+                    let mp = mBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    let ip = iBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    let rp = rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    bn254_fr_batch_mul_parallel(rp, mp, ip, Int32(N))
+                }
+            }
         }
 
-        // Step 6: Compute sums
+        // Step 6: Compute sums via C vector sum
         var lookupSum = Fr.zero
-        for i in 0..<m {
-            lookupSum = frAdd(lookupSum, lookupInvs[i])
+        lookupInvs.withUnsafeBytes { buf in
+            withUnsafeMutableBytes(of: &lookupSum) { rBuf in
+                let a = buf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                let r = rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                bn254_fr_vector_sum(a, Int32(m), r)
+            }
         }
 
         var tableSum = Fr.zero
-        for j in 0..<N {
-            tableSum = frAdd(tableSum, tableTerms[j])
+        tableTerms.withUnsafeBytes { buf in
+            withUnsafeMutableBytes(of: &tableSum) { rBuf in
+                let a = buf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                let r = rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                bn254_fr_vector_sum(a, Int32(N), r)
+            }
         }
 
         if profile { let _t = CFAbsoluteTimeGetCurrent(); fputs(String(format: "  [logup] sums: %.2f ms\n", (_t - _tPhase) * 1000), stderr); _tPhase = _t }

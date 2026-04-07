@@ -676,6 +676,7 @@ public class Stark252STARKProver {
             let qi = Int(sampleLimbs[0] % UInt64(evaluations.count / 2))
             queryIndices.append(qi)
         }
+        let originalQueryIndices = queryIndices
 
         // Precompute inverse of 2
         let two = stark252FromInt(2)
@@ -754,7 +755,7 @@ public class Stark252STARKProver {
         return Stark252FRIProof(
             rounds: rounds,
             finalPoly: finalPoly,
-            queryIndices: queryIndices
+            queryIndices: originalQueryIndices
         )
     }
 }

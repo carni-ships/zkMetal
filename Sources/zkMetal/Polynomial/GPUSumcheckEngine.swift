@@ -90,10 +90,24 @@ public class GPUSumcheckEngine {
             .replacingOccurrences(of: "#define BN254_FR_METAL", with: "")
             .replacingOccurrences(of: "#endif // BN254_FR_METAL", with: "")
 
+        let bbSource = try String(contentsOfFile: shaderDir + "/fields/babybear.metal", encoding: .utf8)
+        let cleanBb = bbSource
+            .replacingOccurrences(of: "#ifndef BABYBEAR_METAL", with: "")
+            .replacingOccurrences(of: "#define BABYBEAR_METAL", with: "")
+            .replacingOccurrences(of: "#endif // BABYBEAR_METAL", with: "")
+            .split(separator: "\n").filter { !$0.contains("#include") }.joined(separator: "\n")
+
+        let glSource = try String(contentsOfFile: shaderDir + "/fields/goldilocks.metal", encoding: .utf8)
+        let cleanGl = glSource
+            .replacingOccurrences(of: "#ifndef GOLDILOCKS_METAL", with: "")
+            .replacingOccurrences(of: "#define GOLDILOCKS_METAL", with: "")
+            .replacingOccurrences(of: "#endif // GOLDILOCKS_METAL", with: "")
+            .split(separator: "\n").filter { !$0.contains("#include") }.joined(separator: "\n")
+
         let reduceSource = try String(contentsOfFile: shaderDir + "/sumcheck/sumcheck_reduce.metal", encoding: .utf8)
         let cleanReduce = reduceSource.split(separator: "\n").filter { !$0.contains("#include") }.joined(separator: "\n")
 
-        let combined = cleanFr + "\n" + cleanReduce
+        let combined = cleanFr + "\n" + cleanBb + "\n" + cleanGl + "\n" + cleanReduce
         let options = MTLCompileOptions()
         options.fastMathEnabled = true
         return try device.makeLibrary(source: combined, options: options)
