@@ -663,10 +663,12 @@ static void g1_add_mixed(const uint64_t p[18], const uint64_t q_aff[12], uint64_
         g1_set_id(r); return;
     }
 
-    fp_sqr(h, hh);
-    uint64_t j[6], vv[6];
-    fp_mul(h, hh, j);
-    fp_mul(px, hh, vv);
+    uint64_t ii[6], j[6], vv[6];
+    fp_sqr(h, hh);               // hh = H^2
+    fp_dbl(h, t1);
+    fp_sqr(t1, ii);              // ii = (2H)^2 = 4*H^2
+    fp_mul(h, ii, j);            // j  = H * ii  = 4*H^3
+    fp_mul(px, ii, vv);          // vv = px * ii  = 4*px*H^2
 
     // x3 = r^2 - j - 2v
     fp_sqr(rr, r);
@@ -674,7 +676,7 @@ static void g1_add_mixed(const uint64_t p[18], const uint64_t q_aff[12], uint64_
     fp_dbl(vv, t1);
     fp_sub(r, t1, r);
 
-    // y3 = r(v - x3) - 2*s1*j
+    // y3 = r(v - x3) - 2*y1*j
     fp_sub(vv, r, t1);
     fp_mul(rr, t1, r + 6);
     fp_mul(py, j, t1);
@@ -900,10 +902,8 @@ void bls12_381_g1_pippenger_msm(const uint64_t *points, const uint32_t *scalars,
         tasks[w].n = n; tasks[w].window_bits = wb;
         tasks[w].window_idx = w; tasks[w].num_buckets = num_buckets;
     }
-    dispatch_apply(num_windows, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
-        ^(size_t w) {
-            g1_window_worker(&tasks[w]);
-        });
+    dispatch_apply((size_t)num_windows, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+                   ^(size_t w) { g1_window_worker(&tasks[w]); });
     memcpy(result, tasks[num_windows - 1].result, 144);
     for (int w = num_windows - 2; w >= 0; w--) {
         uint64_t tmp[18];

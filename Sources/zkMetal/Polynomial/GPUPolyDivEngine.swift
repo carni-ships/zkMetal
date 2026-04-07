@@ -88,8 +88,21 @@ public class GPUPolyDivEngine {
 
         func clean(_ src: String) -> String {
             src.split(separator: "\n")
-                .filter { !$0.contains("#include") && !$0.contains("#ifndef") &&
-                         !$0.contains("#define") && !$0.contains("#endif") }
+                .filter { line in
+                    if line.contains("#include") || line.contains("#ifndef") || line.contains("#endif") {
+                        return false
+                    }
+                    // Strip header-guard #define (no value), keep functional #define (has value)
+                    if line.contains("#define") {
+                        let trimmed = line.trimmingCharacters(in: .whitespaces)
+                        let parts = trimmed.split(maxSplits: 2, omittingEmptySubsequences: true,
+                                                  whereSeparator: { $0.isWhitespace })
+                        // "#define FOO" (2 parts) = guard, strip it
+                        // "#define FOO 256" (3 parts) = functional, keep it
+                        return parts.count >= 3
+                    }
+                    return true
+                }
                 .joined(separator: "\n")
         }
 

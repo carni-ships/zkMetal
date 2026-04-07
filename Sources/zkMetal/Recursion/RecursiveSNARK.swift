@@ -227,18 +227,6 @@ public class Groth16VerifierCircuitEncoder: VerifierCircuitProtocol {
         precondition(publicInputs.count == nPub)
         precondition(vk.ic.count == nPub + 1)
 
-        // Compute vk_accum = vk_ic[0] + sum(pub[i] * vk_ic[i+1])
-        var vkAccum = vk.ic[0]
-        for i in 0..<nPub {
-            if !publicInputs[i].isZero {
-                vkAccum = pointAdd(vkAccum, pointScalarMul(vk.ic[i + 1], publicInputs[i]))
-            }
-        }
-
-        let accumAffine = pointToAffine(vkAccum)
-        let accumX = embeddedFpToFr(accumAffine?.x ?? .zero)
-        let accumY = embeddedFpToFr(accumAffine?.y ?? .zero)
-
         var z = [Fr](repeating: .zero, count: numVars)
         z[0] = .one
 
@@ -246,18 +234,15 @@ public class Groth16VerifierCircuitEncoder: VerifierCircuitProtocol {
         for i in 0..<nPub {
             z[1 + i] = publicInputs[i]
         }
-        // Public: expected accumulation point
-        z[nPub + 1] = accumX
-        z[nPub + 2] = accumY
 
-        // Witness: vk_ic coordinates
+        // Witness: vk_ic coordinates (embed Fp into Fr by reinterpreting limbs)
         for i in 0...(nPub) {
             let aff = pointToAffine(vk.ic[i])
             z[vkICStart + 2 * i] = embeddedFpToFr(aff?.x ?? .zero)
             z[vkICStart + 2 * i + 1] = embeddedFpToFr(aff?.y ?? .zero)
         }
 
-        // Witness: products
+        // Witness: products (field multiplication, matching linearized circuit constraints)
         for i in 0..<nPub {
             let vkICx = z[vkICStart + 2 * (i + 1)]
             let vkICy = z[vkICStart + 2 * (i + 1) + 1]
@@ -265,7 +250,7 @@ public class Groth16VerifierCircuitEncoder: VerifierCircuitProtocol {
             z[productsStart + 2 * i + 1] = frMul(publicInputs[i], vkICy)
         }
 
-        // Witness: partial sums
+        // Witness: partial sums (linearized accumulation, NOT EC point addition)
         var sumX = z[vkICStart]
         var sumY = z[vkICStart + 1]
         for i in 0..<nPub {
@@ -274,6 +259,12 @@ public class Groth16VerifierCircuitEncoder: VerifierCircuitProtocol {
         }
         z[partialStart] = sumX
         z[partialStart + 1] = sumY
+
+        // Public: expected accumulation point = linearized sum
+        // Must match the linearized formula the circuit constraints check,
+        // NOT the actual EC point (which uses non-linear curve addition).
+        z[nPub + 1] = sumX
+        z[nPub + 2] = sumY
 
         return z
     }

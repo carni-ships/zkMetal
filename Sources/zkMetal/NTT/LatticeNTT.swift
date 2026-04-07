@@ -385,9 +385,11 @@ public class LatticeNTT {
         enc.setBuffer(outBuf, offset: 0, index: 2)
         var c = UInt32(count)
         enc.setBytes(&c, length: 4, index: 3)
+        enc.setBuffer(kyberTwiddleBuf, offset: 0, index: 4)  // twiddles for basemul
+        let numPairs = count / 2
         let tgSize = min(256, Int(kyberPointwisePipeline.maxTotalThreadsPerThreadgroup))
         enc.dispatchThreads(
-            MTLSize(width: count, height: 1, depth: 1),
+            MTLSize(width: numPairs, height: 1, depth: 1),
             threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
         enc.endEncoding()
 
@@ -425,9 +427,11 @@ public class LatticeNTT {
         enc.setBuffer(outBuf, offset: 0, index: 2)
         var c = UInt32(count)
         enc.setBytes(&c, length: 4, index: 3)
+        enc.setBuffer(dilithiumTwiddleBuf, offset: 0, index: 4)  // twiddles for basemul
+        let numPairs = count / 2
         let tgSize = min(256, Int(dilithiumPointwisePipeline.maxTotalThreadsPerThreadgroup))
         enc.dispatchThreads(
-            MTLSize(width: count, height: 1, depth: 1),
+            MTLSize(width: numPairs, height: 1, depth: 1),
             threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
         enc.endEncoding()
 
@@ -495,12 +499,52 @@ public class LatticeNTT {
         return result
     }
 
-    /// CPU pointwise multiply fallback
+    /// CPU pointwise multiply fallback using basemul (paired NTT domain multiplication)
+    /// The Kyber/Dilithium NTT stops one layer short, leaving 128 pairs.
+    /// Each pair must be multiplied as degree-1 polynomials mod (x^2 - gamma).
+    /// Following pqcrystals: pairs at 4i use +gamma, pairs at 4i+2 use -gamma.
     public func cpuPointwiseMul(a: [UInt32], b: [UInt32], mode: LatticeMode) -> [UInt32] {
+        let n = mode.polySize  // 256
+        let numPolys = a.count / n
         var result = [UInt32](repeating: 0, count: a.count)
         let q = UInt64(mode.modulus)
-        for i in 0..<a.count {
-            result[i] = UInt32((UInt64(a[i]) * UInt64(b[i])) % q)
+
+        // Get the twiddle factors for basemul (last NTT layer: twiddles[64..127])
+        let twiddleValues: [UInt64]
+        switch mode {
+        case .kyber:
+            let tw = kyberTwiddles()
+            twiddleValues = (64..<128).map { UInt64(tw[$0].value) }
+        case .dilithium:
+            let tw = dilithiumTwiddles()
+            twiddleValues = (64..<128).map { UInt64(tw[$0].value) }
+        }
+
+        for p in 0..<numPolys {
+            let base = p * n
+            // Process 64 groups of 4 elements (2 pairs each)
+            for i in 0..<64 {
+                let gamma = twiddleValues[i]
+                let negGamma = (q - gamma) % q
+
+                // First pair (4i, 4i+1): gamma = +twiddles[64+i]
+                let idx0 = base + 4*i
+                let a0 = UInt64(a[idx0])
+                let a1 = UInt64(a[idx0 + 1])
+                let b0 = UInt64(b[idx0])
+                let b1 = UInt64(b[idx0 + 1])
+                result[idx0]     = UInt32(((a0 * b0) % q + ((a1 * b1) % q * gamma) % q) % q)
+                result[idx0 + 1] = UInt32(((a0 * b1) % q + (a1 * b0) % q) % q)
+
+                // Second pair (4i+2, 4i+3): gamma = -twiddles[64+i]
+                let idx1 = base + 4*i + 2
+                let a2 = UInt64(a[idx1])
+                let a3 = UInt64(a[idx1 + 1])
+                let b2 = UInt64(b[idx1])
+                let b3 = UInt64(b[idx1 + 1])
+                result[idx1]     = UInt32(((a2 * b2) % q + ((a3 * b3) % q * negGamma) % q) % q)
+                result[idx1 + 1] = UInt32(((a2 * b3) % q + (a3 * b2) % q) % q)
+            }
         }
         return result
     }

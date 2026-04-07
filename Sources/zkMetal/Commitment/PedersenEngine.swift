@@ -245,9 +245,9 @@ public struct MultiCurvePedersenParams {
 
     /// Generate deterministic Pallas generators via iterated double-add.
     public static func generatePallas(size: Int) -> MultiCurvePedersenParams {
-        // Use a known generator for Pallas: hash-derived from small integers
+        // Pallas: y^2 = x^3 + 5.  Use (-1, 2) which satisfies (-1)^3 + 5 = 4 = 2^2.
         let seed = pallasPointFromAffine(PallasPointAffine(
-            x: pallasFromInt(1), y: pallasFromInt(2)))
+            x: pallasNeg(pallasFromInt(1)), y: pallasFromInt(2)))
 
         var projPoints = [PallasPointProjective]()
         projPoints.reserveCapacity(size + 1)
@@ -273,8 +273,9 @@ public struct MultiCurvePedersenParams {
 
     /// Generate deterministic Vesta generators via iterated double-add.
     public static func generateVesta(size: Int) -> MultiCurvePedersenParams {
+        // Vesta: y^2 = x^3 + 5.  Use (-1, 2) which satisfies (-1)^3 + 5 = 4 = 2^2.
         let seed = vestaPointFromAffine(VestaPointAffine(
-            x: vestaFromInt(1), y: vestaFromInt(2)))
+            x: vestaNeg(vestaFromInt(1)), y: vestaFromInt(2)))
 
         var projPoints = [VestaPointProjective]()
         projPoints.reserveCapacity(size + 1)
@@ -674,9 +675,24 @@ public class PedersenEngine {
             }
         }
 
-        // CPU path: Pippenger MSM
-        let msmResult = pallasCpuMSM(points: Array(params.pallasGenerators!.prefix(n)),
+        // CPU path: use scalar-mul accumulation for small n, Pippenger for larger
+        let msmResult: PallasPointProjective
+        if n <= 64 {
+            // Small n: individual scalar-muls (avoids Pippenger overhead and edge cases)
+            var acc = pallasPointIdentity()
+            let gens = params.pallasGenerators!
+            for i in 0..<n {
+                if !fpValues[i].isZero {
+                    let gi = pallasPointFromAffine(gens[i])
+                    let term = pallasPointScalarMul(gi, fpValues[i])
+                    acc = pallasPointIsIdentity(acc) ? term : pallasPointAdd(acc, term)
+                }
+            }
+            msmResult = acc
+        } else {
+            msmResult = pallasCpuMSM(points: Array(params.pallasGenerators!.prefix(n)),
                                      scalars: fpValues)
+        }
         let blindingTerm = pallasPointScalarMul(
             pallasPointFromAffine(params.pallasBlinding!), fpR)
         return .pallas(pallasPointAdd(msmResult, blindingTerm))
@@ -711,9 +727,23 @@ public class PedersenEngine {
             }
         }
 
-        // CPU path
-        let msmResult = vestaCpuMSM(points: Array(params.vestaGenerators!.prefix(n)),
+        // CPU path: use scalar-mul accumulation for small n, Pippenger for larger
+        let msmResult: VestaPointProjective
+        if n <= 64 {
+            var acc = vestaPointIdentity()
+            let gens = params.vestaGenerators!
+            for i in 0..<n {
+                if !fpValues[i].isZero {
+                    let gi = vestaPointFromAffine(gens[i])
+                    let term = vestaPointScalarMul(gi, fpValues[i])
+                    acc = vestaPointIsIdentity(acc) ? term : vestaPointAdd(acc, term)
+                }
+            }
+            msmResult = acc
+        } else {
+            msmResult = vestaCpuMSM(points: Array(params.vestaGenerators!.prefix(n)),
                                     scalars: fpValues)
+        }
         let blindingTerm = vestaPointScalarMul(
             vestaPointFromAffine(params.vestaBlinding!), fpR)
         return .vesta(vestaPointAdd(msmResult, blindingTerm))

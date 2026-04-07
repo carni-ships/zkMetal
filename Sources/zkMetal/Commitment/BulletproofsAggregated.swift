@@ -354,11 +354,13 @@ public class BulletproofsAggregatedVerifier {
     ) -> Bool {
         let m = proof.m
         let n = params.n
-        precondition(Vs.count == m, "Need M value commitments")
+        guard Vs.count == m, m > 0, n > 0 else { return false }
 
         let mn = m * n
         let padN = nextPowerOf2(mn)
+        guard padN > 0 else { return false }
         let extParams = BulletproofsParams.generate(n: padN)
+        guard extParams.G.count >= padN, extParams.H.count >= padN else { return false }
 
         let gProj = pointFromAffine(extParams.g)
         let hProj = pointFromAffine(extParams.h)

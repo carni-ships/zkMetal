@@ -511,29 +511,6 @@ public func bn254MillerLoop(_ p: PointAffine, _ q: G2AffinePoint) -> Fp12 {
     return f
 }
 
-/// Miller loop without Q1/Q2 Frobenius correction (for debugging)
-public func bn254MillerLoopNoCorrection(_ p: PointAffine, _ q: G2AffinePoint) -> Fp12 {
-    var tPt = q
-    var f = Fp12.one
-    let negQ = g2NegateAffine(q)
-    for i in 1..<sixXPlus2NAF.count {
-        f = fp12Sqr(f)
-        let oldT = tPt
-        let lam = g2AffineDouble(&tPt)
-        f = fp12Mul(f, lineEval(lambda: lam, xT: oldT.x, yT: oldT.y, p: p))
-        if sixXPlus2NAF[i] == 1 {
-            let oldT2 = tPt
-            let lam2 = g2AffineAdd(&tPt, q)
-            f = fp12Mul(f, lineEval(lambda: lam2, xT: oldT2.x, yT: oldT2.y, p: p))
-        } else if sixXPlus2NAF[i] == -1 {
-            let oldT2 = tPt
-            let lam2 = g2AffineAdd(&tPt, negQ)
-            f = fp12Mul(f, lineEval(lambda: lam2, xT: oldT2.x, yT: oldT2.y, p: p))
-        }
-    }
-    return f
-}
-
 // MARK: - Final Exponentiation (C-accelerated with cyclotomic squaring)
 
 /// Marshal Fp12 from Swift (8x32 Montgomery per Fp) to C (4x64 Montgomery per Fp, 48 UInt64 total).

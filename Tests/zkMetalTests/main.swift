@@ -1,241 +1,280 @@
 // zkMetal Test Suite — run with: swift build && .build/debug/zkMetalTests
 // Or: swift build -c release && .build/release/zkMetalTests
+// Filter tests: .build/release/zkMetalTests pairing snarkpack gpu
+// List tests:   .build/release/zkMetalTests --list
 
 import Foundation
 
+// All test entries: (name used for filtering, function to run)
+let allTests: [(String, () -> Void)] = [
+    ("pairing", runPairingDiagnostic),
+    ("snarkpack", runSnarkPackTests),
+    ("field", runFieldTests),
+    ("ntt", runNTTTests),
+    ("hash", runHashTests),
+    ("msm", runMSMTests),
+    ("polynomial", runPolynomialTests),
+    ("proofsystem", runProofSystemTests),
+    ("gkr", runGKRTests),
+    ("dataparallel", runDataParallelTests),
+    ("serialization", runSerializationTests),
+    ("plonk", runPlonkTests),
+    ("circlestark", runCircleSTARKTests),
+    ("groth16prover", runGroth16ProverTests),
+    ("unifiedlookup", runUnifiedLookupTests),
+    ("multimsm", runMultiMSMTests),
+    ("witnessgen", runWitnessGenTests),
+    ("protogalaxy", runProtogalaxyTests),
+    ("ivc", runIVCTests),
+    ("circomparser", runCircomParserTests),
+    ("plonky2recursive", runPlonky2RecursiveTests),
+    ("spartan", runSpartanTests),
+    ("constraintoptimizer", runConstraintOptimizerTests),
+    ("cosetlde", runCosetLDETests),
+    ("airdsl", runAIRDSLTests),
+    ("plonkgate", runPlonkGateTests),
+    ("transcript", runTranscriptTests),
+    ("gpubufferpool", runGPUBufferPoolTests),
+    ("poseidon2sponge", runPoseidon2SpongeTests),
+    ("groth16solidity", runGroth16SolidityTests),
+    ("pedersenengine", runPedersenEngineTests),
+    ("tracecompression", runTraceCompressionTests),
+    ("das", runDASTests),
+    ("universalproofformat", runUniversalProofFormatTests),
+    ("plonkpermutation", runPlonkPermutationTests),
+    ("riscvdecoder", runRISCVDecoderTests),
+    ("verkleproof", runVerkleProofTests),
+    ("multilinear", runMultilinearTests),
+    ("batchkzg", runBatchKZGTests),
+    ("prefixscan", runPrefixScanTests),
+    ("memorychecking", runMemoryCheckingTests),
+    ("riscvexecutor", runRISCVExecutorTests),
+    ("binarytower", runBinaryTowerTests),
+    ("gpusumcheck", runGPUSumcheckTests),
+    ("plonkendtoend", runPlonkEndToEndTests),
+    ("gpupolyeval", runGPUPolyEvalTests),
+    ("hypernova", runHyperNovaTests),
+    ("transcripthardening", runTranscriptHardeningTests),
+    ("airtracegen", runAIRTraceGenTests),
+    ("novafolding", runNovaFoldingTests),
+    ("logupgkr", runLogUpGKRTests),
+    ("reedsolomonengine", runReedSolomonEngineTests),
+    ("gpubatchinverse", runGPUBatchInverseTests),
+    ("trustedsetup", runTrustedSetupTests),
+    ("gpufri", runGPUFRITests),
+    ("groth16recursive", runGroth16RecursiveTests),
+    ("kzgmultiopen", runKZGMultiOpenTests),
+    ("bulletproofs", runBulletproofsTests),
+    ("gpuposeidon2perm", runGPUPoseidon2PermTests),
+    ("pedersenvector", runPedersenVectorTests),
+    ("pcsprotocol", runPCSProtocolTests),
+    ("joltdecomposition", runJoltDecompositionTests),
+    ("constraintconverter", runConstraintConverterTests),
+    ("gpumultilinear", runGPUMultilinearTests),
+    ("starkverifier", runSTARKVerifierTests),
+    ("cairotrace", runCairoTraceTests),
+    ("cosetdomain", runCosetDomainTests),
+    ("latticentt", runLatticeNTTTests),
+    ("whirprover", runWHIRProverTests),
+    ("lookupsingularity", runLookupSingularityTests),
+    ("spartanpolyiop", runSpartanPolyIOPTests),
+    ("gpuwitness", runGPUWitnessTests),
+    ("halo2permutation", runHalo2PermutationTests),
+    ("gpupolydiv", runGPUPolyDivTests),
+    ("witnesssolver", runWitnessSolverTests),
+    ("protogalaxydecider", runProtogalaxyDeciderTests),
+    ("marlinprover", runMarlinProverTests),
+    ("evmprecompile", runEVMPrecompileTests),
+    ("customgatelibrary", runCustomGateLibraryTests),
+    ("gpuparallelreduce", runGPUParallelReduceTests),
+    ("fflonk", runFflonkTests),
+    ("babybearstark", runBabyBearSTARKTests),
+    ("goldilocksstark", runGoldilocksSTARKTests),
+    ("polyidentity", runPolyIdentityTests),
+    ("recursivesnark", runRecursiveSNARKTests),
+    ("prooftranscriptcodec", runProofTranscriptCodecTests),
+    ("gpufft", runGPUFFTTests),
+    ("sparsepolycommit", runSparsePolyCommitTests),
+    ("gpumultipointeval", runGPUMultiPointEvalTests),
+    ("stark252stark", runStark252STARKTests),
+    ("verkleproofengine", runVerkleProofEngineTests),
+    ("plonkisharith", runPlonkishArithTests),
+    ("novaengine", runNovaEngineTests),
+    ("gpucosetldeengine", runGPUCosetLDEEngineTests),
+    ("plonky2verifier", runPlonky2VerifierTests),
+    ("gpubatchinverseengine", runGPUBatchInverseEngineTests),
+    ("pedersenhash", runPedersenHashTests),
+    ("airconstraintcompiler", runAIRConstraintCompilerTests),
+    ("multiscalarinnerproduct", runMultiScalarInnerProductTests),
+    ("gpuinnerproduct", runGPUInnerProductTests),
+    ("groth16gpuwitness", runGroth16GPUWitnessTests),
+    ("pcscomparison", runPCSComparisonTests),
+    ("gpumerkletree", runGPUMerkleTreeTests),
+    ("gpuhornereval", runGPUHornerEvalTests),
+    ("batchecdsa", runBatchECDSATests),
+    ("gpufrifold", runGPUFRIFoldTests),
+    ("gpuconstrainteval", runGPUConstraintEvalTests),
+    ("packedneon", runPackedNEONTests),
+    ("gpugrandproductengine", runGPUGrandProductEngineTests),
+    ("gpuprefixsum", runGPUPrefixSumTests),
+    ("latticeneonntt", runLatticeNeonNTTTests),
+    ("latticenttneon", runLatticeNTTNeonTests),
+    ("gpuquotientengine", runGPUQuotientEngineTests),
+    ("gpurlcengine", runGPURLCEngineTests),
+    ("interpolation", runInterpolationTests),
+    ("gpupolycomposition", runGPUPolyCompositionTests),
+    ("gpumatrixtranspose", runGPUMatrixTransposeTests),
+    ("gpuplookup", runGPUPlookupTests),
+    ("gputracegenerator", runGPUTraceGeneratorTests),
+    ("gpucosetnttengine", runGPUCosetNTTEngineTests),
+    ("gpupolyarith", runGPUPolyArithTests),
+    ("gpuvectorcommit", runGPUVectorCommitTests),
+    ("gpubatchpcsverifier", runGPUBatchPCSVerifierTests),
+    ("gpupermutationengine", runGPUPermutationEngineTests),
+    ("gpusparsepolyengine", runGPUSparsePolyEngineTests),
+    ("gpurangeproof", runGPURangeProofTests),
+    ("gpubatchtranscript", runGPUBatchTranscriptTests),
+    ("gpucosetfft", runGPUCosetFFTTests),
+    ("gpuproofcomposition", runGPUProofCompositionTests),
+    ("gpupolydivision", runGPUPolyDivisionTests),
+    ("gpuwitnessgen", runGPUWitnessGenTests),
+    ("gpuplonkgate", runGPUPlonkGateTests),
+    ("gpusumcheckprover", runGPUSumcheckProverTests),
+    ("gpulogupengine", runGPULogUpEngineTests),
+    ("gpur1cssolver", runGPUR1CSSolverTests),
+    ("gpugroth16prover", runGPUGroth16ProverTests),
+    ("gpuipaengine", runGPUIPAEngineTests),
+    ("gpuzeromorph", runGPUZeromorphTests),
+    ("gpukzgmultiopen", runGPUKZGMultiOpenTests),
+    ("gpulassoengine", runGPULassoEngineTests),
+    ("gpufriprover", runGPUFRIProverTests),
+    ("gpustarkverifier", runGPUSTARKVerifierTests),
+    ("gpunovafold", runGPUNovaFoldTests),
+    ("gpurecursivesnark", runGPURecursiveSNARKTests),
+    ("gpubiniustower", runGPUBiniusTowerTests),
+    ("gpuproofaggregation", runGPUProofAggregationTests),
+    ("gpuhalo2backend", runGPUHalo2BackendTests),
+    ("gpuplonky2engine", runGPUPlonky2EngineTests),
+    ("gpubabybearstarkprover", runGPUBabyBearSTARKProverTests),
+    ("gpugoldilocksstarkprover", runGPUGoldilocksSTARKProverTests),
+    ("gpuspartanprover", runGPUSpartanProverTests),
+    ("gpuzkvmengine", runGPUzkVMEngineTests),
+    ("gpuposeidon2chain", runGPUPoseidon2ChainTests),
+    ("gpumerklebatchproof", runGPUMerkleBatchProofTests),
+    ("gpufieldextension", runGPUFieldExtensionTests),
+    ("gpucircuitoptimizer", runGPUCircuitOptimizerTests),
+    ("gpuairconstraintcompiler", runGPUAIRConstraintCompilerTests),
+    ("gpupcsfactory", runGPUPCSFactoryTests),
+    ("gpuevmprecompile", runGPUEVMPrecompileTests),
+    ("gpufriverifier", runGPUFRIVerifierTests),
+    ("gpupolyinterpolation", runGPUPolyInterpolationTests),
+    ("gpuproofserializer", runGPUProofSerializerTests),
+    ("gpuwitnessreduction", runGPUWitnessReductionTests),
+    ("gpugrandproductprover", runGPUGrandProductProverTests),
+    ("gpur1cstoqap", runGPUR1CSToQAPTests),
+    ("gpublsaggregate", runGPUBLSAggregateTests),
+    ("gpucommitmentbatch", runGPUCommitmentBatchTests),
+    ("gpunovadecider", runGPUNovaDeciderTests),
+    ("gpuplonklookup", runGPUPlonkLookupTests),
+    ("gpumultilinearsumcheck", runGPUMultilinearSumcheckTests),
+    ("gpuverkletree", runGPUVerkleTreeTests),
+    ("gpustarktracelde", runGPUSTARKTraceLDETests),
+    ("gpustarkdeepcomposition", runGPUSTARKDeepCompositionTests),
+    ("gpuconstraintcompiler", runGPUConstraintCompilerTests),
+    ("gpurecursivecomposition", runGPURecursiveCompositionTests),
+    ("gpugroth16vk", runGPUGroth16VKTests),
+    ("gpugoldilocksextension", runGPUGoldilocksExtensionTests),
+    ("gpuairtracevalidator", runGPUAIRTraceValidatorTests),
+    ("gpuplonkcopyconstraint", runGPUPlonkCopyConstraintTests),
+    ("gpukzgsetup", runGPUKZGSetupTests),
+    ("gpubabybearextension", runGPUBabyBearExtensionTests),
+    ("gpujoltsubtable", runGPUJoltSubtableTests),
+    ("gpupedersenchain", runGPUPedersenChainTests),
+    ("gpufiatshamir", runGPUFiatShamirTests),
+    ("gpupolycommitopen", runGPUPolyCommitOpenTests),
+    ("gpunovaverifier", runGPUNovaVerifierTests),
+    ("gpuplonkwireassign", runGPUPlonkWireAssignTests),
+    ("gpufricommitphase", runGPUFRICommitPhaseTests),
+    ("gpur1cswitnesssolver", runGPUR1CSWitnessSolverTests),
+    ("gpugroth16aggregate", runGPUGroth16AggregateTests),
+    ("gpubiniusbinaryfield", runGPUBiniusBinaryFieldTests),
+    ("gpuhalo2lookuparg", runGPUHalo2LookupArgTests),
+    ("gpustarkqueryphase", runGPUSTARKQueryPhaseTests),
+    ("gpusumcheckprotocol", runGPUSumcheckProtocolTests),
+    ("gpukzgbatchverify", runGPUKZGBatchVerifyTests),
+    ("gpuplonkquotient", runGPUPlonkQuotientTests),
+    ("gpuipaprover", runGPUIPAProverTests),
+    ("gpumerkleaggregate", runGPUMerkleAggregateTests),
+    ("gpuspartanlinearize", runGPUSpartanLinearizeTests),
+    ("gpuprotogalaxyverifier", runGPUProtogalaxyVerifierTests),
+    ("gpuplonklinearize", runGPUPlonkLinearizeTests),
+    ("gpuaircomposition", runGPUAIRCompositionTests),
+    ("gpuzeromorphprover", runGPUZeromorphProverTests),
+    ("gpugkrprotocol", runGPUGKRProtocolTests),
+    ("gpubasefoldprover", runGPUBasefoldProverTests),
+    ("gpuecdsabatchverify", runGPUECDSABatchVerifyTests),
+    ("gpuwitnesscommit", runGPUWitnessCommitTests),
+    ("gpumarlinpolyiop", runGPUMarlinPolyIOPTests),
+    ("gpulookupgrandproduct", runGPULookupGrandProductTests),
+    ("gpucirclestarkprover", runGPUCircleSTARKProverTests),
+    ("gpubrakedownprover", runGPUBrakedownProverTests),
+    ("gpuplonkgrandproduct", runGPUPlonkGrandProductTests),
+    ("gpunovarelaxation", runGPUNovaRelaxationTests),
+    ("gpublssignature", runGPUBLSSignatureTests),
+    ("gpuconstraintsat", runGPUConstraintSatTests),
+    ("gpuplonky3air", runGPUPlonky3AIRTests),
+    ("gpucqlookup", runGPUCQLookupTests),
+    ("gpuverklemultiproof", runGPUVerkleMultiproofTests),
+    ("gpuvanishingpoly", runGPUVanishingPolyTests),
+    ("gpujoltinstruction", runGPUJoltInstructionTests),
+    ("gpurangeproofprotocol", runGPURangeProofProtocolTests),
+    ("gpucairomemoryarg", runGPUCairoMemoryArgTests),
+    ("gpufflonkprover", runGPUFflonkProverTests),
+    ("gpukzgdegreebound", runGPUKZGDegreeBoundTests),
+    ("gpur1cstoaircompiler", runGPUR1CSToAIRCompilerTests),
+    ("gpuhyperplonkiop", runGPUHyperPlonkIOPTests),
+    ("gpunovadecidercircuit", runGPUNovaDeciderCircuitTests),
+    ("gpufrigrinding", runGPUFRIGrindingTests),
+    ("gpuplonkcustomgate", runGPUPlonkCustomGateTests),
+    ("gpubiniuspoly", runGPUBiniusPolyTests),
+    ("gpuproofbatchaggregation", runGPUProofBatchAggregationTests),
+    ("biniusm3", runBiniusM3Tests),
+    ("groestlhash", runGroestlHashTests),
+]
+
+// Parse CLI arguments for test filtering
+let args = Array(CommandLine.arguments.dropFirst())
+
+if args.contains("--list") {
+    print("Available tests (\(allTests.count)):")
+    for (name, _) in allTests {
+        print("  \(name)")
+    }
+    exit(0)
+}
+
+if args.contains("--help") || args.contains("-h") {
+    print("Usage: zkMetalTests [filter...]")
+    print("  No args:  run all tests")
+    print("  filter:   run tests whose name contains any filter (case-insensitive)")
+    print("  --list:   list all test names")
+    print("  --help:   show this help")
+    print("\nExamples:")
+    print("  zkMetalTests pairing snarkpack     # run pairing + snarkpack")
+    print("  zkMetalTests gpu                    # run all GPU tests")
+    print("  zkMetalTests groth16                # run all groth16 tests")
+    exit(0)
+}
+
+let filters = args.map { $0.lowercased() }
+
 let t0 = CFAbsoluteTimeGetCurrent()
 
-runFieldTests()
-runNTTTests()
-runHashTests()
-runMSMTests()
-runPolynomialTests()
-runProofSystemTests()
-runGKRTests()
-runDataParallelTests()
-runSerializationTests()
-runPlonkTests()
-runCircleSTARKTests()
-runGroth16ProverTests()
-runUnifiedLookupTests()
-runMultiMSMTests()
-runWitnessGenTests()
-runProtogalaxyTests()
-runIVCTests()
-runCircomParserTests()
-runPlonky2RecursiveTests()
-runSpartanTests()
-runConstraintOptimizerTests()
-runCosetLDETests()
-runAIRDSLTests()
-runPlonkGateTests()
-runTranscriptTests()
-runGPUBufferPoolTests()
-runPoseidon2SpongeTests()
-runGroth16SolidityTests()
-runPedersenEngineTests()
-runTraceCompressionTests()
-runDASTests()
-runUniversalProofFormatTests()
-runPlonkPermutationTests()
-runRISCVDecoderTests()
-runVerkleProofTests()
-runMultilinearTests()
-runBatchKZGTests()
-runPrefixScanTests()
-runMemoryCheckingTests()
-runRISCVExecutorTests()
-runBinaryTowerTests()
-runGPUSumcheckTests()
-runPlonkEndToEndTests()
-runGPUPolyEvalTests()
-runHyperNovaTests()
-runTranscriptHardeningTests()
-runAIRTraceGenTests()
-runNovaFoldingTests()
-runLogUpGKRTests()
-runReedSolomonEngineTests()
-runGPUBatchInverseTests()
-runTrustedSetupTests()
-runGPUFRITests()
-runGroth16RecursiveTests()
-runKZGMultiOpenTests()
-runBulletproofsTests()
-runGPUPoseidon2PermTests()
-runPedersenVectorTests()
-runPCSProtocolTests()
-runJoltDecompositionTests()
-runConstraintConverterTests()
-runGPUMultilinearTests()
-runSTARKVerifierTests()
-runCairoTraceTests()
-runCosetDomainTests()
-runLatticeNTTTests()
-runWHIRProverTests()
-runLookupSingularityTests()
-runSpartanPolyIOPTests()
-runGPUWitnessTests()
-runHalo2PermutationTests()
-runGPUPolyDivTests()
-runWitnessSolverTests()
-runProtogalaxyDeciderTests()
-runMarlinProverTests()
-runEVMPrecompileTests()
-runCustomGateLibraryTests()
-runGPUParallelReduceTests()
-runFflonkTests()
-runBabyBearSTARKTests()
-runGoldilocksSTARKTests()
-runPolyIdentityTests()
-runRecursiveSNARKTests()
-runProofTranscriptCodecTests()
-runGPUFFTTests()
-runSparsePolyCommitTests()
-runGPUMultiPointEvalTests()
-runStark252STARKTests()
-runVerkleProofEngineTests()
-runPlonkishArithTests()
-runNovaEngineTests()
-runGPUCosetLDEEngineTests()
-runPlonky2VerifierTests()
-runGPUBatchInverseEngineTests()
-runPedersenHashTests()
-runAIRConstraintCompilerTests()
-runMultiScalarInnerProductTests()
-runGPUInnerProductTests()
-runGroth16GPUWitnessTests()
-runPCSComparisonTests()
-runGPUMerkleTreeTests()
-runGPUHornerEvalTests()
-runBatchECDSATests()
-runGPUFRIFoldTests()
-runGPUConstraintEvalTests()
-runPackedNEONTests()
-runGPUGrandProductEngineTests()
-runGPUPrefixSumTests()
-runLatticeNeonNTTTests()
-runLatticeNTTNeonTests()
-runGPUQuotientEngineTests()
-runGPURLCEngineTests()
-runInterpolationTests()
-runGPUPolyCompositionTests()
-runGPUMatrixTransposeTests()
-runGPUPlookupTests()
-runGPUTraceGeneratorTests()
-runGPUCosetNTTEngineTests()
-runGPUPolyArithTests()
-runGPUVectorCommitTests()
-runGPUBatchPCSVerifierTests()
-runGPUPermutationEngineTests()
-runGPUSparsePolyEngineTests()
-runGPURangeProofTests()
-runGPUBatchTranscriptTests()
-runGPUCosetFFTTests()
-runGPUProofCompositionTests()
-runGPUPolyDivisionTests()
-runGPUWitnessGenTests()
-runGPUPlonkGateTests()
-runGPUSumcheckProverTests()
-runGPULogUpEngineTests()
-runGPUR1CSSolverTests()
-runGPUGroth16ProverTests()
-runGPUIPAEngineTests()
-runGPUZeromorphTests()
-runGPUKZGMultiOpenTests()
-runGPULassoEngineTests()
-runGPUFRIProverTests()
-runGPUSTARKVerifierTests()
-runGPUNovaFoldTests()
-runGPURecursiveSNARKTests()
-runGPUBiniusTowerTests()
-runGPUProofAggregationTests()
-runGPUHalo2BackendTests()
-runGPUPlonky2EngineTests()
-runGPUBabyBearSTARKProverTests()
-runGPUGoldilocksSTARKProverTests()
-runGPUSpartanProverTests()
-runGPUzkVMEngineTests()
-runGPUPoseidon2ChainTests()
-runGPUMerkleBatchProofTests()
-runGPUFieldExtensionTests()
-runGPUCircuitOptimizerTests()
-runGPUAIRConstraintCompilerTests()
-runGPUPCSFactoryTests()
-runGPUEVMPrecompileTests()
-runGPUFRIVerifierTests()
-runGPUPolyInterpolationTests()
-runGPUProofSerializerTests()
-runGPUWitnessReductionTests()
-runGPUGrandProductProverTests()
-runGPUR1CSToQAPTests()
-runGPUBLSAggregateTests()
-runGPUCommitmentBatchTests()
-runGPUNovaDeciderTests()
-runGPUPlonkLookupTests()
-runGPUMultilinearSumcheckTests()
-runGPUVerkleTreeTests()
-runGPUSTARKTraceLDETests()
-runGPUSTARKDeepCompositionTests()
-runGPUConstraintCompilerTests()
-runGPURecursiveCompositionTests()
-runGPUGroth16VKTests()
-runGPUGoldilocksExtensionTests()
-runGPUAIRTraceValidatorTests()
-runGPUPlonkCopyConstraintTests()
-runGPUKZGSetupTests()
-runGPUBabyBearExtensionTests()
-runGPUJoltSubtableTests()
-runGPUPedersenChainTests()
-runGPUFiatShamirTests()
-runGPUPolyCommitOpenTests()
-runGPUNovaVerifierTests()
-runGPUPlonkWireAssignTests()
-runGPUFRICommitPhaseTests()
-runGPUR1CSWitnessSolverTests()
-runGPUGroth16AggregateTests()
-runGPUBiniusBinaryFieldTests()
-runGPUHalo2LookupArgTests()
-runGPUSTARKQueryPhaseTests()
-runGPUSumcheckProtocolTests()
-runGPUKZGBatchVerifyTests()
-runGPUPlonkQuotientTests()
-runGPUIPAProverTests()
-runGPUMerkleAggregateTests()
-runGPUSpartanLinearizeTests()
-runGPUProtogalaxyVerifierTests()
-runGPUPlonkLinearizeTests()
-runGPUAIRCompositionTests()
-runGPUZeromorphProverTests()
-runGPUGKRProtocolTests()
-runGPUBasefoldProverTests()
-runGPUECDSABatchVerifyTests()
-runGPUWitnessCommitTests()
-runGPUMarlinPolyIOPTests()
-runGPULookupGrandProductTests()
-runGPUCircleSTARKProverTests()
-runGPUBrakedownProverTests()
-runGPUPlonkGrandProductTests()
-runGPUNovaRelaxationTests()
-runGPUBLSSignatureTests()
-runGPUConstraintSatTests()
-runGPUPlonky3AIRTests()
-runGPUCQLookupTests()
-runGPUVerkleMultiproofTests()
-runGPUVanishingPolyTests()
-runGPUJoltInstructionTests()
-runGPURangeProofProtocolTests()
-runGPUCairoMemoryArgTests()
-runGPUFflonkProverTests()
-runGPUKZGDegreeBoundTests()
-runGPUR1CSToAIRCompilerTests()
-runGPUHyperPlonkIOPTests()
-runGPUNovaDeciderCircuitTests()
-runGPUFRIGrindingTests()
-runGPUPlonkCustomGateTests()
-runGPUBiniusPolyTests()
-runGPUProofBatchAggregationTests()
-runBiniusM3Tests()
-runGroestlHashTests()
+for (name, fn) in allTests {
+    if filters.isEmpty || filters.contains(where: { name.contains($0) }) {
+        fn()
+    }
+}
 
 let elapsed = CFAbsoluteTimeGetCurrent() - t0
 print(String(format: "\nCompleted in %.1fs", elapsed))

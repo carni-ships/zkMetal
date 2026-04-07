@@ -358,16 +358,19 @@ public class GPUDASEngine {
     /// Compute KZG commitment via GPU MSM: C = sum_i coeff_i * SRS[i].
     private func gpuCommit(_ coefficients: [Fr381]) -> G1Projective381 {
         let n = min(coefficients.count, srs.count)
-        let points = Array(srs.prefix(n))
-        let scalars = Array(coefficients.prefix(n))
 
-        if let gpu = gpuMSM, n >= gpuThreshold {
-            if let result = try? gpu.msmFr(points: points, scalars: scalars) {
+        // Filter out zero scalars to avoid Pippenger zero-scalar bug
+        let (filteredPoints, filteredScalars) = filterZeroScalars(
+            points: Array(srs.prefix(n)), scalars: Array(coefficients.prefix(n)))
+        guard !filteredPoints.isEmpty else { return g1_381Identity() }
+
+        if let gpu = gpuMSM, filteredPoints.count >= gpuThreshold {
+            if let result = try? gpu.msmFr(points: filteredPoints, scalars: filteredScalars) {
                 return result
             }
         }
         // CPU fallback
-        return cpuMSM381(points: points, scalars: scalars)
+        return cpuMSM381(points: filteredPoints, scalars: filteredScalars)
     }
 
     /// Compute KZG witness via GPU MSM: W = sum_i q_i * SRS[i].
@@ -377,14 +380,36 @@ public class GPUDASEngine {
             throw RSError.gpuError("SRS too small for polynomial degree")
         }
 
-        let points = Array(srs.prefix(quotient.count))
-        if let gpu = gpuMSM, quotient.count >= gpuThreshold {
-            if let result = try? gpu.msmFr(points: points, scalars: quotient) {
+        // Filter out zero scalars to avoid Pippenger zero-scalar bug
+        let (filteredPoints, filteredScalars) = filterZeroScalars(
+            points: Array(srs.prefix(quotient.count)), scalars: quotient)
+        guard !filteredPoints.isEmpty else { return g1_381Identity() }
+
+        if let gpu = gpuMSM, filteredPoints.count >= gpuThreshold {
+            if let result = try? gpu.msmFr(points: filteredPoints, scalars: filteredScalars) {
                 return result
             }
         }
         // CPU fallback
-        return cpuMSM381(points: points, scalars: quotient)
+        return cpuMSM381(points: filteredPoints, scalars: filteredScalars)
+    }
+
+    /// Filter out zero scalars from MSM inputs.
+    /// Works around a Pippenger MSM bug where zero scalars paired with
+    /// non-trivial points can produce incorrect contributions to the sum.
+    private func filterZeroScalars(points: [G1Affine381], scalars: [Fr381]) -> ([G1Affine381], [Fr381]) {
+        var filteredPoints = [G1Affine381]()
+        var filteredScalars = [Fr381]()
+        filteredPoints.reserveCapacity(scalars.count)
+        filteredScalars.reserveCapacity(scalars.count)
+        let zeroLimbs: [UInt64] = [0, 0, 0, 0]
+        for i in 0..<scalars.count {
+            if fr381ToInt(scalars[i]) != zeroLimbs {
+                filteredPoints.append(points[i])
+                filteredScalars.append(scalars[i])
+            }
+        }
+        return (filteredPoints, filteredScalars)
     }
 
     // MARK: - Private: CPU Helpers

@@ -266,16 +266,18 @@ public func kyberNTTCPU(_ poly: inout [KyberField]) {
 }
 
 /// CPU Kyber inverse NTT (Gentleman-Sande)
-/// Uses forward twiddles (not inverse), matching the standard Kyber INTT formulation.
+/// Uses negated forward twiddles: the GS butterfly computes (t - f[j+len]),
+/// which requires multiplying by -zeta (i.e., q - twiddles[k]) to match
+/// the standard formulation where the butterfly is zeta * (f[j+len] - t).
 public func kyberInvNTTCPU(_ poly: inout [KyberField]) {
     precondition(poly.count == 256)
-    let twiddles = kyberTwiddles()  // use FORWARD twiddles
+    let twiddles = kyberTwiddles()
     var k = 127
     var len = 2
     while len <= 128 {
         var start = 0
         while start < 256 {
-            let tw = twiddles[k]
+            let tw = kyberNeg(twiddles[k])  // negate: use q - twiddles[k]
             k -= 1
             for j in start..<(start + len) {
                 let t = poly[j]
@@ -315,16 +317,16 @@ public func dilithiumNTTCPU(_ poly: inout [DilithiumField]) {
 }
 
 /// CPU Dilithium inverse NTT (Gentleman-Sande)
-/// Uses forward twiddles, matching the standard formulation.
+/// Uses negated forward twiddles, same as Kyber INTT.
 public func dilithiumInvNTTCPU(_ poly: inout [DilithiumField]) {
     precondition(poly.count == 256)
-    let twiddles = dilithiumTwiddles()  // use FORWARD twiddles
+    let twiddles = dilithiumTwiddles()
     var k = 127
     var len = 2
     while len <= 128 {
         var start = 0
         while start < 256 {
-            let tw = twiddles[k]
+            let tw = dilithiumNeg(twiddles[k])  // negate: use q - twiddles[k]
             k -= 1
             for j in start..<(start + len) {
                 let t = poly[j]

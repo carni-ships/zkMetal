@@ -168,13 +168,13 @@ All benchmarks on Apple M3 Pro (6P+6E cores). Run `swift run -c release zkbench 
 
 | Points | Vanilla CPU | Swift Pippenger | C Pippenger | GPU (Metal) |
 |--------|-------------|----------------|-------------|-------------|
-| 2^8 | 450ms | 16ms | **1.3ms** | 1.1ms |
-| 2^10 | 1.8s | 45ms | **2.9ms** | 3.0ms |
+| 2^8 | 450ms | 16ms | **1.3ms** | 0.9ms |
+| 2^10 | 1.8s | 45ms | **2.9ms** | 2.6ms |
 | 2^12 | 7.3s | 129ms | **8.1ms** | 14ms |
 | 2^14 | 35s | 429ms | 29ms | **22ms** |
-| 2^16 | -- | -- | 68ms | **27ms** |
-| 2^18 | -- | -- | 240ms | **45ms** |
-| 2^20 | -- | -- | 856ms | **119ms** |
+| 2^16 | -- | -- | 68ms | **31ms** |
+| 2^18 | -- | -- | 240ms | **53ms** |
+| 2^20 | -- | -- | 856ms | **137ms** |
 
 C Pippenger uses multi-threaded bucket accumulation with `__uint128_t` CIOS Montgomery (8 pthreads). At n<=2048, C Pippenger is automatically used instead of GPU. GPU wins at n>=2^14.
 
@@ -182,9 +182,9 @@ C Pippenger uses multi-threaded bucket accumulation with `__uint128_t` CIOS Mont
 
 | Points | zkMetal (M3 Pro)&#185; | ICICLE-Metal (M3 Pro)&#185; | ICICLE CPU (M3 Pro)&#185; | ICICLE-Metal (M3 Air)&#178; | MoPro v2 (M3 Air)&#178; | Arkworks CPU (M3 Air)&#178; | ICICLE CUDA&#179; |
 |--------|---------|-------------|-----------|-------------|-----------|-----------|-----------|
-| 2^16 | **27ms** | 1,083ms | 114ms | -- | 253ms | 69ms | ~9ms |
-| 2^18 | **45ms** | 1,475ms | 556ms | 149ms | 678ms | 266ms | -- |
-| 2^20 | **119ms** | 2,590ms | 2,349ms | 421ms | 1,702ms | 592ms | -- |
+| 2^16 | **31ms** | 1,083ms | 114ms | -- | 253ms | 69ms | ~9ms |
+| 2^18 | **53ms** | 1,475ms | 556ms | 149ms | 678ms | 266ms | -- |
+| 2^20 | **137ms** | 2,590ms | 2,349ms | 421ms | 1,702ms | 592ms | -- |
 
 &#185; Measured locally. ICICLE-Metal v3.8.0 has ~600ms constant overhead per call (license server).
 &#178; Reported by [MoPro blog](https://zkmopro.org/blog/metal-msm-v2/) -- different hardware/methodology.
@@ -196,34 +196,34 @@ C Pippenger uses multi-threaded bucket accumulation with `__uint128_t` CIOS Mont
 
 | Size | BN254 Fr (256-bit) | BLS12-377 Fr (253-bit) | Goldilocks (64-bit) | BabyBear (31-bit) |
 |------|-------------------|----------------------|--------------------|--------------------|
-| 2^16 | 0.47ms | 1.4ms | 0.14ms | 0.18ms |
-| 2^18 | 1.6ms | 2.1ms | 0.19ms | 0.26ms |
-| 2^20 | 6.1ms | 5.8ms | 0.81ms | 0.95ms |
-| 2^22 | 26ms | 25ms | 4.2ms | 2.8ms |
-| 2^24 | 116ms | 110ms | 3.0ms | 2.0ms |
+| 2^16 | 0.69ms | 1.4ms | 0.15ms | 0.26ms |
+| 2^18 | 2.9ms | 2.1ms | 0.21ms | 0.54ms |
+| 2^20 | 10.8ms | 5.8ms | 0.70ms | 0.79ms |
+| 2^22 | 28ms | 25ms | 4.3ms | 3.0ms |
+| 2^24 | 113ms | 110ms | 3.1ms | 2.3ms |
 
-BabyBear at 2^24: **8.5B elements/sec** (native 32-bit arithmetic). Goldilocks: **5.7B elements/sec**.
+BabyBear at 2^24: **7.4B elements/sec** (native 32-bit arithmetic). Goldilocks: **5.5B elements/sec**.
 
 **BN254 Fr GPU vs CPU:**
 
 | Size | Vanilla CPU | Opt C | C vs Vanilla | GPU (Metal) | GPU vs Vanilla |
 |------|-------------|-------|--------------|-------------|----------------|
-| 2^14 | 79ms | 2.6ms | **30x** | 0.45ms | **176x** |
-| 2^16 | 369ms | 12ms | **30x** | 0.76ms | **483x** |
-| 2^18 | 1.6s | 55ms | **30x** | 2.2ms | **749x** |
-| 2^20 | 7.3s | 246ms | **30x** | 6.1ms | **1198x** |
+| 2^14 | 97ms | 2.6ms | **37x** | 0.57ms | **169x** |
+| 2^16 | 507ms | 12ms | **42x** | 0.69ms | **738x** |
+| 2^18 | 2.2s | 55ms | **40x** | 2.9ms | **746x** |
+| 2^20 | 13.0s | 246ms | **53x** | 10.8ms | **1206x** |
 
 **Comparison to ICICLE-Metal v3.8 NTT (measured locally, M3 Pro):**
 
 | Size | zkMetal BN254&#185; | ICICLE BN254&#185; | zkMetal BabyBear&#185; | ICICLE BabyBear&#185; |
 |------|------------|-------------|----------------|----------------|
-| 2^16 | **0.76ms** | 89ms | **0.18ms** | 86ms |
-| 2^18 | **1.6ms** | 108ms | **0.26ms** | 92ms |
-| 2^20 | **6.1ms** | 194ms | **0.95ms** | 108ms |
-| 2^22 | **26ms** | 915ms | **2.8ms** | 181ms |
-| 2^24 | **116ms** | 3,892ms | **2.0ms** | 709ms |
+| 2^16 | **0.69ms** | 89ms | **0.26ms** | 86ms |
+| 2^18 | **2.9ms** | 108ms | **0.54ms** | 92ms |
+| 2^20 | **10.8ms** | 194ms | **0.79ms** | 108ms |
+| 2^22 | **28ms** | 915ms | **3.0ms** | 181ms |
+| 2^24 | **113ms** | 3,892ms | **2.3ms** | 709ms |
 
-&#185; ICICLE-Metal has ~85ms per-call overhead. zkMetal is **30-90x faster** on BN254 and **90-500x faster** on BabyBear.
+&#185; ICICLE-Metal has ~85ms per-call overhead. zkMetal is **18-33x faster** on BN254 and **60-330x faster** on BabyBear.
 
 ### Hashing
 
@@ -682,7 +682,9 @@ swift build -c release
 
 ## Correctness & Testing
 
-Run `swift build -c release && .build/release/zkMetalTests`. 234 test files, 229 test suites. All GPU kernels verified against CPU reference implementations.
+Run `swift build -c release && .build/release/zkMetalTests`. 234 test files, 233 test suites. All GPU kernels verified against CPU reference implementations.
+
+Filter tests by keyword: `.build/release/zkMetalTests pairing groth16 gpu` runs only matching suites. Use `--list` to see all test names.
 
 | Category | Primitives | Verification |
 |----------|------------|-------------|

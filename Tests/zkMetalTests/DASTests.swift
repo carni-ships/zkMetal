@@ -5,6 +5,164 @@ import Foundation
 import zkMetal
 
 func runDASTests() {
+    suite("DAS — Pippenger MSM Correctness")
+
+    // Test Pippenger MSM with zero scalars
+    do {
+        let secretLimbs: [UInt64] = [42, 0, 0, 0]
+        let srs = ReedSolomon381Engine.generateTestSRS(secret: secretLimbs, size: 17)
+        let gen = bls12381G1Generator()
+        let genProj = g1_381FromAffine(gen)
+
+        // Verify SRS[0] == G
+        if let s0Aff = g1_381ToAffine(g1_381FromAffine(srs[0])),
+           let gAff = g1_381ToAffine(genProj) {
+            expect(fp381ToInt(s0Aff.x) == fp381ToInt(gAff.x), "SRS[0] == G")
+        }
+
+        // Direct: 469*G
+        let directResult = g1_381ScalarMul(genProj, [469, 0, 0, 0])
+
+        // MSM with 2 non-zero scalars, no padding
+        let fr7 = fr381FromInt(7)
+        let fr11 = fr381FromInt(11)
+        var flatScalars2 = [UInt32]()
+        for s in [fr7, fr11] {
+            let std = fr381ToInt(s)
+            flatScalars2.append(UInt32(std[0] & 0xFFFFFFFF))
+            flatScalars2.append(UInt32(std[0] >> 32))
+            flatScalars2.append(UInt32(std[1] & 0xFFFFFFFF))
+            flatScalars2.append(UInt32(std[1] >> 32))
+            flatScalars2.append(UInt32(std[2] & 0xFFFFFFFF))
+            flatScalars2.append(UInt32(std[2] >> 32))
+            flatScalars2.append(UInt32(std[3] & 0xFFFFFFFF))
+            flatScalars2.append(UInt32(std[3] >> 32))
+        }
+        let msm2 = g1_381PippengerMSMFlat(points: [srs[0], srs[1]], flatScalars: flatScalars2)
+        if let m2Aff = g1_381ToAffine(msm2), let dAff = g1_381ToAffine(directResult) {
+            let match = fp381ToInt(m2Aff.x) == fp381ToInt(dAff.x)
+            expect(match, "MSM(SRS[:2], [7,11]) == 469*G")
+            if !match {
+                print("    MSM result.x = \(fp381ToInt(m2Aff.x))")
+                print("    469*G.x      = \(fp381ToInt(dAff.x))")
+            }
+        }
+
+        // MSM with 16 scalars (14 zeros)
+        var flatScalars16 = flatScalars2
+        for _ in 2..<16 {
+            flatScalars16.append(contentsOf: [UInt32](repeating: 0, count: 8))
+        }
+        let msm16 = g1_381PippengerMSMFlat(points: Array(srs.prefix(16)), flatScalars: flatScalars16)
+        if let m16Aff = g1_381ToAffine(msm16), let dAff = g1_381ToAffine(directResult) {
+            let match = fp381ToInt(m16Aff.x) == fp381ToInt(dAff.x)
+            expect(match, "MSM(SRS[:16], [7,11,0,...]) == 469*G")
+            if !match {
+                print("    MSM16 result.x = \(fp381ToInt(m16Aff.x))")
+                print("    469*G.x        = \(fp381ToInt(dAff.x))")
+            }
+        }
+
+        // Manual computation: 7*SRS[0] + 11*SRS[1] using scalar mul + add
+        let seven_G = g1_381ScalarMul(g1_381FromAffine(srs[0]), [7, 0, 0, 0])
+        let eleven_42G = g1_381ScalarMul(g1_381FromAffine(srs[1]), [11, 0, 0, 0])
+        let manual = g1_381Add(seven_G, eleven_42G)
+        if let mAff = g1_381ToAffine(manual), let dAff = g1_381ToAffine(directResult) {
+            let match = fp381ToInt(mAff.x) == fp381ToInt(dAff.x)
+            expect(match, "7*SRS[0] + 11*SRS[1] via scalar_mul == 469*G")
+            if !match {
+                print("    manual.x = \(fp381ToInt(mAff.x))")
+                print("    469*G.x  = \(fp381ToInt(dAff.x))")
+            }
+        }
+
+        // Also test the old-style MSM (not Pippenger): g1_381PippengerMSM (array-of-arrays)
+        let scalarsAA: [[UInt32]] = [
+            [7, 0, 0, 0, 0, 0, 0, 0],
+            [11, 0, 0, 0, 0, 0, 0, 0]
+        ]
+        let msmAA = g1_381PippengerMSM(points: [srs[0], srs[1]], scalars: scalarsAA)
+        if let aaAff = g1_381ToAffine(msmAA), let dAff = g1_381ToAffine(directResult) {
+            let match = fp381ToInt(aaAff.x) == fp381ToInt(dAff.x)
+            expect(match, "g1_381PippengerMSM(SRS[:2], [7,11]) == 469*G")
+        }
+
+        // Single point MSM: MSM([SRS[0]], [1]) should equal G
+        let scalars1: [UInt32] = [1, 0, 0, 0, 0, 0, 0, 0]
+        let msm1 = g1_381PippengerMSMFlat(points: [srs[0]], flatScalars: scalars1)
+        if let m1Aff = g1_381ToAffine(msm1), let gAff = g1_381ToAffine(genProj) {
+            let match = fp381ToInt(m1Aff.x) == fp381ToInt(gAff.x)
+            expect(match, "MSM([G], [1]) == G")
+            if !match {
+                print("    msm1.x = \(fp381ToInt(m1Aff.x))")
+                print("    G.x    = \(fp381ToInt(gAff.x))")
+            }
+        }
+
+        // MSM([SRS[0]], [7]) should equal 7*G
+        let scalars7: [UInt32] = [7, 0, 0, 0, 0, 0, 0, 0]
+        let msm7 = g1_381PippengerMSMFlat(points: [srs[0]], flatScalars: scalars7)
+        let sevenG = g1_381ScalarMul(genProj, [7, 0, 0, 0])
+        if let m7Aff = g1_381ToAffine(msm7), let s7Aff = g1_381ToAffine(sevenG) {
+            let match = fp381ToInt(m7Aff.x) == fp381ToInt(s7Aff.x)
+            expect(match, "MSM([G], [7]) == 7*G")
+            if !match {
+                print("    msm7.x = \(fp381ToInt(m7Aff.x))")
+                print("    7G.x   = \(fp381ToInt(s7Aff.x))")
+            }
+        }
+
+        // MSM([SRS[1]], [11]) should equal 11*42*G = 462*G
+        let scalars11: [UInt32] = [11, 0, 0, 0, 0, 0, 0, 0]
+        let msm11 = g1_381PippengerMSMFlat(points: [srs[1]], flatScalars: scalars11)
+        let four62G = g1_381ScalarMul(genProj, [462, 0, 0, 0])
+        if let m11Aff = g1_381ToAffine(msm11), let f462Aff = g1_381ToAffine(four62G) {
+            let match = fp381ToInt(m11Aff.x) == fp381ToInt(f462Aff.x)
+            expect(match, "MSM([42G], [11]) == 462*G")
+            if !match {
+                print("    msm462.x = \(fp381ToInt(m11Aff.x))")
+                print("    462G.x   = \(fp381ToInt(f462Aff.x))")
+            }
+        }
+
+        // Verify SRS[1] via scalar_mul
+        let srs1Proj = g1_381FromAffine(srs[1])
+        let fortyTwoG = g1_381ScalarMul(genProj, [42, 0, 0, 0])
+        if let s1Aff = g1_381ToAffine(srs1Proj), let ftAff = g1_381ToAffine(fortyTwoG) {
+            let match = fp381ToInt(s1Aff.x) == fp381ToInt(ftAff.x)
+            expect(match, "SRS[1] == 42*G")
+            if !match {
+                print("    SRS[1].x = \(fp381ToInt(s1Aff.x))")
+                print("    42*G.x   = \(fp381ToInt(ftAff.x))")
+            }
+        }
+
+        // Simple test: MSM with 1 point, [469] directly
+        let scalars469: [UInt32] = [469, 0, 0, 0, 0, 0, 0, 0]
+        let msm469 = g1_381PippengerMSMFlat(points: [srs[0]], flatScalars: scalars469)
+        if let m469Aff = g1_381ToAffine(msm469), let dAff = g1_381ToAffine(directResult) {
+            let match = fp381ToInt(m469Aff.x) == fp381ToInt(dAff.x)
+            expect(match, "MSM([G], [469]) == 469*G")
+        }
+
+        // MSM result for [7, 11]
+        if let m2Aff = g1_381ToAffine(msm2) {
+            // Check if MSM result is actually 7*G + 11*SRS[1]
+            // Compute 7*G + 11*SRS[1] manually
+            let manualSum = g1_381Add(sevenG, g1_381ScalarMul(srs1Proj, [11, 0, 0, 0]))
+            if let msAff = g1_381ToAffine(manualSum) {
+                let match = fp381ToInt(m2Aff.x) == fp381ToInt(msAff.x)
+                print("  MSM([G,42G], [7,11]) == 7G + 11*(42G)? \(match)")
+                if !match {
+                    print("    MSM.x    = \(fp381ToInt(m2Aff.x))")
+                    print("    manual.x = \(fp381ToInt(msAff.x))")
+                }
+            }
+        }
+
+        print("  Pippenger MSM zero scalar test: done")
+    }
+
     suite("DAS — Data Availability Sampling")
 
     // Use a small config for fast testing

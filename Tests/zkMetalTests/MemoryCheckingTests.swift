@@ -293,7 +293,7 @@ public func runMemoryCheckingTests() {
         var localMemory = [UInt64: Fr]()
 
         // Generate valid ops
-        for i in 0..<numOps {
+        for _ in 0..<numOps {
             let addr = nextRng() % numAddrs
             let isWrite = (nextRng() % 3) != 0
 
@@ -303,14 +303,14 @@ public func runMemoryCheckingTests() {
                 localMemory[addr] = val
             } else {
                 let expected = localMemory[addr] ?? Fr.zero
-                if i == numOps - 1 {
-                    // Inject bad read on last operation
-                    checker.read(addr: addr, value: frAdd(expected, Fr.one))
-                } else {
-                    checker.read(addr: addr, value: expected)
-                }
+                checker.read(addr: addr, value: expected)
             }
         }
+
+        // Inject one bad read after all valid ops
+        let badAddr = nextRng() % numAddrs
+        let expected = localMemory[badAddr] ?? Fr.zero
+        checker.read(addr: badAddr, value: frAdd(expected, Fr.one))
 
         let result = checker.check()
         expect(!result.success, "Stress test with bad read detected as invalid")

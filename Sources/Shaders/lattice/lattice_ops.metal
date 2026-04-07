@@ -75,16 +75,31 @@ kernel void kyber_poly_sub(
     out[gid] = kyber_sub_ops(a[gid], b[gid]);
 }
 
-// Batch pointwise multiplication in NTT domain: out[i] = a[i] * b[i] mod q
+// Batch basemul in NTT domain: pairs at (4i, 4i+1) use +gamma, (4i+2, 4i+3) use -gamma
+// gid indexes pairs (count/2 total). twiddles buffer has 128 entries; gammas are twiddles[64..127].
 kernel void kyber_poly_pointwise_mul(
     device const ushort* a [[buffer(0)]],
     device const ushort* b [[buffer(1)]],
     device ushort* out [[buffer(2)]],
     constant uint& count [[buffer(3)]],
+    constant ushort* twiddles [[buffer(4)]],
     uint gid [[thread_position_in_grid]]
 ) {
-    if (gid >= count) return;
-    out[gid] = kyber_mul_ops(a[gid], b[gid]);
+    uint total_pairs = count / 2;
+    if (gid >= total_pairs) return;
+
+    uint pair_in_poly = gid % 128;
+    uint group = pair_in_poly / 2;
+    bool is_second = (pair_in_poly & 1) != 0;
+    uint base = gid * 2;
+
+    ushort a0 = a[base], a1 = a[base + 1];
+    ushort b0 = b[base], b1 = b[base + 1];
+    ushort fwd_gamma = twiddles[64 + group];
+    ushort gamma = is_second ? (KYBER_Q_OPS - fwd_gamma) : fwd_gamma;
+
+    out[base]     = kyber_add_ops(kyber_mul_ops(a0, b0), kyber_mul_ops(kyber_mul_ops(a1, b1), gamma));
+    out[base + 1] = kyber_add_ops(kyber_mul_ops(a0, b1), kyber_mul_ops(a1, b0));
 }
 
 // Matrix-vector multiply for Kyber (k x k matrix of NTT polys, k-vector of NTT polys)
@@ -143,10 +158,24 @@ kernel void dilithium_poly_pointwise_mul(
     device const uint* b [[buffer(1)]],
     device uint* out [[buffer(2)]],
     constant uint& count [[buffer(3)]],
+    constant uint* twiddles [[buffer(4)]],
     uint gid [[thread_position_in_grid]]
 ) {
-    if (gid >= count) return;
-    out[gid] = dil_mul_ops(a[gid], b[gid]);
+    uint total_pairs = count / 2;
+    if (gid >= total_pairs) return;
+
+    uint pair_in_poly = gid % 128;
+    uint group = pair_in_poly / 2;
+    bool is_second = (pair_in_poly & 1) != 0;
+    uint base = gid * 2;
+
+    uint a0 = a[base], a1 = a[base + 1];
+    uint b0 = b[base], b1 = b[base + 1];
+    uint fwd_gamma = twiddles[64 + group];
+    uint gamma = is_second ? (DIL_Q_OPS - fwd_gamma) : fwd_gamma;
+
+    out[base]     = dil_add_ops(dil_mul_ops(a0, b0), dil_mul_ops(dil_mul_ops(a1, b1), gamma));
+    out[base + 1] = dil_add_ops(dil_mul_ops(a0, b1), dil_mul_ops(a1, b0));
 }
 
 // Matrix-vector multiply for Dilithium

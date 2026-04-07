@@ -120,7 +120,7 @@ kernel void kyber_ntt_batch(
 // Kyber inverse NTT batch kernel
 kernel void kyber_intt_batch(
     device ushort* polys [[buffer(0)]],
-    constant ushort* inv_twiddles [[buffer(1)]],  // 128 inverse twiddle factors
+    constant ushort* fwd_twiddles [[buffer(1)]],  // forward twiddle factors (negated in-kernel)
     constant uint& num_polys [[buffer(2)]],
     constant ushort& inv_n [[buffer(3)]],  // 128^{-1} mod q
     uint tgid [[threadgroup_position_in_grid]],
@@ -138,7 +138,7 @@ kernel void kyber_intt_batch(
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
     // Inverse NTT: Gentleman-Sande, layers from len=2 up to len=128
-    // CPU processes blocks 0,1,...,num_blocks-1 with twiddles[k], twiddles[k-1], ..., twiddles[k-num_blocks+1]
+    // Uses negated forward twiddles: q - twiddles[k]
     uint k = 127;
     for (uint len = 2; len <= 128; len <<= 1) {
         uint num_blocks = 256 / (2 * len);
@@ -146,7 +146,8 @@ kernel void kyber_intt_batch(
             uint block_idx = block / len;
             uint j = block % len;
             uint start = block_idx * 2 * len;
-            ushort tw = inv_twiddles[k - block_idx];
+            ushort fwd_tw = fwd_twiddles[k - block_idx];
+            ushort tw = (fwd_tw == 0) ? 0 : (KYBER_Q - fwd_tw);  // negate
             uint i0 = start + j;
             uint i1 = i0 + len;
             ushort t = shared_poly[i0];
@@ -218,7 +219,7 @@ kernel void dilithium_ntt_batch(
 // Dilithium inverse NTT batch kernel
 kernel void dilithium_intt_batch(
     device uint* polys [[buffer(0)]],
-    constant uint* inv_twiddles [[buffer(1)]],
+    constant uint* fwd_twiddles [[buffer(1)]],  // forward twiddle factors (negated in-kernel)
     constant uint& num_polys [[buffer(2)]],
     constant uint& inv_n [[buffer(3)]],  // 128^{-1} mod q
     uint tgid [[threadgroup_position_in_grid]],
@@ -235,6 +236,7 @@ kernel void dilithium_intt_batch(
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
+    // Uses negated forward twiddles: q - twiddles[k]
     uint k = 127;
     for (uint len = 2; len <= 128; len <<= 1) {
         uint num_blocks = 256 / (2 * len);
@@ -242,7 +244,8 @@ kernel void dilithium_intt_batch(
             uint block_idx = block / len;
             uint j = block % len;
             uint start = block_idx * 2 * len;
-            uint tw = inv_twiddles[k - block_idx];
+            uint fwd_tw = fwd_twiddles[k - block_idx];
+            uint tw = (fwd_tw == 0) ? 0 : (DIL_Q - fwd_tw);  // negate
             uint i0 = start + j;
             uint i1 = i0 + len;
             uint t = shared_poly[i0];

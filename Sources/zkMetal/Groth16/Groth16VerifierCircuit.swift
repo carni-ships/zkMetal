@@ -295,21 +295,6 @@ public struct Groth16VerifierCircuit {
         precondition(publicInputs.count == nPub)
         precondition(vk.ic.count == nPub + 1)
 
-        // Compute vk_accum = vk_ic[0] + sum(pub[i] * vk_ic[i+1])
-        var vkAccum = vk.ic[0]
-        for i in 0..<nPub {
-            if !publicInputs[i].isZero {
-                vkAccum = pointAdd(vkAccum, pointScalarMul(vk.ic[i + 1], publicInputs[i]))
-            }
-        }
-
-        // Convert accumulation point to affine coordinates as Fr elements
-        // We embed the Fp coordinates into Fr (they fit since Fp < Fr for BN254...
-        // actually Fp > Fr, but the values still fit in 256 bits, we just reduce mod r)
-        let accumAffine = pointToAffine(vkAccum)
-        let accumX = verifierFpToFr(accumAffine?.x ?? .zero)
-        let accumY = verifierFpToFr(accumAffine?.y ?? .zero)
-
         // Build z vector
         var z = [Fr](repeating: .zero, count: numVars)
         z[0] = .one
@@ -318,11 +303,8 @@ public struct Groth16VerifierCircuit {
         for i in 0..<nPub {
             z[1 + i] = publicInputs[i]
         }
-        // Public inputs: expected accumulation point
-        z[nPub + 1] = accumX
-        z[nPub + 2] = accumY
 
-        // Witness: vk_ic coordinates
+        // Witness: vk_ic coordinates (embed Fp into Fr by reinterpreting limbs)
         let vkICStart = numPublicVars + 1
         for i in 0...(nPub) {
             let aff = pointToAffine(vk.ic[i])
@@ -330,7 +312,7 @@ public struct Groth16VerifierCircuit {
             z[vkICStart + 2 * i + 1] = verifierFpToFr(aff?.y ?? .zero)
         }
 
-        // Witness: products
+        // Witness: products (field multiplication, matching the linearized circuit constraints)
         let productsStart = vkICStart + 2 * (nPub + 1)
         for i in 0..<nPub {
             let vkICx = z[vkICStart + 2 * (i + 1)]
@@ -339,7 +321,7 @@ public struct Groth16VerifierCircuit {
             z[productsStart + 2 * i + 1] = frMul(publicInputs[i], vkICy)
         }
 
-        // Witness: partial sums
+        // Witness: partial sums (linearized accumulation, NOT EC point addition)
         let partialStart = productsStart + 2 * nPub
         var sumX = z[vkICStart]      // vk_ic[0].x
         var sumY = z[vkICStart + 1]  // vk_ic[0].y
@@ -349,6 +331,12 @@ public struct Groth16VerifierCircuit {
         }
         z[partialStart] = sumX
         z[partialStart + 1] = sumY
+
+        // Public inputs: expected accumulation point = linearized sum
+        // Must match the linearized formula the circuit constraints check,
+        // NOT the actual EC point (which uses non-linear curve addition).
+        z[nPub + 1] = sumX
+        z[nPub + 2] = sumY
 
         return z
     }

@@ -158,21 +158,117 @@ void blake3_batch_hash_pairs_neon(const uint8_t *inputs, uint8_t *outputs, size_
     }
 }
 
-// General-purpose Blake3 hash (single chunk, <=64 bytes input -> 32 bytes output).
-// For inputs > 64 bytes, uses only the first 64 bytes (matching Swift blake3 behavior).
-// Flags: CHUNK_START(1) | CHUNK_END(2) | ROOT(8) = 11
+// Blake3 flag constants
+#define BLAKE3_CHUNK_START 1
+#define BLAKE3_CHUNK_END   2
+#define BLAKE3_ROOT        8
+
+// General-purpose Blake3 hash for arbitrary-length inputs -> 32 bytes output.
+// Processes data in 64-byte blocks with proper chaining within chunks (up to 1024 bytes),
+// and uses the Blake3 tree structure for inputs larger than one chunk.
 void blake3_hash_neon(const uint8_t *input, size_t len, uint8_t output[32]) {
-    uint32_t msg[16];
-    memset(msg, 0, 64);
+    if (len == 0) {
+        uint32_t msg[16];
+        memset(msg, 0, 64);
+        uint32_t state[16];
+        blake3_compress_neon(BLAKE3_IV, msg, 0, 0, 0,
+                             BLAKE3_CHUNK_START | BLAKE3_CHUNK_END | BLAKE3_ROOT, state);
+        memcpy(output, state, 32);
+        return;
+    }
 
-    // Copy min(len, 64) bytes into message block
-    size_t block_len = len < 64 ? len : 64;
-    memcpy(msg, input, block_len);
+    // Stack for tree hashing (max depth ~54 for 2^64 bytes)
+    uint32_t cv_stack[55][8];
+    int stack_depth = 0;
+    uint64_t chunk_counter = 0;
 
-    uint32_t state[16];
-    // flags = CHUNK_START | CHUNK_END | ROOT = 1 | 2 | 8 = 11
-    blake3_compress_neon(BLAKE3_IV, msg, 0, 0, (uint32_t)block_len, 11, state);
+    size_t offset = 0;
+    while (offset < len) {
+        // Process one chunk (up to 1024 bytes)
+        size_t chunk_len = len - offset;
+        if (chunk_len > 1024) chunk_len = 1024;
+        int is_last_chunk = (offset + chunk_len >= len);
 
-    // Output first 8 words = 32 bytes
-    memcpy(output, state, 32);
+        // Initialize chaining value for this chunk
+        uint32_t cv[8];
+        memcpy(cv, BLAKE3_IV, 32);
+
+        // Process blocks within this chunk
+        size_t chunk_offset = 0;
+        while (chunk_offset < chunk_len) {
+            size_t block_len = chunk_len - chunk_offset;
+            if (block_len > 64) block_len = 64;
+            int is_first_block = (chunk_offset == 0);
+            int is_last_block = (chunk_offset + block_len >= chunk_len);
+
+            uint32_t flags = 0;
+            if (is_first_block) flags |= BLAKE3_CHUNK_START;
+            if (is_last_block) flags |= BLAKE3_CHUNK_END;
+
+            // If single chunk, add ROOT flag on last block
+            if (chunk_counter == 0 && is_last_chunk && is_last_block)
+                flags |= BLAKE3_ROOT;
+
+            uint32_t msg[16];
+            memset(msg, 0, 64);
+            memcpy(msg, input + offset + chunk_offset, block_len);
+
+            uint32_t state[16];
+            blake3_compress_neon(cv, msg,
+                                 (uint32_t)(chunk_counter & 0xFFFFFFFF),
+                                 (uint32_t)(chunk_counter >> 32),
+                                 (uint32_t)block_len, flags, state);
+
+            // Update CV from the first 8 words of state
+            memcpy(cv, state, 32);
+            chunk_offset += block_len;
+        }
+
+        // Single chunk: already finalized with ROOT flag above
+        if (chunk_counter == 0 && is_last_chunk) {
+            memcpy(output, cv, 32);
+            return;
+        }
+
+        // Multi-chunk: push CV onto stack and merge pairs
+        memcpy(cv_stack[stack_depth], cv, 32);
+        stack_depth++;
+        chunk_counter++;
+
+        uint64_t merge_count = chunk_counter;
+        while (stack_depth >= 2 && (merge_count & 1) == 0) {
+            stack_depth--;
+            uint32_t parent_msg[16];
+            memcpy(&parent_msg[0], cv_stack[stack_depth - 1], 32);
+            memcpy(&parent_msg[8], cv_stack[stack_depth], 32);
+
+            uint32_t parent_flags = BLAKE3_PARENT;
+            if (stack_depth == 1 && offset + chunk_len >= len)
+                parent_flags |= BLAKE3_ROOT;
+
+            uint32_t state[16];
+            blake3_compress_neon(BLAKE3_IV, parent_msg, 0, 0, 64, parent_flags, state);
+            memcpy(cv_stack[stack_depth - 1], state, 32);
+            merge_count >>= 1;
+        }
+
+        offset += chunk_len;
+    }
+
+    // Finalize: merge remaining stack entries
+    while (stack_depth > 1) {
+        stack_depth--;
+        uint32_t parent_msg[16];
+        memcpy(&parent_msg[0], cv_stack[stack_depth - 1], 32);
+        memcpy(&parent_msg[8], cv_stack[stack_depth], 32);
+
+        uint32_t parent_flags = BLAKE3_PARENT;
+        if (stack_depth == 1) parent_flags |= BLAKE3_ROOT;
+
+        uint32_t state[16];
+        blake3_compress_neon(BLAKE3_IV, parent_msg, 0, 0, 64, parent_flags, state);
+        memcpy(cv_stack[stack_depth - 1], state, 32);
+    }
+
+    memcpy(output, cv_stack[0], 32);
 }

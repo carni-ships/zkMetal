@@ -21,8 +21,8 @@ constant uint LNTT_KYBER_BARRETT_M = 5039;
 constant uint LNTT_KYBER_BARRETT_SHIFT = 24;
 
 inline ushort lntt_kyber_reduce(uint a) {
-    // Barrett reduction for small modulus
-    uint t = (a * LNTT_KYBER_BARRETT_M) >> LNTT_KYBER_BARRETT_SHIFT;
+    // Barrett reduction: must use 64-bit for intermediate (a*M can exceed 2^32)
+    uint t = uint((ulong(a) * ulong(LNTT_KYBER_BARRETT_M)) >> LNTT_KYBER_BARRETT_SHIFT);
     uint r = a - t * uint(LNTT_KYBER_Q);
     return ushort(r >= uint(LNTT_KYBER_Q) ? r - uint(LNTT_KYBER_Q) : r);
 }
@@ -162,6 +162,7 @@ kernel void lattice_intt_kyber(
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
     // Inverse NTT: Gentleman-Sande, layers from len=2 up to len=128
+    // Uses negated forward twiddles: q - twiddles[k]
     uint k = 127;
     for (uint len = 2; len <= 128; len <<= 1) {
         uint num_blocks = 256 / (2 * len);
@@ -169,7 +170,8 @@ kernel void lattice_intt_kyber(
             uint block_idx = block / len;
             uint j = block % len;
             uint start = block_idx * 2 * len;
-            ushort tw = twiddles[k - block_idx];
+            ushort fwd_tw = twiddles[k - block_idx];
+            ushort tw = (fwd_tw == 0) ? 0 : (LNTT_KYBER_Q - fwd_tw);  // negate
             uint i0 = start + j;
             uint i1 = i0 + len;
             ushort t = shared_poly[i0];
@@ -256,6 +258,7 @@ kernel void lattice_intt_dilithium(
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
+    // Uses negated forward twiddles: q - twiddles[k]
     uint k = 127;
     for (uint len = 2; len <= 128; len <<= 1) {
         uint num_blocks = 256 / (2 * len);
@@ -263,7 +266,8 @@ kernel void lattice_intt_dilithium(
             uint block_idx = block / len;
             uint j = block % len;
             uint start = block_idx * 2 * len;
-            uint tw = twiddles[k - block_idx];
+            uint fwd_tw = twiddles[k - block_idx];
+            uint tw = (fwd_tw == 0) ? 0 : (LNTT_DIL_Q - fwd_tw);  // negate
             uint i0 = start + j;
             uint i1 = i0 + len;
             uint t = shared_poly[i0];
@@ -280,24 +284,47 @@ kernel void lattice_intt_dilithium(
 }
 
 // ============================================================
-// Kyber pointwise multiplication in NTT domain
+// Kyber pointwise multiplication in NTT domain (basemul)
 // ============================================================
-// Element-wise: out[i] = a[i] * b[i] mod q
-// Operates on flat arrays (num_polys * 256 elements).
+// The Kyber NTT stops one layer short, leaving 128 pairs per polynomial.
+// Each pair is multiplied as degree-1 polynomials mod (x^2 - gamma).
+// BaseCaseMultiply: c0 = a0*b0 + a1*b1*gamma, c1 = a0*b1 + a1*b0
 
 kernel void lattice_pointwise_kyber(
     device const ushort* a [[buffer(0)]],
     device const ushort* b [[buffer(1)]],
     device ushort* out [[buffer(2)]],
-    constant uint& count [[buffer(3)]],         // total elements
+    constant uint& count [[buffer(3)]],         // total elements (must be multiple of 256)
+    constant ushort* twiddles [[buffer(4)]],     // 128 twiddle factors (gammas are twiddles[64..127])
     uint gid [[thread_position_in_grid]]
 ) {
-    if (gid >= count) return;
-    out[gid] = lntt_kyber_mul(a[gid], b[gid]);
+    // gid indexes pairs (128 per polynomial)
+    uint total_pairs = count / 2;
+    if (gid >= total_pairs) return;
+
+    uint pair_in_poly = gid % 128;  // which pair within the polynomial
+    uint group = pair_in_poly / 2;  // which group of 4 elements
+    bool is_second = (pair_in_poly & 1) != 0;  // second pair in group uses negated gamma
+    uint base = gid * 2;
+
+    ushort a0 = a[base];
+    ushort a1 = a[base + 1];
+    ushort b0 = b[base];
+    ushort b1 = b[base + 1];
+    ushort fwd_gamma = twiddles[64 + group];
+    ushort gamma = is_second ? (LNTT_KYBER_Q - fwd_gamma) : fwd_gamma;
+
+    // c0 = a0*b0 + a1*b1*gamma
+    ushort c0 = lntt_kyber_add(lntt_kyber_mul(a0, b0), lntt_kyber_mul(lntt_kyber_mul(a1, b1), gamma));
+    // c1 = a0*b1 + a1*b0
+    ushort c1 = lntt_kyber_add(lntt_kyber_mul(a0, b1), lntt_kyber_mul(a1, b0));
+
+    out[base] = c0;
+    out[base + 1] = c1;
 }
 
 // ============================================================
-// Dilithium pointwise multiplication in NTT domain
+// Dilithium pointwise multiplication in NTT domain (basemul)
 // ============================================================
 
 kernel void lattice_pointwise_dilithium(
@@ -305,8 +332,29 @@ kernel void lattice_pointwise_dilithium(
     device const uint* b [[buffer(1)]],
     device uint* out [[buffer(2)]],
     constant uint& count [[buffer(3)]],
+    constant uint* twiddles [[buffer(4)]],       // 128 twiddle factors (gammas are twiddles[64..127])
     uint gid [[thread_position_in_grid]]
 ) {
-    if (gid >= count) return;
-    out[gid] = lntt_dil_mul(a[gid], b[gid]);
+    uint total_pairs = count / 2;
+    if (gid >= total_pairs) return;
+
+    uint pair_in_poly = gid % 128;
+    uint group = pair_in_poly / 2;
+    bool is_second = (pair_in_poly & 1) != 0;
+    uint base = gid * 2;
+
+    uint a0 = a[base];
+    uint a1 = a[base + 1];
+    uint b0 = b[base];
+    uint b1 = b[base + 1];
+    uint fwd_gamma = twiddles[64 + group];
+    uint gamma = is_second ? (LNTT_DIL_Q - fwd_gamma) : fwd_gamma;
+
+    // c0 = a0*b0 + a1*b1*gamma
+    uint c0 = lntt_dil_add(lntt_dil_mul(a0, b0), lntt_dil_mul(lntt_dil_mul(a1, b1), gamma));
+    // c1 = a0*b1 + a1*b0
+    uint c1 = lntt_dil_add(lntt_dil_mul(a0, b1), lntt_dil_mul(a1, b0));
+
+    out[base] = c0;
+    out[base + 1] = c1;
 }
