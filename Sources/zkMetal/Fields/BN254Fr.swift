@@ -101,56 +101,52 @@ extension Fr: Hashable {
     }
 }
 
-// MARK: - Fr Field Operations
+// MARK: - Fr Field Operations (zero-copy C CIOS)
+// Fr.v is 8×UInt32 = 32 bytes = same layout as uint64_t[4] on little-endian
 
+@inline(__always)
+private func withFrPtr<T>(_ a: Fr, _ body: (UnsafePointer<UInt64>) -> T) -> T {
+    var v = a.v
+    return withUnsafePointer(to: &v) { p in
+        body(UnsafeRawPointer(p).assumingMemoryBound(to: UInt64.self))
+    }
+}
+
+@inline(__always)
+private func frFromRaw(_ body: (UnsafeMutablePointer<UInt64>) -> Void) -> Fr {
+    var rv: (UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32) = (0,0,0,0,0,0,0,0)
+    withUnsafeMutablePointer(to: &rv) { p in
+        body(UnsafeMutableRawPointer(p).assumingMemoryBound(to: UInt64.self))
+    }
+    return Fr(v: rv)
+}
+
+@inline(__always)
 public func frMul(_ a: Fr, _ b: Fr) -> Fr {
-    let al = a.to64(), bl = b.to64()
-    var r = [UInt64](repeating: 0, count: 4)
-    al.withUnsafeBufferPointer { aPtr in
-        bl.withUnsafeBufferPointer { bPtr in
-            r.withUnsafeMutableBufferPointer { rPtr in
-                bn254_fr_mul(aPtr.baseAddress!, bPtr.baseAddress!, rPtr.baseAddress!)
-            }
-        }
-    }
-    return Fr.from64(r)
+    withFrPtr(a) { ap in withFrPtr(b) { bp in
+        frFromRaw { rp in bn254_fr_mul(ap, bp, rp) }
+    }}
 }
 
+@inline(__always)
 public func frAdd(_ a: Fr, _ b: Fr) -> Fr {
-    let al = a.to64(), bl = b.to64()
-    var r = [UInt64](repeating: 0, count: 4)
-    al.withUnsafeBufferPointer { aPtr in
-        bl.withUnsafeBufferPointer { bPtr in
-            r.withUnsafeMutableBufferPointer { rPtr in
-                bn254_fr_add(aPtr.baseAddress!, bPtr.baseAddress!, rPtr.baseAddress!)
-            }
-        }
-    }
-    return Fr.from64(r)
+    withFrPtr(a) { ap in withFrPtr(b) { bp in
+        frFromRaw { rp in bn254_fr_add(ap, bp, rp) }
+    }}
 }
 
+@inline(__always)
 public func frSub(_ a: Fr, _ b: Fr) -> Fr {
-    let al = a.to64(), bl = b.to64()
-    var r = [UInt64](repeating: 0, count: 4)
-    al.withUnsafeBufferPointer { aPtr in
-        bl.withUnsafeBufferPointer { bPtr in
-            r.withUnsafeMutableBufferPointer { rPtr in
-                bn254_fr_sub(aPtr.baseAddress!, bPtr.baseAddress!, rPtr.baseAddress!)
-            }
-        }
-    }
-    return Fr.from64(r)
+    withFrPtr(a) { ap in withFrPtr(b) { bp in
+        frFromRaw { rp in bn254_fr_sub(ap, bp, rp) }
+    }}
 }
 
+@inline(__always)
 public func frSqr(_ a: Fr) -> Fr {
-    let al = a.to64()
-    var r = [UInt64](repeating: 0, count: 4)
-    al.withUnsafeBufferPointer { aPtr in
-        r.withUnsafeMutableBufferPointer { rPtr in
-            bn254_fr_sqr(aPtr.baseAddress!, rPtr.baseAddress!)
-        }
+    withFrPtr(a) { ap in
+        frFromRaw { rp in bn254_fr_sqr(ap, rp) }
     }
-    return Fr.from64(r)
 }
 
 public func frFromInt(_ val: UInt64) -> Fr {
@@ -174,15 +170,11 @@ public func frToUInt64(_ a: Fr) -> UInt64 {
     return UInt64(reduced.v.0) | (UInt64(reduced.v.1) << 32)
 }
 
+@inline(__always)
 public func frInverse(_ a: Fr) -> Fr {
-    let al = a.to64()
-    var r = [UInt64](repeating: 0, count: 4)
-    al.withUnsafeBufferPointer { aPtr in
-        r.withUnsafeMutableBufferPointer { rPtr in
-            bn254_fr_inverse(aPtr.baseAddress!, rPtr.baseAddress!)
-        }
+    withFrPtr(a) { ap in
+        frFromRaw { rp in bn254_fr_inverse(ap, rp) }
     }
-    return Fr.from64(r)
 }
 
 /// Montgomery batch inversion: compute 1/a[i] for all i using a single frInverse.
