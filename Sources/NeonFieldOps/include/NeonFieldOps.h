@@ -273,6 +273,10 @@ void bn254_fr_batch_scalar_sub_neon(uint64_t *result, const uint64_t *scalar,
 void bn254_fr_batch_mul_neon(uint64_t *result, const uint64_t *a,
                               const uint64_t *b, int n);
 
+/// Parallel batch element-wise multiply: result[i] = a[i] * b[i]. Auto-threads for n>=4096.
+void bn254_fr_batch_mul_parallel(uint64_t *result, const uint64_t *a,
+                                  const uint64_t *b, int n);
+
 /// Fused scalar-multiply-accumulate: result[i] += scalar * a[i].
 void bn254_fr_batch_mac_neon(uint64_t *result, const uint64_t *a,
                               const uint64_t *scalar, int n);

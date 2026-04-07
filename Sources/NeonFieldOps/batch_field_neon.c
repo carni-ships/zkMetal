@@ -366,6 +366,7 @@ static void batch_parallel(uint64_t *result, const uint64_t *a,
         case 1: bn254_fr_batch_sub_neon(result, a, b, n); break;
         case 2: bn254_fr_batch_neg_neon(result, a, n); break;
         case 3: bn254_fr_batch_mul_scalar_neon(result, a, scalar, n); break;
+        case 4: bn254_fr_batch_mul_neon(result, a, b, n); break;
         }
         return;
     }
@@ -403,6 +404,12 @@ static void batch_parallel(uint64_t *result, const uint64_t *a,
                 for (int i = 0; i < count; i++)
                     fr_mont_mul(&ap[i * 4], scalar, &res[i * 4]);
                 break;
+            case 4: {
+                const uint64_t *bp = b + start * 4;
+                for (int i = 0; i < count; i++)
+                    fr_mont_mul(&ap[i * 4], &bp[i * 4], &res[i * 4]);
+                break;
+            }
             }
         });
 }
@@ -429,6 +436,12 @@ void bn254_fr_batch_mul_scalar_parallel(uint64_t *result, const uint64_t *a,
                                          const uint64_t *scalar, int n)
 {
     batch_parallel(result, a, NULL, scalar, n, 3);
+}
+
+void bn254_fr_batch_mul_parallel(uint64_t *result, const uint64_t *a,
+                                  const uint64_t *b, int n)
+{
+    batch_parallel(result, a, b, NULL, n, 4);
 }
 
 // ============================================================

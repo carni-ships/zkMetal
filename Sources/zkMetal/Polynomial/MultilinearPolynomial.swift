@@ -109,7 +109,7 @@ extension MultilinearPoly {
         a.evals.withUnsafeBytes { aBuf in
             b.evals.withUnsafeBytes { bBuf in
                 result.withUnsafeMutableBytes { rBuf in
-                    bn254_fr_batch_add_neon(
+                    bn254_fr_batch_add_parallel(
                         rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
                         aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
                         bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
@@ -129,7 +129,7 @@ extension MultilinearPoly {
         a.evals.withUnsafeBytes { aBuf in
             b.evals.withUnsafeBytes { bBuf in
                 result.withUnsafeMutableBytes { rBuf in
-                    bn254_fr_batch_sub_neon(
+                    bn254_fr_batch_sub_parallel(
                         rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
                         aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
                         bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
@@ -151,7 +151,7 @@ extension MultilinearPoly {
         a.evals.withUnsafeBytes { aBuf in
             b.evals.withUnsafeBytes { bBuf in
                 result.withUnsafeMutableBytes { rBuf in
-                    bn254_fr_batch_mul_neon(
+                    bn254_fr_batch_mul_parallel(
                         rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
                         aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
                         bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
