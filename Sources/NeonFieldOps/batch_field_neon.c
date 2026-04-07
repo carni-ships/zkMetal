@@ -289,6 +289,37 @@ void bn254_fr_batch_mul_scalar_neon(uint64_t *result, const uint64_t *a,
     }
 }
 
+/// Fused scalar-multiply-accumulate: result[i] += scalar * a[i] for i in 0..n-1
+void bn254_fr_batch_mac_neon(uint64_t *result, const uint64_t *a,
+                              const uint64_t *scalar, int n)
+{
+    uint64_t tmp[4];
+    for (int i = 0; i < n; i++) {
+        if (i + 2 < n) __builtin_prefetch(&a[(i + 2) * 4], 0, 1);
+        fr_mont_mul(&a[i * 4], scalar, tmp);
+        fr_add_branchless(tmp, &result[i * 4], &result[i * 4]);
+    }
+}
+
+/// Sumcheck reduce: result[i] = a[i] + challenge * (b[i] - a[i]) for i in 0..halfN-1
+/// where a = evals[0..halfN-1], b = evals[halfN..n-1]
+void bn254_fr_sumcheck_reduce(const uint64_t *evals, const uint64_t *challenge,
+                               uint64_t *result, int halfN)
+{
+    uint64_t diff[4], scaled[4];
+    for (int i = 0; i < halfN; i++) {
+        if (i + 2 < halfN) {
+            __builtin_prefetch(&evals[(i + 2) * 4], 0, 1);
+            __builtin_prefetch(&evals[(halfN + i + 2) * 4], 0, 1);
+        }
+        const uint64_t *ai = &evals[i * 4];
+        const uint64_t *bi = &evals[(halfN + i) * 4];
+        fr_sub_branchless(bi, ai, diff);
+        fr_mont_mul(challenge, diff, scaled);
+        fr_add_branchless(ai, scaled, &result[i * 4]);
+    }
+}
+
 // ============================================================
 // Multi-threaded batch operations for large arrays
 // ============================================================

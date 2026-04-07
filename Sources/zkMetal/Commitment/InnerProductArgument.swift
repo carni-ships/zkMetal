@@ -410,16 +410,20 @@ public class IPAVerifier {
             Cprime = pointAdd(Cprime, pointAdd(lTerm, rTerm))
         }
 
-        // Compute s[i] = product of x_j^{+-1} based on bit decomposition
-        // s[i] = prod_{j=0}^{logN-1} x_j^{bit(i,logN-1-j)} * x_j^{-(1-bit(i,logN-1-j))}
-        var s = [Fr](repeating: Fr.one, count: n)
+        // Compute s[i] = product of x_j^{+-1} using O(n) butterfly construction
+        // (was O(n * logN); this is ~logN× faster for large n)
+        var s = [Fr](repeating: Fr.zero, count: n)
+        s[0] = Fr.one
+        var half = 1
         for round in 0..<logN {
             let x = challenges[round]
             let xInv = challengeInvs[round]
-            for i in 0..<n {
-                let bit = (i >> (logN - 1 - round)) & 1
-                s[i] = frMul(s[i], bit == 1 ? x : xInv)
+            // Expand in reverse to avoid overwriting: s[2i] = s[i]*xInv, s[2i+1] = s[i]*x
+            for i in stride(from: half - 1, through: 0, by: -1) {
+                s[2 * i + 1] = frMul(s[i], x)
+                s[2 * i]     = frMul(s[i], xInv)
             }
+            half *= 2
         }
 
         // G_final = MSM(G, s) using C Pippenger

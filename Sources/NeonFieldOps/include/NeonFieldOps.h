@@ -265,6 +265,14 @@ void bn254_fr_batch_neg_neon(uint64_t *result, const uint64_t *a, int n);
 void bn254_fr_batch_mul_scalar_neon(uint64_t *result, const uint64_t *a,
                                      const uint64_t *scalar, int n);
 
+/// Fused scalar-multiply-accumulate: result[i] += scalar * a[i].
+void bn254_fr_batch_mac_neon(uint64_t *result, const uint64_t *a,
+                              const uint64_t *scalar, int n);
+
+/// Sumcheck reduce: result[i] = evals[i] + challenge * (evals[halfN+i] - evals[i]).
+void bn254_fr_sumcheck_reduce(const uint64_t *evals, const uint64_t *challenge,
+                               uint64_t *result, int halfN);
+
 /// Multi-threaded batch add (auto-threads for n >= 4096).
 void bn254_fr_batch_add_parallel(uint64_t *result, const uint64_t *a,
                                   const uint64_t *b, int n);

@@ -620,17 +620,22 @@ public class SumcheckEngine {
 
     // MARK: - CPU Reference
 
-    /// CPU sumcheck reduce for verification.
+    /// CPU sumcheck reduce for verification (batch C kernel).
     public static func cpuReduce(evals: [Fr], challenge: Fr) -> [Fr] {
         let n = evals.count
         let halfN = n / 2
         var result = [Fr](repeating: Fr.zero, count: halfN)
-        for i in 0..<halfN {
-            let a = evals[i]
-            let b = evals[i + halfN]
-            let diff = frSub(b, a)
-            let rDiff = frMul(challenge, diff)
-            result[i] = frAdd(a, rDiff)
+        evals.withUnsafeBytes { evalsBuf in
+            result.withUnsafeMutableBytes { resBuf in
+                var chal = challenge
+                withUnsafeBytes(of: &chal) { chalBuf in
+                    bn254_fr_sumcheck_reduce(
+                        evalsBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        chalBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        resBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(halfN))
+                }
+            }
         }
         return result
     }

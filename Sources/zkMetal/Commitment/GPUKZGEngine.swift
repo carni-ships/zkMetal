@@ -249,8 +249,17 @@ public class GPUKZGEngine {
         var gammaPow = Fr.one
         for i in 0..<n {
             let poly = polys[i]
-            for j in 0..<poly.count {
-                combined[j] = frAdd(combined[j], frMul(gammaPow, poly[j]))
+            // Batch MAC: combined[j] += gammaPow * poly[j]
+            poly.withUnsafeBytes { polyBuf in
+                combined.withUnsafeMutableBytes { combBuf in
+                    withUnsafeBytes(of: gammaPow) { gpBuf in
+                        bn254_fr_batch_mac_neon(
+                            combBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            polyBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            gpBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(poly.count))
+                    }
+                }
             }
             if i < n - 1 {
                 gammaPow = frMul(gammaPow, gamma)
