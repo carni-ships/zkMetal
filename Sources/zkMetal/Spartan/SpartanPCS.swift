@@ -243,10 +243,16 @@ public struct KZGPCSAdapter: SpartanPCSBackend {
             let rk = point[k]
             let oneMinusRk = frSub(Fr.one, rk)
             var folded = [Fr](repeating: Fr.zero, count: half)
-            for i in 0..<half {
-                let lo = current[2 * i]
-                let hi = current[2 * i + 1]
-                folded[i] = frAdd(frMul(oneMinusRk, lo), frMul(rk, hi))
+            current.withUnsafeBytes { cBuf in
+                folded.withUnsafeMutableBytes { fBuf in
+                    withUnsafeBytes(of: rk) { rkBuf in
+                        bn254_fr_fold_interleaved(
+                            cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rkBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            fBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(half))
+                    }
+                }
             }
 
             // Commit to the folded polynomial

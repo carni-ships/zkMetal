@@ -165,13 +165,19 @@ public class LogUpGKRProver {
         let n = columns[0].count
         if numCols == 1 { return columns[0] }
 
-        var result = [Fr](repeating: Fr.zero, count: n)
-        for i in 0..<n {
-            var val = columns[numCols - 1][i]
-            for c in stride(from: numCols - 2, through: 0, by: -1) {
-                val = frAdd(frMul(val, beta), columns[c][i])
+        var result = columns[numCols - 1]
+        for c in stride(from: numCols - 2, through: 0, by: -1) {
+            result.withUnsafeMutableBytes { rBuf in
+                withUnsafeBytes(of: beta) { bBuf in
+                    columns[c].withUnsafeBytes { cBuf in
+                        bn254_fr_batch_fma_scalar(
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
             }
-            result[i] = val
         }
         return result
     }
@@ -496,13 +502,19 @@ public class LogUpGKRVerifier {
         let numCols = columns.count
         let n = columns[0].count
         if numCols == 1 { return columns[0] }
-        var result = [Fr](repeating: Fr.zero, count: n)
-        for i in 0..<n {
-            var val = columns[numCols - 1][i]
-            for c in stride(from: numCols - 2, through: 0, by: -1) {
-                val = frAdd(frMul(val, beta), columns[c][i])
+        var result = columns[numCols - 1]
+        for c in stride(from: numCols - 2, through: 0, by: -1) {
+            result.withUnsafeMutableBytes { rBuf in
+                withUnsafeBytes(of: beta) { bBuf in
+                    columns[c].withUnsafeBytes { cBuf in
+                        bn254_fr_batch_fma_scalar(
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
             }
-            result[i] = val
         }
         return result
     }

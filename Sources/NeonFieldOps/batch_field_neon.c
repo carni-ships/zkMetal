@@ -366,6 +366,151 @@ void bn254_fr_sumcheck_reduce(const uint64_t *evals, const uint64_t *challenge,
     }
 }
 
+/// Batch FMA: result[i] = result[i] * scalar + other[i]
+void bn254_fr_batch_fma_scalar(uint64_t *result, const uint64_t *scalar,
+                                const uint64_t *other, int n)
+{
+    uint64_t tmp[4];
+    for (int i = 0; i < n; i++) {
+        if (i + 2 < n) {
+            __builtin_prefetch(&result[(i + 2) * 4], 1, 1);
+            __builtin_prefetch(&other[(i + 2) * 4], 0, 1);
+        }
+        fr_mont_mul(&result[i * 4], scalar, tmp);
+        fr_add_branchless(tmp, &other[i * 4], &result[i * 4]);
+    }
+}
+
+/// Interleaved fold: result[i] = evals[2i] + challenge*(evals[2i+1]-evals[2i])
+void bn254_fr_fold_interleaved(const uint64_t *evals, const uint64_t *challenge,
+                                uint64_t *result, int halfN)
+{
+    uint64_t diff[4], scaled[4];
+    for (int i = 0; i < halfN; i++) {
+        if (i + 2 < halfN) {
+            __builtin_prefetch(&evals[(2 * (i + 2)) * 4], 0, 1);
+        }
+        const uint64_t *lo = &evals[(2 * i) * 4];
+        const uint64_t *hi = &evals[(2 * i + 1) * 4];
+        fr_sub_branchless(hi, lo, diff);
+        fr_mont_mul(challenge, diff, scaled);
+        fr_add_branchless(lo, scaled, &result[i * 4]);
+    }
+}
+
+/// Spartan degree-2 sumcheck round:
+///   s0 = sum_{i<h} w[i]*z[i]
+///   s1 = sum_{i<h} w[i+h]*z[i+h]
+///   s2 = sum_{i<h} (2*w[i+h]-w[i])*(2*z[i+h]-z[i])
+void bn254_fr_spartan_sumcheck_deg2(const uint64_t *w, const uint64_t *z,
+                                     int halfN,
+                                     uint64_t *s0, uint64_t *s1, uint64_t *s2)
+{
+    uint64_t acc0[4] = {0}, acc1[4] = {0}, acc2[4] = {0};
+    uint64_t prod[4], w2[4], z2[4], dw[4], dz[4];
+
+    for (int i = 0; i < halfN; i++) {
+        if (i + 2 < halfN) {
+            __builtin_prefetch(&w[(i + 2) * 4], 0, 1);
+            __builtin_prefetch(&w[(halfN + i + 2) * 4], 0, 1);
+            __builtin_prefetch(&z[(i + 2) * 4], 0, 1);
+            __builtin_prefetch(&z[(halfN + i + 2) * 4], 0, 1);
+        }
+        const uint64_t *w0 = &w[i * 4];
+        const uint64_t *w1 = &w[(halfN + i) * 4];
+        const uint64_t *z0 = &z[i * 4];
+        const uint64_t *z1 = &z[(halfN + i) * 4];
+
+        // s0 += w0 * z0
+        fr_mont_mul(w0, z0, prod);
+        fr_add_branchless(acc0, prod, acc0);
+
+        // s1 += w1 * z1
+        fr_mont_mul(w1, z1, prod);
+        fr_add_branchless(acc1, prod, acc1);
+
+        // s2 += (2*w1 - w0) * (2*z1 - z0)
+        fr_add_branchless(w1, w1, dw);
+        fr_sub_branchless(dw, w0, w2);
+        fr_add_branchless(z1, z1, dz);
+        fr_sub_branchless(dz, z0, z2);
+        fr_mont_mul(w2, z2, prod);
+        fr_add_branchless(acc2, prod, acc2);
+    }
+
+    memcpy(s0, acc0, 32);
+    memcpy(s1, acc1, 32);
+    memcpy(s2, acc2, 32);
+}
+
+/// Spartan degree-3 sumcheck round for F(x) = eq(tau,x) * (Az(x)*Bz(x) - Cz(x))
+void bn254_fr_spartan_sumcheck_deg3(const uint64_t *eq, const uint64_t *az,
+                                     const uint64_t *bz, const uint64_t *cz,
+                                     int halfN,
+                                     uint64_t *s0, uint64_t *s1,
+                                     uint64_t *s2, uint64_t *s3)
+{
+    uint64_t acc0[4] = {0}, acc1[4] = {0}, acc2[4] = {0}, acc3[4] = {0};
+    uint64_t ab[4], f[4], tmp[4];
+    uint64_t eq2[4], a2[4], b2[4], c2[4];
+    uint64_t eq3[4], a3[4], b3[4], c3[4];
+    uint64_t d[4];
+
+    for (int i = 0; i < halfN; i++) {
+        if (i + 2 < halfN) {
+            __builtin_prefetch(&eq[(i + 2) * 4], 0, 1);
+            __builtin_prefetch(&eq[(halfN + i + 2) * 4], 0, 1);
+            __builtin_prefetch(&az[(i + 2) * 4], 0, 1);
+            __builtin_prefetch(&az[(halfN + i + 2) * 4], 0, 1);
+        }
+        const uint64_t *e0 = &eq[i * 4];
+        const uint64_t *e1 = &eq[(halfN + i) * 4];
+        const uint64_t *a0 = &az[i * 4];
+        const uint64_t *a1 = &az[(halfN + i) * 4];
+        const uint64_t *b0 = &bz[i * 4];
+        const uint64_t *b1 = &bz[(halfN + i) * 4];
+        const uint64_t *c0 = &cz[i * 4];
+        const uint64_t *c1 = &cz[(halfN + i) * 4];
+
+        // t=0: eq0 * (a0*b0 - c0)
+        fr_mont_mul(a0, b0, ab);
+        fr_sub_branchless(ab, c0, tmp);
+        fr_mont_mul(e0, tmp, f);
+        fr_add_branchless(acc0, f, acc0);
+
+        // t=1: eq1 * (a1*b1 - c1)
+        fr_mont_mul(a1, b1, ab);
+        fr_sub_branchless(ab, c1, tmp);
+        fr_mont_mul(e1, tmp, f);
+        fr_add_branchless(acc1, f, acc1);
+
+        // t=2: linear interpolation at 2
+        fr_add_branchless(e1, e1, d); fr_sub_branchless(d, e0, eq2);
+        fr_add_branchless(a1, a1, d); fr_sub_branchless(d, a0, a2);
+        fr_add_branchless(b1, b1, d); fr_sub_branchless(d, b0, b2);
+        fr_add_branchless(c1, c1, d); fr_sub_branchless(d, c0, c2);
+        fr_mont_mul(a2, b2, ab);
+        fr_sub_branchless(ab, c2, tmp);
+        fr_mont_mul(eq2, tmp, f);
+        fr_add_branchless(acc2, f, acc2);
+
+        // t=3: linear interpolation at 3
+        fr_sub_branchless(e1, e0, d); fr_add_branchless(eq2, d, eq3);
+        fr_sub_branchless(a1, a0, d); fr_add_branchless(a2, d, a3);
+        fr_sub_branchless(b1, b0, d); fr_add_branchless(b2, d, b3);
+        fr_sub_branchless(c1, c0, d); fr_add_branchless(c2, d, c3);
+        fr_mont_mul(a3, b3, ab);
+        fr_sub_branchless(ab, c3, tmp);
+        fr_mont_mul(eq3, tmp, f);
+        fr_add_branchless(acc3, f, acc3);
+    }
+
+    memcpy(s0, acc0, 32);
+    memcpy(s1, acc1, 32);
+    memcpy(s2, acc2, 32);
+    memcpy(s3, acc3, 32);
+}
+
 // ============================================================
 // Multi-threaded batch operations for large arrays
 // ============================================================

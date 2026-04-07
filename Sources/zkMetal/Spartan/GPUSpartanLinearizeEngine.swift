@@ -578,15 +578,22 @@ public class GPUSpartanLinearizeEngine {
     public func sumcheckRound(wVec: [Fr], zVec: [Fr],
                                halfSize h: Int) -> (Fr, Fr, Fr) {
         var s0 = Fr.zero, s1 = Fr.zero, s2 = Fr.zero
-        for i in 0..<h {
-            let w0 = wVec[i], w1 = wVec[i + h]
-            let z0 = zVec[i], z1 = zVec[i + h]
-            s0 = frAdd(s0, frMul(w0, z0))
-            s1 = frAdd(s1, frMul(w1, z1))
-            // s(2): evaluate at t=2 using linear interpolation of w and z
-            let w2 = frSub(frAdd(w1, w1), w0)  // 2*w1 - w0
-            let z2 = frSub(frAdd(z1, z1), z0)  // 2*z1 - z0
-            s2 = frAdd(s2, frMul(w2, z2))
+        wVec.withUnsafeBytes { wBuf in
+            zVec.withUnsafeBytes { zBuf in
+                withUnsafeMutableBytes(of: &s0) { s0Buf in
+                    withUnsafeMutableBytes(of: &s1) { s1Buf in
+                        withUnsafeMutableBytes(of: &s2) { s2Buf in
+                            bn254_fr_spartan_sumcheck_deg2(
+                                wBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                zBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                Int32(h),
+                                s0Buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                s1Buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                s2Buf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                        }
+                    }
+                }
+            }
         }
         return (s0, s1, s2)
     }
@@ -597,35 +604,31 @@ public class GPUSpartanLinearizeEngine {
     public func sumcheckRoundDeg3(eqTau: [Fr], az: [Fr], bz: [Fr], cz: [Fr],
                                    halfSize h: Int) -> (Fr, Fr, Fr, Fr) {
         var s0 = Fr.zero, s1 = Fr.zero, s2 = Fr.zero, s3 = Fr.zero
-        for i in 0..<h {
-            let eq0 = eqTau[i], eq1 = eqTau[i + h]
-            let a0 = az[i], a1 = az[i + h]
-            let b0 = bz[i], b1 = bz[i + h]
-            let c0 = cz[i], c1 = cz[i + h]
-
-            // t=0: eq0 * (a0*b0 - c0)
-            let f0 = frMul(eq0, frSub(frMul(a0, b0), c0))
-            s0 = frAdd(s0, f0)
-
-            // t=1: eq1 * (a1*b1 - c1)
-            let f1 = frMul(eq1, frSub(frMul(a1, b1), c1))
-            s1 = frAdd(s1, f1)
-
-            // t=2: interpolate at 2
-            let eq2 = frSub(frAdd(eq1, eq1), eq0)
-            let a2 = frSub(frAdd(a1, a1), a0)
-            let b2 = frSub(frAdd(b1, b1), b0)
-            let c2 = frSub(frAdd(c1, c1), c0)
-            let f2 = frMul(eq2, frSub(frMul(a2, b2), c2))
-            s2 = frAdd(s2, f2)
-
-            // t=3: interpolate at 3
-            let eq3 = frAdd(eq2, frSub(eq1, eq0))
-            let a3 = frAdd(a2, frSub(a1, a0))
-            let b3 = frAdd(b2, frSub(b1, b0))
-            let c3 = frAdd(c2, frSub(c1, c0))
-            let f3 = frMul(eq3, frSub(frMul(a3, b3), c3))
-            s3 = frAdd(s3, f3)
+        eqTau.withUnsafeBytes { eqBuf in
+            az.withUnsafeBytes { aBuf in
+                bz.withUnsafeBytes { bBuf in
+                    cz.withUnsafeBytes { cBuf in
+                        withUnsafeMutableBytes(of: &s0) { s0B in
+                            withUnsafeMutableBytes(of: &s1) { s1B in
+                                withUnsafeMutableBytes(of: &s2) { s2B in
+                                    withUnsafeMutableBytes(of: &s3) { s3B in
+                                        bn254_fr_spartan_sumcheck_deg3(
+                                            eqBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                            aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                            bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                            cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                            Int32(h),
+                                            s0B.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                            s1B.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                            s2B.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                            s3B.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
         return (s0, s1, s2, s3)
     }

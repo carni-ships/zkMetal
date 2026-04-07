@@ -293,6 +293,28 @@ void bn254_fr_batch_mac_neon(uint64_t *result, const uint64_t *a,
 void bn254_fr_sumcheck_reduce(const uint64_t *evals, const uint64_t *challenge,
                                uint64_t *result, int halfN);
 
+/// Spartan degree-2 sumcheck round: compute s0, s1, s2 from w and z vectors.
+///   s0 = sum w[i]*z[i], s1 = sum w[i+h]*z[i+h],
+///   s2 = sum (2*w[i+h]-w[i])*(2*z[i+h]-z[i])
+void bn254_fr_spartan_sumcheck_deg2(const uint64_t *w, const uint64_t *z,
+                                     int halfN,
+                                     uint64_t *s0, uint64_t *s1, uint64_t *s2);
+
+/// Spartan degree-3 sumcheck round: compute s0..s3 for F(x) = eq(tau,x)*(A*B-C).
+void bn254_fr_spartan_sumcheck_deg3(const uint64_t *eq, const uint64_t *az,
+                                     const uint64_t *bz, const uint64_t *cz,
+                                     int halfN,
+                                     uint64_t *s0, uint64_t *s1,
+                                     uint64_t *s2, uint64_t *s3);
+
+/// Interleaved fold: result[i] = evals[2i] + challenge*(evals[2i+1]-evals[2i]).
+void bn254_fr_fold_interleaved(const uint64_t *evals, const uint64_t *challenge,
+                                uint64_t *result, int halfN);
+
+/// Batch FMA: result[i] = result[i] * scalar + other[i] for i in 0..n-1.
+void bn254_fr_batch_fma_scalar(uint64_t *result, const uint64_t *scalar,
+                                const uint64_t *other, int n);
+
 /// Multi-threaded batch add (auto-threads for n >= 4096).
 void bn254_fr_batch_add_parallel(uint64_t *result, const uint64_t *a,
                                   const uint64_t *b, int n);

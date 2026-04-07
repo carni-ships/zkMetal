@@ -485,8 +485,16 @@ public func spartanEvalML(evals: [Fr], pt: [Fr]) -> Fr {
     for a in pt {
         let h = c.count / 2
         var n = [Fr](repeating: Fr.zero, count: h)
-        for j in 0..<h {
-            n[j] = frAdd(c[j], frMul(a, frSub(c[j + h], c[j])))
+        c.withUnsafeBytes { cBuf in
+            n.withUnsafeMutableBytes { nBuf in
+                withUnsafeBytes(of: a) { aBuf in
+                    bn254_fr_sumcheck_reduce(
+                        cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        nBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(h))
+                }
+            }
         }
         c = n
     }
