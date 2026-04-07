@@ -4,6 +4,7 @@
 // extension computation for wiring predicates.
 
 import Foundation
+import NeonFieldOps
 
 // MARK: - Gate Types
 
@@ -138,10 +139,19 @@ public struct MultilinearPoly {
     public func fixVariable(_ value: Fr) -> MultilinearPoly {
         precondition(numVars > 0)
         let half = size / 2
-        let oneMinusV = frSub(Fr.one, value)
         var result = [Fr](repeating: Fr.zero, count: half)
-        for j in 0..<half {
-            result[j] = frAdd(frMul(oneMinusV, evals[j]), frMul(value, evals[j + half]))
+        // result[j] = evals[j] + value * (evals[j+half] - evals[j])
+        evals.withUnsafeBytes { evalsBuf in
+            result.withUnsafeMutableBytes { resBuf in
+                var v = value
+                withUnsafeBytes(of: &v) { vBuf in
+                    bn254_fr_sumcheck_reduce(
+                        evalsBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        vBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        resBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(half))
+                }
+            }
         }
         return MultilinearPoly(numVars: numVars - 1, evals: result)
     }

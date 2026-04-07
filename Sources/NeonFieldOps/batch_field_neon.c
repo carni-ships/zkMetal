@@ -289,6 +289,24 @@ void bn254_fr_batch_mul_scalar_neon(uint64_t *result, const uint64_t *a,
     }
 }
 
+/// Batch element-wise multiply: result[i] = a[i] * b[i] for i in 0..n-1
+void bn254_fr_batch_mul_neon(uint64_t *result, const uint64_t *a,
+                              const uint64_t *b, int n)
+{
+    int i = 0;
+    for (; i + 1 < n; i += 2) {
+        if (i + 3 < n) {
+            __builtin_prefetch(&a[(i + 2) * 4], 0, 1);
+            __builtin_prefetch(&b[(i + 2) * 4], 0, 1);
+        }
+        fr_mont_mul(&a[i * 4], &b[i * 4], &result[i * 4]);
+        fr_mont_mul(&a[(i + 1) * 4], &b[(i + 1) * 4], &result[(i + 1) * 4]);
+    }
+    if (i < n) {
+        fr_mont_mul(&a[i * 4], &b[i * 4], &result[i * 4]);
+    }
+}
+
 /// Fused scalar-multiply-accumulate: result[i] += scalar * a[i] for i in 0..n-1
 void bn254_fr_batch_mac_neon(uint64_t *result, const uint64_t *a,
                               const uint64_t *scalar, int n)
