@@ -473,15 +473,18 @@ public class MultiScalarInnerProduct {
             Cprime = pointAdd(Cprime, pointAdd(lTerm, rTerm))
         }
 
-        // Compute s[i] = product of x_j^{+-1} based on bit decomposition
-        var s = [Fr](repeating: Fr.one, count: n)
+        // Compute s[i] via O(n) butterfly construction (replaces O(n*logN) nested loops)
+        var s = [Fr](repeating: Fr.zero, count: n)
+        s[0] = Fr.one
+        var half = 1
         for round in 0..<logN {
             let x = challenges[round]
             let xInv = challengeInvs[round]
-            for i in 0..<n {
-                let bit = (i >> (logN - 1 - round)) & 1
-                s[i] = frMul(s[i], bit == 1 ? x : xInv)
+            for i in stride(from: half - 1, through: 0, by: -1) {
+                s[2 * i + 1] = frMul(s[i], x)
+                s[2 * i]     = frMul(s[i], xInv)
             }
+            half *= 2
         }
 
         // G_final = MSM(G, s)
@@ -706,8 +709,16 @@ public class MultiScalarInnerProduct {
     private func cpuFoldSingle(_ v: [Fr], challenge: Fr) -> [Fr] {
         let halfLen = v.count / 2
         var result = [Fr](repeating: Fr.zero, count: halfLen)
-        for i in 0..<halfLen {
-            result[i] = frAdd(v[i], frMul(challenge, v[halfLen + i]))
+        withUnsafeBytes(of: challenge) { cPtr in
+            v.withUnsafeBytes { vBuf in
+                result.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_sumcheck_reduce(
+                        vBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        cPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(halfLen))
+                }
+            }
         }
         return result
     }
@@ -716,9 +727,27 @@ public class MultiScalarInnerProduct {
         let halfLen = a.count / 2
         var aResult = [Fr](repeating: Fr.zero, count: halfLen)
         var bResult = [Fr](repeating: Fr.zero, count: halfLen)
-        for i in 0..<halfLen {
-            aResult[i] = frAdd(a[i], frMul(x, a[halfLen + i]))
-            bResult[i] = frAdd(b[i], frMul(xInv, b[halfLen + i]))
+        withUnsafeBytes(of: x) { xPtr in
+            a.withUnsafeBytes { aBuf in
+                aResult.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_sumcheck_reduce(
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        xPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(halfLen))
+                }
+            }
+        }
+        withUnsafeBytes(of: xInv) { xiPtr in
+            b.withUnsafeBytes { bBuf in
+                bResult.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_sumcheck_reduce(
+                        bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        xiPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(halfLen))
+                }
+            }
         }
         return (aFolded: aResult, bFolded: bResult)
     }
