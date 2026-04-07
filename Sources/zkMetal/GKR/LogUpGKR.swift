@@ -429,7 +429,13 @@ public class LogUpGKRVerifier {
         }
         let luWitInvs = batchInverse(luWitDiffs)
         var witnessSum = Fr.zero
-        for i in 0..<n { witnessSum = frAdd(witnessSum, luWitInvs[i]) }
+        luWitInvs.withUnsafeBytes { buf in
+            withUnsafeMutableBytes(of: &witnessSum) { rBuf in
+                bn254_fr_vector_sum(buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                    Int32(n),
+                                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+            }
+        }
 
         var luTblDiffs = [Fr](repeating: Fr.zero, count: N)
         var gammaVal1 = gamma

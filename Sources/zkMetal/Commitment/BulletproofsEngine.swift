@@ -540,9 +540,19 @@ public class BulletproofsVerifier {
 
         // delta(y,z) = (z - z^2) * <1^n, y^n> - z^3 * <1^n, 2^n>
         var sumYPow = Fr.zero
-        for i in 0..<n { sumYPow = frAdd(sumYPow, yPow[i]) }
+        yPow.withUnsafeBytes { buf in
+            withUnsafeMutableBytes(of: &sumYPow) { r in
+                bn254_fr_vector_sum(buf.baseAddress!.assumingMemoryBound(to: UInt64.self), Int32(n),
+                                    r.baseAddress!.assumingMemoryBound(to: UInt64.self))
+            }
+        }
         var sumTwoPow = Fr.zero
-        for i in 0..<n { sumTwoPow = frAdd(sumTwoPow, twoPow[i]) }
+        twoPow.withUnsafeBytes { buf in
+            withUnsafeMutableBytes(of: &sumTwoPow) { r in
+                bn254_fr_vector_sum(buf.baseAddress!.assumingMemoryBound(to: UInt64.self), Int32(n),
+                                    r.baseAddress!.assumingMemoryBound(to: UInt64.self))
+            }
+        }
 
         let z3 = frMul(z2, z)
         let delta = frSub(frMul(frSub(z, z2), sumYPow), frMul(z3, sumTwoPow))
