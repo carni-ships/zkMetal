@@ -729,7 +729,17 @@ public class InnerProductArgument {
             P = pointAdd(P, cPointScalarMul(pointFromAffine(H[i]), b[i]))
         }
         var ip = Fr.zero
-        for i in 0..<n { ip = frAdd(ip, frMul(a[i], b[i])) }
+        a.withUnsafeBytes { aBuf in
+            b.withUnsafeBytes { bBuf in
+                withUnsafeMutableBytes(of: &ip) { rBuf in
+                    bn254_fr_inner_product(
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                }
+            }
+        }
         P = pointAdd(P, cPointScalarMul(U, ip))
         return P
     }
