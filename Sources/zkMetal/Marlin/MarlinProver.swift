@@ -188,10 +188,32 @@ public class MarlinProver {
         let zBEvals2 = try ntt.ntt(zBCoeffs2)
         let zCEvals2 = try ntt.ntt(zCCoeffs2)
 
-        // Numerator: z_A * z_B - z_C on 2x domain
+        // Numerator: z_A * z_B - z_C on 2x domain (batch C calls)
         var numEvals2 = [Fr](repeating: .zero, count: doubleH)
-        for i in 0..<doubleH {
-            numEvals2[i] = frSub(frMul(zAEvals2[i], zBEvals2[i]), zCEvals2[i])
+        var abProduct = [Fr](repeating: .zero, count: doubleH)
+        zAEvals2.withUnsafeBytes { aBuf in
+            zBEvals2.withUnsafeBytes { bBuf in
+                abProduct.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_mul_parallel(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(doubleH)
+                    )
+                }
+            }
+        }
+        abProduct.withUnsafeBytes { aBuf in
+            zCEvals2.withUnsafeBytes { bBuf in
+                numEvals2.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_sub_parallel(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(doubleH)
+                    )
+                }
+            }
         }
         var numCoeffs = try ntt.intt(numEvals2)
 

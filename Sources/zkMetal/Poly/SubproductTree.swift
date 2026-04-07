@@ -3,6 +3,7 @@
 // Reference: von zur Gathen & Gerhard, "Modern Computer Algebra"
 import Foundation
 import Metal
+import NeonFieldOps
 
 extension PolyEngine {
 
@@ -81,8 +82,16 @@ extension PolyEngine {
             wAcc = frMul(wAcc, activeWeights[i])
         }
         var scaledValues = [Fr](repeating: Fr.zero, count: N)
-        for i in 0..<n {
-            scaledValues[i] = frMul(vals[i], weightInvs[i])
+        vals.withUnsafeBytes { vBuf in
+            weightInvs.withUnsafeBytes { wBuf in
+                scaledValues.withUnsafeMutableBytes { sBuf in
+                    bn254_fr_batch_mul_parallel(
+                        sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        vBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        wBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
         }
 
         // Step 5: Linear combination ascent — build result polynomial bottom-up
@@ -147,8 +156,17 @@ extension PolyEngine {
                 basisLen += 1
             }
 
-            for k in 0..<n {
-                result[k] = frAdd(result[k], frMul(weight, basis[k]))
+            // result[k] += weight * basis[k] for all k
+            basis.withUnsafeBytes { bBuf in
+                result.withUnsafeMutableBytes { rBuf in
+                    withUnsafeBytes(of: weight) { wBuf in
+                        bn254_fr_batch_mac_neon(
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            wBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
             }
         }
 
@@ -203,25 +221,34 @@ extension PolyEngine {
                     // right_subprod = treePtr[rightIdx * subprodSize ..< (rightIdx+1) * subprodSize]
 
                     // parent = left_result * right_subprod + right_result * left_subprod
+                    // Use batch MAC: for each coefficient i, accumulate scalar * subprod vector
+                    let outBase = p * parentSize
                     for i in 0..<childSize {
                         let lCoeff = currentLevel[leftIdx * childSize + i]
                         let rCoeff = currentLevel[rightIdx * childSize + i]
-                        // left_result[i] * right_subprod[j]
-                        for j in 0..<subprodSize {
-                            let rSub = treePtr[rightIdx * subprodSize + j]
-                            let prod = frMul(lCoeff, rSub)
-                            let outIdx = p * parentSize + i + j
-                            if outIdx < (p + 1) * parentSize {
-                                nextLevel[outIdx] = frAdd(nextLevel[outIdx], prod)
+                        let macLen = min(subprodSize, parentSize - i)
+                        // nextLevel[outBase+i ..< outBase+i+macLen] += lCoeff * rightSubprod[0..<macLen]
+                        nextLevel.withUnsafeMutableBytes { rBuf in
+                            let rBase = rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                                .advanced(by: (outBase + i) * 4)
+                            let rSubBase = UnsafeRawPointer(treePtr.advanced(by: rightIdx * subprodSize))
+                                .assumingMemoryBound(to: UInt64.self)
+                            withUnsafeBytes(of: lCoeff) { lBuf in
+                                bn254_fr_batch_mac_neon(
+                                    rBase,
+                                    rSubBase,
+                                    lBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                    Int32(macLen))
                             }
-                        }
-                        // right_result[i] * left_subprod[j]
-                        for j in 0..<subprodSize {
-                            let lSub = treePtr[leftIdx * subprodSize + j]
-                            let prod = frMul(rCoeff, lSub)
-                            let outIdx = p * parentSize + i + j
-                            if outIdx < (p + 1) * parentSize {
-                                nextLevel[outIdx] = frAdd(nextLevel[outIdx], prod)
+                            // nextLevel[outBase+i ..< outBase+i+macLen] += rCoeff * leftSubprod[0..<macLen]
+                            let lSubBase = UnsafeRawPointer(treePtr.advanced(by: leftIdx * subprodSize))
+                                .assumingMemoryBound(to: UInt64.self)
+                            withUnsafeBytes(of: rCoeff) { rBuf2 in
+                                bn254_fr_batch_mac_neon(
+                                    rBase,
+                                    lSubBase,
+                                    rBuf2.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                    Int32(macLen))
                             }
                         }
                     }
@@ -269,11 +296,17 @@ extension PolyEngine {
 
                 // Combine: parent[p] = products[2*p] + products[2*p+1]
                 var nextLevel = [Fr](repeating: Fr.zero, count: numPolys * parentSize)
-                for p in 0..<numPolys {
-                    for i in 0..<parentSize {
-                        let v0 = (i < nttN) ? products[(p * 2) * nttN + i] : Fr.zero
-                        let v1 = (i < nttN) ? products[(p * 2 + 1) * nttN + i] : Fr.zero
-                        nextLevel[p * parentSize + i] = frAdd(v0, v1)
+                products.withUnsafeBytes { pBuf in
+                    nextLevel.withUnsafeMutableBytes { nBuf in
+                        let pBase = pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                        let nBase = nBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                        for p in 0..<numPolys {
+                            bn254_fr_batch_add_parallel(
+                                nBase.advanced(by: p * parentSize * 4),
+                                pBase.advanced(by: (p * 2) * nttN * 4),
+                                pBase.advanced(by: (p * 2 + 1) * nttN * 4),
+                                Int32(parentSize))
+                        }
                     }
                 }
                 currentLevel = nextLevel
@@ -478,8 +511,17 @@ extension PolyEngine {
         // Multiply 2: q * g → then subtract from f
         let qg = try multiplyGPU(q, g, nttLogN: nttLogN)
         var r = [Fr](repeating: Fr.zero, count: degG)
-        for i in 0..<degG {
-            r[i] = frSub(f[i], i < qg.count ? qg[i] : Fr.zero)
+        // r[i] = f[i] - qg[i] for i in 0..<degG (qg.count >= degG from NTT size)
+        f.withUnsafeBytes { fBuf in
+            qg.withUnsafeBytes { qgBuf in
+                r.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_sub_parallel(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        fBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        qgBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(degG))
+                }
+            }
         }
 
         return r
@@ -492,11 +534,19 @@ extension PolyEngine {
         var tree = [MTLBuffer]()
 
         // Level 0: linear factors (x - p_i), stored as N × 2 elements
-        var leaves = [Fr]()
-        leaves.reserveCapacity(N * 2)
+        // First batch-negate all points, then interleave with Fr.one
+        var negPts = [Fr](repeating: Fr.zero, count: N)
+        points.withUnsafeBytes { pBuf in
+            negPts.withUnsafeMutableBytes { nBuf in
+                bn254_fr_batch_neg_parallel(
+                    nBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(N))
+            }
+        }
+        var leaves = [Fr](repeating: Fr.one, count: N * 2)
         for i in 0..<N {
-            leaves.append(frSub(Fr.zero, points[i]))
-            leaves.append(Fr.one)
+            leaves[i * 2] = negPts[i]
         }
         tree.append(createBuffer(leaves))
 
@@ -838,14 +888,22 @@ extension PolyEngine {
                                           polyStride: nttN, nttLogN: nttLogN)
 
         // Step 4: Compute remainders r[c] = f[parent(c)] - qg[c]
+        // childRemSize <= parentSize, so f[i] always valid
         let oPtr = output.contents().bindMemory(to: Fr.self, capacity: numChildren * childRemSize)
-        for p in 0..<numParents {
-            for side in 0..<2 {
-                let c = p * 2 + side
-                for i in 0..<childRemSize {
-                    let fi = i < parentSize ? pPtr[p * parentSize + i] : Fr.zero
-                    let qgi = allQG[c * nttN + i]
-                    oPtr[c * childRemSize + i] = frSub(fi, qgi)
+        allQG.withUnsafeBytes { qgBuf in
+            let qgBase = qgBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+            for p in 0..<numParents {
+                let fBase = UnsafeRawPointer(pPtr.advanced(by: p * parentSize))
+                    .assumingMemoryBound(to: UInt64.self)
+                for side in 0..<2 {
+                    let c = p * 2 + side
+                    let outBase = UnsafeMutableRawPointer(oPtr.advanced(by: c * childRemSize))
+                        .assumingMemoryBound(to: UInt64.self)
+                    bn254_fr_batch_sub_parallel(
+                        outBase,
+                        fBase,
+                        qgBase.advanced(by: c * nttN * 4),
+                        Int32(childRemSize))
                 }
             }
         }
