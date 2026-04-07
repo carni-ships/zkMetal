@@ -227,18 +227,35 @@ public struct PermutationArgument {
         // ratio[i] = prod_j (w_j[i] + beta*id_j(i) + gamma) /
         //                    (w_j[i] + beta*sigma_j[i] + gamma)
 
-        // Step 1: Compute all numerators and denominators
+        // Step 1: Precompute coset-scaled domain: idDomain[j] = kj * domain (batch)
+        var idDomains = [[Fr]](repeating: [Fr](repeating: Fr.zero, count: n), count: numWires)
+        for j in 0..<numWires {
+            let kj = cosetMultiplier(forWire: j)
+            if frEq(kj, Fr.one) {
+                idDomains[j] = domain
+            } else {
+                domain.withUnsafeBytes { dBuf in
+                    withUnsafeBytes(of: kj) { kPtr in
+                        idDomains[j].withUnsafeMutableBytes { rBuf in
+                            bn254_fr_batch_mul_scalar_parallel(
+                                rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                kPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                Int32(n))
+                        }
+                    }
+                }
+            }
+        }
+
+        // Step 2: Compute all numerators and denominators
         var numerators = [Fr](repeating: Fr.one, count: n)
         var denominators = [Fr](repeating: Fr.one, count: n)
 
         for i in 0..<n {
             for j in 0..<numWires {
-                let kj = cosetMultiplier(forWire: j)
-                // id_j(omega^i) = kj * omega^i
-                let idVal = frMul(kj, domain[i])
-
                 // numerator term: w_j[i] + beta * id_j(i) + gamma
-                let numTerm = frAdd(frAdd(witness[j][i], frMul(beta, idVal)), gamma)
+                let numTerm = frAdd(frAdd(witness[j][i], frMul(beta, idDomains[j][i])), gamma)
                 numerators[i] = frMul(numerators[i], numTerm)
 
                 // denominator term: w_j[i] + beta * sigma_j[i] + gamma
@@ -316,6 +333,27 @@ public struct PermutationArgument {
         let n = domain.count
         let alpha2 = frSqr(alpha)
 
+        // Precompute coset-scaled domains
+        var idDomains = [[Fr]](repeating: [Fr](repeating: Fr.zero, count: n), count: numWires)
+        for j in 0..<numWires {
+            let kj = cosetMultiplier(forWire: j)
+            if frEq(kj, Fr.one) {
+                idDomains[j] = domain
+            } else {
+                domain.withUnsafeBytes { dBuf in
+                    withUnsafeBytes(of: kj) { kPtr in
+                        idDomains[j].withUnsafeMutableBytes { rBuf in
+                            bn254_fr_batch_mul_scalar_parallel(
+                                rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                kPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                Int32(n))
+                        }
+                    }
+                }
+            }
+        }
+
         var result = [Fr](repeating: Fr.zero, count: n)
 
         for i in 0..<n {
@@ -325,9 +363,7 @@ public struct PermutationArgument {
             var denProd = Fr.one
 
             for j in 0..<numWires {
-                let kj = cosetMultiplier(forWire: j)
-                let idVal = frMul(kj, domain[i])
-                numProd = frMul(numProd, frAdd(frAdd(witness[j][i], frMul(beta, idVal)), gamma))
+                numProd = frMul(numProd, frAdd(frAdd(witness[j][i], frMul(beta, idDomains[j][i])), gamma))
                 denProd = frMul(denProd, frAdd(frAdd(witness[j][i], frMul(beta, sigma[j][i])), gamma))
             }
 

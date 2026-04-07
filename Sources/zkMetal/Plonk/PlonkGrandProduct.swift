@@ -152,14 +152,33 @@ public class PlonkGrandProductEngine {
         let n = domain.count
         let numWires = permArg.numWires
 
+        // Precompute coset-scaled domains: idDomains[j] = kj * domain
+        var idDomains = [[Fr]](repeating: [Fr](repeating: Fr.zero, count: n), count: numWires)
+        for j in 0..<numWires {
+            let kj = permArg.cosetMultiplier(forWire: j)
+            if frEq(kj, Fr.one) {
+                idDomains[j] = domain
+            } else {
+                domain.withUnsafeBytes { dBuf in
+                    withUnsafeBytes(of: kj) { kPtr in
+                        idDomains[j].withUnsafeMutableBytes { rBuf in
+                            bn254_fr_batch_mul_scalar_parallel(
+                                rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                kPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                Int32(n))
+                        }
+                    }
+                }
+            }
+        }
+
         var numerators = [Fr](repeating: Fr.one, count: n)
         var denominators = [Fr](repeating: Fr.one, count: n)
 
         for i in 0..<n {
             for j in 0..<numWires {
-                let kj = permArg.cosetMultiplier(forWire: j)
-                let idVal = frMul(kj, domain[i])
-                let numTerm = frAdd(frAdd(witness[j][i], frMul(beta, idVal)), gamma)
+                let numTerm = frAdd(frAdd(witness[j][i], frMul(beta, idDomains[j][i])), gamma)
                 numerators[i] = frMul(numerators[i], numTerm)
 
                 let denTerm = frAdd(frAdd(witness[j][i], frMul(beta, sigma[j][i])), gamma)
