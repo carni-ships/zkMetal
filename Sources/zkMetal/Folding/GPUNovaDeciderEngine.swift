@@ -441,16 +441,29 @@ public final class GPUNovaDeciderEngine {
             let r_i = transcript.squeeze()
             sumcheckChallenges.append(r_i)
 
-            // Bind variable to r_i
+            // Bind variable to r_i using C-accelerated interleaved fold
             var newG = [Fr](repeating: .zero, count: halfSize)
             var newEq = [Fr](repeating: .zero, count: halfSize)
-            let oneMinusR = frSub(Fr.one, r_i)
-            for j in 0..<halfSize {
-                newG[j] = frAdd(frMul(oneMinusR, currentG[2 * j]),
-                                frMul(r_i, currentG[2 * j + 1]))
-                newEq[j] = frAdd(frMul(oneMinusR, currentEq[2 * j]),
-                                 frMul(r_i, currentEq[2 * j + 1]))
-            }
+            currentG.withUnsafeBytes { gBuf in
+            withUnsafeBytes(of: r_i) { rBuf in
+            newG.withUnsafeMutableBytes { resBuf in
+                bn254_fr_fold_interleaved(
+                    gBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    resBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(halfSize)
+                )
+            }}}
+            currentEq.withUnsafeBytes { eqBuf in
+            withUnsafeBytes(of: r_i) { rBuf in
+            newEq.withUnsafeMutableBytes { resBuf in
+                bn254_fr_fold_interleaved(
+                    eqBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    resBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(halfSize)
+                )
+            }}}
 
             runningClaim = novaDeciderInterpolateAndEval(s0: s0, s1: s1, s2: s2, at: r_i)
             currentG = newG

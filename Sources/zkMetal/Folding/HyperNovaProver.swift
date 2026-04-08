@@ -401,11 +401,16 @@ public class HyperNovaProver {
             transcript.absorb(s1)
             let challenge = transcript.squeeze()
 
-            let oneMinusC = frSub(Fr.one, challenge)
-            for j in 0..<half {
-                crossTermEvals[j] = frAdd(frMul(oneMinusC, crossTermEvals[2 * j]),
-                                          frMul(challenge, crossTermEvals[2 * j + 1]))
-            }
+            // C-accelerated interleaved fold in-place
+            crossTermEvals.withUnsafeMutableBytes { buf in
+            withUnsafeBytes(of: challenge) { chBuf in
+                bn254_fr_fold_interleaved(
+                    buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    chBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(half)
+                )
+            }}
             currentSize = half
         }
 

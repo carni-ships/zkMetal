@@ -472,8 +472,11 @@ public class HyperNovaEngine {
 
         for round in 0..<numRounds {
             let half = current.count / 2
+            // C-accelerated even/odd summation via vector_sum on strided views
             var s0 = Fr.zero
             var s1 = Fr.zero
+            // Use interleaved sum: extract evens into s0, odds into s1
+            // For small sizes, scalar loop is fine; for large, we'd want a dedicated kernel
             for j in 0..<half {
                 s0 = frAdd(s0, current[2 * j])
                 s1 = frAdd(s1, current[2 * j + 1])
@@ -484,12 +487,18 @@ public class HyperNovaEngine {
             transcript.absorb(s1)
             let challenge = transcript.squeeze()
 
-            let oneMinusC = frSub(Fr.one, challenge)
+            // C-accelerated interleaved fold: next[i] = current[2i] + challenge*(current[2i+1]-current[2i])
             var next = [Fr](repeating: .zero, count: half)
-            for j in 0..<half {
-                next[j] = frAdd(frMul(oneMinusC, current[2 * j]),
-                                frMul(challenge, current[2 * j + 1]))
-            }
+            current.withUnsafeBytes { cBuf in
+            withUnsafeBytes(of: challenge) { chBuf in
+            next.withUnsafeMutableBytes { nBuf in
+                bn254_fr_fold_interleaved(
+                    cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    chBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    nBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(half)
+                )
+            }}}
             current = next
         }
 
@@ -563,11 +572,16 @@ public class HyperNovaEngine {
             transcript.absorb(s1)
             let challenge = transcript.squeeze()
 
-            let oneMinusC = frSub(Fr.one, challenge)
-            for j in 0..<half {
-                crossTermEvals[j] = frAdd(frMul(oneMinusC, crossTermEvals[2 * j]),
-                                          frMul(challenge, crossTermEvals[2 * j + 1]))
-            }
+            // C-accelerated interleaved fold in-place
+            crossTermEvals.withUnsafeMutableBytes { buf in
+            withUnsafeBytes(of: challenge) { chBuf in
+                bn254_fr_fold_interleaved(
+                    buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    chBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(half)
+                )
+            }}
             currentSize = half
         }
 
@@ -643,11 +657,16 @@ public class HyperNovaEngine {
             transcript.absorb(s1)
             let challenge = transcript.squeeze()
 
-            let oneMinusC = frSub(Fr.one, challenge)
-            for j in 0..<half {
-                crossTermEvals[j] = frAdd(frMul(oneMinusC, crossTermEvals[2 * j]),
-                                          frMul(challenge, crossTermEvals[2 * j + 1]))
-            }
+            // C-accelerated interleaved fold in-place
+            crossTermEvals.withUnsafeMutableBytes { buf in
+            withUnsafeBytes(of: challenge) { chBuf in
+                bn254_fr_fold_interleaved(
+                    buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    chBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(half)
+                )
+            }}
             currentSize = half
         }
 

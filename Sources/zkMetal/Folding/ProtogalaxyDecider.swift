@@ -232,17 +232,29 @@ public class ProtogalaxyDeciderProver {
             let r_i = transcript.squeeze()
             sumcheckChallenges.append(r_i)
 
-            // Bind the current variable to r_i
+            // Bind the current variable to r_i using C-accelerated interleaved fold
             var newF = [Fr](repeating: Fr.zero, count: halfSize)
             var newEq = [Fr](repeating: Fr.zero, count: halfSize)
-            for j in 0..<halfSize {
-                // f_new(j) = (1-r_i)*f(2j) + r_i*f(2j+1)
-                let oneMinusR = frSub(Fr.one, r_i)
-                newF[j] = frAdd(frMul(oneMinusR, currentF[2 * j]),
-                                frMul(r_i, currentF[2 * j + 1]))
-                newEq[j] = frAdd(frMul(oneMinusR, currentEq[2 * j]),
-                                 frMul(r_i, currentEq[2 * j + 1]))
-            }
+            currentF.withUnsafeBytes { fBuf in
+            withUnsafeBytes(of: r_i) { rBuf in
+            newF.withUnsafeMutableBytes { resBuf in
+                bn254_fr_fold_interleaved(
+                    fBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    resBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(halfSize)
+                )
+            }}}
+            currentEq.withUnsafeBytes { eqBuf in
+            withUnsafeBytes(of: r_i) { rBuf in
+            newEq.withUnsafeMutableBytes { resBuf in
+                bn254_fr_fold_interleaved(
+                    eqBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    resBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(halfSize)
+                )
+            }}}
 
             // Update running claim: s_i(r_i) via Lagrange interpolation on {0,1,2}
             runningClaim = interpolateAndEval(s0: s0, s1: s1, s2: s2, at: r_i)
