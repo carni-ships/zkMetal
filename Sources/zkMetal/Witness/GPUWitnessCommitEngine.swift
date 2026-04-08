@@ -214,7 +214,13 @@ public class GPUWitnessCommitEngine {
             if factors.count >= count {
                 return Array(factors.prefix(count))
             }
-            return factors + [Fr](repeating: Fr.zero, count: count - factors.count)
+            var padded = [Fr](repeating: Fr.zero, count: count)
+            factors.withUnsafeBytes { src in
+                padded.withUnsafeMutableBytes { dst in
+                    memcpy(dst.baseAddress!, src.baseAddress!, factors.count * MemoryLayout<Fr>.stride)
+                }
+            }
+            return padded
         }
     }
 

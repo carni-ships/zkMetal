@@ -56,8 +56,13 @@ extension PolyEngine {
         let N = 1 << logN
 
         // Pad points/values to power-of-two
-        var pts = points
-        while pts.count < N { pts.append(frFromInt(UInt64(pts.count + 1000000))) } // distinct padding points
+        var pts = [Fr](repeating: Fr.zero, count: N)
+        pts.withUnsafeMutableBytes { dst in
+            points.withUnsafeBytes { src in
+                memcpy(dst.baseAddress!, src.baseAddress!, points.count * MemoryLayout<Fr>.stride)
+            }
+        }
+        for i in points.count..<N { pts[i] = frFromInt(UInt64(i + 1000000)) } // distinct padding points
         var vals = [Fr](repeating: Fr.zero, count: N)
         vals.withUnsafeMutableBytes { dst in
             values.withUnsafeBytes { src in

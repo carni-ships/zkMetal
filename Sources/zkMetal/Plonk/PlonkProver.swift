@@ -256,8 +256,16 @@ public class PlonkProver {
         for c in 0..<numChunks {
             let start = c * n
             if start < tCoeffs.count {
-                let chunk = Array(tCoeffs.dropFirst(start).prefix(n))
-                tChunkCoeffs.append(chunk + [Fr](repeating: Fr.zero, count: max(0, n - chunk.count)))
+                let end = min(start + n, tCoeffs.count)
+                let chunkLen = end - start
+                var padded = [Fr](repeating: Fr.zero, count: n)
+                tCoeffs.withUnsafeBytes { src in
+                    padded.withUnsafeMutableBytes { dst in
+                        memcpy(dst.baseAddress!, src.baseAddress! + start * MemoryLayout<Fr>.stride,
+                               chunkLen * MemoryLayout<Fr>.stride)
+                    }
+                }
+                tChunkCoeffs.append(padded)
             } else {
                 tChunkCoeffs.append([Fr](repeating: Fr.zero, count: n))
             }

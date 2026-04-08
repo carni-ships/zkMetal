@@ -529,8 +529,15 @@ public class GPUPlonkQuotientEngine {
         for c in 0..<numChunks {
             let start = c * n
             if start < fullQuotient.count {
-                let chunk = Array(fullQuotient.dropFirst(start).prefix(n))
-                let padded = chunk + [Fr](repeating: Fr.zero, count: max(0, n - chunk.count))
+                let end = min(start + n, fullQuotient.count)
+                let chunkLen = end - start
+                var padded = [Fr](repeating: Fr.zero, count: n)
+                fullQuotient.withUnsafeBytes { src in
+                    padded.withUnsafeMutableBytes { dst in
+                        memcpy(dst.baseAddress!, src.baseAddress! + start * MemoryLayout<Fr>.stride,
+                               chunkLen * MemoryLayout<Fr>.stride)
+                    }
+                }
                 chunks.append(padded)
             } else {
                 chunks.append([Fr](repeating: Fr.zero, count: n))
@@ -776,8 +783,16 @@ public class GPUPlonkQuotientEngine {
         for c in 0..<numChunks {
             let start = c * n
             if start < fullQuotient.count {
-                let chunk = Array(fullQuotient.dropFirst(start).prefix(n))
-                chunks.append(chunk + [Fr](repeating: Fr.zero, count: max(0, n - chunk.count)))
+                let end = min(start + n, fullQuotient.count)
+                let chunkLen = end - start
+                var padded = [Fr](repeating: Fr.zero, count: n)
+                fullQuotient.withUnsafeBytes { src in
+                    padded.withUnsafeMutableBytes { dst in
+                        memcpy(dst.baseAddress!, src.baseAddress! + start * MemoryLayout<Fr>.stride,
+                               chunkLen * MemoryLayout<Fr>.stride)
+                    }
+                }
+                chunks.append(padded)
             } else {
                 chunks.append([Fr](repeating: Fr.zero, count: n))
             }

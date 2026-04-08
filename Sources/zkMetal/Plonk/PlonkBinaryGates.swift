@@ -301,8 +301,16 @@ public struct ConditionalSelectGate: CustomGate {
         }
 
         let selectorEvals = try ntt.ntt(
-            selectorPoly.count >= n ? Array(selectorPoly.prefix(n))
-                                    : selectorPoly + [Fr](repeating: Fr.zero, count: n - selectorPoly.count))
+            {
+                if selectorPoly.count >= n { return Array(selectorPoly.prefix(n)) }
+                var padded = [Fr](repeating: Fr.zero, count: n)
+                selectorPoly.withUnsafeBytes { src in
+                    padded.withUnsafeMutableBytes { dst in
+                        memcpy(dst.baseAddress!, src.baseAddress!, selectorPoly.count * MemoryLayout<Fr>.stride)
+                    }
+                }
+                return padded
+            }())
 
         var gateEvals = [Fr](repeating: Fr.zero, count: n)
         for i in 0..<n {
