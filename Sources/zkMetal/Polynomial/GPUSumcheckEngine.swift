@@ -214,29 +214,28 @@ public class GPUSumcheckEngine {
     private func proveRoundBN254CPU(table: MTLBuffer, n: Int, challenge: Fr) throws -> (s0: Fr, s1: Fr, newTable: MTLBuffer) {
         let halfN = n / 2
         let stride = MemoryLayout<Fr>.stride
-        let ptr = table.contents().bindMemory(to: Fr.self, capacity: n)
+        let evalsPtr = table.contents().assumingMemoryBound(to: UInt64.self)
 
-        var s0 = Fr.zero
-        var s1 = Fr.zero
-        var result = [Fr](repeating: Fr.zero, count: halfN)
+        // Compute s0, s1 via C vector sum
+        var s0Limbs = [UInt64](repeating: 0, count: 4)
+        var s1Limbs = [UInt64](repeating: 0, count: 4)
+        bn254_fr_vector_sum(evalsPtr, Int32(halfN), &s0Limbs)
+        bn254_fr_vector_sum(evalsPtr + halfN * 4, Int32(halfN), &s1Limbs)
+        let s0 = Fr.from64(s0Limbs)
+        let s1 = Fr.from64(s1Limbs)
 
-        let oneMinusR = frSub(Fr.one, challenge)
-        for i in 0..<halfN {
-            let a = ptr[i]
-            let b = ptr[i + halfN]
-            s0 = frAdd(s0, a)
-            s1 = frAdd(s1, b)
-            // fold: a + r*(b - a) = (1-r)*a + r*b
-            let diff = frSub(b, a)
-            let rDiff = frMul(challenge, diff)
-            result[i] = frAdd(a, rDiff)
-        }
-
+        // Fold via C batch kernel: result[i] = evals[i] + challenge*(evals[i+halfN] - evals[i])
         guard let outBuf = device.makeBuffer(length: halfN * stride, options: .storageModeShared) else {
             throw MSMError.gpuError("Failed to create CPU output buffer")
         }
-        result.withUnsafeBytes { src in
-            memcpy(outBuf.contents(), src.baseAddress!, halfN * stride)
+        let outPtr = outBuf.contents().assumingMemoryBound(to: UInt64.self)
+        var chal = challenge
+        withUnsafeBytes(of: &chal) { chalBuf in
+            bn254_fr_sumcheck_reduce(
+                evalsPtr,
+                chalBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                outPtr,
+                Int32(halfN))
         }
 
         return (s0: s0, s1: s1, newTable: outBuf)
@@ -309,14 +308,12 @@ public class GPUSumcheckEngine {
         let stride = MemoryLayout<Fr>.stride
 
         if n < GPUSumcheckEngine.gpuThreshold {
-            let ptr = table.contents().bindMemory(to: Fr.self, capacity: n)
-            var s0 = Fr.zero
-            var s1 = Fr.zero
-            for i in 0..<halfN {
-                s0 = frAdd(s0, ptr[i])
-                s1 = frAdd(s1, ptr[i + halfN])
-            }
-            return (s0, s1)
+            let p = table.contents().assumingMemoryBound(to: UInt64.self)
+            var s0Limbs = [UInt64](repeating: 0, count: 4)
+            var s1Limbs = [UInt64](repeating: 0, count: 4)
+            bn254_fr_vector_sum(p, Int32(halfN), &s0Limbs)
+            bn254_fr_vector_sum(p + halfN * 4, Int32(halfN), &s1Limbs)
+            return (Fr.from64(s0Limbs), Fr.from64(s1Limbs))
         }
 
         let tgSize = 256
@@ -363,20 +360,18 @@ public class GPUSumcheckEngine {
         let stride = MemoryLayout<Fr>.stride
 
         if n < GPUSumcheckEngine.gpuThreshold {
-            let ptr = table.contents().bindMemory(to: Fr.self, capacity: n)
-            var result = [Fr](repeating: Fr.zero, count: halfN)
-            for i in 0..<halfN {
-                let a = ptr[i]
-                let b = ptr[i + halfN]
-                let diff = frSub(b, a)
-                let rDiff = frMul(challenge, diff)
-                result[i] = frAdd(a, rDiff)
-            }
+            let evalsPtr = table.contents().assumingMemoryBound(to: UInt64.self)
             guard let outBuf = device.makeBuffer(length: halfN * stride, options: .storageModeShared) else {
                 throw MSMError.gpuError("Failed to create reduce output buffer")
             }
-            result.withUnsafeBytes { src in
-                memcpy(outBuf.contents(), src.baseAddress!, halfN * stride)
+            let outPtr = outBuf.contents().assumingMemoryBound(to: UInt64.self)
+            var chal = challenge
+            withUnsafeBytes(of: &chal) { chalBuf in
+                bn254_fr_sumcheck_reduce(
+                    evalsPtr,
+                    chalBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    outPtr,
+                    Int32(halfN))
             }
             return outBuf
         }
@@ -730,26 +725,32 @@ public class GPUSumcheckEngine {
     public static func cpuRoundPoly(evals: [Fr]) -> (Fr, Fr) {
         let n = evals.count
         let halfN = n / 2
-        var s0 = Fr.zero
-        var s1 = Fr.zero
-        for i in 0..<halfN {
-            s0 = frAdd(s0, evals[i])
-            s1 = frAdd(s1, evals[i + halfN])
+        var s0Limbs = [UInt64](repeating: 0, count: 4)
+        var s1Limbs = [UInt64](repeating: 0, count: 4)
+        evals.withUnsafeBytes { buf in
+            let p = buf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+            bn254_fr_vector_sum(p, Int32(halfN), &s0Limbs)
+            bn254_fr_vector_sum(p + halfN * 4, Int32(halfN), &s1Limbs)
         }
-        return (s0, s1)
+        return (Fr.from64(s0Limbs), Fr.from64(s1Limbs))
     }
 
-    /// CPU reduce (fold) for verification.
+    /// CPU reduce (fold) for verification (C batch kernel).
     public static func cpuReduce(evals: [Fr], challenge: Fr) -> [Fr] {
         let n = evals.count
         let halfN = n / 2
         var result = [Fr](repeating: Fr.zero, count: halfN)
-        for i in 0..<halfN {
-            let a = evals[i]
-            let b = evals[i + halfN]
-            let diff = frSub(b, a)
-            let rDiff = frMul(challenge, diff)
-            result[i] = frAdd(a, rDiff)
+        evals.withUnsafeBytes { evalsBuf in
+            result.withUnsafeMutableBytes { resBuf in
+                var chal = challenge
+                withUnsafeBytes(of: &chal) { chalBuf in
+                    bn254_fr_sumcheck_reduce(
+                        evalsBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        chalBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        resBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(halfN))
+                }
+            }
         }
         return result
     }

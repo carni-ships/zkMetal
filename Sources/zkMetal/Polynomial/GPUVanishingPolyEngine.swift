@@ -12,6 +12,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 // MARK: - GPUVanishingPolyEngine
 
@@ -506,21 +507,34 @@ public class GPUVanishingPolyEngine {
                 zhVals[i] = frSub(x, Fr.one)
                 current = frMul(current, omega)
             }
-            var zhPrefix = [Fr](repeating: Fr.one, count: domainSize)
-            for i in 1..<domainSize { zhPrefix[i] = frMul(zhPrefix[i - 1], zhVals[i - 1]) }
-            var zhAcc = frInverse(frMul(zhPrefix[domainSize - 1], zhVals[domainSize - 1]))
+            // Batch inverse via C kernel (Montgomery's trick)
             var zhInvs = [Fr](repeating: Fr.zero, count: domainSize)
-            for i in Swift.stride(from: domainSize - 1, through: 0, by: -1) {
-                zhInvs[i] = frMul(zhAcc, zhPrefix[i])
-                zhAcc = frMul(zhAcc, zhVals[i])
+            zhVals.withUnsafeBytes { src in
+                zhInvs.withUnsafeMutableBytes { dst in
+                    bn254_fr_batch_inverse(
+                        src.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(domainSize),
+                        dst.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                }
+            }
+            // Batch multiply evals * zhInvs via C kernel
+            var quotients = [Fr](repeating: Fr.zero, count: domainSize)
+            evals.withUnsafeBytes { evalsBuf in
+                zhInvs.withUnsafeBytes { invsBuf in
+                    quotients.withUnsafeMutableBytes { qBuf in
+                        bn254_fr_batch_mul(
+                            evalsBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            invsBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            qBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(domainSize))
+                    }
+                }
             }
             for i in 0..<domainSize {
-                let base = i * 8
-                let eval = Fr(v: (evals[base], evals[base+1], evals[base+2], evals[base+3],
-                                  evals[base+4], evals[base+5], evals[base+6], evals[base+7]))
-                let q = frMul(eval, zhInvs[i])
-                result.append(contentsOf: [q.v.0, q.v.1, q.v.2, q.v.3,
-                                           q.v.4, q.v.5, q.v.6, q.v.7])
+                result.append(contentsOf: [quotients[i].v.0, quotients[i].v.1,
+                                           quotients[i].v.2, quotients[i].v.3,
+                                           quotients[i].v.4, quotients[i].v.5,
+                                           quotients[i].v.6, quotients[i].v.7])
             }
             return result
 
@@ -960,21 +974,34 @@ public class GPUVanishingPolyEngine {
                 for _ in 0..<logSubgroup { x = frSqr(x) }
                 frZhArr[i] = frSub(x, Fr.one)
             }
-            var frPfx = [Fr](repeating: Fr.one, count: numPoints)
-            for i in 1..<numPoints { frPfx[i] = frMul(frPfx[i - 1], frZhArr[i - 1]) }
-            var frAcc = frInverse(frMul(frPfx[numPoints - 1], frZhArr[numPoints - 1]))
+            // Batch inverse via C kernel (Montgomery's trick)
             var frZhInvArr = [Fr](repeating: Fr.zero, count: numPoints)
-            for i in Swift.stride(from: numPoints - 1, through: 0, by: -1) {
-                frZhInvArr[i] = frMul(frAcc, frPfx[i])
-                frAcc = frMul(frAcc, frZhArr[i])
+            frZhArr.withUnsafeBytes { src in
+                frZhInvArr.withUnsafeMutableBytes { dst in
+                    bn254_fr_batch_inverse(
+                        src.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(numPoints),
+                        dst.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                }
+            }
+            // Batch multiply evals * zhInvs via C kernel
+            var quotients = [Fr](repeating: Fr.zero, count: numPoints)
+            evals.withUnsafeBytes { evalsBuf in
+                frZhInvArr.withUnsafeBytes { invsBuf in
+                    quotients.withUnsafeMutableBytes { qBuf in
+                        bn254_fr_batch_mul(
+                            evalsBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            invsBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            qBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(numPoints))
+                    }
+                }
             }
             for i in 0..<numPoints {
-                let base = i * 8
-                let eval = Fr(v: (evals[base], evals[base+1], evals[base+2], evals[base+3],
-                                  evals[base+4], evals[base+5], evals[base+6], evals[base+7]))
-                let q = frMul(eval, frZhInvArr[i])
-                result.append(contentsOf: [q.v.0, q.v.1, q.v.2, q.v.3,
-                                           q.v.4, q.v.5, q.v.6, q.v.7])
+                result.append(contentsOf: [quotients[i].v.0, quotients[i].v.1,
+                                           quotients[i].v.2, quotients[i].v.3,
+                                           quotients[i].v.4, quotients[i].v.5,
+                                           quotients[i].v.6, quotients[i].v.7])
             }
 
         case .babybear:
