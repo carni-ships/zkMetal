@@ -2,7 +2,7 @@
 
 GPU-accelerated zero-knowledge proof library for Apple Silicon. Metal compute shaders + C/NEON field arithmetic + Swift orchestration.
 
-**~211 primitives** across 18 fields and 10 elliptic curves. 573 source files, 107 Metal shaders, 35 C/NEON files, 239 test files. 50+ engines converted to optimized C batch kernels with prefetch, branchless arithmetic, and auto-parallel dispatch (`dispatch_apply` for n >= 4096). All BN254 Fr serial field loops eliminated — `frBatchInverse` (9 call sites), Hadamard vector ops, axpy/inner product, in-place fold, Montgomery's trick patterns all batch-converted. BabyBear/Goldilocks STARK provers now use C kernels for FRI fold, vanishing polynomial, and batch inverse.
+**~211 primitives** across 18 fields and 10 elliptic curves. 573 source files, 107 Metal shaders, 33 C/NEON files, 239 test files. 50+ engines converted to optimized C batch kernels with prefetch, branchless arithmetic, and auto-parallel dispatch (`dispatch_apply` for n >= 4096). All BN254 Fr serial field loops eliminated — `frBatchInverse` (9 call sites), Hadamard vector ops, axpy/inner product, in-place fold, Montgomery's trick patterns all batch-converted. BabyBear/Goldilocks STARK provers now use C kernels for FRI fold, vanishing polynomial, and batch inverse.
 
 - **Core:** MSM (Pippenger+GLV), NTT (four-step FFT), Poseidon2/Keccak/Blake3/SHA-256, Merkle trees
 - **Proof systems:** Plonk, HyperPlonk, Fflonk, Groth16, STARK (Circle/BabyBear/Goldilocks/Stark252), Spartan, Marlin, GKR
@@ -202,7 +202,7 @@ C Pippenger uses multi-threaded bucket accumulation with `__uint128_t` CIOS Mont
 | 2^22 | 28ms | 25ms | 4.3ms | 3.0ms |
 | 2^24 | 113ms | 110ms | 3.1ms | 2.3ms |
 
-BabyBear at 2^24: **7.4B elements/sec** (native 32-bit arithmetic). Goldilocks: **5.5B elements/sec**.
+BabyBear at 2^24: **7.3B elements/sec** (native 32-bit arithmetic). Goldilocks: **5.4B elements/sec**.
 
 **BN254 Fr GPU vs CPU:**
 
@@ -235,6 +235,10 @@ BabyBear at 2^24: **7.4B elements/sec** (native 32-bit arithmetic). Goldilocks: 
 | Keccak-256 | 2^14 | 100ms | 23ms (parallel) | 0.20ms | **500x** |
 | Keccak-256 | 2^16 | 387ms | 89ms (parallel) | 0.45ms | **860x** |
 | Keccak-256 | 2^18 | 1.6s | 360ms (parallel) | 1.4ms | **1143x** |
+| SHA-256 | 2^14 | -- | 0.81us/hash (CPU) | 0.58ms | **28x** |
+| SHA-256 | 2^16 | -- | -- | 2.0ms | **32M hash/s** |
+| SHA-256 | 2^18 | -- | -- | 3.9ms | **67M hash/s** |
+| SHA-256 | 2^20 | -- | -- | 8.7ms | **121M hash/s** |
 
 ### Merkle Trees
 
@@ -256,6 +260,11 @@ BabyBear at 2^24: **7.4B elements/sec** (native 32-bit arithmetic). Goldilocks: 
 | Blake3 | 2^16 | 1.3ms | 101ms | **78x** |
 | Blake3 | 2^18 | 3.9ms | 345ms | **88x** |
 | Blake3 | 2^20 | 12ms | -- | -- |
+| SHA-256 | 2^12 | 0.83ms | -- | -- |
+| SHA-256 | 2^14 | 0.87ms | -- | -- |
+| SHA-256 | 2^16 | 1.3ms | -- | -- |
+| SHA-256 | 2^18 | 3.3ms | -- | -- |
+| SHA-256 | 2^20 | 10ms | -- | -- |
 
 ### FRI Folding (BN254 Fr)
 
@@ -390,14 +399,14 @@ C CIOS Montgomery acceleration: pre-computed wiring topology, cached buffers, eq
 
 ### Other Curve MSM
 
-| Points | BN254 GPU | BLS12-377 GPU | secp256k1 GPU | secp256k1 C Pip | Pallas GPU | Vesta GPU |
-|--------|-----------|---------------|---------------|-----------------|------------|-----------|
-| 2^8 | 1.1ms | 9ms | 1.3ms | 1.4ms | 5.3ms | 4.9ms |
-| 2^10 | 3.0ms | 35ms | 4.3ms | 4.3ms | 12ms | 10ms |
-| 2^12 | 8.1ms | 14ms | 6.5ms | 10ms | 17ms | 17ms |
-| 2^14 | 22ms | 36ms | 12ms | 31ms | 20ms | 20ms |
-| 2^16 | 27ms | 176ms | 24ms | 92ms | 39ms | 39ms |
-| 2^18 | 45ms | 205ms | 113ms | 339ms | 66ms | 65ms |
+| Points | BN254 GPU | BLS12-377 GPU | secp256k1 GPU | secp256k1 C Pip | Pallas GPU | Vesta GPU | Grumpkin GPU | Ed25519 GPU | BN254 G2 GPU |
+|--------|-----------|---------------|---------------|-----------------|------------|-----------|--------------|-------------|--------------|
+| 2^8 | 1.1ms | 9ms | 1.3ms | 1.4ms | 5.3ms | 4.9ms | 3.3ms | 0.8ms | 13ms |
+| 2^10 | 3.0ms | 35ms | 4.3ms | 4.3ms | 12ms | 10ms | -- | 22ms | 38ms |
+| 2^12 | 8.1ms | 14ms | 6.5ms | 10ms | 17ms | 17ms | 20ms | -- | 63ms |
+| 2^14 | 22ms | 36ms | 12ms | 31ms | 20ms | 20ms | 258ms | -- | 812ms |
+| 2^16 | 27ms | 176ms | 24ms | 92ms | 39ms | 39ms | 48ms | -- | -- |
+| 2^18 | 45ms | 205ms | 113ms | 339ms | 66ms | 65ms | -- | -- | -- |
 
 ### CPU Optimizations
 
@@ -448,7 +457,7 @@ C CIOS Montgomery acceleration: pre-computed wiring topology, cached buffers, eq
 
 | Primitive | Key Benchmark | Notes |
 |-----------|---------------|-------|
-| HyperNova fold | 0.09ms/fold (10-1000 steps) | Keccak256 transcript + C CIOS + pre-computed affine: **40x** (3.6ms→0.09ms) |
+| HyperNova fold | 0.09ms/fold (1000 steps), N=4: 0.21ms, N=8: 0.46ms | Keccak256 transcript + C CIOS + pre-computed affine: **40x** (3.6ms→0.09ms) |
 | Basefold open 2^18 | 110ms | C CIOS fold + zero-copy Merkle paths: **1.3x** faster |
 | Brakedown PCS | -- | Crashes on some hardware (signal 139) |
 | Zeromorph PCS | -- | Crashes on some hardware (signal 139) |
@@ -463,10 +472,13 @@ C CIOS Montgomery acceleration: pre-computed wiring topology, cached buffers, eq
 | LogUp 2^12 | 15ms prove, 16ms verify | Optimal for small-medium tables |
 | cq 2^16 | 8ms prove, 2ms verify | O(N log N) independent of table size |
 | Binius FFT 2^16 | 21ms (CPU) | Binary tower GF(2^32) GPU batch: 0.67ms mul at 2^18 |
-| BLS12-381 | Sign 26ms, Verify 82ms, **Pairing 0.9ms** | Projective G2 Miller loop + sparse line mul + dedicated fp_sqr: **87×** (78→0.9ms) |
+| BLS12-381 | Sign 26ms, Verify 82ms, **Pairing 1.0ms** | Projective G2 Miller loop + sparse line mul + dedicated fp_sqr: **78×** (78→1.0ms) |
 | BN254 GPU Pairing (n=16) | 34ms (vs 5.6ms C = **0.16x**) | Projective Miller loop, fused line-line mul, batched final exp |
 | BN254 C Pairing (n=1) | **0.5ms** (15× vs Swift) | CIOS __uint128_t + Granger-Scott cyc_sqr + sparse line + projective G2 |
-| Schnorr BIP 340 | Sign 0.30ms, Batch verify 0.20ms/sig | x-only pubkeys, SHA-256 tagged hashing |
+| Schnorr BIP 340 | Sign 0.12ms, Verify 0.11ms, Batch 0.03ms/sig (256) | x-only pubkeys, SHA-256 tagged hashing |
+| Ed25519 EdDSA | Sign 0.06ms, Verify 0.08ms, MSM 256pt 0.8ms | C Fq CIOS + Shamir's trick, RFC 8032 test vectors |
+| BabyJubjub EdDSA | Sign 0.11ms, Verify 0.14ms, Batch 10 1.9ms | Pedersen hash (0.01ms/op), twisted Edwards over BN254 Fr |
+| Plookup | Prove 3.2ms (2^8), 70ms (2^12), 204ms (2^14) | Split-half grand product, domain padding, verify 0.3-16ms |
 | Stark252 NTT 2^20 | 238M elem/s (GPU) | StarkNet/Cairo native field |
 | Poseidon2 BabyBear (width-16) | 104M hash/s (GPU) | SP1/Plonky3 exact config |
 | Pasta MSM 2^18 | Pallas 125ms, Vesta 128ms | C CIOS field+curve ops, Jacobian projective, windowed scalar mul |
