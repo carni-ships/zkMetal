@@ -449,13 +449,29 @@ public class IPAVerifier {
             }
         }
 
-        // Fold b (= u) using challenges
+        // Fold b (= u) using challenges — pointer offsets eliminate prefix/suffix copies
         var bFolded = u
         var halfLen = n / 2
         for round in 0..<logN {
-            let bL = Array(bFolded.prefix(halfLen))
-            let bR = Array(bFolded.suffix(halfLen))
-            bFolded = cFrVectorFold(bL, bR, x: challengeInvs[round], xInv: challenges[round])
+            var out = [Fr](repeating: .zero, count: halfLen)
+            bFolded.withUnsafeBytes { bBuf in
+                let basePtr = bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                let aPtr = basePtr  // first half
+                let bPtr = basePtr.advanced(by: halfLen * 4)  // second half (4 UInt64s per Fr)
+                withUnsafeBytes(of: challengeInvs[round]) { xBuf in
+                    withUnsafeBytes(of: challenges[round]) { xiBuf in
+                        out.withUnsafeMutableBytes { outBuf in
+                            bn254_fr_vector_fold(
+                                aPtr, bPtr,
+                                xBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                xiBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                Int32(halfLen),
+                                outBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                        }
+                    }
+                }
+            }
+            bFolded = out
             halfLen /= 2
         }
         let bFinal = bFolded[0]

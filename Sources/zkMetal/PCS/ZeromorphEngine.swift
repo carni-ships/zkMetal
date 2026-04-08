@@ -80,31 +80,14 @@ public class ZeromorphEngine {
         for s in 0..<n {
             let k = n - 1 - s
             let halfLen = f.count / 2
-            var fEven = [Fr](repeating: Fr.zero, count: halfLen)
-            var fOdd = [Fr](repeating: Fr.zero, count: halfLen)
-            for i in 0..<halfLen {
-                fEven[i] = f[2 * i]
-                fOdd[i] = f[2 * i + 1]
-            }
+            // Extract odd coefficients for quotient (must be a new array)
+            var fOdd = [Fr](repeating: .zero, count: halfLen)
+            for i in 0..<halfLen { fOdd[i] = f[2 * i + 1] }
             stepQuotients.append(fOdd)
+            // Fold in-place: f[i] = f[2*i] + uk * f[2*i+1]  (no fEven allocation needed)
             let uk = point[k]
-            // Batch: folded[i] = fEven[i] + uk * fOdd[i]
-            var folded = [Fr](repeating: Fr.zero, count: halfLen)
-            fEven.withUnsafeBytes { aBuf in
-                withUnsafeBytes(of: uk) { sBuf in
-                    fOdd.withUnsafeBytes { bBuf in
-                        folded.withUnsafeMutableBytes { outBuf in
-                            bn254_fr_batch_linear_combine(
-                                aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                                sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                                bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                                outBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                                Int32(halfLen))
-                        }
-                    }
-                }
-            }
-            f = folded
+            for i in 0..<halfLen { f[i] = frAdd(f[2 * i], frMul(uk, f[2 * i + 1])) }
+            f.removeSubrange(halfLen..<f.count)
         }
         precondition(f.count == 1, "folding should reduce to single element")
 
