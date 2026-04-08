@@ -126,9 +126,21 @@ public class LogUpGKRProver {
 
         // Compute sums
         var witnessSum = Fr.zero
-        for v in hf { witnessSum = frAdd(witnessSum, v) }
+        hf.withUnsafeBytes { buf in
+            withUnsafeMutableBytes(of: &witnessSum) { rBuf in
+                bn254_fr_vector_sum(buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                    Int32(n),
+                                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+            }
+        }
         var tableSum = Fr.zero
-        for v in ht { tableSum = frAdd(tableSum, v) }
+        ht.withUnsafeBytes { buf in
+            withUnsafeMutableBytes(of: &tableSum) { rBuf in
+                bn254_fr_vector_sum(buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                    Int32(ht.count),
+                                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+            }
+        }
 
         transcript.absorb(witnessSum)
         transcript.absorb(tableSum)
@@ -224,13 +236,30 @@ public class LogUpGKRProver {
     private func computeTableInverses(table: [Fr], multiplicities: [Fr], gamma: Fr) -> [Fr] {
         let N = table.count
         var diffs = [Fr](repeating: Fr.zero, count: N)
-        for j in 0..<N {
-            diffs[j] = frSub(gamma, table[j])
+        var gammaVal = gamma
+        withUnsafeBytes(of: &gammaVal) { scalarBuf in
+            table.withUnsafeBytes { tBuf in
+                diffs.withUnsafeMutableBytes { dBuf in
+                    bn254_fr_batch_scalar_sub_neon(
+                        dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        scalarBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(N))
+                }
+            }
         }
         let invs = batchInverse(diffs)
         var result = [Fr](repeating: Fr.zero, count: N)
-        for j in 0..<N {
-            result[j] = frMul(multiplicities[j], invs[j])
+        multiplicities.withUnsafeBytes { mBuf in
+            invs.withUnsafeBytes { iBuf in
+                result.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_mul_parallel(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        mBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        iBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(N))
+                }
+            }
         }
         return result
     }
@@ -277,19 +306,22 @@ public class LogUpGKRProver {
         for _ in 0..<logN {
             let half = current.count / 2
 
+            // s0 = sum(current[0..<half]), s1 = sum(current[half..<2*half])
             var s0 = Fr.zero
             var s1 = Fr.zero
-            var s2 = Fr.zero
-
-            for j in 0..<half {
-                let v0 = current[j]           // f(x_remaining, 0)
-                let v1 = current[j + half]    // f(x_remaining, 1)
-                s0 = frAdd(s0, v0)
-                s1 = frAdd(s1, v1)
-                // f(2) = 2*v1 - v0 (linear extrapolation)
-                let v2 = frSub(frAdd(v1, v1), v0)
-                s2 = frAdd(s2, v2)
+            current.withUnsafeBytes { buf in
+                let ptr = buf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                withUnsafeMutableBytes(of: &s0) { r in
+                    bn254_fr_vector_sum(ptr, Int32(half),
+                                        r.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                }
+                withUnsafeMutableBytes(of: &s1) { r in
+                    bn254_fr_vector_sum(ptr.advanced(by: half * 4), Int32(half),
+                                        r.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                }
             }
+            // s2 = 2*s1 - s0 (since sum(2*v1 - v0) = 2*sum(v1) - sum(v0))
+            let s2 = frSub(frAdd(s1, s1), s0)
 
             let msg = SumcheckRoundMsg(s0: s0, s1: s1, s2: s2)
             msgs.append(msg)
@@ -299,12 +331,19 @@ public class LogUpGKRProver {
             transcript.absorb(s2)
             let challenge = transcript.squeeze()
 
-            // Fold: new[j] = (1-r)*current[j] + r*current[j+half]
-            let oneMinusR = frSub(Fr.one, challenge)
+            // Fold: next[j] = current[j] + challenge*(current[j+half] - current[j])
             var next = [Fr](repeating: Fr.zero, count: half)
-            for j in 0..<half {
-                next[j] = frAdd(frMul(oneMinusR, current[j]),
-                                frMul(challenge, current[j + half]))
+            var ch = challenge
+            current.withUnsafeBytes { cBuf in
+                withUnsafeBytes(of: &ch) { chBuf in
+                    next.withUnsafeMutableBytes { nBuf in
+                        bn254_fr_fold_halves(
+                            cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            chBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            nBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(half))
+                    }
+                }
             }
             current = next
         }

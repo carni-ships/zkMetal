@@ -192,9 +192,21 @@ public class LogUpBatchGKRProver {
         let ht = computeTableInverses(table: combinedTable, multiplicities: multiplicities, gamma: gamma)
 
         var witnessSum = Fr.zero
-        for v in hf { witnessSum = frAdd(witnessSum, v) }
+        hf.withUnsafeBytes { buf in
+            withUnsafeMutableBytes(of: &witnessSum) { rBuf in
+                bn254_fr_vector_sum(buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                    Int32(n),
+                                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+            }
+        }
         var tableSum = Fr.zero
-        for v in ht { tableSum = frAdd(tableSum, v) }
+        ht.withUnsafeBytes { buf in
+            withUnsafeMutableBytes(of: &tableSum) { rBuf in
+                bn254_fr_vector_sum(buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                    Int32(ht.count),
+                                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+            }
+        }
 
         transcript.absorb(witnessSum)
         transcript.absorb(tableSum)
@@ -364,22 +376,42 @@ public class LogUpBatchGKRProver {
 
         for _ in 0..<logN {
             let half = current.count / 2
-            var s0 = Fr.zero, s1 = Fr.zero, s2 = Fr.zero
-            for j in 0..<half {
-                let v0 = current[j]
-                let v1 = current[j + half]
-                s0 = frAdd(s0, v0)
-                s1 = frAdd(s1, v1)
-                s2 = frAdd(s2, frSub(frAdd(v1, v1), v0))
+
+            // s0 = sum(current[0..<half]), s1 = sum(current[half..<2*half])
+            var s0 = Fr.zero
+            var s1 = Fr.zero
+            current.withUnsafeBytes { buf in
+                let ptr = buf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                withUnsafeMutableBytes(of: &s0) { r in
+                    bn254_fr_vector_sum(ptr, Int32(half),
+                                        r.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                }
+                withUnsafeMutableBytes(of: &s1) { r in
+                    bn254_fr_vector_sum(ptr.advanced(by: half * 4), Int32(half),
+                                        r.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                }
             }
+            // s2 = 2*s1 - s0
+            let s2 = frSub(frAdd(s1, s1), s0)
+
             let msg = SumcheckRoundMsg(s0: s0, s1: s1, s2: s2)
             msgs.append(msg)
             transcript.absorb(s0); transcript.absorb(s1); transcript.absorb(s2)
             let challenge = transcript.squeeze()
-            let oneMinusR = frSub(Fr.one, challenge)
+
+            // Fold: next[j] = current[j] + challenge*(current[j+half] - current[j])
             var next = [Fr](repeating: Fr.zero, count: half)
-            for j in 0..<half {
-                next[j] = frAdd(frMul(oneMinusR, current[j]), frMul(challenge, current[j + half]))
+            var ch = challenge
+            current.withUnsafeBytes { cBuf in
+                withUnsafeBytes(of: &ch) { chBuf in
+                    next.withUnsafeMutableBytes { nBuf in
+                        bn254_fr_fold_halves(
+                            cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            chBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            nBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(half))
+                    }
+                }
             }
             current = next
         }
@@ -591,16 +623,16 @@ public class LogUpBatchGKRVerifier {
     private func batchVerifierInverse(_ values: [Fr]) -> [Fr] {
         let n = values.count
         guard n > 0 else { return [] }
-        var prefix = [Fr](repeating: Fr.zero, count: n)
-        prefix[0] = values[0]
-        for i in 1..<n { prefix[i] = frMul(prefix[i - 1], values[i]) }
-        var inv = frInverse(prefix[n - 1])
         var result = [Fr](repeating: Fr.zero, count: n)
-        for i in stride(from: n - 1, through: 1, by: -1) {
-            result[i] = frMul(inv, prefix[i - 1])
-            inv = frMul(inv, values[i])
+        values.withUnsafeBytes { aBuf in
+            result.withUnsafeMutableBytes { rBuf in
+                bn254_fr_batch_inverse(
+                    aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(n),
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                )
+            }
         }
-        result[0] = inv
         return result
     }
 
