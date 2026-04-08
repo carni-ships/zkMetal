@@ -16,6 +16,7 @@
 // References: Lookup Singularity (Gabizon 2023), LogUp-GKR (Haboeck 2022)
 
 import Foundation
+import NeonFieldOps
 import Metal
 import NeonFieldOps
 
@@ -90,29 +91,63 @@ public class LookupSingularityProver {
 
         // Step 3: Compute h_w[i] = 1/(gamma - w[i]) -- witness inverse polynomial
         var gammaMinusW = [Fr](repeating: Fr.zero, count: m)
-        for i in 0..<m {
-            gammaMinusW[i] = frSub(gammaVal, paddedWitnesses[i])
+        gammaMinusW.withUnsafeMutableBytes { dst in
+            paddedWitnesses.withUnsafeBytes { src in
+                withUnsafeBytes(of: gammaVal) { g in
+                    bn254_fr_batch_scalar_sub_neon(
+                        dst.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        g.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        src.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(m))
+                }
+            }
         }
         let hw = try polyEngine.batchInverse(gammaMinusW)
 
         // Step 4: Compute h_t[j] = mult[j]/(gamma - T[j]) -- table weighted-inverse polynomial
         var gammaMinusT = [Fr](repeating: Fr.zero, count: N)
-        for j in 0..<N {
-            gammaMinusT[j] = frSub(gammaVal, paddedTable[j])
+        gammaMinusT.withUnsafeMutableBytes { dst in
+            paddedTable.withUnsafeBytes { src in
+                withUnsafeBytes(of: gammaVal) { g in
+                    bn254_fr_batch_scalar_sub_neon(
+                        dst.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        g.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        src.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(N))
+                }
+            }
         }
         let invT = try polyEngine.batchInverse(gammaMinusT)
         let ht = try polyEngine.hadamard(mult, invT)
 
         // Step 5: Compute claimed sum S = sum_i h_w[i]
-        var witnessSum = Fr.zero
-        for i in 0..<m {
-            witnessSum = frAdd(witnessSum, hw[i])
+        let witnessSum: Fr
+        if m >= 256 {
+            var wLimbs: [UInt64] = [0, 0, 0, 0]
+            hw.withUnsafeBytes { src in
+                bn254_fr_vector_sum(src.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                    Int32(m), &wLimbs)
+            }
+            witnessSum = Fr.from64(wLimbs)
+        } else {
+            var acc = Fr.zero
+            for i in 0..<m { acc = frAdd(acc, hw[i]) }
+            witnessSum = acc
         }
 
         // Verify table side matches (soundness check)
-        var tableSum = Fr.zero
-        for j in 0..<N {
-            tableSum = frAdd(tableSum, ht[j])
+        let tableSum: Fr
+        if N >= 256 {
+            var tLimbs: [UInt64] = [0, 0, 0, 0]
+            ht.withUnsafeBytes { src in
+                bn254_fr_vector_sum(src.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                    Int32(N), &tLimbs)
+            }
+            tableSum = Fr.from64(tLimbs)
+        } else {
+            var acc = Fr.zero
+            for j in 0..<N { acc = frAdd(acc, ht[j]) }
+            tableSum = acc
         }
         precondition(frEqual(witnessSum, tableSum),
                      "Lookup Singularity sum mismatch -- witness values not all in table")
