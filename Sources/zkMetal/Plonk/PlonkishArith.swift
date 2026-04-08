@@ -287,9 +287,23 @@ public struct WitnessAssignment {
 
     public init(numAdvice: Int, numFixed: Int, numInstance: Int, numRows: Int) {
         self.numRows = numRows
-        self.advice = (0..<numAdvice).map { _ in [Fr](repeating: Fr.zero, count: numRows) }
-        self.fixed = (0..<numFixed).map { _ in [Fr](repeating: Fr.zero, count: numRows) }
-        self.instance = (0..<numInstance).map { _ in [Fr](repeating: Fr.zero, count: numRows) }
+        let totalColumns = numAdvice + numFixed + numInstance
+        if totalColumns > 0 && numRows * totalColumns > 10_000 {
+            // Parallel allocation for large circuits
+            let allColumns = UnsafeMutableBufferPointer<[Fr]>.allocate(capacity: totalColumns)
+            _ = allColumns.initialize(repeating: [])
+            DispatchQueue.concurrentPerform(iterations: totalColumns) { i in
+                allColumns[i] = [Fr](repeating: Fr.zero, count: numRows)
+            }
+            self.advice = Array(allColumns[0..<numAdvice])
+            self.fixed = Array(allColumns[numAdvice..<(numAdvice + numFixed)])
+            self.instance = Array(allColumns[(numAdvice + numFixed)..<totalColumns])
+            allColumns.deallocate()
+        } else {
+            self.advice = (0..<numAdvice).map { _ in [Fr](repeating: Fr.zero, count: numRows) }
+            self.fixed = (0..<numFixed).map { _ in [Fr](repeating: Fr.zero, count: numRows) }
+            self.instance = (0..<numInstance).map { _ in [Fr](repeating: Fr.zero, count: numRows) }
+        }
     }
 
     /// Set a cell value.

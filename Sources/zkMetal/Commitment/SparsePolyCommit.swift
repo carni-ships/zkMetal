@@ -85,10 +85,12 @@ public struct SparsePoly {
         var prevIdx = 0
 
         for (idx, c) in terms {
-            // Advance zPow from z^prevIdx to z^idx
+            // Advance zPow from z^prevIdx to z^idx via repeated squaring
             let gap = idx - prevIdx
-            for _ in 0..<gap {
+            if gap == 1 {
                 zPow = frMul(zPow, z)
+            } else if gap > 1 {
+                zPow = frMul(zPow, frPow(z, UInt64(gap)))
             }
             prevIdx = idx
             result = frAdd(result, frMul(c, zPow))

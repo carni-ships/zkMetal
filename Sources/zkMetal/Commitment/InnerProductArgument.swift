@@ -152,15 +152,18 @@ public class IPAProver {
         // Convert affine generators to projective flat buffer
         let fpOne: [UInt64] = [0xd35d438dc58f0d9d, 0x0a78eb28f5c70b3d, 0x666ea36f7879462c, 0x0e0a77c19a07df2f]
         generators.withUnsafeBytes { src in
-            for i in 0..<n {
-                gFlat.withUnsafeMutableBytes { dst in
-                    dst.baseAddress!.advanced(by: i * 96).copyMemory(
-                        from: src.baseAddress!.advanced(by: i * 64), byteCount: 64)
+            gFlat.withUnsafeMutableBytes { dst in
+                let srcBase = src.baseAddress!
+                let dstBase = dst.baseAddress!
+                for i in 0..<n {
+                    dstBase.advanced(by: i * 96).copyMemory(
+                        from: srcBase.advanced(by: i * 64), byteCount: 64)
+                    let fpDst = dstBase.advanced(by: i * 96 + 64).assumingMemoryBound(to: UInt64.self)
+                    fpDst[0] = fpOne[0]
+                    fpDst[1] = fpOne[1]
+                    fpDst[2] = fpOne[2]
+                    fpDst[3] = fpOne[3]
                 }
-                gFlat[i * 12 + 8] = fpOne[0]
-                gFlat[i * 12 + 9] = fpOne[1]
-                gFlat[i * 12 + 10] = fpOne[2]
-                gFlat[i * 12 + 11] = fpOne[3]
             }
         }
 
