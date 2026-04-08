@@ -553,11 +553,21 @@ public class GPURangeProofProtocolEngine {
 
         // <1, y^n> = sum of y^i
         var sumY = Fr.zero
-        for i in 0..<n { sumY = frAdd(sumY, yPow[i]) }
+        yPow.withUnsafeBytes { yBuf in
+            withUnsafeMutableBytes(of: &sumY) { rBuf in
+                bn254_fr_vector_sum(yBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                    Int32(n), rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+            }
+        }
 
         // <1, 2^n> = sum of 2^i = 2^n - 1
         var sum2 = Fr.zero
-        for i in 0..<n { sum2 = frAdd(sum2, twoPow[i]) }
+        twoPow.withUnsafeBytes { tBuf in
+            withUnsafeMutableBytes(of: &sum2) { rBuf in
+                bn254_fr_vector_sum(tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                    Int32(n), rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+            }
+        }
 
         let z3 = frMul(z2, z)
         // delta = (z - z^2) * sumY - z^3 * sum2
@@ -891,10 +901,20 @@ public class GPURangeProofProtocolEngine {
 
         // Compute delta for the aggregated case
         var sumY = Fr.zero
-        for i in 0..<totalN { sumY = frAdd(sumY, yPow[i]) }
+        yPow.withUnsafeBytes { yBuf in
+            withUnsafeMutableBytes(of: &sumY) { rBuf in
+                bn254_fr_vector_sum(yBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                    Int32(totalN), rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+            }
+        }
 
         var sum2 = Fr.zero
-        for i in 0..<bitSize { sum2 = frAdd(sum2, twoPow[i]) }
+        twoPow.withUnsafeBytes { tBuf in
+            withUnsafeMutableBytes(of: &sum2) { rBuf in
+                bn254_fr_vector_sum(tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                    Int32(bitSize), rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+            }
+        }
 
         // delta = (z - z^2) * sumY - sum_j z^{j+3} * sum2
         var delta = frMul(frSub(z, frMul(z, z)), sumY)

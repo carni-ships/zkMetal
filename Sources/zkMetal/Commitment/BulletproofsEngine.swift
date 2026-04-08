@@ -260,20 +260,88 @@ public class BulletproofsProver {
 
         let z2 = frMul(z, z)
 
-        // l0 = a_L - z*1, l1 = s_L
-        var l0 = [Fr](repeating: Fr.zero, count: n)
-        for i in 0..<n {
-            l0[i] = frSub(aL[i], z)
+        // l0 = a_L - z*1
+        var l0 = [Fr](repeating: .zero, count: n)
+        var zCopy = z
+        aL.withUnsafeBytes { aBuf in
+            l0.withUnsafeMutableBytes { lBuf in
+                withUnsafeBytes(of: &zCopy) { zBuf in
+                    bn254_fr_batch_sub_scalar(
+                        lBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        zBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
         }
 
-        // r0 = y^n . (a_R + z*1) + z^2 * 2^n
+        // r0 = y^n . (a_R + z) + z^2 * 2^n
         // r1 = y^n . s_R
-        var r0 = [Fr](repeating: Fr.zero, count: n)
-        var r1 = [Fr](repeating: Fr.zero, count: n)
-        for i in 0..<n {
-            let aRpZ = frAdd(aR[i], z)
-            r0[i] = frAdd(frMul(yPow[i], aRpZ), frMul(z2, twoPow[i]))
-            r1[i] = frMul(yPow[i], sR[i])
+        // Step 1: aRpZ[i] = aR[i] + z
+        var aRpZ = [Fr](repeating: .zero, count: n)
+        aR.withUnsafeBytes { aBuf in
+            aRpZ.withUnsafeMutableBytes { rBuf in
+                withUnsafeBytes(of: &zCopy) { zBuf in
+                    bn254_fr_batch_add_scalar_neon(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        zBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
+        }
+        // Step 2: tmp1[i] = yPow[i] * aRpZ[i]
+        var tmp1 = [Fr](repeating: .zero, count: n)
+        yPow.withUnsafeBytes { yBuf in
+            aRpZ.withUnsafeBytes { aBuf in
+                tmp1.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_mul_neon(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        yBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
+        }
+        // Step 3: tmp2[i] = z2 * twoPow[i]
+        var tmp2 = [Fr](repeating: .zero, count: n)
+        var z2Copy = z2
+        twoPow.withUnsafeBytes { tBuf in
+            tmp2.withUnsafeMutableBytes { rBuf in
+                withUnsafeBytes(of: &z2Copy) { zBuf in
+                    bn254_fr_batch_mul_scalar_neon(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        zBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
+        }
+        // Step 4: r0[i] = tmp1[i] + tmp2[i]
+        var r0 = [Fr](repeating: .zero, count: n)
+        tmp1.withUnsafeBytes { aBuf in
+            tmp2.withUnsafeBytes { bBuf in
+                r0.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_add_neon(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
+        }
+        // Step 5: r1[i] = yPow[i] * sR[i]
+        var r1 = [Fr](repeating: .zero, count: n)
+        yPow.withUnsafeBytes { yBuf in
+            sR.withUnsafeBytes { sBuf in
+                r1.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_mul_neon(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        yBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
         }
 
         // t0 = <l0, r0>
