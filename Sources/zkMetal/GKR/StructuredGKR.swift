@@ -11,6 +11,7 @@
 //   - Range check (bit decomposition, value < 2^k)
 
 import Foundation
+import NeonFieldOps
 
 // MARK: - Poseidon2 as a Layered GKR Circuit
 
@@ -732,10 +733,35 @@ public class StructuredGKRProver {
             // Combine for next layer
             let beta = transcript.squeeze()
             let totalInVars = instBits + nInCircuit
-            var newR = [Fr]()
-            newR.reserveCapacity(totalInVars)
-            for i in 0..<totalInVars {
-                newR.append(frAdd(rx[i], frMul(beta, frSub(ry[i], rx[i]))))
+            // newR[i] = rx[i] + beta * (ry[i] - rx[i])
+            var diff = [Fr](repeating: Fr.zero, count: totalInVars)
+            rx.withUnsafeBytes { rxBuf in
+                ry.withUnsafeBytes { ryBuf in
+                    diff.withUnsafeMutableBytes { diffBuf in
+                        bn254_fr_batch_sub_neon(
+                            diffBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            ryBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rxBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(totalInVars)
+                        )
+                    }
+                }
+            }
+            var newR = [Fr](repeating: Fr.zero, count: totalInVars)
+            rx.withUnsafeBytes { rxBuf in
+                withUnsafeBytes(of: beta) { betaBuf in
+                    diff.withUnsafeBytes { diffBuf in
+                        newR.withUnsafeMutableBytes { outBuf in
+                            bn254_fr_batch_linear_combine(
+                                rxBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                betaBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                diffBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                outBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                Int32(totalInVars)
+                            )
+                        }
+                    }
+                }
             }
             r = newR
             claim = frAdd(vx, frMul(beta, frSub(vy, vx)))
@@ -832,10 +858,35 @@ public class StructuredGKRProver {
             let rx = xiChallenges + xcChallenges
             let ry = yiChallenges + ycChallenges
 
-            var newR = [Fr]()
-            newR.reserveCapacity(totalInVars)
-            for i in 0..<totalInVars {
-                newR.append(frAdd(rx[i], frMul(beta, frSub(ry[i], rx[i]))))
+            // newR[i] = rx[i] + beta * (ry[i] - rx[i])
+            var vDiff = [Fr](repeating: Fr.zero, count: totalInVars)
+            rx.withUnsafeBytes { rxBuf in
+                ry.withUnsafeBytes { ryBuf in
+                    vDiff.withUnsafeMutableBytes { diffBuf in
+                        bn254_fr_batch_sub_neon(
+                            diffBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            ryBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rxBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(totalInVars)
+                        )
+                    }
+                }
+            }
+            var newR = [Fr](repeating: Fr.zero, count: totalInVars)
+            rx.withUnsafeBytes { rxBuf in
+                withUnsafeBytes(of: beta) { betaBuf in
+                    vDiff.withUnsafeBytes { diffBuf in
+                        newR.withUnsafeMutableBytes { outBuf in
+                            bn254_fr_batch_linear_combine(
+                                rxBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                betaBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                diffBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                outBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                Int32(totalInVars)
+                            )
+                        }
+                    }
+                }
             }
             r = newR
             claim = frAdd(vx, frMul(beta, frSub(vy, vx)))
@@ -994,11 +1045,19 @@ public class StructuredGKRProver {
             let challenge = transcript.squeeze()
             challenges.append(challenge)
 
-            let oneMinusC = frSub(Fr.one, challenge)
+            // Fold halves: newTable[i] = curTable[i] + challenge * (curTable[i+halfSize] - curTable[i])
             var newTable = [Fr](repeating: Fr.zero, count: halfSize)
-            for j in 0..<halfSize {
-                newTable[j] = frAdd(frMul(oneMinusC, curTable[j]),
-                                    frMul(challenge, curTable[j + halfSize]))
+            curTable.withUnsafeBytes { tableBuf in
+                withUnsafeBytes(of: challenge) { chalBuf in
+                    newTable.withUnsafeMutableBytes { outBuf in
+                        bn254_fr_fold_halves(
+                            tableBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            chalBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            outBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(halfSize)
+                        )
+                    }
+                }
             }
             curTable = newTable
         }
