@@ -11,6 +11,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 // MARK: - Security Configuration
 
@@ -431,9 +432,18 @@ public class GPUSTARKVerifierEngine {
     /// Evaluate a polynomial at a point using Horner's method.
     public func evaluatePolynomial(_ coeffs: [Fr], at point: Fr) -> Fr {
         guard !coeffs.isEmpty else { return Fr.zero }
-        var result = coeffs[coeffs.count - 1]
-        for i in stride(from: coeffs.count - 2, through: 0, by: -1) {
-            result = frAdd(frMul(result, point), coeffs[i])
+        var result = Fr.zero
+        coeffs.withUnsafeBytes { cBuf in
+            withUnsafeBytes(of: point) { zBuf in
+                withUnsafeMutableBytes(of: &result) { rBuf in
+                    bn254_fr_horner_eval(
+                        cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(coeffs.count),
+                        zBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    )
+                }
+            }
         }
         return result
     }

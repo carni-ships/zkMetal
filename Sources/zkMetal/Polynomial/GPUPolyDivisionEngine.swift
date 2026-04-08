@@ -13,6 +13,7 @@
 // CPU-only implementation; leverages NEON-accelerated Fr arithmetic.
 
 import Foundation
+import NeonFieldOps
 
 public class GPUPolyDivisionEngine {
     public static let version = Versions.gpuPolyDivision
@@ -153,26 +154,23 @@ public class GPUPolyDivisionEngine {
         let n = coeffs.count
 
         if n <= 1 {
-            // Constant or empty polynomial divided by linear: quotient = 0, remainder = constant
             return ([Fr.zero], coeffs.isEmpty ? Fr.zero : coeffs[0])
         }
 
-        // Synthetic division: process from highest coefficient down
-        // carry = c[n-1]
-        // for k = n-2 down to 1: q[k-1] ... nope, use standard form:
-        //
-        // q has degree (n-2), so q has (n-1) coefficients
         var quotient = [Fr](repeating: Fr.zero, count: n - 1)
-
-        var carry = coeffs[n - 1]
-        quotient[n - 2] = carry
-
-        for k in stride(from: n - 2, to: 0, by: -1) {
-            carry = frAdd(coeffs[k], frMul(r, carry))
-            quotient[k - 1] = carry
+        coeffs.withUnsafeBytes { cBuf in
+            withUnsafeBytes(of: r) { zBuf in
+                quotient.withUnsafeMutableBytes { qBuf in
+                    bn254_fr_synthetic_div(
+                        cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        zBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n),
+                        qBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    )
+                }
+            }
         }
-
-        let remainder = frAdd(coeffs[0], frMul(r, carry))
+        let remainder = frAdd(coeffs[0], frMul(r, quotient[0]))
 
         return (quotient, remainder)
     }

@@ -39,6 +39,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 // MARK: - GPU CQ Table Commitment
 
@@ -653,11 +654,18 @@ public class GPUCQLookupEngine {
     private func syntheticDivide(_ coeffs: [Fr], root: Fr) -> [Fr] {
         let n = coeffs.count
         if n < 2 { return [] }
-
         var q = [Fr](repeating: Fr.zero, count: n - 1)
-        q[n - 2] = coeffs[n - 1]
-        for i in stride(from: n - 2, through: 1, by: -1) {
-            q[i - 1] = frAdd(coeffs[i], frMul(root, q[i]))
+        coeffs.withUnsafeBytes { cBuf in
+            withUnsafeBytes(of: root) { zBuf in
+                q.withUnsafeMutableBytes { qBuf in
+                    bn254_fr_synthetic_div(
+                        cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        zBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n),
+                        qBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    )
+                }
+            }
         }
         return q
     }

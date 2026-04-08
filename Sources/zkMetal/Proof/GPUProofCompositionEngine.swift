@@ -317,9 +317,18 @@ public class GPUProofCompositionEngine {
     /// poly = c_0 + c_1*x + c_2*x^2 + ...
     public func evaluatePolynomial(_ poly: [Fr], at point: Fr) -> Fr {
         guard !poly.isEmpty else { return Fr.zero }
-        var result = poly[poly.count - 1]
-        for i in stride(from: poly.count - 2, through: 0, by: -1) {
-            result = frAdd(frMul(result, point), poly[i])
+        var result = Fr.zero
+        poly.withUnsafeBytes { cBuf in
+            withUnsafeBytes(of: point) { zBuf in
+                withUnsafeMutableBytes(of: &result) { rBuf in
+                    bn254_fr_horner_eval(
+                        cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(poly.count),
+                        zBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    )
+                }
+            }
         }
         return result
     }

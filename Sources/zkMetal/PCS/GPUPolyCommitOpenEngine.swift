@@ -776,10 +776,17 @@ public class GPUPolyCommitOpenEngine {
         let n = poly.count
         if n < 2 { return [] }
         var quotient = [Fr](repeating: Fr.zero, count: n - 1)
-        // Process from highest degree down
-        quotient[n - 2] = poly[n - 1]
-        for i in stride(from: n - 3, through: 0, by: -1) {
-            quotient[i] = frAdd(poly[i + 1], frMul(root, quotient[i + 1]))
+        poly.withUnsafeBytes { cBuf in
+            withUnsafeBytes(of: root) { zBuf in
+                quotient.withUnsafeMutableBytes { qBuf in
+                    bn254_fr_synthetic_div(
+                        cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        zBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n),
+                        qBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    )
+                }
+            }
         }
         return quotient
     }

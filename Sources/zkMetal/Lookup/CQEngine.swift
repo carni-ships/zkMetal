@@ -561,16 +561,19 @@ public class CQEngine {
     private func syntheticDivide(_ coeffs: [Fr], root: Fr) -> [Fr] {
         let n = coeffs.count
         if n < 2 { return [] }
-
-        // Standard synthetic division: q[n-2] = a[n-1], then
-        // q[i-1] = a[i] + root * q[i] for i = n-2 down to 1
         var q = [Fr](repeating: Fr.zero, count: n - 1)
-        q[n - 2] = coeffs[n - 1]
-        for i in stride(from: n - 2, through: 1, by: -1) {
-            q[i - 1] = frAdd(coeffs[i], frMul(root, q[i]))
+        coeffs.withUnsafeBytes { cBuf in
+            withUnsafeBytes(of: root) { zBuf in
+                q.withUnsafeMutableBytes { qBuf in
+                    bn254_fr_synthetic_div(
+                        cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        zBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n),
+                        qBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    )
+                }
+            }
         }
-        // Remainder should be zero: coeffs[0] + root * q[0] = 0
-        // (This holds when p(root) = 0)
         return q
     }
 
