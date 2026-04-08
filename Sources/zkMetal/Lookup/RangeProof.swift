@@ -53,11 +53,8 @@ public class RangeProofEngine {
             // Direct: table = [0, 1, ..., range-1]
             let N = Int(range)
             let table = buildRangeTable(size: N)
-            var lookups = values.map { frFromInt($0) }
-            // Pad with zeros (which are in range)
-            while lookups.count < m {
-                lookups.append(Fr.zero)
-            }
+            var lookups = [Fr](repeating: Fr.zero, count: m)
+            for i in 0..<values.count { lookups[i] = frFromInt(values[i]) }
 
             let beta = deriveBeta(values: values, range: range)
             let proof = try lookupEngine.prove(table: table, lookups: lookups, beta: beta)
@@ -84,14 +81,9 @@ public class RangeProofEngine {
                 let shift = limb * limbBits
                 let mask = UInt64(limbRange - 1)
 
-                var limbValues = [Fr]()
-                limbValues.reserveCapacity(limbM)
-                for v in values {
-                    let limbVal = (v >> shift) & mask
-                    limbValues.append(frFromInt(limbVal))
-                }
-                while limbValues.count < limbM {
-                    limbValues.append(Fr.zero)
+                var limbValues = [Fr](repeating: Fr.zero, count: limbM)
+                for (idx, v) in values.enumerated() {
+                    limbValues[idx] = frFromInt((v >> shift) & mask)
                 }
 
                 let beta = deriveBetaForLimb(values: values, range: range, limb: limb)
@@ -119,10 +111,8 @@ public class RangeProofEngine {
             guard proof.lookupProofs.count == 1 else { return false }
             let N = Int(proof.range)
             let table = buildRangeTable(size: N)
-            var lookups = values.map { frFromInt($0) }
-            while lookups.count < m {
-                lookups.append(Fr.zero)
-            }
+            var lookups = [Fr](repeating: Fr.zero, count: m)
+            for i in 0..<values.count { lookups[i] = frFromInt(values[i]) }
             return try lookupEngine.verify(
                 proof: proof.lookupProofs[0], table: table, lookups: lookups)
         } else {
@@ -135,14 +125,9 @@ public class RangeProofEngine {
                 let shift = limb * proof.limbBits
                 let mask = UInt64(limbRange - 1)
 
-                var limbValues = [Fr]()
-                limbValues.reserveCapacity(limbM)
-                for v in values {
-                    let limbVal = (v >> shift) & mask
-                    limbValues.append(frFromInt(limbVal))
-                }
-                while limbValues.count < limbM {
-                    limbValues.append(Fr.zero)
+                var limbValues = [Fr](repeating: Fr.zero, count: limbM)
+                for (idx, v) in values.enumerated() {
+                    limbValues[idx] = frFromInt((v >> shift) & mask)
                 }
 
                 let valid = try lookupEngine.verify(

@@ -349,10 +349,18 @@ void bn254_fr_fri_fold_inplace(uint64_t *data, const uint64_t *challenge,
 void bn254_fr_batch_fma_scalar(uint64_t *result, const uint64_t *scalar,
                                 const uint64_t *other, int n);
 
+/// AXPY: result[i] += scalar * x[i] for i in 0..n-1.
+void bn254_fr_batch_axpy(uint64_t *result, const uint64_t *scalar,
+                          const uint64_t *x, int n);
+
 /// FRI fold: result[i] = (a[i]+b[i]) + challenge*(a[i]-b[i])*invTwiddles[i]
 /// where a = evals[0..half-1], b = evals[half..n-1].
 void bn254_fr_fri_fold(const uint64_t *evals, const uint64_t *challenge,
                         const uint64_t *invTwiddles, uint64_t *result, int half);
+
+/// Tensor sumcheck degree-2 round: s0=sum(lo), s1=sum(hi), s2=sum(2*hi-lo) from interleaved pairs.
+void bn254_fr_tensor_sumcheck_round(const uint64_t *evals, int half,
+                                     uint64_t s0[4], uint64_t s1[4], uint64_t s2[4]);
 
 /// Multi-threaded batch add (auto-threads for n >= 4096).
 void bn254_fr_batch_add_parallel(uint64_t *result, const uint64_t *a,

@@ -445,6 +445,21 @@ void bn254_fr_batch_fma_scalar(uint64_t *result, const uint64_t *scalar,
     }
 }
 
+/// AXPY: result[i] += scalar * x[i] for i in 0..n-1
+void bn254_fr_batch_axpy(uint64_t *result, const uint64_t *scalar,
+                          const uint64_t *x, int n)
+{
+    uint64_t tmp[4];
+    for (int i = 0; i < n; i++) {
+        if (i + 2 < n) {
+            __builtin_prefetch(&result[(i + 2) * 4], 1, 1);
+            __builtin_prefetch(&x[(i + 2) * 4], 0, 1);
+        }
+        fr_mont_mul(scalar, &x[i * 4], tmp);
+        fr_add_branchless(&result[i * 4], tmp, &result[i * 4]);
+    }
+}
+
 /// Interleaved fold: result[i] = evals[2i] + challenge*(evals[2i+1]-evals[2i])
 static void fold_interleaved_range(const uint64_t *evals, const uint64_t *challenge,
                                     uint64_t *result, int start, int end)
@@ -1304,6 +1319,37 @@ void bn254_fr_gp_sumcheck_round(
 
     // Final reduce to [0, p)
     for (int k = 0; k < 4; k++) { s0[k] = acc0[k]; s1[k] = acc1[k]; s2[k] = acc2[k]; s3[k] = acc3[k]; }
+}
+
+// ============================================================
+// Tensor sumcheck degree-2 round polynomial.
+// Given interleaved evals[2*i] = lo, evals[2*i+1] = hi for i in 0..half-1,
+// computes s0 = sum(lo), s1 = sum(hi), s2 = sum(2*hi - lo).
+// ============================================================
+void bn254_fr_tensor_sumcheck_round(
+    const uint64_t *evals, int half,
+    uint64_t s0[4], uint64_t s1[4], uint64_t s2[4])
+{
+    uint64_t acc0[4] = {0,0,0,0};
+    uint64_t acc1[4] = {0,0,0,0};
+    uint64_t acc2[4] = {0,0,0,0};
+
+    for (int i = 0; i < half; i++) {
+        if (i + 2 < half) {
+            __builtin_prefetch(&evals[(2 * (i + 2)) * 4], 0, 1);
+            __builtin_prefetch(&evals[(2 * (i + 2) + 1) * 4], 0, 1);
+        }
+        const uint64_t *lo = &evals[(2 * i) * 4];
+        const uint64_t *hi = &evals[(2 * i + 1) * 4];
+        fr_add_branchless(acc0, lo, acc0);
+        fr_add_branchless(acc1, hi, acc1);
+        // at2 = 2*hi - lo
+        uint64_t dbl[4], at2[4];
+        fr_add_branchless(hi, hi, dbl);
+        fr_sub_branchless(dbl, lo, at2);
+        fr_add_branchless(acc2, at2, acc2);
+    }
+    for (int k = 0; k < 4; k++) { s0[k] = acc0[k]; s1[k] = acc1[k]; s2[k] = acc2[k]; }
 }
 
 // ============================================================

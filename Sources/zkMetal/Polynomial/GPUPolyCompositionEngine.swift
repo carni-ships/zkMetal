@@ -16,6 +16,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 // MARK: - GPUPolyCompositionEngine
 
@@ -204,20 +205,34 @@ public class GPUPolyCompositionEngine {
         // Compute weighted sum: result[j] = sum_i alpha^i * trace_i[j] + alpha^K * C[j]
         var result = [Fr](repeating: Fr.zero, count: N)
 
-        // Accumulate trace columns with alpha powers
+        // Accumulate trace columns with alpha powers using batch AXPY
         for i in 0..<K {
-            let alphaI = alphaPowers[i]
-            for j in 0..<N {
-                let term = frMul(alphaI, trace[i][j])
-                result[j] = frAdd(result[j], term)
+            var alphaI = alphaPowers[i]
+            trace[i].withUnsafeBytes { tBuf in
+                result.withUnsafeMutableBytes { rBuf in
+                    withUnsafeBytes(of: &alphaI) { aBuf in
+                        bn254_fr_batch_axpy(
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(N))
+                    }
+                }
             }
         }
 
         // Add constraint polynomial contribution: alpha^K * C(x)
-        let alphaK = alphaPowers[K]
-        for j in 0..<N {
-            let term = frMul(alphaK, constraintPoly[j])
-            result[j] = frAdd(result[j], term)
+        var alphaK = alphaPowers[K]
+        constraintPoly.withUnsafeBytes { cBuf in
+            result.withUnsafeMutableBytes { rBuf in
+                withUnsafeBytes(of: &alphaK) { aBuf in
+                    bn254_fr_batch_axpy(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(N))
+                }
+            }
         }
 
         return result

@@ -96,14 +96,19 @@ public class TensorSumcheckProver {
                 var s1 = Fr.zero
                 var s2 = Fr.zero
 
-                for i in 0..<half {
-                    let lo = currentEvals[2 * i]
-                    let hi = currentEvals[2 * i + 1]
-                    s0 = frAdd(s0, lo)
-                    s1 = frAdd(s1, hi)
-                    // Evaluate at X=2: f(2) = 2*hi - lo (linear interpolation extrapolation)
-                    let at2 = frSub(frAdd(hi, hi), lo)
-                    s2 = frAdd(s2, at2)
+                currentEvals.withUnsafeBytes { eBuf in
+                    withUnsafeMutableBytes(of: &s0) { s0Buf in
+                        withUnsafeMutableBytes(of: &s1) { s1Buf in
+                            withUnsafeMutableBytes(of: &s2) { s2Buf in
+                                bn254_fr_tensor_sumcheck_round(
+                                    eBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                    Int32(half),
+                                    s0Buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                    s1Buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                    s2Buf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                            }
+                        }
+                    }
                 }
 
                 // Scale by running product of evaluated factors * suffix of unevaluated factors

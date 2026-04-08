@@ -4,6 +4,7 @@
 // where z = (1, public_inputs, witness) and A,B,C are sparse matrices.
 
 import Foundation
+import NeonFieldOps
 
 // MARK: - Sparse Matrix Types
 
@@ -209,8 +210,14 @@ func sparseMatVecSpartan(_ matrix: [SpartanEntry], z: [Fr], numRows: Int) -> [Fr
         }
     }
     for t in 0..<nThreads {
-        for i in 0..<numRows {
-            result[i] = frAdd(result[i], partials[t][i])
+        partials[t].withUnsafeBytes { pBuf in
+            result.withUnsafeMutableBytes { rBuf in
+                bn254_fr_batch_add_neon(
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(numRows))
+            }
         }
     }
     return result

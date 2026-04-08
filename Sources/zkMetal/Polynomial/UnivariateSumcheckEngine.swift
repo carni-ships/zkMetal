@@ -15,6 +15,7 @@
 // Also supports batch mode: k polynomials reduced to 1 via random linear combination.
 
 import Foundation
+import NeonFieldOps
 
 // MARK: - Proof structures
 
@@ -224,8 +225,17 @@ public class UnivariateSumcheckEngine {
         for i in 0..<k {
             alphas.append(alphaPow)
             let fi = polynomials[i]
-            for j in 0..<fi.count {
-                gCoeffs[j] = frAdd(gCoeffs[j], frMul(alphaPow, fi[j]))
+            var ap = alphaPow
+            fi.withUnsafeBytes { fBuf in
+                gCoeffs.withUnsafeMutableBytes { gBuf in
+                    withUnsafeBytes(of: &ap) { aBuf in
+                        bn254_fr_batch_axpy(
+                            gBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            fBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(fi.count))
+                    }
+                }
             }
             if i < k - 1 {
                 alphaPow = frMul(alphaPow, alpha)
