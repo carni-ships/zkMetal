@@ -415,47 +415,73 @@ public class GPUHalo2LookupArgEngine {
             aPrime[i] = sortedInputs[i]
         }
 
-        // Build S': for each run of identical values in A', the first element
-        // gets the matching table value (same as A'), and the rest are filled
-        // with the same value (since A'[i] == A'[i-1] covers them).
-        // S' must be a permutation of the original table, so we duplicate
-        // table entries to match input multiplicities.
+        // Build S': must be a permutation of the original table.
+        // For each run of identical values in A', the first element matches A'
+        // (satisfying A'[i] == S'[i] at run boundaries), and the constraint
+        // A'[i] == A'[i-1] covers repeated positions within each run.
+        // Unused table entries are placed in the remaining positions.
         var sPrime = [Fr](repeating: Fr.zero, count: n)
 
-        // Collect unique table values in original order
-        var uniqueTableValues = [[UInt64]]()
-        var seenTable = Set<[UInt64]>()
-        for val in table {
-            let key = val.to64()
-            if !seenTable.contains(key) {
-                seenTable.insert(key)
-                uniqueTableValues.append(key)
-            }
-        }
+        // Track which table entries we've "used" (one per unique input value)
+        var usedTableIndices = Set<Int>()
+        var inputKeyToTableIdx = [Int: Int]()  // run start index -> table index
 
-        // For S': place table values aligned with A' runs
-        var writeIdx = 0
+        // For each run in A', claim one table entry with matching value
         var i = 0
         while i < n {
             let currentKey = aPrime[i].to64()
-            // Count run length in A'
+            // Find a table entry with this value
+            if inputKeyToTableIdx[i] == nil {
+                for (tIdx, tVal) in table.enumerated() {
+                    if !usedTableIndices.contains(tIdx) && tVal.to64() == currentKey {
+                        inputKeyToTableIdx[i] = tIdx
+                        usedTableIndices.insert(tIdx)
+                        break
+                    }
+                }
+            }
+            // Skip the rest of this run
             var runLen = 1
             while i + runLen < n && aPrime[i + runLen].to64() == currentKey {
                 runLen += 1
             }
-            // Place the table value for each position in the run
-            for j in 0..<runLen {
-                sPrime[writeIdx + j] = aPrime[i]  // same value as A' for this run
-            }
-            writeIdx += runLen
             i += runLen
         }
 
-        // Fill any remaining positions with the last table value
-        let lastTableVal = table.last ?? Fr.zero
-        while writeIdx < n {
-            sPrime[writeIdx] = lastTableVal
+        // Collect unused table entries
+        var unusedTableEntries = [Fr]()
+        for (tIdx, tVal) in table.enumerated() {
+            if !usedTableIndices.contains(tIdx) {
+                unusedTableEntries.append(tVal)
+            }
+        }
+
+        // Fill S': first element of each run gets matching table value,
+        // repeated positions within run also get the same value (A'[i]==A'[i-1] covers it),
+        // remaining slots get unused table entries.
+        var writeIdx = 0
+        var unusedIdx = 0
+        i = 0
+        while i < n {
+            let currentKey = aPrime[i].to64()
+            var runLen = 1
+            while i + runLen < n && aPrime[i + runLen].to64() == currentKey {
+                runLen += 1
+            }
+            // First position: matching table value
+            sPrime[writeIdx] = aPrime[i]
             writeIdx += 1
+            // Remaining run positions: fill with unused table entries
+            for _ in 1..<runLen {
+                if unusedIdx < unusedTableEntries.count {
+                    sPrime[writeIdx] = unusedTableEntries[unusedIdx]
+                    unusedIdx += 1
+                } else {
+                    sPrime[writeIdx] = aPrime[i]
+                }
+                writeIdx += 1
+            }
+            i += runLen
         }
 
         return PermutedColumns(
@@ -690,6 +716,10 @@ public class GPUHalo2LookupArgEngine {
         // Check 2: Product relation at each row
         // Batch-invert all denominators
         let m = n - 1
+        guard m > 0 else {
+            // Single-element domain: only check Z_L(omega^0) = 1
+            return true
+        }
         var vDens = [Fr](repeating: Fr.zero, count: m)
         for i in 0..<m {
             vDens[i] = frMul(

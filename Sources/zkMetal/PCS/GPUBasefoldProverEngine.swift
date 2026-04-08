@@ -466,6 +466,9 @@ public class GPUBasefoldProverEngine {
         // for small layers where GPU overhead dominates.
         let gpuThreshold = 64  // Below this, CPU is faster
 
+        // Halves fold processes highest-order variable first, so reverse
+        // point to map point[0] (x_0) to the correct fold round.
+        let reversedPoint = Array(point.reversed())
         var currentEvals = evaluations
         for round in 0..<numVars {
             let halfN = currentEvals.count / 2
@@ -473,9 +476,9 @@ public class GPUBasefoldProverEngine {
 
             let folded: [Fr]
             if currentEvals.count >= gpuThreshold {
-                folded = try basefold.fold(evals: currentEvals, alpha: point[round])
+                folded = try basefold.fold(evals: currentEvals, alpha: reversedPoint[round])
             } else {
-                folded = BasefoldEngine.cpuFold(evals: currentEvals, alpha: point[round])
+                folded = BasefoldEngine.cpuFold(evals: currentEvals, alpha: reversedPoint[round])
             }
             layers.append(folded)
             currentEvals = folded
@@ -496,6 +499,7 @@ public class GPUBasefoldProverEngine {
         numVars: Int,
         point: [Fr]
     ) -> BasefoldProverQuery {
+        let reversedPoint = Array(point.reversed())
         var evalPairs: [(Fr, Fr)] = []
         var foldValues: [Fr] = []
         var authPaths: [[Fr]] = []
@@ -509,7 +513,7 @@ public class GPUBasefoldProverEngine {
         let b0 = originalEvals[canonIdx0 + halfN0]
         evalPairs.append((a0, b0))
         authPaths.append(extractMerklePath(tree: originalTree, leafCount: n, index: canonIdx0))
-        let fold0 = frAdd(a0, frMul(point[0], frSub(b0, a0)))
+        let fold0 = frAdd(a0, frMul(reversedPoint[0], frSub(b0, a0)))
         foldValues.append(fold0)
         idx = canonIdx0
 
@@ -531,7 +535,7 @@ public class GPUBasefoldProverEngine {
                 authPaths.append([])
             }
 
-            let foldR = frAdd(a, frMul(point[level + 1], frSub(b, a)))
+            let foldR = frAdd(a, frMul(reversedPoint[level + 1], frSub(b, a)))
             foldValues.append(foldR)
             idx = canonIdx
         }
@@ -546,9 +550,10 @@ public class GPUBasefoldProverEngine {
 
     /// Verify a single query proof: check fold consistency at each level.
     private func verifyQueryProof(query: BasefoldProverQuery, point: [Fr], finalValue: Fr) -> Bool {
+        let reversedPoint = Array(point.reversed())
         for level in 0..<query.evalPairs.count {
             let (a, b) = query.evalPairs[level]
-            let alpha = point[level]
+            let alpha = reversedPoint[level]
             let expected = frAdd(a, frMul(alpha, frSub(b, a)))
 
             if !frEqual(expected, query.foldValues[level]) {
@@ -678,6 +683,7 @@ public class GPUBasefoldProverEngine {
         }
 
         // Verify query proofs
+        let reversedPoint = Array(proof.point.reversed())
         for query in proof.queries {
             // Each query must have the right number of levels
             if query.evalPairs.count != query.foldValues.count {
@@ -687,7 +693,7 @@ public class GPUBasefoldProverEngine {
             // Fold consistency
             for level in 0..<query.evalPairs.count {
                 let (a, b) = query.evalPairs[level]
-                let alpha = proof.point[level]
+                let alpha = reversedPoint[level]
                 let expected = frAdd(a, frMul(alpha, frSub(b, a)))
                 if !frEqual(expected, query.foldValues[level]) {
                     return false

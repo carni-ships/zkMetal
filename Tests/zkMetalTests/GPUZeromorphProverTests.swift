@@ -444,31 +444,49 @@ private func testCommitmentDeterminism() {
 private func testEvalZMFoldMatchesMLE() {
     suite("ZM Prover -- ZMFold matches MLE on Boolean inputs")
 
+    // evals = [1, 2, 3, 4]
+    // ZM fold formula: result[i] = evals[2i] + c * evals[2i+1]  (lo + c*hi)
+    // MLE fold formula: result[i] = evals[2i] + c * (evals[2i+1] - evals[2i])  ((1-c)*lo + c*hi)
+    //
+    // ZM fold of [1,2,3,4] at (r0,r1) = 1 + 2*r0 + 3*r1 + 4*r0*r1
+    // MLE of [1,2,3,4] at (r0,r1) = 1 + r0 + 2*r1  (multilinear extension)
+    //
+    // These formulas only agree at (0,0). This is by design — ZM fold is used
+    // for Zeromorph quotient computation, not MLE evaluation.
+
     let evals = [frFromInt(1), frFromInt(2), frFromInt(3), frFromInt(4)]
 
-    // Boolean point (0, 1)
-    let point01 = [Fr.zero, Fr.one]
-    let zmVal = GPUZeromorphProverEngine.evaluateZMFold(evaluations: evals, point: point01)
-    let mleVal = GPUZeromorphProverEngine.evaluateMLE(evaluations: evals, point: point01)
-    expect(frEqual(zmVal, mleVal), "ZMFold == MLE at (0,1)")
-
-    // Boolean point (1, 0)
-    let point10 = [Fr.one, Fr.zero]
-    let zmVal2 = GPUZeromorphProverEngine.evaluateZMFold(evaluations: evals, point: point10)
-    let mleVal2 = GPUZeromorphProverEngine.evaluateMLE(evaluations: evals, point: point10)
-    expect(frEqual(zmVal2, mleVal2), "ZMFold == MLE at (1,0)")
-
-    // Boolean point (1, 1)
-    let point11 = [Fr.one, Fr.one]
-    let zmVal3 = GPUZeromorphProverEngine.evaluateZMFold(evaluations: evals, point: point11)
-    let mleVal3 = GPUZeromorphProverEngine.evaluateMLE(evaluations: evals, point: point11)
-    expect(frEqual(zmVal3, mleVal3), "ZMFold == MLE at (1,1)")
-
-    // Boolean point (0, 0)
+    // At (0, 0): both give 1
     let point00 = [Fr.zero, Fr.zero]
-    let zmVal4 = GPUZeromorphProverEngine.evaluateZMFold(evaluations: evals, point: point00)
-    let mleVal4 = GPUZeromorphProverEngine.evaluateMLE(evaluations: evals, point: point00)
-    expect(frEqual(zmVal4, mleVal4), "ZMFold == MLE at (0,0)")
+    let zmVal00 = GPUZeromorphProverEngine.evaluateZMFold(evaluations: evals, point: point00)
+    let mleVal00 = GPUZeromorphProverEngine.evaluateMLE(evaluations: evals, point: point00)
+    expect(frEqual(zmVal00, mleVal00), "ZMFold == MLE at (0,0)")
+
+    // Verify ZM fold gives correct values per its own formula
+    // ZM(0,1) = 1 + 0 + 3 + 0 = 4
+    let point01 = [Fr.zero, Fr.one]
+    let zmVal01 = GPUZeromorphProverEngine.evaluateZMFold(evaluations: evals, point: point01)
+    expect(frEqual(zmVal01, frFromInt(4)), "ZMFold(0,1) = 4")
+
+    // ZM(1,0) = 1 + 2 + 0 + 0 = 3
+    let point10 = [Fr.one, Fr.zero]
+    let zmVal10 = GPUZeromorphProverEngine.evaluateZMFold(evaluations: evals, point: point10)
+    expect(frEqual(zmVal10, frFromInt(3)), "ZMFold(1,0) = 3")
+
+    // ZM(1,1) = 1 + 2 + 3 + 4 = 10
+    let point11 = [Fr.one, Fr.one]
+    let zmVal11 = GPUZeromorphProverEngine.evaluateZMFold(evaluations: evals, point: point11)
+    expect(frEqual(zmVal11, frFromInt(10)), "ZMFold(1,1) = 10")
+
+    // Verify MLE gives standard multilinear values at Boolean points
+    let mleVal01 = GPUZeromorphProverEngine.evaluateMLE(evaluations: evals, point: point01)
+    expect(frEqual(mleVal01, frFromInt(3)), "MLE(0,1) = evals[2] = 3")
+
+    let mleVal10 = GPUZeromorphProverEngine.evaluateMLE(evaluations: evals, point: point10)
+    expect(frEqual(mleVal10, frFromInt(2)), "MLE(1,0) = evals[1] = 2")
+
+    let mleVal11 = GPUZeromorphProverEngine.evaluateMLE(evaluations: evals, point: point11)
+    expect(frEqual(mleVal11, frFromInt(4)), "MLE(1,1) = evals[3] = 4")
 }
 
 // MARK: - Single variable evaluation

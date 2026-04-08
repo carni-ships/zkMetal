@@ -631,14 +631,19 @@ public class BasefoldEngine {
     }
 
     /// CPU evaluation of multilinear polynomial at a point.
-    /// f(r_1, ..., r_n) via sequential folding. Uses C CIOS all-rounds fold.
+    /// f(r_0, ..., r_{n-1}) via sequential folding. Uses C CIOS all-rounds fold.
+    /// Point is reversed because halves fold processes the highest variable first.
     public static func cpuEvaluate(evals: [Fr], point: [Fr]) -> Fr {
         let numVars = point.count
         precondition(evals.count == (1 << numVars))
         let totalOut = evals.count - 1  // n/2 + n/4 + ... + 1
         var outLayers = [Fr](repeating: Fr.zero, count: totalOut)
+        // Halves fold pairs evals[j] with evals[j+halfN], which corresponds to
+        // the highest-order bit variable. Reverse point so that point[0] (x_0)
+        // maps to the last fold round, matching standard MLE evaluation order.
+        var reversedPoint = Array(point.reversed())
         evals.withUnsafeBytes { evalsPtr in
-            point.withUnsafeBytes { pointPtr in
+            reversedPoint.withUnsafeBytes { pointPtr in
                 outLayers.withUnsafeMutableBytes { outPtr in
                     bn254_fr_basefold_fold_all(
                         evalsPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),

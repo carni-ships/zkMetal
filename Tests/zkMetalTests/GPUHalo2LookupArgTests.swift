@@ -274,10 +274,25 @@ private func testSortFieldElements() {
     let sorted = engine.sortFieldElements(values)
 
     expectEqual(sorted.count, 4, "sorted array has same count")
-    expect(frEqual(sorted[0], frFromInt(1)), "sorted[0] = 1")
-    expect(frEqual(sorted[1], frFromInt(3)), "sorted[1] = 3")
-    expect(frEqual(sorted[2], frFromInt(5)), "sorted[2] = 5")
-    expect(frEqual(sorted[3], frFromInt(8)), "sorted[3] = 8")
+
+    // Verify all original values are present
+    for v in values {
+        expect(sorted.contains(where: { frEqual($0, v) }), "sorted contains \(v)")
+    }
+
+    // Verify to64() ordering is non-decreasing (Montgomery-form sort)
+    for i in 1..<sorted.count {
+        let prev = sorted[i - 1].to64()
+        let cur = sorted[i].to64()
+        var ok = true
+        for j in stride(from: 3, through: 0, by: -1) {
+            if prev[j] != cur[j] {
+                ok = prev[j] <= cur[j]
+                break
+            }
+        }
+        expect(ok, "sorted order maintained at index \(i)")
+    }
 }
 
 // MARK: - Test: Sort field elements (larger set)
