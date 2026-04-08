@@ -213,16 +213,20 @@ public func frPow(_ a: Fr, _ n: UInt64) -> Fr {
     return result
 }
 
+/// Cached roots of unity — only 29 possible values (logN 0...28).
+private let _rootOfUnityCache: [Fr] = {
+    var cache = [Fr](repeating: Fr.zero, count: Fr.TWO_ADICITY + 1)
+    cache[Fr.TWO_ADICITY] = Fr.from64(Fr.ROOT_OF_UNITY)
+    for k in stride(from: Fr.TWO_ADICITY - 1, through: 0, by: -1) {
+        cache[k] = frSqr(cache[k + 1])
+    }
+    return cache
+}()
+
 /// Get the primitive 2^k-th root of unity (k <= TWO_ADICITY=28).
 public func frRootOfUnity(logN: Int) -> Fr {
-    precondition(logN <= Fr.TWO_ADICITY, "logN exceeds TWO_ADICITY")
-    // omega_28 is the primitive 2^28-th root
-    // omega_k = omega_28^(2^(28-k)) is the primitive 2^k-th root
-    var omega = Fr.from64(Fr.ROOT_OF_UNITY)
-    for _ in 0..<(Fr.TWO_ADICITY - logN) {
-        omega = frSqr(omega)
-    }
-    return omega
+    precondition(logN >= 0 && logN <= Fr.TWO_ADICITY, "logN out of range")
+    return _rootOfUnityCache[logN]
 }
 
 /// Precompute twiddle factors: [omega^0, omega^1, ..., omega^(n - 1)] in Montgomery form.
