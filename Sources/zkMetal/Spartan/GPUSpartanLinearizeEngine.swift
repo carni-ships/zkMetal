@@ -325,7 +325,7 @@ public struct MemoryCheckingDigest {
         }
         return MemoryCheckingDigest(
             digest: writeDigest, numReads: 0,
-            numWrites: tableValues.filter { !$0.isZero }.count,
+            numWrites: tableValues.reduce(0) { $0 + ($1.isZero ? 0 : 1) },
             challenge: gamma)
     }
 }

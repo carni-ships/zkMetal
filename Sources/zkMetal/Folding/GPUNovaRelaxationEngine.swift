@@ -792,7 +792,7 @@ public class GPUNovaRelaxationEngine {
 
     /// Count the number of non-zero entries in an error vector.
     public func errorNonZeroCount(_ E: [Fr]) -> Int {
-        return E.filter { !$0.isZero }.count
+        return E.reduce(0) { $0 + ($1.isZero ? 0 : 1) }
     }
 
     /// Compute the "weight" of the error vector: number of non-zero entries

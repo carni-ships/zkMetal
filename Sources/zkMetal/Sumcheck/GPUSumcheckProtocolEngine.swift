@@ -123,19 +123,61 @@ public struct RoundUnivariate: Equatable {
 }
 
 /// General Lagrange interpolation over evaluation points {0, 1, ..., n-1}.
+/// Uses batch inversion to reduce O(n²) individual inversions to O(n) batch inversion.
 private func generalLagrange(points: [Fr], at r: Fr) -> Fr {
     let n = points.count
-    var result = Fr.zero
+
+    // Precompute (r - j) for all j
+    var rMinusJ = [Fr](repeating: Fr.zero, count: n)
+    for j in 0..<n {
+        rMinusJ[j] = frSub(r, frFromInt(UInt64(j)))
+    }
+
+    // Precompute denominator products: denom[i] = prod_{j≠i} (i - j)
+    // For consecutive integer points, denom[i] = i! * (n-1-i)! * (-1)^(n-1-i)
+    var denoms = [Fr](repeating: Fr.one, count: n)
     for i in 0..<n {
-        var basis = Fr.one
-        let xi = frFromInt(UInt64(i))
         for j in 0..<n {
             if i == j { continue }
-            let xj = frFromInt(UInt64(j))
-            let num = frSub(r, xj)
-            let den = frSub(xi, xj)
-            basis = frMul(basis, frMul(num, frInverse(den)))
+            denoms[i] = frMul(denoms[i], frSub(frFromInt(UInt64(i)), frFromInt(UInt64(j))))
         }
+    }
+
+    // Batch invert all denominators
+    var denomInvs = [Fr](repeating: Fr.zero, count: n)
+    denoms.withUnsafeBytes { src in
+        denomInvs.withUnsafeMutableBytes { dst in
+            bn254_fr_batch_inverse(
+                src.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                Int32(n),
+                dst.baseAddress!.assumingMemoryBound(to: UInt64.self))
+        }
+    }
+
+    // Check if r equals any evaluation point
+    for i in 0..<n {
+        if rMinusJ[i].isZero { return points[i] }
+    }
+
+    // Batch invert (r - j) for all j
+    var rMinusJInvs = [Fr](repeating: Fr.zero, count: n)
+    rMinusJ.withUnsafeBytes { src in
+        rMinusJInvs.withUnsafeMutableBytes { dst in
+            bn254_fr_batch_inverse(
+                src.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                Int32(n),
+                dst.baseAddress!.assumingMemoryBound(to: UInt64.self))
+        }
+    }
+
+    // Compute numerator product: prod_{j=0}^{n-1} (r - j)
+    var fullProd = Fr.one
+    for j in 0..<n { fullProd = frMul(fullProd, rMinusJ[j]) }
+
+    // Lagrange basis: L_i(r) = fullProd * (r-i)^{-1} * denomInv[i]
+    var result = Fr.zero
+    for i in 0..<n {
+        let basis = frMul(frMul(fullProd, rMinusJInvs[i]), denomInvs[i])
         result = frAdd(result, frMul(points[i], basis))
     }
     return result
