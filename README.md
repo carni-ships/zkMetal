@@ -2,7 +2,7 @@
 
 GPU-accelerated zero-knowledge proof library for Apple Silicon. Metal compute shaders + C/NEON field arithmetic + Swift orchestration.
 
-**~211 primitives** across 18 fields and 10 elliptic curves. 479 source files, 105 Metal shaders, 33 C/NEON files, 234 test files (229 test suites). 30+ engines converted to optimized C batch kernels with prefetch, branchless arithmetic, and auto-parallel dispatch (`dispatch_apply` for n >= 4096).
+**~211 primitives** across 18 fields and 10 elliptic curves. 479 source files, 105 Metal shaders, 33 C/NEON files, 234 test files (229 test suites). 50+ engines converted to optimized C batch kernels with prefetch, branchless arithmetic, and auto-parallel dispatch (`dispatch_apply` for n >= 4096). All BN254 Fr serial field loops eliminated — `frBatchInverse` (9 call sites), Hadamard vector ops, axpy/inner product, in-place fold, Montgomery's trick patterns all batch-converted.
 
 - **Core:** MSM (Pippenger+GLV), NTT (four-step FFT), Poseidon2/Keccak/Blake3/SHA-256, Merkle trees
 - **Proof systems:** Plonk, HyperPlonk, Fflonk, Groth16, STARK (Circle/BabyBear/Goldilocks/Stark252), Spartan, Marlin, GKR
@@ -413,7 +413,10 @@ C CIOS Montgomery acceleration: pre-computed wiring topology, cached buffers, eq
 | BN254 batch add (C) | 100K | 16ms | 264 us | **60x** | 2.6 ns/op vectorized |
 | BN254 batch mul (C) | 100K | -- | 1.3ms | -- | 13.4 ns/op CIOS |
 | BN254 batch MAC (C) | 100K | -- | -- | -- | Fused scalar*vec + accumulate |
-| BN254 batch inverse (C) | 100K | -- | -- | -- | Montgomery's trick, zero-safe variant |
+| BN254 batch inverse (C) | 100K | -- | -- | -- | Montgomery's trick, zero-safe variant (9 call sites) |
+| BN254 batch axpy (C) | 100K | -- | -- | -- | result[i] += scalar * x[i], in-place |
+| BN254 inner product (C) | 100K | -- | -- | -- | Dot product + vector_sum |
+| BN254 fold_interleaved (C) | 2^18 | -- | -- | -- | In-place: data[i] = data[2i] + c * (data[2i+1] - data[2i]) |
 | BN254 Horner eval (C) | deg 2^16 | -- | -- | -- | Prefetch + branchless, replaces Swift `evaluatePolynomial` |
 | BN254 synthetic div (C) | deg 2^16 | -- | -- | -- | Replaces Swift `syntheticDivide` in 5 PCS engines |
 | BN254 fold_halves (C) | 2^18 | -- | -- | -- | Fused fold for non-interleaved layout, auto-parallel |
@@ -526,15 +529,15 @@ Methodology: Compute-bound = total_ops / 3.6T flops (BN254 mul = ~64 32-bit muls
 
 BabyBear/Goldilocks NTT and IPA are near-optimal (within 1-2x of hardware limits).
 
-**CPU batch operations are now near-optimal.** 30+ engines converted to C kernels with prefetch hints, branchless arithmetic, and auto-parallel dispatch (`dispatch_apply` for n >= 4096). Key conversions: `batch_mul_scalar`, `batch_inverse` (Montgomery's trick), `horner_eval`, `synthetic_div`, `fold_halves`, `inner_product`, `linear_combine`, `prefix_product`. NTT/INTT butterfly stages now dispatch across cores for large transforms. All major BN254 Fr batch patterns are exhausted -- no significant Swift-to-C conversion targets remain.
+**CPU batch operations are now near-optimal.** 50+ engines converted to C kernels with prefetch hints, branchless arithmetic, and auto-parallel dispatch (`dispatch_apply` for n >= 4096). Key conversions: `batch_mul_scalar`, `batch_inverse` (Montgomery's trick, 9 call sites), `batch_axpy`, `inner_product`, `vector_sum`, `fold_interleaved_inplace`, `horner_eval`, `synthetic_div`, `fold_halves`, `linear_combine`, `prefix_product`. Hadamard vector ops (l0/r0/r1 patterns in 4 files) decomposed into 5-6 batch kernel calls each. Manual Montgomery's trick patterns replaced with `batch_scalar_sub` + `batch_inverse_safe`. In-place fold eliminates allocation in sumcheck loops. NTT/INTT butterfly stages dispatch across cores for large transforms. All BN254 Fr serial field loops are exhausted -- remaining loops are inherently serial (power sequences), complex multi-step, or small-n fallbacks (<4 elements).
 
-**The system is GPU-bound.** At peak optimization on M3 Pro (BN254 UltraHonk 428K gates, ~969ms prove), the profile shows ~59% GPU time (MSM commits, Gemini, KZG), ~31% CPU, ~10% overhead. CPU micro-optimizations are exhausted -- all components within 2-5x of theoretical hardware limits.
+**The system is GPU-bound.** At peak optimization on M3 Pro (BN254 UltraHonk 428K gates, ~969ms prove), the profile shows ~59% GPU time (MSM commits, Gemini, KZG), ~31% CPU, ~10% overhead. CPU micro-optimizations are exhausted -- all BN254 Fr batch patterns converted, all allocation patterns optimized (in-place fold, pointer offsets instead of Array copies, removeLast instead of new allocations).
 
-**Remaining systemic opportunities**: Command buffer chaining (163 `waitUntilCompleted` sync points could batch into ~10 chained dispatches, saving 3-8ms). FRI fold-by-4 halves round count, reducing Merkle commit overhead.
+**Remaining systemic opportunities**: Command buffer chaining (163 `waitUntilCompleted` sync points could batch into ~10 chained dispatches, saving 3-8ms). FRI fold-by-4 halves round count, reducing Merkle commit overhead. Non-BN254 field optimizations (BabyBear/Goldilocks already have NEON NTT/batch kernels but constraint evaluation and sumcheck remain in Swift).
 
 **Algorithmic (mostly realized)**: Granger-Scott cyclotomic squaring, projective G2 Miller loop (BLS12-381 78→0.9ms), sparse line multiplication, dedicated fp_sqr, fp_mul9 shift-add chains, precomputed G2 line coefficients, Frobenius precomputation. Binary tower PMULL intrinsics (~3ns vs ~50ns) remain open.
 
-**Near floor** (< 1.5x headroom): BabyBear NTT, Goldilocks NTT, Circle NTT, IPA prove, HyperNova fold, KZG commit, Groth16 prove (cached). These are within noise of hardware limits. Further gains require hardware upgrade (M4 Pro/Max with more GPU cores), protocol changes (fewer commitment rounds), or application-level caching (circuit/ProverInstance reuse).
+**Near floor** (< 1.5x headroom): BabyBear NTT, Goldilocks NTT, Circle NTT, IPA prove, HyperNova fold, KZG commit, Groth16 prove (cached). These are within noise of hardware limits. All BN254 Fr CPU paths are at their theoretical floor -- batch inverse, Hadamard ops, fold operations, and inner products all converted to C NEON kernels with zero-copy bridging. Further gains require hardware upgrade (M4 Pro/Max with more GPU cores), protocol changes (fewer commitment rounds), or application-level caching (circuit/ProverInstance reuse).
 
 ## Supported Fields
 
@@ -692,7 +695,7 @@ swift build -c release
 - **Signed-digit MSM**: Scalar recoding halves bucket count, reducing bucket accumulation work.
 - **GLV endomorphism**: BN254's efficient endomorphism splits 256-bit scalar muls into two 128-bit half-width muls.
 - **C CIOS field arithmetic**: Hot-path 256-bit Montgomery multiplication uses C `__uint128_t` compiled with `-O3`, which is 156x faster than Swift for BN254 Fr (16ns vs 2500ns). All 10 field types (BN254/BLS12-381/BLS12-377/Ed25519/Secp256k1/Pallas/Vesta/Stark252 Fr/Fp) use zero-copy C bridge.
-- **Zero-copy Swift↔C bridge**: Field elements (8×UInt32 or 4×UInt64 tuples) share memory layout with C `uint64_t[4]`. `UnsafeRawPointer` cast avoids all heap allocation. 30+ batch C kernels (mul_scalar, inverse, horner_eval, synthetic_div, fold_halves, inner_product, linear_combine, prefix_product, sumcheck_reduce, vector_sum) eliminate per-element call overhead with prefetch hints and branchless arithmetic. Auto-parallel dispatch via `dispatch_apply` for n >= 4096.
+- **Zero-copy Swift↔C bridge**: Field elements (8×UInt32 or 4×UInt64 tuples) share memory layout with C `uint64_t[4]`. `UnsafeRawPointer` cast avoids all heap allocation. 40+ batch C kernels (mul_scalar, batch_inverse, batch_axpy, inner_product, vector_sum, fold_interleaved_inplace, horner_eval, synthetic_div, fold_halves, linear_combine, prefix_product, sumcheck_reduce, batch_scalar_sub, batch_add_scalar, batch_mac) eliminate per-element call overhead with prefetch hints and branchless arithmetic. Auto-parallel dispatch via `dispatch_apply` for n >= 4096. GPU buffer results read via `bindMemory(to: Fr.self)` instead of per-element reconstruction.
 - **Small-input fast path**: MSM automatically routes to multi-threaded C Pippenger for small inputs (BN254 n<=2048, secp256k1 n<=1024) to avoid GPU dispatch overhead.
 
 ## Correctness & Testing
