@@ -644,40 +644,109 @@ public class GPUHalo2LookupArgEngine {
     ) -> LookupProduct {
         let n = permuted.domainSize
 
-        // Precompute all denominators and batch-invert
+        // Precompute all denominators: (a'+beta) * (s'+gamma), then batch-invert
+        var aPlusBeta = [Fr](repeating: Fr.zero, count: n)
+        var sPlusGamma = [Fr](repeating: Fr.zero, count: n)
+        permuted.permutedInput.withUnsafeBytes { aBuf in
+            aPlusBeta.withUnsafeMutableBytes { rBuf in
+                withUnsafeBytes(of: beta) { bBuf in
+                    bn254_fr_batch_add_scalar_neon(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
+        }
+        permuted.permutedTable.withUnsafeBytes { sBuf in
+            sPlusGamma.withUnsafeMutableBytes { rBuf in
+                withUnsafeBytes(of: gamma) { gBuf in
+                    bn254_fr_batch_add_scalar_neon(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        gBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
+        }
         var dens = [Fr](repeating: Fr.zero, count: n)
-        for i in 0..<n {
-            let aPrimePlusBeta = frAdd(permuted.permutedInput[i], beta)
-            let sPrimePlusGamma = frAdd(permuted.permutedTable[i], gamma)
-            dens[i] = frMul(aPrimePlusBeta, sPrimePlusGamma)
+        aPlusBeta.withUnsafeBytes { aBuf in
+            sPlusGamma.withUnsafeBytes { sBuf in
+                dens.withUnsafeMutableBytes { dBuf in
+                    bn254_fr_batch_mul_neon(
+                        dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
         }
-
-        var dPrefix = [Fr](repeating: Fr.one, count: n)
-        for i in 1..<n {
-            dPrefix[i] = dens[i - 1] == Fr.zero ? dPrefix[i - 1] : frMul(dPrefix[i - 1], dens[i - 1])
-        }
-        let dLast = dens[n - 1] == Fr.zero ? dPrefix[n - 1] : frMul(dPrefix[n - 1], dens[n - 1])
-        var dInv = frInverse(dLast)
         var denInvs = [Fr](repeating: Fr.zero, count: n)
-        for i in stride(from: n - 1, through: 0, by: -1) {
-            if dens[i] != Fr.zero {
-                denInvs[i] = frMul(dInv, dPrefix[i])
-                dInv = frMul(dInv, dens[i])
+        dens.withUnsafeBytes { src in
+            denInvs.withUnsafeMutableBytes { dst in
+                bn254_fr_batch_inverse_safe(
+                    src.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(n),
+                    dst.baseAddress!.assumingMemoryBound(to: UInt64.self))
             }
         }
 
-        var zEvals = [Fr](repeating: Fr.zero, count: n)
-        zEvals[0] = Fr.one  // Z_L(omega^0) = 1
-
-        for i in 0..<(n - 1) {
-            let num = frMul(frAdd(inputs[i], beta), frAdd(table[i], gamma))
-            let ratio = frMul(num, denInvs[i])
-            zEvals[i + 1] = frMul(zEvals[i], ratio)
+        // Batch compute numerators: (inputs[i]+beta) * (table[i]+gamma)
+        var iPlusBeta = [Fr](repeating: Fr.zero, count: n)
+        var tPlusGamma = [Fr](repeating: Fr.zero, count: n)
+        inputs.withUnsafeBytes { iBuf in
+            iPlusBeta.withUnsafeMutableBytes { rBuf in
+                withUnsafeBytes(of: beta) { bBuf in
+                    bn254_fr_batch_add_scalar_neon(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        iBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
+        }
+        table.withUnsafeBytes { tBuf in
+            tPlusGamma.withUnsafeMutableBytes { rBuf in
+                withUnsafeBytes(of: gamma) { gBuf in
+                    bn254_fr_batch_add_scalar_neon(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        gBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
+        }
+        // ratios[i] = (inputs[i]+beta) * (table[i]+gamma) * denInvs[i]
+        var ratios = [Fr](repeating: Fr.zero, count: n)
+        iPlusBeta.withUnsafeBytes { aBuf in
+            tPlusGamma.withUnsafeBytes { bBuf in
+                ratios.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_mul_neon(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
+        }
+        ratios.withUnsafeMutableBytes { rBuf in
+            denInvs.withUnsafeBytes { dBuf in
+                let rPtr = rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                bn254_fr_batch_mul_neon(
+                    rPtr, rPtr,
+                    dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(n))
+            }
         }
 
-        // Check: Z_L at the last position should telescope to give a valid product
-        let lastNum = frMul(frAdd(inputs[n - 1], beta), frAdd(table[n - 1], gamma))
-        let finalProduct = frMul(zEvals[n - 1], frMul(lastNum, denInvs[n - 1]))
+        // Prefix product: zEvals[i+1] = zEvals[i] * ratios[i]
+        var zEvals = [Fr](repeating: Fr.zero, count: n)
+        zEvals[0] = Fr.one
+        for i in 0..<(n - 1) {
+            zEvals[i + 1] = frMul(zEvals[i], ratios[i])
+        }
+
+        let finalProduct = frMul(zEvals[n - 1], ratios[n - 1])
         let isValid = frEqual(finalProduct, Fr.one)
 
         return LookupProduct(
@@ -720,24 +789,49 @@ public class GPUHalo2LookupArgEngine {
             // Single-element domain: only check Z_L(omega^0) = 1
             return true
         }
+        var vAPlusBeta = [Fr](repeating: Fr.zero, count: m)
+        var vSPlusGamma = [Fr](repeating: Fr.zero, count: m)
+        product.permuted.permutedInput.withUnsafeBytes { aBuf in
+            vAPlusBeta.withUnsafeMutableBytes { rBuf in
+                withUnsafeBytes(of: beta) { bBuf in
+                    bn254_fr_batch_add_scalar_neon(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(m))
+                }
+            }
+        }
+        product.permuted.permutedTable.withUnsafeBytes { sBuf in
+            vSPlusGamma.withUnsafeMutableBytes { rBuf in
+                withUnsafeBytes(of: gamma) { gBuf in
+                    bn254_fr_batch_add_scalar_neon(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        gBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(m))
+                }
+            }
+        }
         var vDens = [Fr](repeating: Fr.zero, count: m)
-        for i in 0..<m {
-            vDens[i] = frMul(
-                frAdd(product.permuted.permutedInput[i], beta),
-                frAdd(product.permuted.permutedTable[i], gamma)
-            )
+        vAPlusBeta.withUnsafeBytes { aBuf in
+            vSPlusGamma.withUnsafeBytes { sBuf in
+                vDens.withUnsafeMutableBytes { dBuf in
+                    bn254_fr_batch_mul_neon(
+                        dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(m))
+                }
+            }
         }
-        var vPrefix = [Fr](repeating: Fr.one, count: m)
-        for i in 1..<m {
-            vPrefix[i] = vDens[i - 1] == Fr.zero ? vPrefix[i - 1] : frMul(vPrefix[i - 1], vDens[i - 1])
-        }
-        let vLast = vDens[m - 1] == Fr.zero ? vPrefix[m - 1] : frMul(vPrefix[m - 1], vDens[m - 1])
-        var vInv = frInverse(vLast)
         var vDenInvs = [Fr](repeating: Fr.zero, count: m)
-        for i in stride(from: m - 1, through: 0, by: -1) {
-            if vDens[i] != Fr.zero {
-                vDenInvs[i] = frMul(vInv, vPrefix[i])
-                vInv = frMul(vInv, vDens[i])
+        vDens.withUnsafeBytes { src in
+            vDenInvs.withUnsafeMutableBytes { dst in
+                bn254_fr_batch_inverse_safe(
+                    src.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(m),
+                    dst.baseAddress!.assumingMemoryBound(to: UInt64.self))
             }
         }
         for i in 0..<m {
