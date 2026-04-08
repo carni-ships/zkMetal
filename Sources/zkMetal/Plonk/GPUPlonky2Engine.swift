@@ -17,6 +17,7 @@
 //   Plonky2RecursiveCircuitRepr — encodes a circuit as data for recursive verification
 
 import Foundation
+import NeonFieldOps
 
 // MARK: - Gate Types
 
@@ -732,18 +733,13 @@ public class GPUPlonky2Engine {
             gpDens[i] = denominator
         }
 
-        // Montgomery batch inversion of all denominators
-        var gpPrefix = [Gl](repeating: Gl.one, count: m)
-        for i in 1..<m {
-            gpPrefix[i] = gpDens[i - 1].v == 0 ? gpPrefix[i - 1] : glMul(gpPrefix[i - 1], gpDens[i - 1])
-        }
-        let gpLast = gpDens[m - 1].v == 0 ? gpPrefix[m - 1] : glMul(gpPrefix[m - 1], gpDens[m - 1])
-        var gpInv = glInverse(gpLast)
+        // Batch inversion of all denominators via C kernel
         var gpDenInvs = [Gl](repeating: Gl.zero, count: m)
-        for i in stride(from: m - 1, through: 0, by: -1) {
-            if gpDens[i].v != 0 {
-                gpDenInvs[i] = glMul(gpInv, gpPrefix[i])
-                gpInv = glMul(gpInv, gpDens[i])
+        gpDens.withUnsafeBytes { src in
+            gpDenInvs.withUnsafeMutableBytes { dst in
+                gl_batch_inverse(src.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                 dst.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                 Int32(m))
             }
         }
 

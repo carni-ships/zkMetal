@@ -552,13 +552,13 @@ public class GPUVanishingPolyEngine {
                 bbZhVals[i] = bbSub(x, Bb.one)
                 current = bbMul(current, omega)
             }
-            var bbZhPrefix = [Bb](repeating: Bb.one, count: domainSize)
-            for i in 1..<domainSize { bbZhPrefix[i] = bbMul(bbZhPrefix[i - 1], bbZhVals[i - 1]) }
-            var bbZhAcc = bbInverse(bbMul(bbZhPrefix[domainSize - 1], bbZhVals[domainSize - 1]))
             var bbZhInvs = [Bb](repeating: Bb.zero, count: domainSize)
-            for i in Swift.stride(from: domainSize - 1, through: 0, by: -1) {
-                bbZhInvs[i] = bbMul(bbZhAcc, bbZhPrefix[i])
-                bbZhAcc = bbMul(bbZhAcc, bbZhVals[i])
+            bbZhVals.withUnsafeBytes { src in
+                bbZhInvs.withUnsafeMutableBytes { dst in
+                    bb_batch_inverse(src.baseAddress!.assumingMemoryBound(to: UInt32.self),
+                                     dst.baseAddress!.assumingMemoryBound(to: UInt32.self),
+                                     Int32(domainSize))
+                }
             }
             for i in 0..<domainSize {
                 let eval = Bb(v: evals[i])
@@ -1012,13 +1012,13 @@ public class GPUVanishingPolyEngine {
                 for _ in 0..<logSubgroup { x = bbSqr(x) }
                 bbZhArr[i] = bbSub(x, Bb.one)
             }
-            var bbPfx = [Bb](repeating: Bb.one, count: numPoints)
-            for i in 1..<numPoints { bbPfx[i] = bbMul(bbPfx[i - 1], bbZhArr[i - 1]) }
-            var bbAcc = bbInverse(bbMul(bbPfx[numPoints - 1], bbZhArr[numPoints - 1]))
             var bbZhInvArr = [Bb](repeating: Bb.zero, count: numPoints)
-            for i in Swift.stride(from: numPoints - 1, through: 0, by: -1) {
-                bbZhInvArr[i] = bbMul(bbAcc, bbPfx[i])
-                bbAcc = bbMul(bbAcc, bbZhArr[i])
+            bbZhArr.withUnsafeBytes { src in
+                bbZhInvArr.withUnsafeMutableBytes { dst in
+                    bb_batch_inverse(src.baseAddress!.assumingMemoryBound(to: UInt32.self),
+                                     dst.baseAddress!.assumingMemoryBound(to: UInt32.self),
+                                     Int32(numPoints))
+                }
             }
             for i in 0..<numPoints {
                 let eval = Bb(v: evals[i])

@@ -20,6 +20,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 // MARK: - GPUQuotientEngine
 
@@ -526,17 +527,12 @@ public class GPUQuotientEngine {
                 for _ in 0..<logTraceLen { x = frSqr(x) }
                 qZhVals[i] = frSub(x, Fr.one)
             }
-            var qFrPfx = [Fr](repeating: Fr.one, count: domainSize)
-            for i in 1..<domainSize {
-                qFrPfx[i] = qZhVals[i - 1] == Fr.zero ? qFrPfx[i - 1] : frMul(qFrPfx[i - 1], qZhVals[i - 1])
-            }
-            let qFrLst = qZhVals[domainSize - 1] == Fr.zero ? qFrPfx[domainSize - 1] : frMul(qFrPfx[domainSize - 1], qZhVals[domainSize - 1])
-            var qFrInvR = frInverse(qFrLst)
             var qFrInvs = [Fr](repeating: Fr.zero, count: domainSize)
-            for i in Swift.stride(from: domainSize - 1, through: 0, by: -1) {
-                if qZhVals[i] != Fr.zero {
-                    qFrInvs[i] = frMul(qFrInvR, qFrPfx[i])
-                    qFrInvR = frMul(qFrInvR, qZhVals[i])
+            qZhVals.withUnsafeBytes { src in
+                qFrInvs.withUnsafeMutableBytes { dst in
+                    bn254_fr_batch_inverse(src.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                           Int32(domainSize),
+                                           dst.baseAddress!.assumingMemoryBound(to: UInt64.self))
                 }
             }
             for i in 0..<domainSize {
@@ -562,17 +558,12 @@ public class GPUQuotientEngine {
                 for _ in 0..<logTraceLen { x = bbSqr(x) }
                 qBbVals[i] = bbSub(x, Bb.one)
             }
-            var qBbPfx = [Bb](repeating: Bb.one, count: domainSize)
-            for i in 1..<domainSize {
-                qBbPfx[i] = qBbVals[i - 1].v == 0 ? qBbPfx[i - 1] : bbMul(qBbPfx[i - 1], qBbVals[i - 1])
-            }
-            let qBbLst = qBbVals[domainSize - 1].v == 0 ? qBbPfx[domainSize - 1] : bbMul(qBbPfx[domainSize - 1], qBbVals[domainSize - 1])
-            var qBbInvR = bbInverse(qBbLst)
             var qBbInvs = [Bb](repeating: Bb.zero, count: domainSize)
-            for i in Swift.stride(from: domainSize - 1, through: 0, by: -1) {
-                if qBbVals[i].v != 0 {
-                    qBbInvs[i] = bbMul(qBbInvR, qBbPfx[i])
-                    qBbInvR = bbMul(qBbInvR, qBbVals[i])
+            qBbVals.withUnsafeBytes { src in
+                qBbInvs.withUnsafeMutableBytes { dst in
+                    bb_batch_inverse(src.baseAddress!.assumingMemoryBound(to: UInt32.self),
+                                     dst.baseAddress!.assumingMemoryBound(to: UInt32.self),
+                                     Int32(domainSize))
                 }
             }
             for i in 0..<domainSize {
