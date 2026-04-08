@@ -395,18 +395,67 @@ public class LookupSingularityVerifier {
         // Verify final evaluations by recomputing the inverse polynomials
         // and evaluating their MLEs at the sumcheck random points.
         // h_w[i] = 1/(gamma - w[i]) for i in {0,1}^logM
-        var hwEvals = [Fr](repeating: Fr.zero, count: m)
-        for i in 0..<m {
-            hwEvals[i] = frInverse(frSub(proof.gamma, paddedWitnesses[i]))
+        // Batch: diffs[i] = gamma - witnesses[i], then batch inverse
+        var hwDiffs = [Fr](repeating: .zero, count: m)
+        var gammaCopy = proof.gamma
+        paddedWitnesses.withUnsafeBytes { wBuf in
+            hwDiffs.withUnsafeMutableBytes { dBuf in
+                withUnsafeBytes(of: &gammaCopy) { gBuf in
+                    bn254_fr_batch_scalar_sub_neon(
+                        dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        gBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        wBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(m))
+                }
+            }
+        }
+        var hwEvals = [Fr](repeating: .zero, count: m)
+        hwDiffs.withUnsafeBytes { dBuf in
+            hwEvals.withUnsafeMutableBytes { iBuf in
+                bn254_fr_batch_inverse_safe(
+                    dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(m),
+                    iBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+            }
         }
         let hwAtR = evaluateMLE(hwEvals, at: witnessChallenges)
         if !frEqual(hwAtR, proof.witnessFinalEval) { return false }
 
         // h_t[j] = mult[j]/(gamma - T[j]) for j in {0,1}^logN
-        var htEvals = [Fr](repeating: Fr.zero, count: N)
-        for j in 0..<N {
-            let inv = frInverse(frSub(proof.gamma, paddedTable[j]))
-            htEvals[j] = frMul(proof.multiplicities[j], inv)
+        // Batch: diffs[j] = gamma - table[j], then batch inverse, then mul by multiplicities
+        var htDiffs = [Fr](repeating: .zero, count: N)
+        var gammaCopy2 = proof.gamma
+        paddedTable.withUnsafeBytes { tBuf in
+            htDiffs.withUnsafeMutableBytes { dBuf in
+                withUnsafeBytes(of: &gammaCopy2) { gBuf in
+                    bn254_fr_batch_scalar_sub_neon(
+                        dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        gBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(N))
+                }
+            }
+        }
+        var htInvs = [Fr](repeating: .zero, count: N)
+        htDiffs.withUnsafeBytes { dBuf in
+            htInvs.withUnsafeMutableBytes { iBuf in
+                bn254_fr_batch_inverse_safe(
+                    dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(N),
+                    iBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+            }
+        }
+        var htEvals = [Fr](repeating: .zero, count: N)
+        proof.multiplicities.withUnsafeBytes { mBuf in
+            htInvs.withUnsafeBytes { iBuf in
+                htEvals.withUnsafeMutableBytes { oBuf in
+                    bn254_fr_batch_mul_neon(
+                        oBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        mBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        iBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(N))
+                }
+            }
         }
         let htAtR = evaluateMLE(htEvals, at: tableChallenges)
         if !frEqual(htAtR, proof.tableFinalEval) { return false }

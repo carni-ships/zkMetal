@@ -1,5 +1,6 @@
 // Groth16 Trusted Setup (toy implementation for benchmarking)
 import Foundation
+import NeonFieldOps
 
 public class Groth16Setup {
     public init() {}
@@ -50,22 +51,26 @@ public class Groth16Setup {
         let zOverN = frMul(zTau, nInv)  // Z(tau) / domainN
 
         // Batch-invert all (tau - omega^i) denominators
-        var diffs = [Fr](repeating: Fr.zero, count: domainN)
-        for i in 0..<domainN { diffs[i] = frSub(tau, omegaPow[i]) }
-        // Montgomery batch inversion (skip any zero diffs — vanishingly unlikely)
-        var diffPrefix = [Fr](repeating: Fr.one, count: domainN)
-        for i in 1..<domainN {
-            diffPrefix[i] = diffs[i - 1].isZero ? diffPrefix[i - 1] : frMul(diffPrefix[i - 1], diffs[i - 1])
+        var diffs = [Fr](repeating: .zero, count: domainN)
+        var tauCopy = tau
+        omegaPow.withUnsafeBytes { oBuf in
+            diffs.withUnsafeMutableBytes { dBuf in
+                withUnsafeBytes(of: &tauCopy) { tBuf in
+                    bn254_fr_batch_scalar_sub_neon(
+                        dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        oBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(domainN))
+                }
+            }
         }
-        let lastProd = diffs[domainN - 1].isZero ? diffPrefix[domainN - 1] : frMul(diffPrefix[domainN - 1], diffs[domainN - 1])
-        var diffAcc = frInverse(lastProd)
-        var diffInvs = [Fr](repeating: Fr.zero, count: domainN)
-        for i in Swift.stride(from: domainN - 1, through: 0, by: -1) {
-            if diffs[i].isZero {
-                diffInvs[i] = Fr.zero  // sentinel
-            } else {
-                diffInvs[i] = frMul(diffAcc, diffPrefix[i])
-                diffAcc = frMul(diffAcc, diffs[i])
+        var diffInvs = [Fr](repeating: .zero, count: domainN)
+        diffs.withUnsafeBytes { dBuf in
+            diffInvs.withUnsafeMutableBytes { iBuf in
+                bn254_fr_batch_inverse_safe(
+                    dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(domainN),
+                    iBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
             }
         }
         var lagrangeAtTau = [Fr](repeating: .zero, count: domainN)

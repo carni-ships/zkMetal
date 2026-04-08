@@ -415,7 +415,15 @@ public final class GPUPolyInterpolationEngine {
     /// Phase 3: CPU accumulates Lagrange basis polynomials
     private func gpuLagrangeInterpolate(points: [Fr], values: [Fr]) throws -> [Fr] {
         let denoms = try gpuComputeDenominators(points: points)
-        let invDenoms = frBatchInverse(denoms)
+        var invDenoms = [Fr](repeating: .zero, count: denoms.count)
+        denoms.withUnsafeBytes { dBuf in
+            invDenoms.withUnsafeMutableBytes { iBuf in
+                bn254_fr_batch_inverse(
+                    dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(denoms.count),
+                    iBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+            }
+        }
         return accumulateLagrangeBasis(points: points, values: values, invDenoms: invDenoms)
     }
 
@@ -424,10 +432,10 @@ public final class GPUPolyInterpolationEngine {
         let n = points.count
         let elemSize = 32 // 8 x UInt32 = 32 bytes per Fr
 
-        let pointWords = flattenFr(points)
-
-        guard let pointsBuf = device.makeBuffer(bytes: pointWords, length: n * elemSize,
-                                                 options: .storageModeShared),
+        guard let pointsBuf = points.withUnsafeBytes({ buf in
+                  device.makeBuffer(bytes: buf.baseAddress!, length: n * elemSize,
+                                    options: .storageModeShared)
+              }),
               let denomsBuf = device.makeBuffer(length: n * elemSize,
                                                  options: .storageModeShared) else {
             throw MSMError.gpuError("Failed to allocate interpolation buffers")
@@ -454,14 +462,8 @@ public final class GPUPolyInterpolationEngine {
             throw MSMError.gpuError(error.localizedDescription)
         }
 
-        let denomPtr = denomsBuf.contents().bindMemory(to: UInt32.self, capacity: n * 8)
-        var denoms = [Fr](repeating: .zero, count: n)
-        for i in 0..<n {
-            let base = i * 8
-            denoms[i] = Fr(v: (denomPtr[base], denomPtr[base+1], denomPtr[base+2], denomPtr[base+3],
-                               denomPtr[base+4], denomPtr[base+5], denomPtr[base+6], denomPtr[base+7]))
-        }
-        return denoms
+        let denomFrPtr = denomsBuf.contents().bindMemory(to: Fr.self, capacity: n)
+        return Array(UnsafeBufferPointer(start: denomFrPtr, count: n))
     }
 
     /// CPU compute denominators for small n.
@@ -572,20 +574,4 @@ public final class GPUPolyInterpolationEngine {
 
     // MARK: - Helpers
 
-    /// Flatten Fr array to UInt32 array for GPU buffers.
-    private func flattenFr(_ arr: [Fr]) -> [UInt32] {
-        var words = [UInt32](repeating: 0, count: arr.count * 8)
-        for i in 0..<arr.count {
-            let base = i * 8
-            words[base]   = arr[i].v.0
-            words[base+1] = arr[i].v.1
-            words[base+2] = arr[i].v.2
-            words[base+3] = arr[i].v.3
-            words[base+4] = arr[i].v.4
-            words[base+5] = arr[i].v.5
-            words[base+6] = arr[i].v.6
-            words[base+7] = arr[i].v.7
-        }
-        return words
-    }
 }
