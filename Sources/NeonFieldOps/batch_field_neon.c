@@ -446,12 +446,12 @@ void bn254_fr_batch_fma_scalar(uint64_t *result, const uint64_t *scalar,
 }
 
 /// Interleaved fold: result[i] = evals[2i] + challenge*(evals[2i+1]-evals[2i])
-void bn254_fr_fold_interleaved(const uint64_t *evals, const uint64_t *challenge,
-                                uint64_t *result, int halfN)
+static void fold_interleaved_range(const uint64_t *evals, const uint64_t *challenge,
+                                    uint64_t *result, int start, int end)
 {
     uint64_t diff[4], scaled[4];
-    for (int i = 0; i < halfN; i++) {
-        if (i + 2 < halfN) {
+    for (int i = start; i < end; i++) {
+        if (i + 2 < end) {
             __builtin_prefetch(&evals[(2 * (i + 2)) * 4], 0, 1);
         }
         const uint64_t *lo = &evals[(2 * i) * 4];
@@ -462,20 +462,62 @@ void bn254_fr_fold_interleaved(const uint64_t *evals, const uint64_t *challenge,
     }
 }
 
+void bn254_fr_fold_interleaved(const uint64_t *evals, const uint64_t *challenge,
+                                uint64_t *result, int halfN)
+{
+    if (halfN >= BATCH_THREAD_THRESHOLD) {
+        int nChunks = MAX_THREADS;
+        if (halfN < nChunks * 1024) nChunks = 4;
+        int chunkSize = halfN / nChunks;
+        int total = halfN;
+        const uint64_t *se = evals, *sc = challenge;
+        uint64_t *sr = result;
+        dispatch_apply(nChunks, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+                       ^(size_t idx) {
+            int s = (int)idx * chunkSize;
+            int e = ((int)idx == nChunks - 1) ? total : s + chunkSize;
+            fold_interleaved_range(se, sc, sr, s, e);
+        });
+    } else {
+        fold_interleaved_range(evals, challenge, result, 0, halfN);
+    }
+}
+
 /// ZM fold interleaved: result[i] = evals[2i] + challenge * evals[2i+1]
 /// For Zeromorph/Gemini where the formula is lo + c*hi (NOT lo + c*(hi-lo)).
-void bn254_fr_fold_zm_interleaved(const uint64_t *evals, const uint64_t *challenge,
-                                   uint64_t *result, int halfN)
+static void fold_zm_interleaved_range(const uint64_t *evals, const uint64_t *challenge,
+                                       uint64_t *result, int start, int end)
 {
     uint64_t scaled[4];
-    for (int i = 0; i < halfN; i++) {
-        if (i + 2 < halfN) {
+    for (int i = start; i < end; i++) {
+        if (i + 2 < end) {
             __builtin_prefetch(&evals[(2 * (i + 2)) * 4], 0, 1);
         }
         const uint64_t *lo = &evals[(2 * i) * 4];
         const uint64_t *hi = &evals[(2 * i + 1) * 4];
         fr_mont_mul(challenge, hi, scaled);
         fr_add_branchless(lo, scaled, &result[i * 4]);
+    }
+}
+
+void bn254_fr_fold_zm_interleaved(const uint64_t *evals, const uint64_t *challenge,
+                                   uint64_t *result, int halfN)
+{
+    if (halfN >= BATCH_THREAD_THRESHOLD) {
+        int nChunks = MAX_THREADS;
+        if (halfN < nChunks * 1024) nChunks = 4;
+        int chunkSize = halfN / nChunks;
+        int total = halfN;
+        const uint64_t *se = evals, *sc = challenge;
+        uint64_t *sr = result;
+        dispatch_apply(nChunks, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+                       ^(size_t idx) {
+            int s = (int)idx * chunkSize;
+            int e = ((int)idx == nChunks - 1) ? total : s + chunkSize;
+            fold_zm_interleaved_range(se, sc, sr, s, e);
+        });
+    } else {
+        fold_zm_interleaved_range(evals, challenge, result, 0, halfN);
     }
 }
 
