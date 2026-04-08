@@ -13,6 +13,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 // MARK: - Engine
 
@@ -405,12 +406,15 @@ public class BrakedownEngine {
         for i in 0..<logN {
             let half = evals.count / 2
             var folded = [Fr](repeating: Fr.zero, count: half)
-            for j in 0..<half {
-                let low = evals[j]
-                let high = evals[j + half]
-                let diff = frSub(high, low)
-                folded[j] = frAdd(low, frMul(point[i], diff))
-            }
+            evals.withUnsafeBytes { eBuf in
+            withUnsafeBytes(of: point[i]) { pBuf in
+            folded.withUnsafeMutableBytes { fBuf in
+                bn254_fr_fold_halves(
+                    eBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    fBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(half))
+            }}}
             evals = folded
         }
         return evals[0]
