@@ -18,11 +18,19 @@ extension PolyEngine {
         let logN = ceilLog2(n)
         let N = 1 << logN
 
-        var pts = points
-        while pts.count < N { pts.append(Fr.one) }
-
-        var c = coeffs
-        while c.count < N { c.append(Fr.zero) }
+        let frStride = MemoryLayout<Fr>.stride
+        var pts = [Fr](repeating: Fr.one, count: N)
+        pts.withUnsafeMutableBytes { dst in
+            points.withUnsafeBytes { src in
+                memcpy(dst.baseAddress!, src.baseAddress!, points.count * frStride)
+            }
+        }
+        var c = [Fr](repeating: Fr.zero, count: N)
+        c.withUnsafeMutableBytes { dst in
+            coeffs.withUnsafeBytes { src in
+                memcpy(dst.baseAddress!, src.baseAddress!, coeffs.count * frStride)
+            }
+        }
 
         let tree = try buildSubproductTree(pts, logN: logN)
         let results = try remainderTreeDescent(poly: c, tree: tree, logN: logN)
@@ -50,8 +58,12 @@ extension PolyEngine {
         // Pad points/values to power-of-two
         var pts = points
         while pts.count < N { pts.append(frFromInt(UInt64(pts.count + 1000000))) } // distinct padding points
-        var vals = values
-        while vals.count < N { vals.append(Fr.zero) }
+        var vals = [Fr](repeating: Fr.zero, count: N)
+        vals.withUnsafeMutableBytes { dst in
+            values.withUnsafeBytes { src in
+                memcpy(dst.baseAddress!, src.baseAddress!, values.count * MemoryLayout<Fr>.stride)
+            }
+        }
 
         // Step 1: Build subproduct tree from points
         let tree = try buildSubproductTree(pts, logN: logN)
@@ -648,13 +660,25 @@ extension PolyEngine {
         let srcPtr = prev.contents().bindMemory(to: Fr.self, capacity: numPolys * 2 * polySize)
         let leftPtr = left.contents().bindMemory(to: Fr.self, capacity: numPolys * polySize)
         let rightPtr = right.contents().bindMemory(to: Fr.self, capacity: numPolys * polySize)
-        for i in 0..<numPolys {
-            memcpy(leftPtr.advanced(by: i * polySize),
-                   srcPtr.advanced(by: (2 * i) * polySize),
-                   polySize * stride)
-            memcpy(rightPtr.advanced(by: i * polySize),
-                   srcPtr.advanced(by: (2 * i + 1) * polySize),
-                   polySize * stride)
+        let chunkBytes = polySize * stride
+        if numPolys >= 64 {
+            DispatchQueue.concurrentPerform(iterations: numPolys) { i in
+                memcpy(leftPtr.advanced(by: i * polySize),
+                       srcPtr.advanced(by: (2 * i) * polySize),
+                       chunkBytes)
+                memcpy(rightPtr.advanced(by: i * polySize),
+                       srcPtr.advanced(by: (2 * i + 1) * polySize),
+                       chunkBytes)
+            }
+        } else {
+            for i in 0..<numPolys {
+                memcpy(leftPtr.advanced(by: i * polySize),
+                       srcPtr.advanced(by: (2 * i) * polySize),
+                       chunkBytes)
+                memcpy(rightPtr.advanced(by: i * polySize),
+                       srcPtr.advanced(by: (2 * i + 1) * polySize),
+                       chunkBytes)
+            }
         }
     }
 
@@ -877,20 +901,33 @@ extension PolyEngine {
         cmdBuf.waitUntilCompleted()
         if let error = cmdBuf.error { throw MSMError.gpuError(error.localizedDescription) }
 
-        // CPU: read quotient result and reverse
+        // CPU: read quotient result and reverse (parallel for large numChildren)
         let allQRev = readBuffer(mulABuf, count: numChildren * nttN)
         var allQ = [Fr](repeating: Fr.zero, count: numChildren * nttN)
-        for c in 0..<numChildren {
-            for i in 0..<quotientSize {
-                allQ[c * nttN + i] = allQRev[c * nttN + (quotientSize - 1 - i)]
-            }
-        }
-
-        // Step 3: Multiply q * g for all children (separate CB — needs CPU-prepared data)
         var allG = [Fr](repeating: Fr.zero, count: numChildren * nttN)
-        for c in 0..<numChildren {
-            for i in 0..<childSize {
-                allG[c * nttN + i] = cPtr[c * childSize + i]
+        if numChildren >= 64 {
+            DispatchQueue.concurrentPerform(iterations: numChildren) { c in
+                let qBase = c * nttN
+                for i in 0..<quotientSize {
+                    allQ[qBase + i] = allQRev[qBase + (quotientSize - 1 - i)]
+                }
+                let gBase = c * nttN
+                let cBase = c * childSize
+                for i in 0..<childSize {
+                    allG[gBase + i] = cPtr[cBase + i]
+                }
+            }
+        } else {
+            for c in 0..<numChildren {
+                let qBase = c * nttN
+                for i in 0..<quotientSize {
+                    allQ[qBase + i] = allQRev[qBase + (quotientSize - 1 - i)]
+                }
+                let gBase = c * nttN
+                let cBase = c * childSize
+                for i in 0..<childSize {
+                    allG[gBase + i] = cPtr[cBase + i]
+                }
             }
         }
 

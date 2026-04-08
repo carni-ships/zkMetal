@@ -341,10 +341,19 @@ public class GPUIPAProverEngine {
 
         // Pad to power of 2
         let targetN = nextPowerOf2(inputA.count)
-        var a = inputA
-        var b = inputB
-        while a.count < targetN { a.append(Fr.zero) }
-        while b.count < targetN { b.append(Fr.zero) }
+        var a = [Fr](repeating: Fr.zero, count: targetN)
+        var b = [Fr](repeating: Fr.zero, count: targetN)
+        let frStride = MemoryLayout<Fr>.stride
+        a.withUnsafeMutableBytes { dst in
+            inputA.withUnsafeBytes { src in
+                memcpy(dst.baseAddress!, src.baseAddress!, inputA.count * frStride)
+            }
+        }
+        b.withUnsafeMutableBytes { dst in
+            inputB.withUnsafeBytes { src in
+                memcpy(dst.baseAddress!, src.baseAddress!, inputB.count * frStride)
+            }
+        }
 
         let n = a.count
         guard n <= maxSize else {
