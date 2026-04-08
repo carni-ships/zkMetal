@@ -389,30 +389,14 @@ public class GPUGrandProductEngine {
 
     private func cpuPermutationProduct(numerators: [Fr], denominators: [Fr]) -> [Fr] {
         let n = numerators.count
-        // Batch inverse on CPU
+        // Batch inverse on CPU (handles zeros)
         var invDen = [Fr](repeating: Fr.zero, count: n)
-
-        // Montgomery's trick
-        var prefix = [Fr](repeating: Fr.zero, count: n)
-        var running = Fr.one
-        for i in 0..<n {
-            if !denominators[i].isZero {
-                running = frMul(running, denominators[i])
-            }
-            prefix[i] = running
-        }
-
-        var inv = frInverse(running)
-        for i in stride(from: n - 1, through: 0, by: -1) {
-            if denominators[i].isZero {
-                invDen[i] = Fr.zero
-            } else {
-                if i > 0 {
-                    invDen[i] = frMul(inv, prefix[i - 1])
-                } else {
-                    invDen[i] = inv
-                }
-                inv = frMul(inv, denominators[i])
+        denominators.withUnsafeBytes { src in
+            invDen.withUnsafeMutableBytes { dst in
+                bn254_fr_batch_inverse_safe(
+                    src.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(n),
+                    dst.baseAddress!.assumingMemoryBound(to: UInt64.self))
             }
         }
 

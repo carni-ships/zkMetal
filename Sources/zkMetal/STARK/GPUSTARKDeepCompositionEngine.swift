@@ -282,24 +282,39 @@ public final class GPUSTARKDeepCompositionEngine {
                 }
             }
         }
-        var denomPrefix = [Fr](repeating: Fr.one, count: m)
-        for i in 1..<m {
-            denomPrefix[i] = denoms[i - 1] == Fr.zero ? denomPrefix[i - 1] : frMul(denomPrefix[i - 1], denoms[i - 1])
-        }
-        let denomLast = denoms[m - 1] == Fr.zero ? denomPrefix[m - 1] : frMul(denomPrefix[m - 1], denoms[m - 1])
-        var denomInvRunning = frInverse(denomLast)
         var denomInvs = [Fr](repeating: Fr.zero, count: m)
-        for i in stride(from: m - 1, through: 0, by: -1) {
-            if denoms[i] != Fr.zero {
-                denomInvs[i] = frMul(denomInvRunning, denomPrefix[i])
-                denomInvRunning = frMul(denomInvRunning, denoms[i])
+        denoms.withUnsafeBytes { src in
+            denomInvs.withUnsafeMutableBytes { dst in
+                bn254_fr_batch_inverse_safe(
+                    src.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(m),
+                    dst.baseAddress!.assumingMemoryBound(to: UInt64.self))
             }
         }
 
+        // numerator[i] = columnEvals[i] - oodEval, quotient[i] = numerator[i] * denomInvs[i]
         var quotientEvals = [Fr](repeating: Fr.zero, count: m)
-        for i in 0..<m {
-            let numerator = frSub(columnEvals[i], oodEval)
-            quotientEvals[i] = frMul(numerator, denomInvs[i])
+        columnEvals.withUnsafeBytes { cBuf in
+            denomInvs.withUnsafeBytes { dBuf in
+                quotientEvals.withUnsafeMutableBytes { qBuf in
+                    var ood = oodEval
+                    withUnsafeBytes(of: &ood) { oBuf in
+                        // First compute numerators in-place: q[i] = c[i] - oodEval
+                        bn254_fr_batch_sub_scalar(
+                            qBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            oBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(m))
+                    }
+                    // Then multiply by denomInvs: q[i] *= denomInvs[i]
+                    let qPtr = qBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    bn254_fr_batch_mul_neon(
+                        qPtr,
+                        qPtr,
+                        dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(m))
+                }
+            }
         }
 
         return DEEPQuotient(label: label, evaluations: quotientEvals)
