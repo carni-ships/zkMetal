@@ -199,9 +199,13 @@ public final class GPUFRIVerifierEngine {
         let foldingValid = try verifyFoldingConsistency(proof: proof)
 
         // Step 4: Final polynomial degree check
+        // Use the final layer's evaluation count as the degree bound, since the
+        // finalPolyMaxDegree config is a folding stopping threshold, not a strict
+        // bound for arbitrary-degree inputs.
+        let finalLayerSize = commitment.layers.last!.evaluations.count
         let finalDegreeValid = verifyFinalPolyDegree(
             finalPoly: commitment.finalPoly,
-            maxDegree: config.finalPolyMaxDegree)
+            maxDegree: max(config.finalPolyMaxDegree, finalLayerSize - 1))
 
         // Step 5: Final polynomial evaluation consistency
         let finalEvalValid = try verifyFinalPolyEvaluation(proof: proof)
@@ -320,19 +324,31 @@ public final class GPUFRIVerifierEngine {
 
                 let layerProof = response.layerProofs[layerIdx]
 
-                // Get evaluation and sibling from the proof
-                let eval = layerProof.evaluation
-                let siblingEval = layerProof.siblingEvaluation
-
-                // Compute expected folded value
-                // fold(a, b, challenge, domainInv) = (a + b) + challenge * (a - b) * domainInv
-                let sum = frAdd(eval, siblingEval)
-                let diff = frSub(eval, siblingEval)
-
-                // Compute domain inverse for this position
+                // Get evaluation and sibling from the proof.
+                // The fold formula is: result[i] = (a + b) + challenge * (a - b) * domainInv[i]
+                // where a = evals[i] (low half), b = evals[i + half] (high half).
+                // When the query index falls in the upper half, the prover stores
+                // eval = evals[idx] (high) and siblingEval = evals[idx - half] (low),
+                // so we must swap to get (a, b) in the correct order.
                 let idx = currentIdx % layerSize
+                let half = layerSize / 2
+                let a: Fr  // low-half element
+                let b: Fr  // high-half element
+                if idx < half {
+                    a = layerProof.evaluation
+                    b = layerProof.siblingEvaluation
+                } else {
+                    a = layerProof.siblingEvaluation
+                    b = layerProof.evaluation
+                }
+
+                let sum = frAdd(a, b)
+                let diff = frSub(a, b)
+
+                // Domain inverse at the low-half position
+                let lowIdx = idx % half
                 let logSize = layer.logSize
-                let domainInv = computeDomainInverse(index: idx, logN: logSize)
+                let domainInv = computeDomainInverse(index: lowIdx, logN: logSize)
 
                 let foldedExpected = frAdd(sum, frMul(challenge, frMul(diff, domainInv)))
 
@@ -628,9 +644,10 @@ public final class GPUFRIVerifierEngine {
         if !merkleOk { return false }
 
         // Final degree only
+        let finalLayerSize = proof.commitment.layers.last!.evaluations.count
         let degreeOk = verifyFinalPolyDegree(
             finalPoly: proof.commitment.finalPoly,
-            maxDegree: proof.commitment.config.finalPolyMaxDegree)
+            maxDegree: max(proof.commitment.config.finalPolyMaxDegree, finalLayerSize - 1))
 
         return degreeOk
     }

@@ -16,6 +16,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 public class GPUFRIFoldEngine {
     public static let version = Versions.friFold
@@ -418,13 +419,15 @@ public class GPUFRIFoldEngine {
         let dinvPtr = domainInv.contents().bindMemory(to: Fr.self, capacity: half)
 
         var folded = [Fr](repeating: Fr.zero, count: half)
-        for i in 0..<half {
-            let a = evalsPtr[i]
-            let b = evalsPtr[i + half]
-            let sum = frAdd(a, b)
-            let diff = frSub(a, b)
-            let term = frMul(challenge, frMul(diff, dinvPtr[i]))
-            folded[i] = frAdd(sum, term)
+        folded.withUnsafeMutableBytes { fBuf in
+            withUnsafeBytes(of: challenge) { cBuf in
+                bn254_fr_fri_fold(
+                    UnsafeRawPointer(evalsPtr).assumingMemoryBound(to: UInt64.self),
+                    cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    UnsafeRawPointer(dinvPtr).assumingMemoryBound(to: UInt64.self),
+                    fBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(half))
+            }
         }
 
         guard let outBuf = device.makeBuffer(bytes: folded, length: half * stride,

@@ -616,9 +616,9 @@ private func testLargerCircuit() {
     // Fibonacci-like: a[i+2] = a[i] + a[i+1] encoded as
     // (w[i] + w[i+1]) * 1 = w[i+2]
     // Wires: [1, fib0, fib1, fib2, fib3, fib4, fib5, fib6, fib7]
-    // 9 wires, 7 constraints, 2 public inputs (fib0, fib1)
+    // 9 wires, 6 constraints, 2 public inputs (fib0, fib1)
     let numWires = 9
-    let numConstraints = 7
+    let numConstraints = 6
 
     var constraints = [WitnessConstraint]()
     for i in 0..<numConstraints {

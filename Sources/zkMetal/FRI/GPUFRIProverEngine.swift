@@ -371,34 +371,19 @@ public class GPUFRIProverEngine {
         let n = evaluations.count
         if n <= 1 { return evaluations }
 
-        // Use inverse NTT to get coefficients from evaluations
-        // For the final (small) polynomial, CPU is fine
+        // Direct inverse DFT: coeffs[k] = (1/n) * sum_j evals[j] * omega^{-jk}
+        // O(n^2) but n is small (final poly is typically <= 32 elements)
         let invTwiddles = precomputeInverseTwiddles(logN: logN)
-        var coeffs = evaluations
-
-        // Cooley-Tukey inverse NTT
-        var m = 1
-        var step = 0
-        while m < n {
-            let halfM = m
-            m *= 2
-            let twiddleStep = n / m
-            for k in stride(from: 0, to: n, by: m) {
-                for j in 0..<halfM {
-                    let u = coeffs[k + j]
-                    let v = coeffs[k + j + halfM]
-                    coeffs[k + j] = frAdd(u, v)
-                    let diff = frSub(u, v)
-                    coeffs[k + j + halfM] = frMul(diff, invTwiddles[j * twiddleStep])
-                }
-            }
-            step += 1
-        }
-
-        // Multiply by 1/n
         let nInv = frInverse(frFromInt(UInt64(n)))
-        for i in 0..<n {
-            coeffs[i] = frMul(coeffs[i], nInv)
+        var coeffs = [Fr](repeating: Fr.zero, count: n)
+
+        for k in 0..<n {
+            var sum = Fr.zero
+            for j in 0..<n {
+                let twIdx = (j * k) % n
+                sum = frAdd(sum, frMul(evaluations[j], invTwiddles[twIdx]))
+            }
+            coeffs[k] = frMul(sum, nInv)
         }
 
         return coeffs

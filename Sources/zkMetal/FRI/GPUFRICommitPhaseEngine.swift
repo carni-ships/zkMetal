@@ -702,13 +702,19 @@ public final class GPUFRICommitPhaseEngine {
         let invTwiddles = precomputeInverseTwiddles(logN: logN)
 
         var folded = [Fr](repeating: Fr.zero, count: half)
-        for i in 0..<half {
-            let a = evals[i]
-            let b = evals[i + half]
-            let sum = frAdd(a, b)
-            let diff = frSub(a, b)
-            let term = frMul(challenge, frMul(diff, invTwiddles[i]))
-            folded[i] = frAdd(sum, term)
+        evals.withUnsafeBytes { eBuf in
+            invTwiddles.withUnsafeBytes { tBuf in
+                folded.withUnsafeMutableBytes { fBuf in
+                    withUnsafeBytes(of: challenge) { cBuf in
+                        bn254_fr_fri_fold(
+                            eBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            fBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(half))
+                    }
+                }
+            }
         }
         return folded
     }

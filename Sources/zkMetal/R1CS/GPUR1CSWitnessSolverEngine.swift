@@ -219,14 +219,6 @@ public struct IncrementalWitnessState {
     }
 }
 
-/// Dependency graph node for topological sorting.
-private struct DepNode {
-    var constraintIdx: Int
-    var dependsOn: Set<Int>     // variable indices needed as input
-    var produces: Set<Int>      // variable indices this constraint can solve
-    var inDegree: Int = 0       // number of unresolved dependencies
-}
-
 // MARK: - GPU R1CS Witness Solver Engine
 
 public final class GPUR1CSWitnessSolverEngine {
@@ -369,88 +361,97 @@ public final class GPUR1CSWitnessSolverEngine {
         let n = system.constraints.count
         if n == 0 { return [] }
 
-        // Build dependency nodes
-        var nodes = [DepNode]()
-        nodes.reserveCapacity(n)
+        // Store per-constraint variable sets for dynamic produces computation
+        struct ConstraintVars {
+            let index: Int
+            let aVars: Set<Int>
+            let bVars: Set<Int>
+            let cVars: Set<Int>
+            let allVars: Set<Int>
+        }
+        var cVarsList = [ConstraintVars]()
+        cVarsList.reserveCapacity(n)
 
-        // Track which variables each constraint can produce
-        // A constraint can solve a variable in C if A and B are fully known
-        // Or a variable in A if B and C are fully known, etc.
         for constraint in system.constraints {
             let aVars = Set(constraint.a.variableIndices)
             let bVars = Set(constraint.b.variableIndices)
             let cVars = Set(constraint.c.variableIndices)
-            let allVars = aVars.union(bVars).union(cVars)
+            cVarsList.append(ConstraintVars(
+                index: constraint.index,
+                aVars: aVars, bVars: bVars, cVars: cVars,
+                allVars: aVars.union(bVars).union(cVars)))
+        }
 
-            // Dependencies: all variables this constraint reads
-            let deps = allVars.subtracting(knownVars)
-
-            // Outputs: variables that could be solved
-            // Primary: C-only variables (when A, B are fully known)
+        // Compute what a constraint produces given current resolved set
+        func computeProduces(_ cv: ConstraintVars, resolved: Set<Int>) -> Set<Int> {
+            let aKnown = cv.aVars.isSubset(of: resolved)
+            let bKnown = cv.bVars.isSubset(of: resolved)
+            let cKnown = cv.cVars.isSubset(of: resolved)
             var produces = Set<Int>()
-            for v in cVars {
-                if !aVars.contains(v) && !bVars.contains(v) {
+            // Primary: solve C vars when A and B fully known
+            if aKnown && bKnown {
+                for v in cv.cVars where !resolved.contains(v) {
                     produces.insert(v)
                 }
             }
-            // Secondary: single-unknown in A or B
-            if aVars.count == 1, let v = aVars.first, !knownVars.contains(v) {
+            // Secondary: single-unknown in A when B, C fully known
+            if bKnown && cKnown, cv.aVars.count == 1,
+               let v = cv.aVars.first, !resolved.contains(v) {
                 produces.insert(v)
             }
-            if bVars.count == 1, let v = bVars.first, !knownVars.contains(v) {
+            // Secondary: single-unknown in B when A, C fully known
+            if aKnown && cKnown, cv.bVars.count == 1,
+               let v = cv.bVars.first, !resolved.contains(v) {
                 produces.insert(v)
             }
-
-            nodes.append(DepNode(constraintIdx: constraint.index,
-                                 dependsOn: deps,
-                                 produces: produces))
+            return produces
         }
 
-        // Kahn's algorithm: constraints with no unsolved dependencies go first
-        var inDegree = [Int](repeating: 0, count: n)
+        // Kahn's algorithm with dynamic produces recomputation
         var resolved = knownVars
+        var scheduled = [Bool](repeating: false, count: n)
         var queue = [Int]()
         var order = [Int]()
         order.reserveCapacity(n)
 
-        // Compute initial in-degrees
-        for i in 0..<n {
-            let unresolved = nodes[i].dependsOn.subtracting(resolved)
-            inDegree[i] = unresolved.count
-            if inDegree[i] == 0 {
-                queue.append(i)
+        // A constraint is ready when it can produce at least one variable
+        // (i.e., enough of its inputs are resolved)
+        func enqueueReady() {
+            for i in 0..<n {
+                if !scheduled[i] {
+                    let produces = computeProduces(cVarsList[i], resolved: resolved)
+                    if !produces.isEmpty {
+                        scheduled[i] = true
+                        queue.append(i)
+                    }
+                }
             }
         }
+
+        enqueueReady()
 
         var head = 0
         while head < queue.count {
             let idx = queue[head]
             head += 1
-            order.append(nodes[idx].constraintIdx)
 
-            // Mark outputs as resolved
-            let newlyResolved = nodes[idx].produces
-            resolved.formUnion(newlyResolved)
+            let cv = cVarsList[idx]
+            order.append(cv.index)
 
-            // Update in-degrees
-            for i in 0..<n {
-                if inDegree[i] > 0 {
-                    let remaining = nodes[i].dependsOn.subtracting(resolved)
-                    let newDeg = remaining.count
-                    if newDeg == 0 && inDegree[i] > 0 {
-                        queue.append(i)
-                    }
-                    inDegree[i] = newDeg
-                }
-            }
+            // Recompute produces with current resolved set and mark resolved
+            let produces = computeProduces(cv, resolved: resolved)
+            resolved.formUnion(produces)
+
+            // Check if any new constraints became ready
+            enqueueReady()
         }
 
         // Append any constraints not yet ordered (cyclic dependencies)
         if order.count < n {
             let ordered = Set(order)
             for i in 0..<n {
-                if !ordered.contains(nodes[i].constraintIdx) {
-                    order.append(nodes[i].constraintIdx)
+                if !ordered.contains(cVarsList[i].index) {
+                    order.append(cVarsList[i].index)
                 }
             }
         }

@@ -712,7 +712,7 @@ public class MultiScalarInnerProduct {
         withUnsafeBytes(of: challenge) { cPtr in
             v.withUnsafeBytes { vBuf in
                 result.withUnsafeMutableBytes { rBuf in
-                    bn254_fr_sumcheck_reduce(
+                    bn254_fr_ipa_fold(
                         vBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
                         cPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
                         rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
@@ -730,7 +730,7 @@ public class MultiScalarInnerProduct {
         withUnsafeBytes(of: x) { xPtr in
             a.withUnsafeBytes { aBuf in
                 aResult.withUnsafeMutableBytes { rBuf in
-                    bn254_fr_sumcheck_reduce(
+                    bn254_fr_ipa_fold(
                         aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
                         xPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
                         rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
@@ -741,7 +741,7 @@ public class MultiScalarInnerProduct {
         withUnsafeBytes(of: xInv) { xiPtr in
             b.withUnsafeBytes { bBuf in
                 bResult.withUnsafeMutableBytes { rBuf in
-                    bn254_fr_sumcheck_reduce(
+                    bn254_fr_ipa_fold(
                         bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
                         xiPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
                         rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),

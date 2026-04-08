@@ -137,10 +137,9 @@ func testMerklePathVerify() {
         let leftValid = engine.verifyMerklePath(leftPath, expectedRoot: expectedRoot)
         expect(leftValid, "Left child Merkle path should verify")
 
-        // Right child at index 1
-        let rightRoot = frAdd(frAdd(frMul(right, right), frMul(frFromInt(3), left)), frFromInt(7))
-        let rightPath = FrMerklePath(leafIndex: 1, leaf: right, siblings: [left], root: rightRoot)
-        let rightValid = engine.verifyMerklePath(rightPath, expectedRoot: rightRoot)
+        // Right child at index 1 — same parent root as left child
+        let rightPath = FrMerklePath(leafIndex: 1, leaf: right, siblings: [left], root: expectedRoot)
+        let rightValid = engine.verifyMerklePath(rightPath, expectedRoot: expectedRoot)
         expect(rightValid, "Right child Merkle path should verify")
 
         // Test 4: batch verification

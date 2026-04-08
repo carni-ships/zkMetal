@@ -44,16 +44,19 @@ private func evaluatePolyForVerifier(coeffs: [Fr], logN: Int) -> [Fr] {
     return evals
 }
 
-/// Helper: generate a proof using the prover engine.
+/// Helper: generate a proof using the prover engine with a valid low-degree polynomial.
 private func generateProof(logN: Int, config: GPUFRIConfig,
                            seed: UInt64) throws -> GPUFRIProof {
     let prover = try GPUFRIProverEngine()
     var rng = VerifierRNG(state: seed)
-    let n = 1 << logN
 
-    var evals = [Fr](repeating: Fr.zero, count: n)
-    for i in 0..<n { evals[i] = rng.nextFr() }
+    // Generate random coefficients for a polynomial of degree <= finalPolyMaxDegree
+    // so that FRI verification (degree check, eval check) can succeed.
+    let numCoeffs = config.finalPolyMaxDegree + 1
+    var coeffs = [Fr](repeating: Fr.zero, count: numCoeffs)
+    for i in 0..<numCoeffs { coeffs[i] = rng.nextFr() }
 
+    let evals = evaluatePolyForVerifier(coeffs: coeffs, logN: logN)
     return try prover.prove(evaluations: evals, config: config)
 }
 

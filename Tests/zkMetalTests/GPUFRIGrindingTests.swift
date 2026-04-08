@@ -48,8 +48,10 @@ private func testLeadingZeroCount() {
     expect(lzOne < 256, "Fr.one should have fewer than 256 leading zeros")
     expect(lzOne >= 0, "Leading zeros should be non-negative")
 
-    // Construct a value with exactly 64 leading zeros (limbs[3] = 0, limbs[2] != 0)
-    let val64 = Fr.from64([0xDEADBEEF, 0x12345678, 0xABCDEF01, 0])
+    // Construct a value with exactly 64 leading zeros (limbs[3] = 0, limbs[2] has MSB set)
+    // Note: from64 treats each element as a full UInt64, so the upper 32 bits must be non-zero
+    // for the 64-bit limb to have 0 leading zeros.
+    let val64 = Fr.from64([0xDEADBEEF, 0x12345678, 0xABCDEF0100000000, 0])
     let lz64 = GrindingVerifier.countLeadingZeros(val64)
     expectEqual(lz64, 64, "Value with zero MSB limb should have 64 leading zeros")
 

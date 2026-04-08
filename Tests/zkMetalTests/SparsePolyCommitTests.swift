@@ -9,10 +9,8 @@ public func runSparsePolyCommitTests() {
     // Shared test SRS
     let secret: [UInt32] = [7, 0, 0, 0, 0, 0, 0, 0]
     let srsSecret = frFromLimbs(secret)
-    let generator = PointAffine(x: .one, y: Fp(v: (
-        0x2611_5a1b, 0xa722_44a0, 0x1f23_2048, 0x66b3_ff14,
-        0x3250_d688, 0x4eb1_de7e, 0x29e7_52c2, 0x1971_ff07
-    )))
+    // Generator at (1, 2) on BN254: y^2 = 1^3 + 3 = 4, y = 2
+    let generator = PointAffine(x: .one, y: fpFromInt(2))
     let srsSize = 1024
     let srs = KZGEngine.generateTestSRS(secret: secret, size: srsSize, generator: generator)
 
@@ -272,6 +270,7 @@ public func runSparsePolyCommitTests() {
         // Open at a random point and verify
         let z = frFromInt(17)
         let proof = openingEngine.open(qM, at: z)
+
         let valid = openingEngine.verify(
             commitment: commitment,
             point: z,

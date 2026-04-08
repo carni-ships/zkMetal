@@ -366,6 +366,44 @@ void bn254_fr_sumcheck_reduce(const uint64_t *evals, const uint64_t *challenge,
     }
 }
 
+/// IPA fold: result[i] = v[i] + challenge * v[halfN+i]
+void bn254_fr_ipa_fold(const uint64_t *v, const uint64_t *challenge,
+                        uint64_t *result, int halfN)
+{
+    uint64_t scaled[4];
+    for (int i = 0; i < halfN; i++) {
+        if (i + 2 < halfN) {
+            __builtin_prefetch(&v[(i + 2) * 4], 0, 1);
+            __builtin_prefetch(&v[(halfN + i + 2) * 4], 0, 1);
+        }
+        const uint64_t *lo = &v[i * 4];
+        const uint64_t *hi = &v[(halfN + i) * 4];
+        fr_mont_mul(challenge, hi, scaled);
+        fr_add_branchless(lo, scaled, &result[i * 4]);
+    }
+}
+
+/// FRI fold: result[i] = (a[i]+b[i]) + challenge*(a[i]-b[i])*invTwiddles[i]
+void bn254_fr_fri_fold(const uint64_t *evals, const uint64_t *challenge,
+                        const uint64_t *invTwiddles, uint64_t *result, int half)
+{
+    uint64_t sum[4], diff[4], prod[4], term[4];
+    for (int i = 0; i < half; i++) {
+        if (i + 2 < half) {
+            __builtin_prefetch(&evals[(i + 2) * 4], 0, 1);
+            __builtin_prefetch(&evals[(half + i + 2) * 4], 0, 1);
+            __builtin_prefetch(&invTwiddles[(i + 2) * 4], 0, 1);
+        }
+        const uint64_t *a = &evals[i * 4];
+        const uint64_t *b = &evals[(half + i) * 4];
+        fr_add_branchless(a, b, sum);
+        fr_sub_branchless(a, b, diff);
+        fr_mont_mul(diff, &invTwiddles[i * 4], prod);
+        fr_mont_mul(challenge, prod, term);
+        fr_add_branchless(sum, term, &result[i * 4]);
+    }
+}
+
 /// Batch FMA: result[i] = result[i] * scalar + other[i]
 void bn254_fr_batch_fma_scalar(uint64_t *result, const uint64_t *scalar,
                                 const uint64_t *other, int n)

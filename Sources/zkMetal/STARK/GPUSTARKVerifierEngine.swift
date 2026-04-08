@@ -316,7 +316,7 @@ public class GPUSTARKVerifierEngine {
             idx >>= 1
         }
 
-        return frEqual(current, expectedRoot)
+        return frEqual(current, expectedRoot) && frEqual(current, path.root)
     }
 
     /// Simple algebraic Merkle hash: H(l, r) = l^2 + 3*r + 7
