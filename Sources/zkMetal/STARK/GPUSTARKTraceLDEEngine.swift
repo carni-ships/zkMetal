@@ -315,10 +315,17 @@ public final class GPUSTARKTraceLDEEngine {
             let coeffs = cpuINTT(col, logN: config.logTraceLen)
 
             var padded = [Fr](repeating: Fr.zero, count: m)
-            var gPower = Fr.one
-            for i in 0..<n {
-                padded[i] = frMul(coeffs[i], gPower)
-                gPower = frMul(gPower, config.cosetShift)
+            // padded[i] = coeffs[i] * cosetShift^i
+            coeffs.withUnsafeBytes { cBuf in
+                padded.withUnsafeMutableBytes { pBuf in
+                    withUnsafeBytes(of: config.cosetShift) { sBuf in
+                        bn254_fr_batch_mul_powers(
+                            pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
             }
 
             let lde = cpuNTT(padded, logN: logM)
@@ -382,18 +389,14 @@ public final class GPUSTARKTraceLDEEngine {
             omegaMNpow = frMul(omegaMNpow, omegaMN)
         }
 
-        // Batch-invert vanishing poly: 3(m-1) muls + 1 inverse
+        // Batch-invert vanishing poly
         var vanishingInv = [Fr](repeating: Fr.zero, count: m)
-        var vPrefix = [Fr](repeating: Fr.one, count: m)
-        for i in 1..<m {
-            vPrefix[i] = vanishing[i - 1] == Fr.zero ? vPrefix[i - 1] : frMul(vPrefix[i - 1], vanishing[i - 1])
-        }
-        let vLast = vanishing[m - 1] == Fr.zero ? vPrefix[m - 1] : frMul(vPrefix[m - 1], vanishing[m - 1])
-        var vInv = frInverse(vLast)
-        for i in stride(from: m - 1, through: 0, by: -1) {
-            if vanishing[i] != Fr.zero {
-                vanishingInv[i] = frMul(vInv, vPrefix[i])
-                vInv = frMul(vInv, vanishing[i])
+        vanishing.withUnsafeBytes { src in
+            vanishingInv.withUnsafeMutableBytes { dst in
+                bn254_fr_batch_inverse_safe(
+                    src.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(m),
+                    dst.baseAddress!.assumingMemoryBound(to: UInt64.self))
             }
         }
 
@@ -466,11 +469,13 @@ public final class GPUSTARKTraceLDEEngine {
         }
 
         // Compute LDE domain points: x_i = cosetShift * omega_M^i
-        var domainPoints = [Fr](repeating: Fr.zero, count: m)
-        var w = Fr.one
-        for i in 0..<m {
-            domainPoints[i] = frMul(config.cosetShift, w)
-            w = frMul(w, omegaM)
+        var domainPoints = [Fr](repeating: config.cosetShift, count: m)
+        domainPoints.withUnsafeMutableBytes { pBuf in
+            withUnsafeBytes(of: omegaM) { oBuf in
+                let pPtr = pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                bn254_fr_batch_mul_powers(pPtr, pPtr,
+                    oBuf.baseAddress!.assumingMemoryBound(to: UInt64.self), Int32(m))
+            }
         }
 
         var quotients = [[Fr]]()
@@ -484,27 +489,47 @@ public final class GPUSTARKTraceLDEEngine {
             }
 
             // B(x_i) = (trace_col(x_i) - val) / (x_i - omega_N^row)
-            // Batch-invert denominators
+            // Batch: denoms[i] = domainPoints[i] - omegaRow
             var bcDenoms = [Fr](repeating: Fr.zero, count: m)
-            for i in 0..<m { bcDenoms[i] = frSub(domainPoints[i], omegaRow) }
-            var bcPrefix = [Fr](repeating: Fr.one, count: m)
-            for i in 1..<m {
-                bcPrefix[i] = bcDenoms[i - 1] == Fr.zero ? bcPrefix[i - 1] : frMul(bcPrefix[i - 1], bcDenoms[i - 1])
-            }
-            let bcLast = bcDenoms[m - 1] == Fr.zero ? bcPrefix[m - 1] : frMul(bcPrefix[m - 1], bcDenoms[m - 1])
-            var bcInvRunning = frInverse(bcLast)
-            var bcDenomInvs = [Fr](repeating: Fr.zero, count: m)
-            for i in stride(from: m - 1, through: 0, by: -1) {
-                if bcDenoms[i] != Fr.zero {
-                    bcDenomInvs[i] = frMul(bcInvRunning, bcPrefix[i])
-                    bcInvRunning = frMul(bcInvRunning, bcDenoms[i])
+            domainPoints.withUnsafeBytes { dBuf in
+                bcDenoms.withUnsafeMutableBytes { rBuf in
+                    withUnsafeBytes(of: omegaRow) { oBuf in
+                        bn254_fr_batch_sub_scalar(
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            oBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(m))
+                    }
                 }
             }
+            var bcDenomInvs = [Fr](repeating: Fr.zero, count: m)
+            bcDenoms.withUnsafeBytes { src in
+                bcDenomInvs.withUnsafeMutableBytes { dst in
+                    bn254_fr_batch_inverse_safe(
+                        src.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(m),
+                        dst.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                }
+            }
+            // quotient[i] = (trace[i] - val) * denomInvs[i]
             var quotient = [Fr](repeating: Fr.zero, count: m)
-            for i in 0..<m {
-                let traceVal = ldeResult.ldeColumns[bc.column][i]
-                let numerator = frSub(traceVal, bc.value)
-                quotient[i] = frMul(numerator, bcDenomInvs[i])
+            ldeResult.ldeColumns[bc.column].withUnsafeBytes { tBuf in
+                quotient.withUnsafeMutableBytes { qBuf in
+                    withUnsafeBytes(of: bc.value) { vBuf in
+                        let qPtr = qBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                        bn254_fr_batch_sub_scalar(
+                            qPtr,
+                            tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            vBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(m))
+                    }
+                    bcDenomInvs.withUnsafeBytes { dBuf in
+                        let qPtr = qBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                        bn254_fr_batch_mul_neon(qPtr, qPtr,
+                            dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(m))
+                    }
+                }
             }
             quotients.append(quotient)
         }
