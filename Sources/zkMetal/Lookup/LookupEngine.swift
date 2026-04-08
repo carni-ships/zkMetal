@@ -539,10 +539,16 @@ public class LookupEngine {
         for r in point {
             let half = current.count / 2
             var next = [Fr](repeating: Fr.zero, count: half)
-            for i in 0..<half {
-                // f(r) = (1-r)*f(0) + r*f(1)
-                let oneMinusR = frSub(Fr.one, r)
-                next[i] = frAdd(frMul(oneMinusR, current[i]), frMul(r, current[half + i]))
+            current.withUnsafeBytes { aBuf in
+                withUnsafeBytes(of: r) { rBuf in
+                    next.withUnsafeMutableBytes { outBuf in
+                        bn254_fr_fold_halves(
+                            aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            outBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(half))
+                    }
+                }
             }
             current = next
         }
