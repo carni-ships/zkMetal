@@ -298,9 +298,34 @@ public class BulletproofsProver {
         // r = r0 + r1*x = y^n . (a_R + z*1 + s_R*x) + z^2 * 2^n
         var lVec = [Fr](repeating: Fr.zero, count: n)
         var rVec = [Fr](repeating: Fr.zero, count: n)
-        for i in 0..<n {
-            lVec[i] = frAdd(l0[i], frMul(sL[i], x))
-            rVec[i] = frAdd(r0[i], frMul(r1[i], x))
+        var xx = x
+        l0.withUnsafeBytes { l0Buf in
+            sL.withUnsafeBytes { sLBuf in
+                lVec.withUnsafeMutableBytes { lBuf in
+                    withUnsafeBytes(of: &xx) { xBuf in
+                        bn254_fr_linear_combine(
+                            l0Buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            sLBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            xBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            lBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
+            }
+        }
+        r0.withUnsafeBytes { r0Buf in
+            r1.withUnsafeBytes { r1Buf in
+                rVec.withUnsafeMutableBytes { rBuf in
+                    withUnsafeBytes(of: &xx) { xBuf in
+                        bn254_fr_linear_combine(
+                            r0Buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            r1Buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            xBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
+            }
         }
 
         let tHat = frInnerProduct(lVec, rVec)

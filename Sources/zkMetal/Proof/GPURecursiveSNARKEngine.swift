@@ -269,14 +269,49 @@ public class GPURecursiveSNARKEngine {
 
         // Compute cross term: <acc, new>
         var crossTerm = Fr.zero
-        for i in 0..<n {
-            crossTerm = frAdd(crossTerm, frMul(accumulator.accPoly[i], newPoly[i]))
+        if n >= 16 {
+            var temp = [Fr](repeating: Fr.zero, count: n)
+            accumulator.accPoly.withUnsafeBytes { aBuf in
+                newPoly.withUnsafeBytes { bBuf in
+                    temp.withUnsafeMutableBytes { tBuf in
+                        bn254_fr_batch_mul_neon(
+                            tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
+            }
+            temp.withUnsafeBytes { tBuf in
+                withUnsafeMutableBytes(of: &crossTerm) { cBuf in
+                    bn254_fr_vector_sum(
+                        tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n),
+                        cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                }
+            }
+        } else {
+            for i in 0..<n {
+                crossTerm = frAdd(crossTerm, frMul(accumulator.accPoly[i], newPoly[i]))
+            }
         }
 
         // acc' = acc + r * new
         var newAcc = [Fr](repeating: Fr.zero, count: n)
-        for i in 0..<n {
-            newAcc[i] = frAdd(accumulator.accPoly[i], frMul(challenge, newPoly[i]))
+        var ch = challenge
+        accumulator.accPoly.withUnsafeBytes { aBuf in
+            newPoly.withUnsafeBytes { bBuf in
+                newAcc.withUnsafeMutableBytes { rBuf in
+                    withUnsafeBytes(of: &ch) { cBuf in
+                        bn254_fr_linear_combine(
+                            aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
+            }
         }
 
         // error' = error + r^2 * cross_term
