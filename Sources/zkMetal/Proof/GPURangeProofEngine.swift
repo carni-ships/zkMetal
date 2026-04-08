@@ -494,9 +494,34 @@ public class GPURangeProofEngine {
         x: Fr, n: Int,
         lVec: inout [Fr], rVec: inout [Fr]
     ) {
-        for i in 0..<n {
-            lVec[i] = frAdd(l0[i], frMul(sL[i], x))
-            rVec[i] = frAdd(r0[i], frMul(r1[i], x))
+        var xx = x
+        l0.withUnsafeBytes { l0Buf in
+            sL.withUnsafeBytes { sLBuf in
+                lVec.withUnsafeMutableBytes { lBuf in
+                    withUnsafeBytes(of: &xx) { xBuf in
+                        bn254_fr_linear_combine(
+                            l0Buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            sLBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            xBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            lBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
+            }
+        }
+        r0.withUnsafeBytes { r0Buf in
+            r1.withUnsafeBytes { r1Buf in
+                rVec.withUnsafeMutableBytes { rBuf in
+                    withUnsafeBytes(of: &xx) { xBuf in
+                        bn254_fr_linear_combine(
+                            r0Buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            r1Buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            xBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
+            }
         }
     }
 
