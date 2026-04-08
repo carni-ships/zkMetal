@@ -464,9 +464,16 @@ public class HyperNovaEngine {
         var current = crossTermEvals
         let eqR = eqEvals(point: r)
 
-        for i in 0..<current.count {
-            if i < eqR.count {
-                current[i] = frMul(current[i], eqR[i])
+        let mulLen = min(current.count, eqR.count)
+        if mulLen > 0 {
+            current.withUnsafeMutableBytes { cBuf in
+                eqR.withUnsafeBytes { eBuf in
+                    let cPtr = cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    bn254_fr_batch_mul_neon(
+                        cPtr, cPtr,
+                        eBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(mulLen))
+                }
             }
         }
 

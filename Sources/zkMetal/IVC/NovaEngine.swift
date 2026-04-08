@@ -248,19 +248,46 @@ public class NovaProver {
         // T = Az1 . Bz2 + Az2 . Bz1 - u1*(Cz2) - u2*(Cz1)
         // where u1 = running.u, u2 = 1 (new instance is not relaxed)
         let m = step.r1cs.m
+        // T[i] = Az1[i]*Bz2[i] + Az2[i]*Bz1[i] - u*Cz2[i] - Cz1[i]
+        var ab12 = [Fr](repeating: .zero, count: m)
+        var ab21 = [Fr](repeating: .zero, count: m)
+        var uCz2 = [Fr](repeating: .zero, count: m)
+        Az1.withUnsafeBytes { a1 in Bz2.withUnsafeBytes { b2 in ab12.withUnsafeMutableBytes { r in
+            bn254_fr_batch_mul_neon(r.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                a1.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                b2.baseAddress!.assumingMemoryBound(to: UInt64.self), Int32(m))
+        }}}
+        Az2.withUnsafeBytes { a2 in Bz1.withUnsafeBytes { b1 in ab21.withUnsafeMutableBytes { r in
+            bn254_fr_batch_mul_neon(r.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                a2.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                b1.baseAddress!.assumingMemoryBound(to: UInt64.self), Int32(m))
+        }}}
+        Cz2.withUnsafeBytes { c2 in uCz2.withUnsafeMutableBytes { r in
+            var u = running.u
+            withUnsafeBytes(of: &u) { uBuf in
+                bn254_fr_batch_mul_scalar_neon(r.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    c2.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    uBuf.baseAddress!.assumingMemoryBound(to: UInt64.self), Int32(m))
+            }
+        }}
+        // T = (ab12 + ab21) - (uCz2 + Cz1)
         var T = [Fr](repeating: .zero, count: m)
-        for i in 0..<m {
-            // Az1[i] * Bz2[i]
-            let ab12 = frMul(Az1[i], Bz2[i])
-            // Az2[i] * Bz1[i]
-            let ab21 = frMul(Az2[i], Bz1[i])
-            // u1 * Cz2[i]
-            let uCz2 = frMul(running.u, Cz2[i])
-            // 1 * Cz1[i] = Cz1[i] (u2 = 1 for fresh instance)
-            let uCz1 = Cz1[i]
-            // T[i] = ab12 + ab21 - uCz2 - uCz1
-            T[i] = frSub(frAdd(ab12, ab21), frAdd(uCz2, uCz1))
-        }
+        ab12.withUnsafeBytes { a in ab21.withUnsafeBytes { b in T.withUnsafeMutableBytes { r in
+            bn254_fr_batch_add_neon(r.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                a.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                b.baseAddress!.assumingMemoryBound(to: UInt64.self), Int32(m))
+        }}}
+        var rhs = [Fr](repeating: .zero, count: m)
+        uCz2.withUnsafeBytes { a in Cz1.withUnsafeBytes { b in rhs.withUnsafeMutableBytes { r in
+            bn254_fr_batch_add_neon(r.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                a.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                b.baseAddress!.assumingMemoryBound(to: UInt64.self), Int32(m))
+        }}}
+        T.withUnsafeMutableBytes { tBuf in rhs.withUnsafeBytes { rBuf in
+            let tPtr = tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+            bn254_fr_batch_sub_neon(tPtr, tPtr,
+                rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self), Int32(m))
+        }}
 
         // Commit to cross-term T
         let commitT = step.ppE.commit(witness: T)
