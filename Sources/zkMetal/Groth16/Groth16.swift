@@ -1,5 +1,6 @@
 // Groth16 SNARK types and R1CS representation for BN254
 import Foundation
+import NeonFieldOps
 
 // MARK: - R1CS
 
@@ -52,8 +53,14 @@ public struct R1CSInstance {
         }
         // Merge thread-local results
         for t in 0..<nThreads {
-            for i in 0..<m {
-                result[i] = frAdd(result[i], partials[t][i])
+            partials[t].withUnsafeBytes { pBuf in
+                result.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_add_neon(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(m))
+                }
             }
         }
         return result

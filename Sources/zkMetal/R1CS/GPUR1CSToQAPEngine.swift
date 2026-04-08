@@ -367,8 +367,14 @@ public final class GPUR1CSToQAPEngine {
             let end = min(offset + effectiveBatch, entries.count)
             let chunk = Array(entries[offset..<end])
             let partial = cpuSparseMatVec(chunk, witness, numRows: numRows)
-            for i in 0..<numRows {
-                result[i] = frAdd(result[i], partial[i])
+            partial.withUnsafeBytes { pBuf in
+                result.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_add_neon(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(numRows))
+                }
             }
             offset = end
         }

@@ -313,10 +313,18 @@ extension MultilinearPoly {
 
         var result = [Fr](repeating: Fr.zero, count: size)
         for (k, poly) in polys.enumerated() {
-            let c = coeffs[k]
+            var c = coeffs[k]
             if c.isZero { continue }
-            for i in 0..<size {
-                result[i] = frAdd(result[i], frMul(c, poly.evals[i]))
+            poly.evals.withUnsafeBytes { pBuf in
+                result.withUnsafeMutableBytes { rBuf in
+                    withUnsafeBytes(of: &c) { cBuf in
+                        bn254_fr_batch_axpy(
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(size))
+                    }
+                }
             }
         }
         return MultilinearPoly(numVars: n, evals: result)

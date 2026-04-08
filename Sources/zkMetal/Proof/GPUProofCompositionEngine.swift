@@ -139,10 +139,18 @@ public class GPUProofCompositionEngine {
 
         var result = [Fr](repeating: Fr.zero, count: n)
         for j in 0..<polys.count {
-            let c = challenges[j]
+            var c = challenges[j]
             let poly = polys[j]
-            for i in 0..<n {
-                result[i] = frAdd(result[i], frMul(c, poly[i]))
+            poly.withUnsafeBytes { pBuf in
+                result.withUnsafeMutableBytes { rBuf in
+                    withUnsafeBytes(of: &c) { cBuf in
+                        bn254_fr_batch_axpy(
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
             }
         }
         return result
