@@ -489,9 +489,18 @@ public class GPUPolyCommitOpenEngine {
             var shifted = polynomials[i]
             shifted[0] = frSub(shifted[0], evaluations[i])
             let qi = syntheticDivide(shifted, root: z)
-            for j in 0..<qi.count {
-                if j < combinedQuotient.count {
-                    combinedQuotient[j] = frAdd(combinedQuotient[j], frMul(gammaPow, qi[j]))
+            let axpyLen = min(qi.count, combinedQuotient.count)
+            if axpyLen > 0 {
+                qi.withUnsafeBytes { qBuf in
+                    combinedQuotient.withUnsafeMutableBytes { cBuf in
+                        withUnsafeBytes(of: gammaPow) { gBuf in
+                            bn254_fr_batch_axpy(
+                                cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                gBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                qBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                Int32(axpyLen))
+                        }
+                    }
                 }
             }
             if i < numPolys - 1 { gammaPow = frMul(gammaPow, gamma) }

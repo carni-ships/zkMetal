@@ -267,8 +267,13 @@ public class GPUCQLookupEngine {
 
         // Verify sum of multiplicities = n
         var multSum = Fr.zero
-        for i in 0..<T {
-            multSum = frAdd(multSum, mult[i])
+        mult.withUnsafeBytes { src in
+            withUnsafeMutableBytes(of: &multSum) { dst in
+                bn254_fr_vector_sum(
+                    src.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(T),
+                    dst.baseAddress!.assumingMemoryBound(to: UInt64.self))
+            }
         }
         let expectedN = frFromInt(UInt64(n))
         precondition(frEqual(multSum, expectedN),
@@ -599,8 +604,16 @@ public class GPUCQLookupEngine {
                                      z: Fr, T: Int) -> Fr {
         // Build denominators: (z - omega^i) for all i
         var denoms = [Fr](repeating: Fr.zero, count: T)
-        for i in 0..<T {
-            denoms[i] = frSub(z, roots[i])
+        roots.withUnsafeBytes { rBuf in
+            denoms.withUnsafeMutableBytes { dBuf in
+                withUnsafeBytes(of: z) { zBuf in
+                    bn254_fr_batch_scalar_sub_neon(
+                        dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        zBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(T))
+                }
+            }
         }
 
         // GPU batch inverse for T >= gpuThreshold, CPU for small T
@@ -611,11 +624,18 @@ public class GPUCQLookupEngine {
             inverses = cpuBatchInverse(denoms)
         }
 
-        // Accumulate: sum_i m_i * inv_i
+        // Accumulate: sum_i m_i * inv_i (inner product)
         var result = Fr.zero
-        for i in 0..<T {
-            if frEqual(multiplicities[i], Fr.zero) { continue }
-            result = frAdd(result, frMul(multiplicities[i], inverses[i]))
+        multiplicities.withUnsafeBytes { mBuf in
+            inverses.withUnsafeBytes { iBuf in
+                withUnsafeMutableBytes(of: &result) { rBuf in
+                    bn254_fr_inner_product(
+                        mBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        iBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(T),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                }
+            }
         }
         return result
     }
@@ -624,25 +644,15 @@ public class GPUCQLookupEngine {
     private func cpuBatchInverse(_ a: [Fr]) -> [Fr] {
         let n = a.count
         if n == 0 { return [] }
-
-        // Build prefix products
-        var prefix = [Fr](repeating: Fr.one, count: n)
-        prefix[0] = a[0]
-        for i in 1..<n {
-            prefix[i] = frMul(prefix[i - 1], a[i])
-        }
-
-        // Invert the total product
-        var inv = frInverse(prefix[n - 1])
         var result = [Fr](repeating: Fr.zero, count: n)
-
-        // Back-propagate to get individual inverses
-        for i in stride(from: n - 1, through: 1, by: -1) {
-            result[i] = frMul(inv, prefix[i - 1])
-            inv = frMul(inv, a[i])
+        a.withUnsafeBytes { src in
+            result.withUnsafeMutableBytes { dst in
+                bn254_fr_batch_inverse(
+                    src.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(n),
+                    dst.baseAddress!.assumingMemoryBound(to: UInt64.self))
+            }
         }
-        result[0] = inv
-
         return result
     }
 
