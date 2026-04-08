@@ -77,8 +77,17 @@ public class GPUVanishingPolyEngine {
 
         func clean(_ src: String) -> String {
             src.split(separator: "\n")
-                .filter { !$0.contains("#include") && !$0.contains("#ifndef") &&
-                         !$0.contains("#define") && !$0.contains("#endif") }
+                .filter { line in
+                    if line.contains("#include") || line.contains("#ifndef") || line.contains("#endif") { return false }
+                    // Keep #define lines with numeric values (e.g., VH_BATCH_INV_CHUNK_FR 256)
+                    // Strip include guard #defines (e.g., #define BN254_FR_METAL)
+                    if line.contains("#define") {
+                        let trimmed = line.trimmingCharacters(in: .whitespaces)
+                        let parts = trimmed.split(separator: " ", maxSplits: 3)
+                        return parts.count >= 3  // has a value: #define NAME VALUE
+                    }
+                    return true
+                }
                 .joined(separator: "\n")
         }
 
@@ -103,18 +112,18 @@ public class GPUVanishingPolyEngine {
 
         // --- Vanishing polynomial Z_H evaluation: BabyBear ---
         kernel void vanishing_zh_eval_babybear(
-            device const uint* points      [[buffer(0)]],
-            device uint* zh_out            [[buffer(1)]],
+            device const Bb* points        [[buffer(0)]],
+            device Bb* zh_out              [[buffer(1)]],
             constant uint& count           [[buffer(2)]],
             constant uint& subgroup_log    [[buffer(3)]],
             uint gid                       [[thread_position_in_grid]]
         ) {
             if (gid >= count) return;
-            uint x = points[gid];
+            Bb x = points[gid];
             for (uint i = 0; i < subgroup_log; i++) {
                 x = bb_mul(x, x);
             }
-            zh_out[gid] = bb_sub(x, 1u);
+            zh_out[gid] = bb_sub(x, bb_one());
         }
 
         // --- Batch inverse (Montgomery's trick): BN254 ---
@@ -136,7 +145,7 @@ public class GPUVanishingPolyEngine {
                 prefix[i] = fr_mul(prefix[i-1], input[start + i]);
             }
 
-            Fr inv = fr_inverse(prefix[end - start - 1]);
+            Fr inv = fr_inv(prefix[end - start - 1]);
             for (uint i = end - start; i > 1; i--) {
                 output[start + i - 1] = fr_mul(inv, prefix[i - 2]);
                 inv = fr_mul(inv, input[start + i - 1]);
@@ -146,8 +155,8 @@ public class GPUVanishingPolyEngine {
 
         // --- Batch inverse: BabyBear ---
         kernel void vanishing_batch_inv_babybear(
-            device const uint* input       [[buffer(0)]],
-            device uint* output            [[buffer(1)]],
+            device const Bb* input         [[buffer(0)]],
+            device Bb* output              [[buffer(1)]],
             constant uint& count           [[buffer(2)]],
             uint gid                       [[threadgroup_position_in_grid]]
         ) {
@@ -156,13 +165,13 @@ public class GPUVanishingPolyEngine {
             uint end = min(start + CHUNK, count);
             if (start >= count) return;
 
-            uint prefix[1024];
+            Bb prefix[1024];
             prefix[0] = input[start];
             for (uint i = 1; i < end - start; i++) {
                 prefix[i] = bb_mul(prefix[i-1], input[start + i]);
             }
 
-            uint inv = bb_inverse(prefix[end - start - 1]);
+            Bb inv = bb_inv(prefix[end - start - 1]);
             for (uint i = end - start; i > 1; i--) {
                 output[start + i - 1] = bb_mul(inv, prefix[i - 2]);
                 inv = bb_mul(inv, input[start + i - 1]);
@@ -184,9 +193,9 @@ public class GPUVanishingPolyEngine {
 
         // --- Element-wise multiply: BabyBear ---
         kernel void vanishing_elem_mul_babybear(
-            device const uint* a           [[buffer(0)]],
-            device const uint* b           [[buffer(1)]],
-            device uint* out               [[buffer(2)]],
+            device const Bb* a             [[buffer(0)]],
+            device const Bb* b             [[buffer(1)]],
+            device Bb* out                 [[buffer(2)]],
             constant uint& count           [[buffer(3)]],
             uint gid                       [[thread_position_in_grid]]
         ) {

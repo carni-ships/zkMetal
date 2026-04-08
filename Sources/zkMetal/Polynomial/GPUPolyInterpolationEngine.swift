@@ -64,8 +64,15 @@ public final class GPUPolyInterpolationEngine {
 
         func clean(_ src: String) -> String {
             src.split(separator: "\n")
-                .filter { !$0.contains("#include") && !$0.contains("#ifndef") &&
-                         !$0.contains("#define") && !$0.contains("#endif") }
+                .filter { line in
+                    if line.contains("#include") || line.contains("#ifndef") || line.contains("#endif") { return false }
+                    if line.contains("#define") {
+                        let trimmed = line.trimmingCharacters(in: .whitespaces)
+                        let parts = trimmed.split(separator: " ", maxSplits: 3)
+                        return parts.count >= 3
+                    }
+                    return true
+                }
                 .joined(separator: "\n")
         }
 
