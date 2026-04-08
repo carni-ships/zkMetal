@@ -543,5 +543,5 @@ private func keccak256PairHash(_ left: [UInt8], _ right: [UInt8]) -> [UInt8] {
 }
 
 private func blake3PairHash(_ left: [UInt8], _ right: [UInt8]) -> [UInt8] {
-    blake3(left + right)
+    blake3Parent(left + right)
 }

@@ -1384,8 +1384,8 @@ public class NTTEngine {
             withUnsafeBytes(of: &invN) { sBuf in
                 bn254_fr_batch_mul_scalar_neon(
                     dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                    sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
                     dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
                     Int32(n))
             }
         }
