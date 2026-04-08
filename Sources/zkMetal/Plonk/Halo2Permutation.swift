@@ -152,10 +152,19 @@ public struct Halo2PermutationAssembly {
         // Step 1: Initialize identity permutation
         // sigma[j][i] = cosetMultipliers[j] * omega^i
         var sigma = [[Fr]](repeating: [Fr](repeating: Fr.zero, count: n), count: numColumns)
-        for j in 0..<numColumns {
-            let delta_j = cosetMultipliers[j]
-            for i in 0..<n {
-                sigma[j][i] = frMul(delta_j, domain[i])
+        domain.withUnsafeBytes { domBuf in
+            let domPtr = domBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+            for j in 0..<numColumns {
+                var delta_j = cosetMultipliers[j]
+                sigma[j].withUnsafeMutableBytes { sigBuf in
+                    withUnsafeBytes(of: &delta_j) { sBuf in
+                        bn254_fr_batch_mul_scalar(
+                            domPtr,
+                            sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            sigBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
             }
         }
 
@@ -203,10 +212,19 @@ public struct Halo2PermutationAssembly {
         let n = domainSize
         precondition(domain.count == n)
         var id = [[Fr]](repeating: [Fr](repeating: Fr.zero, count: n), count: numColumns)
-        for j in 0..<numColumns {
-            let delta_j = cosetMultipliers[j]
-            for i in 0..<n {
-                id[j][i] = frMul(delta_j, domain[i])
+        domain.withUnsafeBytes { domBuf in
+            let domPtr = domBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+            for j in 0..<numColumns {
+                var delta_j = cosetMultipliers[j]
+                id[j].withUnsafeMutableBytes { idBuf in
+                    withUnsafeBytes(of: &delta_j) { sBuf in
+                        bn254_fr_batch_mul_scalar(
+                            domPtr,
+                            sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            idBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
             }
         }
         return id
@@ -264,22 +282,108 @@ public struct Halo2PermutationProver {
         precondition(witness.count == numColumns, "Need \(numColumns) witness columns")
         precondition(sigma.count == numColumns, "Need \(numColumns) sigma columns")
 
-        // Step 1: Compute per-row numerator and denominator products
+        // Step 1: Compute per-row numerator and denominator products using batch ops
         var numerators = [Fr](repeating: Fr.one, count: n)
         var denominators = [Fr](repeating: Fr.one, count: n)
+        var tmp = [Fr](repeating: Fr.zero, count: n)
+        var betaId = [Fr](repeating: Fr.zero, count: n)
 
-        for i in 0..<n {
-            for j in 0..<numColumns {
-                // Identity element for column j at row i: delta^j * omega^i
-                let idVal = frMul(cosetMultipliers[j], domain[i])
+        for j in 0..<numColumns {
+            var betaDelta = frMul(beta, cosetMultipliers[j])
+            // betaId[i] = beta * delta^j * domain[i]
+            domain.withUnsafeBytes { dBuf in
+                withUnsafeBytes(of: &betaDelta) { sBuf in
+                    betaId.withUnsafeMutableBytes { rBuf in
+                        bn254_fr_batch_mul_scalar(
+                            dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
+            }
+            // tmp[i] = witness[j][i] + betaId[i]
+            witness[j].withUnsafeBytes { wBuf in
+                betaId.withUnsafeBytes { bBuf in
+                    tmp.withUnsafeMutableBytes { rBuf in
+                        bn254_fr_batch_add(
+                            wBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
+            }
+            // tmp[i] += gamma
+            var gammaVal = gamma
+            tmp.withUnsafeMutableBytes { tBuf in
+                let tPtr = tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                withUnsafeBytes(of: &gammaVal) { gBuf in
+                    bn254_fr_batch_add_scalar_parallel(
+                        tPtr,
+                        tPtr,
+                        gBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
+            // numerators[i] *= tmp[i]
+            numerators.withUnsafeMutableBytes { nBuf in
+                let nPtr = nBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                tmp.withUnsafeBytes { tBuf in
+                    bn254_fr_batch_mul(
+                        nPtr,
+                        tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        nPtr,
+                        Int32(n))
+                }
+            }
 
-                // numerator: f_j(i) + beta * id_j(i) + gamma
-                let numTerm = frAdd(frAdd(witness[j][i], frMul(beta, idVal)), gamma)
-                numerators[i] = frMul(numerators[i], numTerm)
-
-                // denominator: f_j(i) + beta * sigma_j(i) + gamma
-                let denTerm = frAdd(frAdd(witness[j][i], frMul(beta, sigma[j][i])), gamma)
-                denominators[i] = frMul(denominators[i], denTerm)
+            // betaSig[i] = beta * sigma[j][i]
+            var betaVal = beta
+            sigma[j].withUnsafeBytes { sBuf in
+                withUnsafeBytes(of: &betaVal) { bBuf in
+                    betaId.withUnsafeMutableBytes { rBuf in
+                        bn254_fr_batch_mul_scalar(
+                            sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
+            }
+            // tmp[i] = witness[j][i] + betaSig[i]
+            witness[j].withUnsafeBytes { wBuf in
+                betaId.withUnsafeBytes { bBuf in
+                    tmp.withUnsafeMutableBytes { rBuf in
+                        bn254_fr_batch_add(
+                            wBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
+            }
+            // tmp[i] += gamma
+            tmp.withUnsafeMutableBytes { tBuf in
+                let tPtr = tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                withUnsafeBytes(of: &gammaVal) { gBuf in
+                    bn254_fr_batch_add_scalar_parallel(
+                        tPtr,
+                        tPtr,
+                        gBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
+            // denominators[i] *= tmp[i]
+            denominators.withUnsafeMutableBytes { dBuf in
+                let dPtr = dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                tmp.withUnsafeBytes { tBuf in
+                    bn254_fr_batch_mul(
+                        dPtr,
+                        tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        dPtr,
+                        Int32(n))
+                }
             }
         }
 

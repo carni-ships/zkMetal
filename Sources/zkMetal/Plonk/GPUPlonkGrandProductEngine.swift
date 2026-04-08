@@ -474,14 +474,95 @@ public class GPUPlonkGrandProductEngine {
         // We compute on the standard domain for consistency.
         var numEvals = [Fr](repeating: Fr.one, count: n)
         var denEvals = [Fr](repeating: Fr.one, count: n)
-        for i in 0..<n {
-            for j in 0..<numWires {
-                let idVal = frMul(cosetMuls[j], stdDomain[i])
-                let numTerm = frAdd(frAdd(witness[j][i], frMul(beta, idVal)), gamma)
-                numEvals[i] = frMul(numEvals[i], numTerm)
+        var tmpCoset = [Fr](repeating: Fr.zero, count: n)
+        var betaTmpCoset = [Fr](repeating: Fr.zero, count: n)
 
-                let denTerm = frAdd(frAdd(witness[j][i], frMul(beta, sigmaPolys[j][i])), gamma)
-                denEvals[i] = frMul(denEvals[i], denTerm)
+        for j in 0..<numWires {
+            var betaCoset = frMul(beta, cosetMuls[j])
+            stdDomain.withUnsafeBytes { dBuf in
+                withUnsafeBytes(of: &betaCoset) { sBuf in
+                    betaTmpCoset.withUnsafeMutableBytes { rBuf in
+                        bn254_fr_batch_mul_scalar(
+                            dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
+            }
+            witness[j].withUnsafeBytes { wBuf in
+                betaTmpCoset.withUnsafeBytes { bBuf in
+                    tmpCoset.withUnsafeMutableBytes { rBuf in
+                        bn254_fr_batch_add(
+                            wBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
+            }
+            var gammaVal = gamma
+            tmpCoset.withUnsafeMutableBytes { tBuf in
+                let tPtr = tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                withUnsafeBytes(of: &gammaVal) { gBuf in
+                    bn254_fr_batch_add_scalar_parallel(
+                        tPtr, tPtr,
+                        gBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
+            numEvals.withUnsafeMutableBytes { nBuf in
+                let nPtr = nBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                tmpCoset.withUnsafeBytes { tBuf in
+                    bn254_fr_batch_mul(
+                        nPtr,
+                        tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        nPtr,
+                        Int32(n))
+                }
+            }
+
+            var betaVal = beta
+            sigmaPolys[j].withUnsafeBytes { sBuf in
+                withUnsafeBytes(of: &betaVal) { bBuf in
+                    betaTmpCoset.withUnsafeMutableBytes { rBuf in
+                        bn254_fr_batch_mul_scalar(
+                            sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
+            }
+            witness[j].withUnsafeBytes { wBuf in
+                betaTmpCoset.withUnsafeBytes { bBuf in
+                    tmpCoset.withUnsafeMutableBytes { rBuf in
+                        bn254_fr_batch_add(
+                            wBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
+            }
+            tmpCoset.withUnsafeMutableBytes { tBuf in
+                let tPtr = tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                withUnsafeBytes(of: &gammaVal) { gBuf in
+                    bn254_fr_batch_add_scalar_parallel(
+                        tPtr, tPtr,
+                        gBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
+            denEvals.withUnsafeMutableBytes { dBuf in
+                let dPtr = dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                tmpCoset.withUnsafeBytes { tBuf in
+                    bn254_fr_batch_mul(
+                        dPtr,
+                        tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        dPtr,
+                        Int32(n))
+                }
             }
         }
 
@@ -524,23 +605,122 @@ public class GPUPlonkGrandProductEngine {
             let wireEnd = min(wireStart + splitSize, numWires)
             let partWires = wireEnd - wireStart
 
-            // Compute num/den for this partition's wires
+            // Compute num/den for this partition's wires using batch ops
             var partNum = [Fr](repeating: Fr.one, count: n)
             var partDen = [Fr](repeating: Fr.one, count: n)
+            var splitTmp = [Fr](repeating: Fr.zero, count: n)
+            var splitBetaTmp = [Fr](repeating: Fr.zero, count: n)
 
-            for i in 0..<n {
-                for jLocal in 0..<partWires {
-                    let j = wireStart + jLocal
-                    let idVal = frMul(cosetMuls[j], domain[i])
-                    let numTerm = frAdd(frAdd(witness[j][i], frMul(beta, idVal)), gamma)
-                    partNum[i] = frMul(partNum[i], numTerm)
-
-                    let denTerm = frAdd(frAdd(witness[j][i], frMul(beta, sigmaPolys[j][i])), gamma)
-                    partDen[i] = frMul(partDen[i], denTerm)
+            for jLocal in 0..<partWires {
+                let j = wireStart + jLocal
+                var betaCoset = frMul(beta, cosetMuls[j])
+                domain.withUnsafeBytes { dBuf in
+                    withUnsafeBytes(of: &betaCoset) { sBuf in
+                        splitBetaTmp.withUnsafeMutableBytes { rBuf in
+                            bn254_fr_batch_mul_scalar(
+                                dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                Int32(n))
+                        }
+                    }
+                }
+                witness[j].withUnsafeBytes { wBuf in
+                    splitBetaTmp.withUnsafeBytes { bBuf in
+                        splitTmp.withUnsafeMutableBytes { rBuf in
+                            bn254_fr_batch_add(
+                                wBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                Int32(n))
+                        }
+                    }
+                }
+                var gammaVal = gamma
+                splitTmp.withUnsafeMutableBytes { tBuf in
+                    let tPtr = tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    withUnsafeBytes(of: &gammaVal) { gBuf in
+                        bn254_fr_batch_add_scalar_parallel(
+                            tPtr, tPtr,
+                            gBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
+                partNum.withUnsafeMutableBytes { nBuf in
+                    let nPtr = nBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    splitTmp.withUnsafeBytes { tBuf in
+                        bn254_fr_batch_mul(
+                            nPtr,
+                            tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            nPtr,
+                            Int32(n))
+                    }
                 }
 
-                totalNum[i] = frMul(totalNum[i], partNum[i])
-                totalDen[i] = frMul(totalDen[i], partDen[i])
+                var betaVal = beta
+                sigmaPolys[j].withUnsafeBytes { sBuf in
+                    withUnsafeBytes(of: &betaVal) { bBuf in
+                        splitBetaTmp.withUnsafeMutableBytes { rBuf in
+                            bn254_fr_batch_mul_scalar(
+                                sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                Int32(n))
+                        }
+                    }
+                }
+                witness[j].withUnsafeBytes { wBuf in
+                    splitBetaTmp.withUnsafeBytes { bBuf in
+                        splitTmp.withUnsafeMutableBytes { rBuf in
+                            bn254_fr_batch_add(
+                                wBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                Int32(n))
+                        }
+                    }
+                }
+                splitTmp.withUnsafeMutableBytes { tBuf in
+                    let tPtr = tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    withUnsafeBytes(of: &gammaVal) { gBuf in
+                        bn254_fr_batch_add_scalar_parallel(
+                            tPtr, tPtr,
+                            gBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
+                partDen.withUnsafeMutableBytes { dBuf in
+                    let dPtr = dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    splitTmp.withUnsafeBytes { tBuf in
+                        bn254_fr_batch_mul(
+                            dPtr,
+                            tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            dPtr,
+                            Int32(n))
+                    }
+                }
+            }
+
+            // totalNum[i] *= partNum[i], totalDen[i] *= partDen[i]
+            totalNum.withUnsafeMutableBytes { tBuf in
+                let tPtr = tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                partNum.withUnsafeBytes { pBuf in
+                    bn254_fr_batch_mul(
+                        tPtr,
+                        pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        tPtr,
+                        Int32(n))
+                }
+            }
+            totalDen.withUnsafeMutableBytes { tBuf in
+                let tPtr = tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                partDen.withUnsafeBytes { pBuf in
+                    bn254_fr_batch_mul(
+                        tPtr,
+                        pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        tPtr,
+                        Int32(n))
+                }
             }
 
             // Prefix product for this partition
@@ -704,15 +884,95 @@ public class GPUPlonkGrandProductEngine {
     ) -> (numerators: [Fr], denominators: [Fr]) {
         var numerators = [Fr](repeating: Fr.one, count: n)
         var denominators = [Fr](repeating: Fr.one, count: n)
+        var tmp = [Fr](repeating: Fr.zero, count: n)
+        var betaTmp = [Fr](repeating: Fr.zero, count: n)
 
-        for i in 0..<n {
-            for j in 0..<numWires {
-                let idVal = frMul(cosetMuls[j], domain[i])
-                let numTerm = frAdd(frAdd(witness[j][i], frMul(beta, idVal)), gamma)
-                numerators[i] = frMul(numerators[i], numTerm)
+        for j in 0..<numWires {
+            var betaCoset = frMul(beta, cosetMuls[j])
+            domain.withUnsafeBytes { dBuf in
+                withUnsafeBytes(of: &betaCoset) { sBuf in
+                    betaTmp.withUnsafeMutableBytes { rBuf in
+                        bn254_fr_batch_mul_scalar(
+                            dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
+            }
+            witness[j].withUnsafeBytes { wBuf in
+                betaTmp.withUnsafeBytes { bBuf in
+                    tmp.withUnsafeMutableBytes { rBuf in
+                        bn254_fr_batch_add(
+                            wBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
+            }
+            var gammaVal = gamma
+            tmp.withUnsafeMutableBytes { tBuf in
+                let tPtr = tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                withUnsafeBytes(of: &gammaVal) { gBuf in
+                    bn254_fr_batch_add_scalar_parallel(
+                        tPtr, tPtr,
+                        gBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
+            numerators.withUnsafeMutableBytes { nBuf in
+                let nPtr = nBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                tmp.withUnsafeBytes { tBuf in
+                    bn254_fr_batch_mul(
+                        nPtr,
+                        tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        nPtr,
+                        Int32(n))
+                }
+            }
 
-                let denTerm = frAdd(frAdd(witness[j][i], frMul(beta, sigmaPolys[j][i])), gamma)
-                denominators[i] = frMul(denominators[i], denTerm)
+            var betaVal = beta
+            sigmaPolys[j].withUnsafeBytes { sBuf in
+                withUnsafeBytes(of: &betaVal) { bBuf in
+                    betaTmp.withUnsafeMutableBytes { rBuf in
+                        bn254_fr_batch_mul_scalar(
+                            sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
+            }
+            witness[j].withUnsafeBytes { wBuf in
+                betaTmp.withUnsafeBytes { bBuf in
+                    tmp.withUnsafeMutableBytes { rBuf in
+                        bn254_fr_batch_add(
+                            wBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
+            }
+            tmp.withUnsafeMutableBytes { tBuf in
+                let tPtr = tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                withUnsafeBytes(of: &gammaVal) { gBuf in
+                    bn254_fr_batch_add_scalar_parallel(
+                        tPtr, tPtr,
+                        gBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
+            denominators.withUnsafeMutableBytes { dBuf in
+                let dPtr = dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                tmp.withUnsafeBytes { tBuf in
+                    bn254_fr_batch_mul(
+                        dPtr,
+                        tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        dPtr,
+                        Int32(n))
+                }
             }
         }
 

@@ -248,23 +248,109 @@ public struct PermutationArgument {
             }
         }
 
-        // Step 2: Compute all numerators and denominators
+        // Step 2: Compute all numerators and denominators using batch ops
         var numerators = [Fr](repeating: Fr.one, count: n)
         var denominators = [Fr](repeating: Fr.one, count: n)
+        var tmp = [Fr](repeating: Fr.zero, count: n)
+        var betaTmp = [Fr](repeating: Fr.zero, count: n)
 
-        for i in 0..<n {
-            for j in 0..<numWires {
-                // numerator term: w_j[i] + beta * id_j(i) + gamma
-                let numTerm = frAdd(frAdd(witness[j][i], frMul(beta, idDomains[j][i])), gamma)
-                numerators[i] = frMul(numerators[i], numTerm)
+        for j in 0..<numWires {
+            var betaVal = beta
+            // betaTmp[i] = beta * idDomains[j][i]
+            idDomains[j].withUnsafeBytes { iBuf in
+                withUnsafeBytes(of: &betaVal) { bBuf in
+                    betaTmp.withUnsafeMutableBytes { rBuf in
+                        bn254_fr_batch_mul_scalar(
+                            iBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
+            }
+            // tmp[i] = witness[j][i] + betaTmp[i]
+            witness[j].withUnsafeBytes { wBuf in
+                betaTmp.withUnsafeBytes { bBuf in
+                    tmp.withUnsafeMutableBytes { rBuf in
+                        bn254_fr_batch_add(
+                            wBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
+            }
+            // tmp[i] += gamma
+            var gammaVal = gamma
+            tmp.withUnsafeMutableBytes { tBuf in
+                let tPtr = tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                withUnsafeBytes(of: &gammaVal) { gBuf in
+                    bn254_fr_batch_add_scalar_parallel(
+                        tPtr, tPtr,
+                        gBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
+            // numerators[i] *= tmp[i]
+            numerators.withUnsafeMutableBytes { nBuf in
+                let nPtr = nBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                tmp.withUnsafeBytes { tBuf in
+                    bn254_fr_batch_mul(
+                        nPtr,
+                        tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        nPtr,
+                        Int32(n))
+                }
+            }
 
-                // denominator term: w_j[i] + beta * sigma_j[i] + gamma
-                let denTerm = frAdd(frAdd(witness[j][i], frMul(beta, sigma[j][i])), gamma)
-                denominators[i] = frMul(denominators[i], denTerm)
+            // betaTmp[i] = beta * sigma[j][i]
+            sigma[j].withUnsafeBytes { sBuf in
+                withUnsafeBytes(of: &betaVal) { bBuf in
+                    betaTmp.withUnsafeMutableBytes { rBuf in
+                        bn254_fr_batch_mul_scalar(
+                            sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
+            }
+            // tmp[i] = witness[j][i] + betaTmp[i]
+            witness[j].withUnsafeBytes { wBuf in
+                betaTmp.withUnsafeBytes { bBuf in
+                    tmp.withUnsafeMutableBytes { rBuf in
+                        bn254_fr_batch_add(
+                            wBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
+            }
+            // tmp[i] += gamma
+            tmp.withUnsafeMutableBytes { tBuf in
+                let tPtr = tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                withUnsafeBytes(of: &gammaVal) { gBuf in
+                    bn254_fr_batch_add_scalar_parallel(
+                        tPtr, tPtr,
+                        gBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
+            // denominators[i] *= tmp[i]
+            denominators.withUnsafeMutableBytes { dBuf in
+                let dPtr = dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                tmp.withUnsafeBytes { tBuf in
+                    bn254_fr_batch_mul(
+                        dPtr,
+                        tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        dPtr,
+                        Int32(n))
+                }
             }
         }
 
-        // Step 2: Batch invert denominators
+        // Step 2b: Batch invert denominators
         var invDenominators = [Fr](repeating: Fr.zero, count: n)
         denominators.withUnsafeBytes { denBuf in
             invDenominators.withUnsafeMutableBytes { invBuf in
@@ -354,33 +440,162 @@ public struct PermutationArgument {
             }
         }
 
-        var result = [Fr](repeating: Fr.zero, count: n)
+        // Compute numProd and denProd arrays using batch ops
+        var numProd = [Fr](repeating: Fr.one, count: n)
+        var denProd = [Fr](repeating: Fr.one, count: n)
+        var tmp = [Fr](repeating: Fr.zero, count: n)
+        var betaTmp = [Fr](repeating: Fr.zero, count: n)
 
-        for i in 0..<n {
-            // Term 1: Z(omega^i) * prod_j(w_j[i] + beta*id_j(i) + gamma)
-            //       - Z(omega^{i+1}) * prod_j(w_j[i] + beta*sigma_j[i] + gamma)
-            var numProd = Fr.one
-            var denProd = Fr.one
-
-            for j in 0..<numWires {
-                numProd = frMul(numProd, frAdd(frAdd(witness[j][i], frMul(beta, idDomains[j][i])), gamma))
-                denProd = frMul(denProd, frAdd(frAdd(witness[j][i], frMul(beta, sigma[j][i])), gamma))
+        for j in 0..<numWires {
+            var betaVal = beta
+            // betaTmp[i] = beta * idDomains[j][i]
+            idDomains[j].withUnsafeBytes { iBuf in
+                withUnsafeBytes(of: &betaVal) { bBuf in
+                    betaTmp.withUnsafeMutableBytes { rBuf in
+                        bn254_fr_batch_mul_scalar(
+                            iBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
+            }
+            witness[j].withUnsafeBytes { wBuf in
+                betaTmp.withUnsafeBytes { bBuf in
+                    tmp.withUnsafeMutableBytes { rBuf in
+                        bn254_fr_batch_add(
+                            wBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
+            }
+            var gammaVal = gamma
+            tmp.withUnsafeMutableBytes { tBuf in
+                let tPtr = tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                withUnsafeBytes(of: &gammaVal) { gBuf in
+                    bn254_fr_batch_add_scalar_parallel(
+                        tPtr, tPtr,
+                        gBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
+            numProd.withUnsafeMutableBytes { nBuf in
+                let nPtr = nBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                tmp.withUnsafeBytes { tBuf in
+                    bn254_fr_batch_mul(
+                        nPtr,
+                        tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        nPtr,
+                        Int32(n))
+                }
             }
 
-            let iNext = (i + 1) % n
-            let permTerm = frSub(frMul(Z[i], numProd), frMul(Z[iNext], denProd))
-
-            // Term 2: (Z(omega^i) - 1) * L_1(omega^i)
-            // L_1(omega^i) = 1 if i==0, else 0  (on the evaluation domain)
-            let boundaryTerm: Fr
-            if i == 0 {
-                boundaryTerm = frSub(Z[0], Fr.one)
-            } else {
-                boundaryTerm = Fr.zero
+            sigma[j].withUnsafeBytes { sBuf in
+                withUnsafeBytes(of: &betaVal) { bBuf in
+                    betaTmp.withUnsafeMutableBytes { rBuf in
+                        bn254_fr_batch_mul_scalar(
+                            sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
             }
-
-            result[i] = frAdd(frMul(alpha, permTerm), frMul(alpha2, boundaryTerm))
+            witness[j].withUnsafeBytes { wBuf in
+                betaTmp.withUnsafeBytes { bBuf in
+                    tmp.withUnsafeMutableBytes { rBuf in
+                        bn254_fr_batch_add(
+                            wBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
+            }
+            tmp.withUnsafeMutableBytes { tBuf in
+                let tPtr = tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                withUnsafeBytes(of: &gammaVal) { gBuf in
+                    bn254_fr_batch_add_scalar_parallel(
+                        tPtr, tPtr,
+                        gBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
+            denProd.withUnsafeMutableBytes { dBuf in
+                let dPtr = dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                tmp.withUnsafeBytes { tBuf in
+                    bn254_fr_batch_mul(
+                        dPtr,
+                        tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        dPtr,
+                        Int32(n))
+                }
+            }
         }
+
+        // Z[i]*numProd[i]
+        var zNum = [Fr](repeating: Fr.zero, count: n)
+        Z.withUnsafeBytes { zBuf in
+            numProd.withUnsafeBytes { nBuf in
+                zNum.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_mul(
+                        zBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        nBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
+        }
+
+        // Z[iNext]*denProd[i] — need shifted Z
+        var zShifted = [Fr](repeating: Fr.zero, count: n)
+        for i in 0..<n { zShifted[i] = Z[(i + 1) % n] }
+        var zDen = [Fr](repeating: Fr.zero, count: n)
+        zShifted.withUnsafeBytes { zBuf in
+            denProd.withUnsafeBytes { dBuf in
+                zDen.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_mul(
+                        zBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
+        }
+
+        // permTerm[i] = zNum[i] - zDen[i]
+        var permTerm = [Fr](repeating: Fr.zero, count: n)
+        zNum.withUnsafeBytes { aBuf in
+            zDen.withUnsafeBytes { bBuf in
+                permTerm.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_sub(
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
+        }
+
+        // result[i] = alpha * permTerm[i]
+        var result = [Fr](repeating: Fr.zero, count: n)
+        var alphaVal = alpha
+        permTerm.withUnsafeBytes { pBuf in
+            withUnsafeBytes(of: &alphaVal) { aBuf in
+                result.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_mul_scalar(
+                        pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
+        }
+
+        // Boundary term: only at i=0
+        result[0] = frAdd(result[0], frMul(alpha2, frSub(Z[0], Fr.one)))
 
         return result
     }
