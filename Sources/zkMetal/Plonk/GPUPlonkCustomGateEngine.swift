@@ -880,9 +880,17 @@ public class GPUPlonkCustomGateEngine {
             }
 
             // Accumulate with alpha power: combined += alpha^k * constraintEvals
-            for i in 0..<n {
-                if !constraintEvals[i].isZero {
-                    combined[i] = frAdd(combined[i], frMul(alphaPow, constraintEvals[i]))
+            var ap = alphaPow
+            combined.withUnsafeMutableBytes { combinedBuf in
+                constraintEvals.withUnsafeBytes { ceBuf in
+                    withUnsafeBytes(of: &ap) { apBuf in
+                        bn254_fr_batch_linear_combine(
+                            combinedBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            apBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            ceBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            combinedBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
                 }
             }
 
@@ -1056,9 +1064,18 @@ public class GPUPlonkCustomGateEngine {
 
             if let coeffs = entry.selectorCoeffs {
                 let scaledLen = min(coeffs.count, n)
-                for j in 0..<scaledLen {
-                    let term = frMul(multiplier, coeffs[j])
-                    combined[j] = frAdd(combined[j], term)
+                var mult = multiplier
+                combined.withUnsafeMutableBytes { combinedBuf in
+                    coeffs.withUnsafeBytes { coeffsBuf in
+                        withUnsafeBytes(of: &mult) { multBuf in
+                            bn254_fr_batch_linear_combine(
+                                combinedBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                multBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                coeffsBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                combinedBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                Int32(scaledLen))
+                        }
+                    }
                 }
             }
 
@@ -1412,9 +1429,17 @@ public class GPUPlonkCustomGateEngine {
             }
 
             // Combine with alpha power
-            for i in 0..<n {
-                if !gateResiduals[i].isZero {
-                    combined[i] = frAdd(combined[i], frMul(alphaPow, gateResiduals[i]))
+            var ap = alphaPow
+            combined.withUnsafeMutableBytes { combinedBuf in
+                gateResiduals.withUnsafeBytes { grBuf in
+                    withUnsafeBytes(of: &ap) { apBuf in
+                        bn254_fr_batch_linear_combine(
+                            combinedBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            apBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            grBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            combinedBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
                 }
             }
             alphaPow = frMul(alphaPow, alpha)
