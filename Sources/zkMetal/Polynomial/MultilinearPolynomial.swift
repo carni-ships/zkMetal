@@ -69,14 +69,30 @@ extension MultilinearPoly {
         let numBlocks = size / (2 * stride)
 
         var result = [Fr](repeating: Fr.zero, count: newSize)
-        var outIdx = 0
-        for block in 0..<numBlocks {
-            let base = block * 2 * stride
-            for i in 0..<blockSize {
-                let lo = evals[base + i]           // variable j = 0
-                let hi = evals[base + stride + i]  // variable j = 1
-                result[outIdx] = frAdd(frMul(oneMinusV, lo), frMul(value, hi))
-                outIdx += 1
+        evals.withUnsafeBytes { eBuf in
+            result.withUnsafeMutableBytes { rBuf in
+                var omv = oneMinusV
+                var v = value
+                withUnsafeBytes(of: &omv) { xBuf in
+                    withUnsafeBytes(of: &v) { xiBuf in
+                        let ePtr = eBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                        let rPtr = rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                        let xPtr = xBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                        let xiPtr = xiBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                        var outIdx = 0
+                        for block in 0..<numBlocks {
+                            let base = block * 2 * stride
+                            // out[i] = lo[i]*(1-v) + hi[i]*v
+                            bn254_fr_vector_fold(
+                                ePtr.advanced(by: base * 4),
+                                ePtr.advanced(by: (base + stride) * 4),
+                                xPtr, xiPtr,
+                                Int32(blockSize),
+                                rPtr.advanced(by: outIdx * 4))
+                            outIdx += blockSize
+                        }
+                    }
+                }
             }
         }
 
@@ -266,13 +282,21 @@ extension MultilinearPoly {
 
         // For each polynomial, compute inner product <evals, eq>
         var results = [Fr](repeating: Fr.zero, count: polys.count)
-        for (k, poly) in polys.enumerated() {
-            var sum = Fr.zero
-            for i in 0..<size {
-                if eq.evals[i].isZero || poly.evals[i].isZero { continue }
-                sum = frAdd(sum, frMul(poly.evals[i], eq.evals[i]))
+        eq.evals.withUnsafeBytes { eqBuf in
+            let eqPtr = eqBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+            for (k, poly) in polys.enumerated() {
+                poly.evals.withUnsafeBytes { pBuf in
+                    results.withUnsafeMutableBytes { rBuf in
+                        let rPtr = rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                            .advanced(by: k * 4)
+                        bn254_fr_inner_product(
+                            pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            eqPtr,
+                            Int32(size),
+                            rPtr)
+                    }
+                }
             }
-            results[k] = sum
         }
 
         return results

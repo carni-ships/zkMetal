@@ -13,6 +13,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 // MARK: - Query Phase Configuration
 
@@ -506,17 +507,13 @@ public final class GPUSTARKQueryPhaseEngine {
             qDenoms[2 * qi] = frSub(domainPoint, oodFrame.zeta)
             qDenoms[2 * qi + 1] = frSub(domainPoint, zetaNext)
         }
-        var qPrefix = [Fr](repeating: Fr.one, count: 2 * qCount)
-        for i in 1..<(2 * qCount) {
-            qPrefix[i] = qDenoms[i - 1] == Fr.zero ? qPrefix[i - 1] : frMul(qPrefix[i - 1], qDenoms[i - 1])
-        }
-        let qLast = qDenoms[2 * qCount - 1] == Fr.zero ? qPrefix[2 * qCount - 1] : frMul(qPrefix[2 * qCount - 1], qDenoms[2 * qCount - 1])
-        var qInv = frInverse(qLast)
         var qDenomInvs = [Fr](repeating: Fr.zero, count: 2 * qCount)
-        for i in stride(from: 2 * qCount - 1, through: 0, by: -1) {
-            if qDenoms[i] != Fr.zero {
-                qDenomInvs[i] = frMul(qInv, qPrefix[i])
-                qInv = frMul(qInv, qDenoms[i])
+        qDenoms.withUnsafeBytes { src in
+            qDenomInvs.withUnsafeMutableBytes { dst in
+                bn254_fr_batch_inverse_safe(
+                    src.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(2 * qCount),
+                    dst.baseAddress!.assumingMemoryBound(to: UInt64.self))
             }
         }
 
@@ -762,11 +759,18 @@ public final class GPUSTARKQueryPhaseEngine {
         let logM = config.logLDEDomainSize
         let omegaM = frRootOfUnity(logN: logM)
 
-        var points = [Fr](repeating: Fr.zero, count: m)
-        var w = Fr.one
-        for i in 0..<m {
-            points[i] = frMul(config.cosetShift, w)
-            w = frMul(w, omegaM)
+        // points[i] = cosetShift * omega^i
+        // First fill with cosetShift, then batch_mul_powers by omega
+        var points = [Fr](repeating: config.cosetShift, count: m)
+        points.withUnsafeMutableBytes { pBuf in
+            withUnsafeBytes(of: omegaM) { oBuf in
+                let pPtr = pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                bn254_fr_batch_mul_powers(
+                    pPtr,
+                    pPtr,
+                    oBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(m))
+            }
         }
         return points
     }

@@ -235,9 +235,15 @@ public class LookupEngine {
         let bufBetaPlusF = cachedBufA!
         let bufHf = cachedBufB!
         do {
-            let dst = bufBetaPlusF.contents().bindMemory(to: Fr.self, capacity: m)
-            for i in 0..<m {
-                dst[i] = frAdd(beta, lookups[i])
+            let dst = bufBetaPlusF.contents().assumingMemoryBound(to: UInt64.self)
+            lookups.withUnsafeBytes { src in
+                withUnsafeBytes(of: beta) { bBuf in
+                    bn254_fr_batch_add_scalar_neon(
+                        dst,
+                        bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        src.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(m))
+                }
             }
         }
 
@@ -262,9 +268,15 @@ public class LookupEngine {
 
         // Prepare betaPlusT and mult into GPU buffers
         do {
-            let dst = bufBetaPlusT.contents().bindMemory(to: Fr.self, capacity: N)
-            for i in 0..<N {
-                dst[i] = frAdd(beta, table[i])
+            let dst = bufBetaPlusT.contents().assumingMemoryBound(to: UInt64.self)
+            table.withUnsafeBytes { src in
+                withUnsafeBytes(of: beta) { bBuf in
+                    bn254_fr_batch_add_scalar_neon(
+                        dst,
+                        bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        src.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(N))
+                }
             }
         }
         mult.withUnsafeBytes { src in
