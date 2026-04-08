@@ -188,9 +188,30 @@ extension SpartanR1CSBuilder {
 
 func sparseMatVecSpartan(_ matrix: [SpartanEntry], z: [Fr], numRows: Int) -> [Fr] {
     var result = [Fr](repeating: Fr.zero, count: numRows)
-    for entry in matrix {
-        guard entry.row < numRows && entry.col < z.count else { continue }
-        result[entry.row] = frAdd(result[entry.row], frMul(entry.value, z[entry.col]))
+    let n = matrix.count
+    if n < 8192 {
+        for entry in matrix {
+            guard entry.row < numRows && entry.col < z.count else { continue }
+            result[entry.row] = frAdd(result[entry.row], frMul(entry.value, z[entry.col]))
+        }
+        return result
+    }
+    let nThreads = min(8, ProcessInfo.processInfo.activeProcessorCount)
+    let chunkSize = (n + nThreads - 1) / nThreads
+    var partials = [[Fr]](repeating: [Fr](repeating: .zero, count: numRows), count: nThreads)
+    DispatchQueue.concurrentPerform(iterations: nThreads) { t in
+        let start = t * chunkSize
+        let end = min(start + chunkSize, n)
+        for idx in start..<end {
+            let entry = matrix[idx]
+            guard entry.row < numRows && entry.col < z.count else { continue }
+            partials[t][entry.row] = frAdd(partials[t][entry.row], frMul(entry.value, z[entry.col]))
+        }
+    }
+    for t in 0..<nThreads {
+        for i in 0..<numRows {
+            result[i] = frAdd(result[i], partials[t][i])
+        }
     }
     return result
 }

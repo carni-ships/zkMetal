@@ -29,9 +29,32 @@ public struct R1CSInstance {
     }
 
     public func sparseMatVec(_ entries: [R1CSEntry], _ z: [Fr]) -> [Fr] {
-        var result = [Fr](repeating: .zero, count: numConstraints)
-        for e in entries {
-            result[e.row] = frAdd(result[e.row], frMul(e.val, z[e.col]))
+        let m = numConstraints
+        var result = [Fr](repeating: .zero, count: m)
+        let n = entries.count
+        if n < 8192 {
+            for e in entries {
+                result[e.row] = frAdd(result[e.row], frMul(e.val, z[e.col]))
+            }
+            return result
+        }
+        // Parallel: each thread accumulates into its own result array, then merge
+        let nThreads = min(8, ProcessInfo.processInfo.activeProcessorCount)
+        let chunkSize = (n + nThreads - 1) / nThreads
+        var partials = [[Fr]](repeating: [Fr](repeating: .zero, count: m), count: nThreads)
+        DispatchQueue.concurrentPerform(iterations: nThreads) { t in
+            let start = t * chunkSize
+            let end = min(start + chunkSize, n)
+            for idx in start..<end {
+                let e = entries[idx]
+                partials[t][e.row] = frAdd(partials[t][e.row], frMul(e.val, z[e.col]))
+            }
+        }
+        // Merge thread-local results
+        for t in 0..<nThreads {
+            for i in 0..<m {
+                result[i] = frAdd(result[i], partials[t][i])
+            }
         }
         return result
     }
