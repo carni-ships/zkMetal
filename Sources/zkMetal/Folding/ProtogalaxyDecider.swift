@@ -240,35 +240,29 @@ public class ProtogalaxyDeciderProver {
             let r_i = transcript.squeeze()
             sumcheckChallenges.append(r_i)
 
-            // Bind the current variable to r_i using C-accelerated interleaved fold
-            var newF = [Fr](repeating: Fr.zero, count: halfSize)
-            var newEq = [Fr](repeating: Fr.zero, count: halfSize)
-            currentF.withUnsafeBytes { fBuf in
-            withUnsafeBytes(of: r_i) { rBuf in
-            newF.withUnsafeMutableBytes { resBuf in
-                bn254_fr_fold_interleaved(
-                    fBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                    resBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                    Int32(halfSize)
-                )
-            }}}
-            currentEq.withUnsafeBytes { eqBuf in
-            withUnsafeBytes(of: r_i) { rBuf in
-            newEq.withUnsafeMutableBytes { resBuf in
-                bn254_fr_fold_interleaved(
-                    eqBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                    resBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                    Int32(halfSize)
-                )
-            }}}
+            // Bind the current variable to r_i using in-place interleaved fold (no allocation)
+            currentF.withUnsafeMutableBytes { fBuf in
+                withUnsafeBytes(of: r_i) { rBuf in
+                    bn254_fr_fold_interleaved_inplace(
+                        fBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(halfSize))
+                }
+            }
+            currentF.removeLast(halfSize)
+
+            currentEq.withUnsafeMutableBytes { eqBuf in
+                withUnsafeBytes(of: r_i) { rBuf in
+                    bn254_fr_fold_interleaved_inplace(
+                        eqBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(halfSize))
+                }
+            }
+            currentEq.removeLast(halfSize)
 
             // Update running claim: s_i(r_i) via Lagrange interpolation on {0,1,2}
             runningClaim = interpolateAndEval(s0: s0, s1: s1, s2: s2, at: r_i)
-
-            currentF = newF
-            currentEq = newEq
         }
 
         // Step 8: Compute witness evaluations at the sumcheck evaluation point

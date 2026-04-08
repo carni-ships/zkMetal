@@ -403,14 +403,13 @@ public class HyperNovaProver {
 
             // C-accelerated interleaved fold in-place
             crossTermEvals.withUnsafeMutableBytes { buf in
-            withUnsafeBytes(of: challenge) { chBuf in
-                bn254_fr_fold_interleaved(
-                    buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                    chBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                    buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                    Int32(half)
-                )
-            }}
+                withUnsafeBytes(of: challenge) { chBuf in
+                    bn254_fr_fold_interleaved_inplace(
+                        buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        chBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(half))
+                }
+            }
             currentSize = half
         }
 
