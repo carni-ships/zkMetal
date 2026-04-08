@@ -445,6 +445,16 @@ void bn254_fr_batch_fma_scalar(uint64_t *result, const uint64_t *scalar,
     }
 }
 
+/// Batch subtract scalar from array: result[i] = a[i] - scalar for i in 0..n-1
+void bn254_fr_batch_sub_scalar(uint64_t *result, const uint64_t *a,
+                                const uint64_t *scalar, int n)
+{
+    for (int i = 0; i < n; i++) {
+        if (i + 2 < n) __builtin_prefetch(&a[(i + 2) * 4], 0, 1);
+        fr_sub_branchless(&a[i * 4], scalar, &result[i * 4]);
+    }
+}
+
 /// AXPY: result[i] += scalar * x[i] for i in 0..n-1
 void bn254_fr_batch_axpy(uint64_t *result, const uint64_t *scalar,
                           const uint64_t *x, int n)

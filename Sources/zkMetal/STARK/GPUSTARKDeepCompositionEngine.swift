@@ -270,7 +270,18 @@ public final class GPUSTARKDeepCompositionEngine {
 
         // Compute denominators and batch-invert (Montgomery's trick)
         var denoms = [Fr](repeating: Fr.zero, count: m)
-        for i in 0..<m { denoms[i] = frSub(domainPoints[i], oodPoint) }
+        var ood = oodPoint
+        domainPoints.withUnsafeBytes { dBuf in
+            denoms.withUnsafeMutableBytes { rBuf in
+                withUnsafeBytes(of: &ood) { oBuf in
+                    bn254_fr_batch_sub_scalar(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        oBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(m))
+                }
+            }
+        }
         var denomPrefix = [Fr](repeating: Fr.one, count: m)
         for i in 1..<m {
             denomPrefix[i] = denoms[i - 1] == Fr.zero ? denomPrefix[i - 1] : frMul(denomPrefix[i - 1], denoms[i - 1])

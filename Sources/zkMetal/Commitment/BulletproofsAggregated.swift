@@ -445,10 +445,24 @@ public class BulletproofsAggregatedVerifier {
         // But we need to be careful about the padded vs unpadded parts.
 
         var sumYPow = Fr.zero
-        for i in 0..<mn { sumYPow = frAdd(sumYPow, yPow[i]) }
+        yPow.withUnsafeBytes { yBuf in
+            withUnsafeMutableBytes(of: &sumYPow) { sBuf in
+                bn254_fr_vector_sum(
+                    yBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(mn),
+                    sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+            }
+        }
 
         var sumTwoPow = Fr.zero
-        for i in 0..<n { sumTwoPow = frAdd(sumTwoPow, twoPow[i]) }
+        twoPow.withUnsafeBytes { tBuf in
+            withUnsafeMutableBytes(of: &sumTwoPow) { sBuf in
+                bn254_fr_vector_sum(
+                    tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(n),
+                    sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+            }
+        }
 
         var delta = frMul(frSub(z, zPow[2]), sumYPow)
         for j in 0..<m {

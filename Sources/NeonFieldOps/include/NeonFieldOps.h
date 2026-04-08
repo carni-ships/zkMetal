@@ -349,6 +349,10 @@ void bn254_fr_fri_fold_inplace(uint64_t *data, const uint64_t *challenge,
 void bn254_fr_batch_fma_scalar(uint64_t *result, const uint64_t *scalar,
                                 const uint64_t *other, int n);
 
+/// Batch subtract scalar: result[i] = a[i] - scalar for i in 0..n-1.
+void bn254_fr_batch_sub_scalar(uint64_t *result, const uint64_t *a,
+                                const uint64_t *scalar, int n);
+
 /// AXPY: result[i] += scalar * x[i] for i in 0..n-1.
 void bn254_fr_batch_axpy(uint64_t *result, const uint64_t *scalar,
                           const uint64_t *x, int n);

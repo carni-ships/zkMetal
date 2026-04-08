@@ -225,8 +225,12 @@ public class LookupSingularityProver {
         var p = 1
         while p < n { p <<= 1 }
         if p == n { return arr }
-        var result = arr
-        while result.count < p { result.append(padWith) }
+        var result = [Fr](repeating: padWith, count: p)
+        result.withUnsafeMutableBytes { rBuf in
+            arr.withUnsafeBytes { aBuf in
+                memcpy(rBuf.baseAddress!, aBuf.baseAddress!, n * MemoryLayout<Fr>.stride)
+            }
+        }
         return result
     }
 
@@ -417,8 +421,12 @@ public class LookupSingularityVerifier {
         var p = 1
         while p < n { p <<= 1 }
         if p == n { return arr }
-        var result = arr
-        while result.count < p { result.append(padWith) }
+        var result = [Fr](repeating: padWith, count: p)
+        result.withUnsafeMutableBytes { rBuf in
+            arr.withUnsafeBytes { aBuf in
+                memcpy(rBuf.baseAddress!, aBuf.baseAddress!, n * MemoryLayout<Fr>.stride)
+            }
+        }
         return result
     }
 

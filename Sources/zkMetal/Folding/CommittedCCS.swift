@@ -55,7 +55,13 @@ public func padToPow2(_ v: [Fr]) -> [Fr] {
     while (1 << logN) < n { logN += 1 }
     let padded = (1 << logN)
     if padded == n { return v }
-    return v + [Fr](repeating: .zero, count: padded - n)
+    var result = [Fr](repeating: .zero, count: padded)
+    result.withUnsafeMutableBytes { rBuf in
+        v.withUnsafeBytes { vBuf in
+            memcpy(rBuf.baseAddress!, vBuf.baseAddress!, n * MemoryLayout<Fr>.stride)
+        }
+    }
+    return result
 }
 
 /// Compute eq(r, x) for all x in {0,1}^s.
