@@ -563,14 +563,16 @@ private func testCPUFallbackPath() {
 
 private func testAggregateAndBatchVerify() {
     do {
-        let (proof1, vk, _, pub1, _) = generateTestProof(x: 5)
-        let (proof2, _, _, pub2, _) = generateTestProof(x: 8)
+        // Use generateMultipleProofs so both proofs share the same setup (pk/vk).
+        // generateTestProof creates independent setups, so proof2's pk wouldn't
+        // match vk from proof1's setup.
+        let (proofs, pubInputs, vk, _, _) = generateMultipleProofs(count: 2, startX: 5)
         let srs = testSRS()
 
         let engine = try GPUGroth16AggregateEngine()
         let inputs = [
-            AggregateProofInput(proof: proof1, publicInputs: pub1, vk: vk, circuitIndex: 0),
-            AggregateProofInput(proof: proof2, publicInputs: pub2, vk: vk, circuitIndex: 0),
+            AggregateProofInput(proof: proofs[0], publicInputs: pubInputs[0], vk: vk, circuitIndex: 0),
+            AggregateProofInput(proof: proofs[1], publicInputs: pubInputs[1], vk: vk, circuitIndex: 0),
         ]
 
         let valid = try engine.batchVerify(inputs: inputs, srs: srs)

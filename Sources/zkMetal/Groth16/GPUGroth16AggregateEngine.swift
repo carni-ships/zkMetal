@@ -401,6 +401,24 @@ public class GPUGroth16AggregateEngine {
 
         if !frEqual(rSum, aggProof.challengeSum) { return false }
 
+        // Step 2b: Verify aggA consistency (re-derive from original proofs)
+        var recomputedAggA = pointIdentity()
+        for i in 0..<n {
+            if !rPowers[i].isZero && !pointIsIdentity(originalProofs[i].a) {
+                recomputedAggA = pointAdd(recomputedAggA, cPointScalarMul(originalProofs[i].a, rPowers[i]))
+            }
+        }
+        if !projPointEqual(recomputedAggA, aggProof.aggA) { return false }
+
+        // Step 2c: Verify aggC consistency (re-derive from original proofs)
+        var recomputedAggC = pointIdentity()
+        for i in 0..<n {
+            if !rPowers[i].isZero && !pointIsIdentity(originalProofs[i].c) {
+                recomputedAggC = pointAdd(recomputedAggC, cPointScalarMul(originalProofs[i].c, rPowers[i]))
+            }
+        }
+        if !projPointEqual(recomputedAggC, aggProof.aggC) { return false }
+
         // Step 3: Verify IPPA
         if !verifyIPPA(
             ippProof: aggProof.ippProof,

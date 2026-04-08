@@ -45,7 +45,7 @@ public func runGPUGroth16VKTests() {
 
     // --- Test 4: JSON serialization round-trip ---
     do {
-        let (vk, _, _) = makeVK()
+        let (vk, pk, r1cs) = makeVK()
         let json = engine.serializeJSON(vk)
         expect(json["protocol"] as? String == "groth16", "JSON has protocol field")
         expect(json["curve"] as? String == "bn254", "JSON has curve field")
@@ -55,11 +55,10 @@ public func runGPUGroth16VKTests() {
             return
         }
         // JSON round-trip goes through affine->hex->parse->Montgomery, so check
-        // that the VK is functionally equivalent (validates same proofs)
-        let r1cs = buildExampleCircuit()
+        // that the VK is functionally equivalent (validates same proofs).
+        // We must use the pk from the SAME setup that produced this VK,
+        // otherwise the proof won't verify (different toxic waste).
         let (pubInputs, witness) = computeExampleWitness(x: 3)
-        let setup = Groth16Setup()
-        let (pk, _) = setup.setup(r1cs: r1cs)
         let prover = try Groth16Prover()
         let proof = try prover.prove(pk: pk, r1cs: r1cs,
                                       publicInputs: pubInputs, witness: witness)
