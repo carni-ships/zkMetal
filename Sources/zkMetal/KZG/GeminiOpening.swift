@@ -94,18 +94,16 @@ public class GeminiOpener {
         for k in 0..<(n - 1) {
             let uk = point[n - 1 - k]
             let halfLen = current.count / 2
-            var folded = [Fr](repeating: Fr.zero, count: halfLen)
-            current.withUnsafeBytes { cBuf in
-            withUnsafeBytes(of: uk) { uBuf in
-            folded.withUnsafeMutableBytes { fBuf in
-                bn254_fr_fold_zm_interleaved(
-                    cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                    uBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                    fBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                    Int32(halfLen))
-            }}}
-            foldPolynomials.append(folded)
-            current = folded
+            current.withUnsafeMutableBytes { cBuf in
+                withUnsafeBytes(of: uk) { uBuf in
+                    bn254_fr_fold_zm_interleaved_inplace(
+                        cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        uBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(halfLen))
+                }
+            }
+            current.removeLast(halfLen)
+            foldPolynomials.append(current)
         }
         // After n-1 folds, current should have 2 elements
         // The final fold with u_0 gives the evaluation value
@@ -262,17 +260,15 @@ public class GeminiOpener {
         for k in stride(from: n - 1, through: 0, by: -1) {
             let halfLen = current.count / 2
             let uk = point[k]
-            var folded = [Fr](repeating: Fr.zero, count: halfLen)
-            current.withUnsafeBytes { cBuf in
-            withUnsafeBytes(of: uk) { uBuf in
-            folded.withUnsafeMutableBytes { fBuf in
-                bn254_fr_fold_zm_interleaved(
-                    cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                    uBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                    fBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                    Int32(halfLen))
-            }}}
-            current = folded
+            current.withUnsafeMutableBytes { cBuf in
+                withUnsafeBytes(of: uk) { uBuf in
+                    bn254_fr_fold_zm_interleaved_inplace(
+                        cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        uBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(halfLen))
+                }
+            }
+            current.removeLast(halfLen)
         }
         return current[0]
     }

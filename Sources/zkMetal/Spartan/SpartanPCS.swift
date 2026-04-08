@@ -241,30 +241,24 @@ public struct KZGPCSAdapter: SpartanPCSBackend {
         for k in stride(from: n - 1, through: 0, by: -1) {
             let half = current.count / 2
             let rk = point[k]
-            let oneMinusRk = frSub(Fr.one, rk)
-            var folded = [Fr](repeating: Fr.zero, count: half)
-            current.withUnsafeBytes { cBuf in
-                folded.withUnsafeMutableBytes { fBuf in
-                    withUnsafeBytes(of: rk) { rkBuf in
-                        bn254_fr_fold_interleaved(
-                            cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            rkBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            fBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            Int32(half))
-                    }
-                }
-            }
 
-            // Commit to the folded polynomial
-            let C = try kzg.commit(folded)
-            foldCommitments.append(C)
-
-            // Open the current polynomial at a challenge derived from the fold
-            // For simplicity in testing: open at X=0 to get current[0]
+            // Open the current polynomial BEFORE in-place fold
             let proof = try kzg.open(current, at: rk)
             foldProofs.append(proof)
 
-            current = folded
+            current.withUnsafeMutableBytes { cBuf in
+                withUnsafeBytes(of: rk) { rkBuf in
+                    bn254_fr_fold_interleaved_inplace(
+                        cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rkBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(half))
+                }
+            }
+            current.removeLast(half)
+
+            // Commit to the folded polynomial
+            let C = try kzg.commit(current)
+            foldCommitments.append(C)
         }
 
         let value = current[0]

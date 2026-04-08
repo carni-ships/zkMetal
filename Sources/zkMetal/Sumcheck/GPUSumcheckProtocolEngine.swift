@@ -753,19 +753,17 @@ public final class GPUSumcheckProtocolEngine {
     ///   next[i] = table[i] + r * (table[i + half] - table[i])
     private func foldTable(_ table: [Fr], challenge: Fr) -> [Fr] {
         let half = table.count / 2
-        var next = [Fr](repeating: Fr.zero, count: half)
-        table.withUnsafeBytes { eBuf in
-            next.withUnsafeMutableBytes { rBuf in
-                withUnsafeBytes(of: challenge) { cBuf in
-                    bn254_fr_sumcheck_reduce(
-                        eBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                        cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                        Int32(half))
-                }
+        var result = table
+        result.withUnsafeMutableBytes { rBuf in
+            withUnsafeBytes(of: challenge) { cBuf in
+                bn254_fr_sumcheck_reduce_inplace(
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(half))
             }
         }
-        return next
+        result.removeLast(half)
+        return result
     }
 
     /// Compute the sum of evaluations in a table.
@@ -787,19 +785,15 @@ public final class GPUSumcheckProtocolEngine {
         var current = evals
         for r in point {
             let half = current.count / 2
-            var next = [Fr](repeating: Fr.zero, count: half)
-            current.withUnsafeBytes { eBuf in
-                next.withUnsafeMutableBytes { rBuf in
-                    withUnsafeBytes(of: r) { cBuf in
-                        bn254_fr_sumcheck_reduce(
-                            eBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            Int32(half))
-                    }
+            current.withUnsafeMutableBytes { cBuf in
+                withUnsafeBytes(of: r) { rBuf in
+                    bn254_fr_sumcheck_reduce_inplace(
+                        cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(half))
                 }
             }
-            current = next
+            current.removeLast(half)
         }
         return current[0]
     }

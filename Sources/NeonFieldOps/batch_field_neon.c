@@ -563,6 +563,191 @@ void bn254_fr_fold_halves(const uint64_t *arr, const uint64_t *challenge,
     }
 }
 
+// ============================================================================
+// In-place fold variants: write results back to the beginning of the input
+// buffer, eliminating temporary array allocations. Safe because position i
+// only reads from positions >= 2i (interleaved) or i and i+halfN (halves).
+// ============================================================================
+
+/// In-place interleaved fold: data[i] = data[2i] + challenge*(data[2i+1]-data[2i])
+static void fold_interleaved_inplace_range(uint64_t *data, const uint64_t *challenge,
+                                            int start, int end)
+{
+    uint64_t diff[4], scaled[4];
+    for (int i = start; i < end; i++) {
+        if (i + 2 < end) {
+            __builtin_prefetch(&data[(2 * (i + 2)) * 4], 0, 1);
+        }
+        const uint64_t *lo = &data[(2 * i) * 4];
+        const uint64_t *hi = &data[(2 * i + 1) * 4];
+        fr_sub_branchless(hi, lo, diff);
+        fr_mont_mul(challenge, diff, scaled);
+        fr_add_branchless(lo, scaled, &data[i * 4]);
+    }
+}
+
+void bn254_fr_fold_interleaved_inplace(uint64_t *data, const uint64_t *challenge, int halfN)
+{
+    if (halfN >= BATCH_THREAD_THRESHOLD) {
+        int nChunks = MAX_THREADS;
+        if (halfN < nChunks * 1024) nChunks = 4;
+        int chunkSize = halfN / nChunks;
+        int total = halfN;
+        uint64_t *sd = data;
+        const uint64_t *sc = challenge;
+        dispatch_apply(nChunks, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+                       ^(size_t idx) {
+            int s = (int)idx * chunkSize;
+            int e = ((int)idx == nChunks - 1) ? total : s + chunkSize;
+            fold_interleaved_inplace_range(sd, sc, s, e);
+        });
+    } else {
+        fold_interleaved_inplace_range(data, challenge, 0, halfN);
+    }
+}
+
+/// In-place ZM fold: data[i] = data[2i] + challenge * data[2i+1]
+static void fold_zm_interleaved_inplace_range(uint64_t *data, const uint64_t *challenge,
+                                               int start, int end)
+{
+    uint64_t scaled[4];
+    for (int i = start; i < end; i++) {
+        if (i + 2 < end) {
+            __builtin_prefetch(&data[(2 * (i + 2)) * 4], 0, 1);
+        }
+        const uint64_t *lo = &data[(2 * i) * 4];
+        const uint64_t *hi = &data[(2 * i + 1) * 4];
+        fr_mont_mul(challenge, hi, scaled);
+        fr_add_branchless(lo, scaled, &data[i * 4]);
+    }
+}
+
+void bn254_fr_fold_zm_interleaved_inplace(uint64_t *data, const uint64_t *challenge, int halfN)
+{
+    if (halfN >= BATCH_THREAD_THRESHOLD) {
+        int nChunks = MAX_THREADS;
+        if (halfN < nChunks * 1024) nChunks = 4;
+        int chunkSize = halfN / nChunks;
+        int total = halfN;
+        uint64_t *sd = data;
+        const uint64_t *sc = challenge;
+        dispatch_apply(nChunks, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+                       ^(size_t idx) {
+            int s = (int)idx * chunkSize;
+            int e = ((int)idx == nChunks - 1) ? total : s + chunkSize;
+            fold_zm_interleaved_inplace_range(sd, sc, s, e);
+        });
+    } else {
+        fold_zm_interleaved_inplace_range(data, challenge, 0, halfN);
+    }
+}
+
+/// In-place fold halves: data[i] = data[i] + challenge * (data[i+halfN] - data[i])
+/// Safe because we read data[i] and data[i+halfN] before overwriting data[i],
+/// and the second half (data[halfN..]) is never written.
+void bn254_fr_fold_halves_inplace(uint64_t *data, const uint64_t *challenge, int halfN)
+{
+    if (halfN >= BATCH_THREAD_THRESHOLD) {
+        int nChunks = MAX_THREADS;
+        if (halfN < nChunks * 1024) nChunks = 4;
+        int chunkSize = halfN / nChunks;
+        int total = halfN;
+        uint64_t *sd = data;
+        const uint64_t *sc = challenge;
+        dispatch_apply(nChunks, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+            ^(size_t idx) {
+                int start = (int)idx * chunkSize;
+                int end = ((int)idx == nChunks - 1) ? total : start + chunkSize;
+                uint64_t diff[4], scaled[4];
+                for (int i = start; i < end; i++) {
+                    if (i + 2 < end) {
+                        __builtin_prefetch(&sd[(i + 2) * 4], 0, 1);
+                        __builtin_prefetch(&sd[(i + 2 + total) * 4], 0, 1);
+                    }
+                    fr_sub_branchless(&sd[(i + total) * 4], &sd[i * 4], diff);
+                    fr_mont_mul(sc, diff, scaled);
+                    fr_add_branchless(&sd[i * 4], scaled, &sd[i * 4]);
+                }
+            });
+        return;
+    }
+    uint64_t diff[4], scaled[4];
+    for (int i = 0; i < halfN; i++) {
+        if (i + 2 < halfN) {
+            __builtin_prefetch(&data[(i + 2) * 4], 0, 1);
+            __builtin_prefetch(&data[(i + 2 + halfN) * 4], 0, 1);
+        }
+        fr_sub_branchless(&data[(i + halfN) * 4], &data[i * 4], diff);
+        fr_mont_mul(challenge, diff, scaled);
+        fr_add_branchless(&data[i * 4], scaled, &data[i * 4]);
+    }
+}
+
+/// In-place sumcheck reduce: data[i] = data[i] + challenge * (data[i+halfN] - data[i])
+/// Same as fold_halves_inplace (identical formula).
+void bn254_fr_sumcheck_reduce_inplace(uint64_t *data, const uint64_t *challenge, int halfN)
+{
+    bn254_fr_fold_halves_inplace(data, challenge, halfN);
+}
+
+/// In-place IPA fold: data[i] = data[i] + challenge * data[i+halfN]
+void bn254_fr_ipa_fold_inplace(uint64_t *data, const uint64_t *challenge, int halfN)
+{
+    if (halfN >= BATCH_THREAD_THRESHOLD) {
+        int nChunks = MAX_THREADS;
+        if (halfN < nChunks * 1024) nChunks = 4;
+        int chunkSize = halfN / nChunks;
+        int total = halfN;
+        uint64_t *sd = data;
+        const uint64_t *sc = challenge;
+        dispatch_apply(nChunks, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+            ^(size_t idx) {
+                int start = (int)idx * chunkSize;
+                int end = ((int)idx == nChunks - 1) ? total : start + chunkSize;
+                uint64_t scaled[4];
+                for (int i = start; i < end; i++) {
+                    if (i + 2 < end) {
+                        __builtin_prefetch(&sd[(i + 2) * 4], 0, 1);
+                        __builtin_prefetch(&sd[(i + 2 + total) * 4], 0, 1);
+                    }
+                    fr_mont_mul(sc, &sd[(i + total) * 4], scaled);
+                    fr_add_branchless(&sd[i * 4], scaled, &sd[i * 4]);
+                }
+            });
+        return;
+    }
+    uint64_t scaled[4];
+    for (int i = 0; i < halfN; i++) {
+        if (i + 2 < halfN) {
+            __builtin_prefetch(&data[(i + 2) * 4], 0, 1);
+            __builtin_prefetch(&data[(i + 2 + halfN) * 4], 0, 1);
+        }
+        fr_mont_mul(challenge, &data[(i + halfN) * 4], scaled);
+        fr_add_branchless(&data[i * 4], scaled, &data[i * 4]);
+    }
+}
+
+/// In-place FRI fold: data[i] = (data[i]+data[i+half]) + challenge*(data[i]-data[i+half])*invTwiddles[i]
+void bn254_fr_fri_fold_inplace(uint64_t *data, const uint64_t *challenge,
+                                const uint64_t *invTwiddles, int half)
+{
+    uint64_t sum[4], diff[4], prod[4], term[4];
+    for (int i = 0; i < half; i++) {
+        if (i + 2 < half) {
+            __builtin_prefetch(&data[(i + 2) * 4], 0, 1);
+            __builtin_prefetch(&data[(half + i + 2) * 4], 0, 1);
+            __builtin_prefetch(&invTwiddles[(i + 2) * 4], 0, 1);
+        }
+        const uint64_t *a = &data[i * 4];
+        const uint64_t *b = &data[(half + i) * 4];
+        fr_add_branchless(a, b, sum);
+        fr_sub_branchless(a, b, diff);
+        fr_mont_mul(diff, &invTwiddles[i * 4], prod);
+        fr_mont_mul(challenge, prod, term);
+        fr_add_branchless(sum, term, &data[i * 4]);
+    }
+}
+
 /// Spartan degree-2 sumcheck round:
 ///   s0 = sum_{i<h} w[i]*z[i]
 ///   s1 = sum_{i<h} w[i+h]*z[i+h]

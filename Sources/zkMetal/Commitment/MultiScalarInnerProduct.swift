@@ -708,18 +708,16 @@ public class MultiScalarInnerProduct {
 
     private func cpuFoldSingle(_ v: [Fr], challenge: Fr) -> [Fr] {
         let halfLen = v.count / 2
-        var result = [Fr](repeating: Fr.zero, count: halfLen)
+        var result = v
         withUnsafeBytes(of: challenge) { cPtr in
-            v.withUnsafeBytes { vBuf in
-                result.withUnsafeMutableBytes { rBuf in
-                    bn254_fr_ipa_fold(
-                        vBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                        cPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                        Int32(halfLen))
-                }
+            result.withUnsafeMutableBytes { rBuf in
+                bn254_fr_ipa_fold_inplace(
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    cPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(halfLen))
             }
         }
+        result.removeLast(halfLen)
         return result
     }
 

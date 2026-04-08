@@ -389,19 +389,15 @@ public final class GPUHyperPlonkIOPEngine {
         for i in 0..<numVars {
             let half = current.count / 2
             let ri = point[i]
-            var next = [Fr](repeating: Fr.zero, count: half)
-            current.withUnsafeBytes { cBuf in
+            current.withUnsafeMutableBytes { cBuf in
                 withUnsafeBytes(of: ri) { rBuf in
-                    next.withUnsafeMutableBytes { outBuf in
-                        bn254_fr_fold_halves(
-                            cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            outBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            Int32(half))
-                    }
+                    bn254_fr_fold_halves_inplace(
+                        cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(half))
                 }
             }
-            current = next
+            current.removeLast(half)
         }
         return current[0]
     }
@@ -416,19 +412,15 @@ public final class GPUHyperPlonkIOPEngine {
                 current = gpuFoldTable(table: current, challenge: point[i], halfSize: half)
             } else {
                 let ri = point[i]
-                var next = [Fr](repeating: Fr.zero, count: half)
-                current.withUnsafeBytes { cBuf in
+                current.withUnsafeMutableBytes { cBuf in
                     withUnsafeBytes(of: ri) { rBuf in
-                        next.withUnsafeMutableBytes { outBuf in
-                            bn254_fr_fold_halves(
-                                cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                                rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                                outBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                                Int32(half))
-                        }
+                        bn254_fr_fold_halves_inplace(
+                            cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(half))
                     }
                 }
-                current = next
+                current.removeLast(half)
             }
         }
         return current[0]
@@ -1086,11 +1078,17 @@ public final class GPUHyperPlonkIOPEngine {
     }
 
     private func cpuFoldTable(table: [Fr], challenge: Fr, halfSize: Int) -> [Fr] {
-        let oneMinusR = frSub(Fr.one, challenge)
-        var result = [Fr](repeating: Fr.zero, count: halfSize)
-        for j in 0..<halfSize {
-            result[j] = frAdd(frMul(oneMinusR, table[j]), frMul(challenge, table[j + halfSize]))
+        var result = table
+        var ch = challenge
+        result.withUnsafeMutableBytes { rBuf in
+            withUnsafeBytes(of: &ch) { chBuf in
+                bn254_fr_fold_halves_inplace(
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    chBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(halfSize))
+            }
         }
+        result.removeLast(halfSize)
         return result
     }
 
@@ -1194,19 +1192,15 @@ public func evaluateMLEAtPoint(evals: [Fr], point: [Fr]) -> Fr {
     for i in 0..<numVars {
         let half = current.count / 2
         let ri = point[i]
-        var next = [Fr](repeating: Fr.zero, count: half)
-        current.withUnsafeBytes { cBuf in
+        current.withUnsafeMutableBytes { cBuf in
             withUnsafeBytes(of: ri) { rBuf in
-                next.withUnsafeMutableBytes { outBuf in
-                    bn254_fr_fold_halves(
-                        cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                        outBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                        Int32(half))
-                }
+                bn254_fr_fold_halves_inplace(
+                    cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(half))
             }
         }
-        current = next
+        current.removeLast(half)
     }
     return current[0]
 }

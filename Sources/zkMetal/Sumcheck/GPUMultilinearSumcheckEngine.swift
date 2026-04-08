@@ -215,19 +215,16 @@ public final class GPUMultilinearSumcheckEngine {
             let challenge = transcript.squeeze()
             challenges.append(challenge)
 
-            // Fold table: next[i] = current[i] + r * (current[i+half] - current[i])
-            var next = [Fr](repeating: Fr.zero, count: half)
-            current.withUnsafeBytes { eBuf in
-                next.withUnsafeMutableBytes { rBuf in
-                    withUnsafeBytes(of: challenge) { cBuf in
-                        let ep = eBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
-                        let rp = rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
-                        let cp = cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
-                        bn254_fr_sumcheck_reduce(ep, cp, rp, Int32(half))
-                    }
+            // Fold table in-place: current[i] = current[i] + r * (current[i+half] - current[i])
+            current.withUnsafeMutableBytes { cBuf in
+                withUnsafeBytes(of: challenge) { rBuf in
+                    bn254_fr_sumcheck_reduce_inplace(
+                        cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(half))
                 }
             }
-            current = next
+            current.removeLast(half)
         }
 
         return MultilinearSumcheckProof(
@@ -325,31 +322,25 @@ public final class GPUMultilinearSumcheckEngine {
             let challenge = transcript.squeeze()
             challenges.append(challenge)
 
-            // Fold both tables at challenge r
-            var nextF = [Fr](repeating: Fr.zero, count: half)
-            var nextG = [Fr](repeating: Fr.zero, count: half)
-            currentF.withUnsafeBytes { fBuf in
-                nextF.withUnsafeMutableBytes { rBuf in
-                    withUnsafeBytes(of: challenge) { cBuf in
-                        let fp = fBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
-                        let rp = rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
-                        let cp = cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
-                        bn254_fr_sumcheck_reduce(fp, cp, rp, Int32(half))
-                    }
+            // Fold both tables in-place at challenge r
+            currentF.withUnsafeMutableBytes { fBuf in
+                withUnsafeBytes(of: challenge) { cBuf in
+                    bn254_fr_sumcheck_reduce_inplace(
+                        fBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(half))
                 }
             }
-            currentG.withUnsafeBytes { gBuf in
-                nextG.withUnsafeMutableBytes { rBuf in
-                    withUnsafeBytes(of: challenge) { cBuf in
-                        let gp = gBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
-                        let rp = rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
-                        let cp = cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
-                        bn254_fr_sumcheck_reduce(gp, cp, rp, Int32(half))
-                    }
+            currentF.removeLast(half)
+            currentG.withUnsafeMutableBytes { gBuf in
+                withUnsafeBytes(of: challenge) { cBuf in
+                    bn254_fr_sumcheck_reduce_inplace(
+                        gBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(half))
                 }
             }
-            currentF = nextF
-            currentG = nextG
+            currentG.removeLast(half)
         }
 
         return MultilinearSumcheckProof(

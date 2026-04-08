@@ -389,19 +389,16 @@ public final class GPUFRICommitPhaseEngine {
                         dst.baseAddress!.assumingMemoryBound(to: UInt64.self))
                 }
             }
-            var folded = [Fr](repeating: Fr.zero, count: half)
-            currentEvals.withUnsafeBytes { eBuf in
+            currentEvals.withUnsafeMutableBytes { eBuf in
             withUnsafeBytes(of: challenge) { cBuf in
             yInvs.withUnsafeBytes { tBuf in
-            folded.withUnsafeMutableBytes { rBuf in
-                bn254_fr_fri_fold(
+                bn254_fr_fri_fold_inplace(
                     eBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
                     cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
                     tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
                     Int32(half))
-            }}}}
-            currentEvals = folded
+            }}}
+            currentEvals.removeLast(half)
 
             // Double the domain points for the next round
             var nextDomain = [CircleDomainPoint]()
@@ -705,22 +702,20 @@ public final class GPUFRICommitPhaseEngine {
         // Build domain inverses
         let invTwiddles = precomputeInverseTwiddles(logN: logN)
 
-        var folded = [Fr](repeating: Fr.zero, count: half)
-        evals.withUnsafeBytes { eBuf in
-            invTwiddles.withUnsafeBytes { tBuf in
-                folded.withUnsafeMutableBytes { fBuf in
-                    withUnsafeBytes(of: challenge) { cBuf in
-                        bn254_fr_fri_fold(
-                            eBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            fBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            Int32(half))
-                    }
+        var result = evals
+        result.withUnsafeMutableBytes { eBuf in
+            withUnsafeBytes(of: challenge) { cBuf in
+                invTwiddles.withUnsafeBytes { tBuf in
+                    bn254_fr_fri_fold_inplace(
+                        eBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(half))
                 }
             }
         }
-        return folded
+        result.removeLast(half)
+        return result
     }
 
     // MARK: - Polynomial Splitting

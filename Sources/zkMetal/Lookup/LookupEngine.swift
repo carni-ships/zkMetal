@@ -538,19 +538,15 @@ public class LookupEngine {
         var current = evals
         for r in point {
             let half = current.count / 2
-            var next = [Fr](repeating: Fr.zero, count: half)
-            current.withUnsafeBytes { aBuf in
+            current.withUnsafeMutableBytes { cBuf in
                 withUnsafeBytes(of: r) { rBuf in
-                    next.withUnsafeMutableBytes { outBuf in
-                        bn254_fr_fold_halves(
-                            aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            outBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            Int32(half))
-                    }
+                    bn254_fr_fold_halves_inplace(
+                        cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(half))
                 }
             }
-            current = next
+            current.removeLast(half)
         }
         precondition(current.count == 1)
         return current[0]

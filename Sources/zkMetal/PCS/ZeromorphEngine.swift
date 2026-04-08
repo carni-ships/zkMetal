@@ -248,20 +248,16 @@ public class ZeromorphEngine {
         var current = evaluations
         for k in stride(from: point.count - 1, through: 0, by: -1) {
             let half = current.count / 2
-            var folded = [Fr](repeating: Fr.zero, count: half)
             let uk = point[k]
-            current.withUnsafeBytes { eBuf in
+            current.withUnsafeMutableBytes { eBuf in
                 withUnsafeBytes(of: uk) { rBuf in
-                    folded.withUnsafeMutableBytes { outBuf in
-                        bn254_fr_fold_interleaved(
-                            eBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            outBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            Int32(half))
-                    }
+                    bn254_fr_fold_interleaved_inplace(
+                        eBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(half))
                 }
             }
-            current = folded
+            current.removeLast(half)
         }
         return current[0]
     }
@@ -273,20 +269,16 @@ public class ZeromorphEngine {
         var current = evaluations
         for k in stride(from: point.count - 1, through: 0, by: -1) {
             let half = current.count / 2
-            var folded = [Fr](repeating: Fr.zero, count: half)
             let uk = point[k]
-            current.withUnsafeBytes { eBuf in
+            current.withUnsafeMutableBytes { eBuf in
                 withUnsafeBytes(of: uk) { rBuf in
-                    folded.withUnsafeMutableBytes { outBuf in
-                        bn254_fr_fold_interleaved(
-                            eBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            outBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            Int32(half))
-                    }
+                    bn254_fr_fold_interleaved_inplace(
+                        eBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(half))
                 }
             }
-            current = folded
+            current.removeLast(half)
         }
         return current[0]
     }

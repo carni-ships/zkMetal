@@ -418,17 +418,21 @@ public class GPUFRIFoldEngine {
         let evalsPtr = evals.contents().bindMemory(to: Fr.self, capacity: n)
         let dinvPtr = domainInv.contents().bindMemory(to: Fr.self, capacity: half)
 
-        var folded = [Fr](repeating: Fr.zero, count: half)
-        folded.withUnsafeMutableBytes { fBuf in
+        var folded = [Fr](repeating: Fr.zero, count: n)
+        folded.withUnsafeMutableBytes { dst in
+            dst.copyBytes(from: UnsafeRawBufferPointer(start: UnsafeRawPointer(evalsPtr),
+                                                        count: n * stride))
+        }
+        folded.withUnsafeMutableBytes { eBuf in
             withUnsafeBytes(of: challenge) { cBuf in
-                bn254_fr_fri_fold(
-                    UnsafeRawPointer(evalsPtr).assumingMemoryBound(to: UInt64.self),
+                bn254_fr_fri_fold_inplace(
+                    eBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
                     cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
                     UnsafeRawPointer(dinvPtr).assumingMemoryBound(to: UInt64.self),
-                    fBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
                     Int32(half))
             }
         }
+        folded.removeLast(half)
 
         guard let outBuf = device.makeBuffer(bytes: folded, length: half * stride,
                                               options: .storageModeShared) else {

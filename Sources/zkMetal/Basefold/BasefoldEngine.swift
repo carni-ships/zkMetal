@@ -616,20 +616,17 @@ public class BasefoldEngine {
     public static func cpuFold(evals: [Fr], alpha: Fr) -> [Fr] {
         let n = evals.count
         let halfN = n / 2
-        var result = [Fr](repeating: Fr.zero, count: halfN)
+        var result = evals
         var alphaVal = alpha
-        evals.withUnsafeBytes { evalsPtr in
-            result.withUnsafeMutableBytes { resultPtr in
-                withUnsafeBytes(of: &alphaVal) { alphaPtr in
-                    bn254_fr_basefold_fold(
-                        evalsPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                        resultPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                        alphaPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                        UInt32(halfN)
-                    )
-                }
+        result.withUnsafeMutableBytes { resultPtr in
+            withUnsafeBytes(of: &alphaVal) { alphaPtr in
+                bn254_fr_fold_halves_inplace(
+                    resultPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    alphaPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(halfN))
             }
         }
+        result.removeLast(halfN)
         return result
     }
 

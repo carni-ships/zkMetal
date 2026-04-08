@@ -21,20 +21,16 @@ public func multilinearEval(evals: [Fr], point: [Fr]) -> Fr {
     var current = evals
     for i in 0..<s {
         let half = current.count / 2
-        var next = [Fr](repeating: .zero, count: half)
         let ri = point[i]
-        current.withUnsafeBytes { cBuf in
+        current.withUnsafeMutableBytes { cBuf in
             withUnsafeBytes(of: ri) { rBuf in
-                next.withUnsafeMutableBytes { outBuf in
-                    bn254_fr_fold_interleaved(
-                        cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                        outBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                        Int32(half))
-                }
+                bn254_fr_fold_interleaved_inplace(
+                    cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(half))
             }
         }
-        current = next
+        current.removeLast(half)
     }
     return current[0]
 }

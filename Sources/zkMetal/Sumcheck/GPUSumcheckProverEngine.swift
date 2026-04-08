@@ -238,20 +238,16 @@ public class GPUSumcheckProverEngine {
             let challenge = transcript.squeeze()
             challenges.append(challenge)
 
-            // Fold: current[i] = current[i] + r * (current[i+halfN] - current[i])
-            var next = [Fr](repeating: Fr.zero, count: halfN)
-            current.withUnsafeBytes { eBuf in
-                next.withUnsafeMutableBytes { rBuf in
-                    withUnsafeBytes(of: challenge) { cBuf in
-                        bn254_fr_sumcheck_reduce(
-                            eBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            Int32(halfN))
-                    }
+            // Fold in-place: current[i] = current[i] + r * (current[i+halfN] - current[i])
+            current.withUnsafeMutableBytes { cBuf in
+                withUnsafeBytes(of: challenge) { rBuf in
+                    bn254_fr_sumcheck_reduce_inplace(
+                        cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(halfN))
                 }
             }
-            current = next
+            current.removeLast(halfN)
             currentLogSize -= 1
         }
 

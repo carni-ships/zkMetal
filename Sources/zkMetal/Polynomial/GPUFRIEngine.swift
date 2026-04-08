@@ -9,6 +9,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 // MARK: - FRI field type
 
@@ -480,17 +481,25 @@ public class GPUFRIEngine {
 
         switch field {
         case .bn254:
-            let ptr = evals.contents().bindMemory(to: Fr.self, capacity: n)
+            let stride = MemoryLayout<Fr>.stride
             let invTwiddles = precomputeInverseTwiddles(logN: logSize)
-            var folded = [Fr](repeating: Fr.zero, count: half)
-            for i in 0..<half {
-                let a = ptr[i]
-                let b = ptr[i + half]
-                let sum = frAdd(a, b)
-                let diff = frSub(a, b)
-                let term = frMul(frMul(alpha, invTwiddles[i]), diff)
-                folded[i] = frAdd(sum, term)
+            var folded = [Fr](repeating: Fr.zero, count: n)
+            folded.withUnsafeMutableBytes { dst in
+                dst.copyBytes(from: UnsafeRawBufferPointer(start: evals.contents(),
+                                                            count: n * stride))
             }
+            folded.withUnsafeMutableBytes { eBuf in
+                withUnsafeBytes(of: alpha) { cBuf in
+                    invTwiddles.withUnsafeBytes { tBuf in
+                        bn254_fr_fri_fold_inplace(
+                            eBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(half))
+                    }
+                }
+            }
+            folded.removeLast(half)
             guard let outBuf = device.makeBuffer(bytes: folded, length: half * elemSize,
                                                   options: .storageModeShared) else {
                 throw MSMError.gpuError("CPU fold: failed to allocate output")

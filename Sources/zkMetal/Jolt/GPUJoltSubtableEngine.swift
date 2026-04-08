@@ -454,21 +454,17 @@ public final class GPUJoltSubtableEngine {
 
         for i in 0..<n {
             let half = evals.count / 2
-            var folded = [Fr](repeating: Fr.zero, count: half)
             let ri = point[i]
-            // bn254_fr_fold_interleaved auto-parallelizes for n >= 4096
-            evals.withUnsafeBytes { eBuf in
+            // bn254_fr_fold_interleaved_inplace auto-parallelizes for n >= 4096
+            evals.withUnsafeMutableBytes { eBuf in
                 withUnsafeBytes(of: ri) { rBuf in
-                    folded.withUnsafeMutableBytes { outBuf in
-                        bn254_fr_fold_interleaved(
-                            eBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            outBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            Int32(half))
-                    }
+                    bn254_fr_fold_interleaved_inplace(
+                        eBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(half))
                 }
             }
-            evals = folded
+            evals.removeLast(half)
         }
 
         if profile {

@@ -405,17 +405,15 @@ public class BrakedownEngine {
         var evals = evaluations
         for i in 0..<logN {
             let half = evals.count / 2
-            var folded = [Fr](repeating: Fr.zero, count: half)
-            evals.withUnsafeBytes { eBuf in
-            withUnsafeBytes(of: point[i]) { pBuf in
-            folded.withUnsafeMutableBytes { fBuf in
-                bn254_fr_fold_halves(
-                    eBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                    pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                    fBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                    Int32(half))
-            }}}
-            evals = folded
+            evals.withUnsafeMutableBytes { eBuf in
+                withUnsafeBytes(of: point[i]) { pBuf in
+                    bn254_fr_fold_halves_inplace(
+                        eBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(half))
+                }
+            }
+            evals.removeLast(half)
         }
         return evals[0]
     }

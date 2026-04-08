@@ -123,19 +123,15 @@ public struct MultilinearPoly {
         for i in 0..<numVars {
             let half = current.count / 2
             let ri = point[i]
-            var next = [Fr](repeating: Fr.zero, count: half)
-            current.withUnsafeBytes { cBuf in
+            current.withUnsafeMutableBytes { cBuf in
                 withUnsafeBytes(of: ri) { rBuf in
-                    next.withUnsafeMutableBytes { outBuf in
-                        bn254_fr_fold_halves(
-                            cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            outBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            Int32(half))
-                    }
+                    bn254_fr_fold_halves_inplace(
+                        cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(half))
                 }
             }
-            current = next
+            current.removeLast(half)
         }
         return current[0]
     }

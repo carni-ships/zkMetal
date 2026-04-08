@@ -325,6 +325,26 @@ void bn254_fr_fold_zm_interleaved(const uint64_t *evals, const uint64_t *challen
 void bn254_fr_fold_halves(const uint64_t *arr, const uint64_t *challenge,
                            uint64_t *result, int halfN);
 
+// In-place fold variants: write results to beginning of input buffer, zero allocations.
+/// In-place interleaved fold: data[i] = data[2i] + challenge*(data[2i+1]-data[2i]).
+void bn254_fr_fold_interleaved_inplace(uint64_t *data, const uint64_t *challenge, int halfN);
+
+/// In-place ZM fold: data[i] = data[2i] + challenge * data[2i+1].
+void bn254_fr_fold_zm_interleaved_inplace(uint64_t *data, const uint64_t *challenge, int halfN);
+
+/// In-place fold halves: data[i] = data[i] + challenge*(data[i+halfN]-data[i]).
+void bn254_fr_fold_halves_inplace(uint64_t *data, const uint64_t *challenge, int halfN);
+
+/// In-place sumcheck reduce (same formula as fold_halves_inplace).
+void bn254_fr_sumcheck_reduce_inplace(uint64_t *data, const uint64_t *challenge, int halfN);
+
+/// In-place IPA fold: data[i] = data[i] + challenge*data[i+halfN].
+void bn254_fr_ipa_fold_inplace(uint64_t *data, const uint64_t *challenge, int halfN);
+
+/// In-place FRI fold: data[i] = (data[i]+data[i+half]) + challenge*(data[i]-data[i+half])*invTwiddles[i].
+void bn254_fr_fri_fold_inplace(uint64_t *data, const uint64_t *challenge,
+                                const uint64_t *invTwiddles, int half);
+
 /// Batch FMA: result[i] = result[i] * scalar + other[i] for i in 0..n-1.
 void bn254_fr_batch_fma_scalar(uint64_t *result, const uint64_t *scalar,
                                 const uint64_t *other, int n);

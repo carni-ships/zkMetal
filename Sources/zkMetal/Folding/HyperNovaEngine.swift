@@ -487,19 +487,16 @@ public class HyperNovaEngine {
             transcript.absorb(s1)
             let challenge = transcript.squeeze()
 
-            // C-accelerated interleaved fold: next[i] = current[2i] + challenge*(current[2i+1]-current[2i])
-            var next = [Fr](repeating: .zero, count: half)
-            current.withUnsafeBytes { cBuf in
-            withUnsafeBytes(of: challenge) { chBuf in
-            next.withUnsafeMutableBytes { nBuf in
-                bn254_fr_fold_interleaved(
-                    cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                    chBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                    nBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                    Int32(half)
-                )
-            }}}
-            current = next
+            // C-accelerated in-place interleaved fold: current[i] = current[2i] + challenge*(current[2i+1]-current[2i])
+            current.withUnsafeMutableBytes { cBuf in
+                withUnsafeBytes(of: challenge) { chBuf in
+                    bn254_fr_fold_interleaved_inplace(
+                        cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        chBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(half))
+                }
+            }
+            current.removeLast(half)
         }
 
         let finalEval = current.isEmpty ? Fr.zero : current[0]

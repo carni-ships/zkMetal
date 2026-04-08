@@ -331,21 +331,17 @@ public class LogUpGKRProver {
             transcript.absorb(s2)
             let challenge = transcript.squeeze()
 
-            // Fold: next[j] = current[j] + challenge*(current[j+half] - current[j])
-            var next = [Fr](repeating: Fr.zero, count: half)
+            // In-place fold: current[j] = current[j] + challenge*(current[j+half] - current[j])
             var ch = challenge
-            current.withUnsafeBytes { cBuf in
+            current.withUnsafeMutableBytes { cBuf in
                 withUnsafeBytes(of: &ch) { chBuf in
-                    next.withUnsafeMutableBytes { nBuf in
-                        bn254_fr_fold_halves(
-                            cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            chBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            nBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            Int32(half))
-                    }
+                    bn254_fr_fold_halves_inplace(
+                        cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        chBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(half))
                 }
             }
-            current = next
+            current.removeLast(half)
         }
 
         transcript.absorbLabel(label)

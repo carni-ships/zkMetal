@@ -624,19 +624,17 @@ public class SumcheckEngine {
     public static func cpuReduce(evals: [Fr], challenge: Fr) -> [Fr] {
         let n = evals.count
         let halfN = n / 2
-        var result = [Fr](repeating: Fr.zero, count: halfN)
-        evals.withUnsafeBytes { evalsBuf in
-            result.withUnsafeMutableBytes { resBuf in
-                var chal = challenge
-                withUnsafeBytes(of: &chal) { chalBuf in
-                    bn254_fr_sumcheck_reduce(
-                        evalsBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                        chalBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                        resBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                        Int32(halfN))
-                }
+        var result = evals
+        result.withUnsafeMutableBytes { resBuf in
+            var chal = challenge
+            withUnsafeBytes(of: &chal) { chalBuf in
+                bn254_fr_sumcheck_reduce_inplace(
+                    resBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    chalBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(halfN))
             }
         }
+        result.removeLast(halfN)
         return result
     }
 
@@ -830,19 +828,17 @@ public class SumcheckEngine {
         let k = polynomials.count
         let n = polynomials[0].count
         let halfN = n / 2
-        var result = [[Fr]](repeating: [Fr](repeating: Fr.zero, count: halfN), count: k)
+        var result = polynomials
         withUnsafeBytes(of: challenge) { cPtr in
             let cP = cPtr.baseAddress!.assumingMemoryBound(to: UInt64.self)
             for j in 0..<k {
-                polynomials[j].withUnsafeBytes { pBuf in
-                    result[j].withUnsafeMutableBytes { rBuf in
-                        bn254_fr_sumcheck_reduce(
-                            pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            cP,
-                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            Int32(halfN))
-                    }
+                result[j].withUnsafeMutableBytes { rBuf in
+                    bn254_fr_sumcheck_reduce_inplace(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        cP,
+                        Int32(halfN))
                 }
+                result[j].removeLast(halfN)
             }
         }
         return result

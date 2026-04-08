@@ -121,27 +121,16 @@ public class TensorSumcheckProver {
                 let r = transcript.squeeze()
                 challenges.append(r)
 
-                // Fold: fix this variable to r
-                // folded[i] = (1-r)*lo + r*hi = lo + r*(hi - lo)
-                // Deinterleave to contiguous layout for sumcheck_reduce
-                var deinterleaved = [Fr](repeating: Fr.zero, count: currentEvals.count)
-                for i in 0..<half {
-                    deinterleaved[i] = currentEvals[2 * i]
-                    deinterleaved[i + half] = currentEvals[2 * i + 1]
-                }
-                var folded = [Fr](repeating: Fr.zero, count: half)
-                deinterleaved.withUnsafeBytes { eBuf in
+                // In-place interleaved fold: currentEvals[i] = currentEvals[2i] + r*(currentEvals[2i+1]-currentEvals[2i])
+                currentEvals.withUnsafeMutableBytes { eBuf in
                     withUnsafeBytes(of: r) { rBuf in
-                        folded.withUnsafeMutableBytes { fBuf in
-                            bn254_fr_sumcheck_reduce(
-                                eBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                                rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                                fBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                                Int32(half))
-                        }
+                        bn254_fr_fold_interleaved_inplace(
+                            eBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(half))
                     }
                 }
-                currentEvals = folded
+                currentEvals.removeLast(half)
 
                 // After the last local round, update suffix for next rounds in this factor
                 if localRound < m - 1 {

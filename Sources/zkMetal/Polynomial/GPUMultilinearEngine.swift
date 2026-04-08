@@ -573,19 +573,15 @@ public class GPUMultilinearEngine {
         for round in 0..<point.count {
             let halfN = table.count / 2
             let r = point[round]
-            var next = [Fr](repeating: Fr.zero, count: halfN)
-            table.withUnsafeBytes { tBuf in
+            table.withUnsafeMutableBytes { tBuf in
                 withUnsafeBytes(of: r) { rBuf in
-                    next.withUnsafeMutableBytes { outBuf in
-                        bn254_fr_fold_halves(
-                            tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            outBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            Int32(halfN))
-                    }
+                    bn254_fr_fold_halves_inplace(
+                        tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(halfN))
                 }
             }
-            table = next
+            table.removeLast(halfN)
         }
         return table[0]
     }
@@ -651,18 +647,16 @@ public class GPUMultilinearEngine {
 
     private func bindCPUArray(evals: [Fr], value: Fr) -> [Fr] {
         let halfN = evals.count / 2
-        var result = [Fr](repeating: Fr.zero, count: halfN)
-        evals.withUnsafeBytes { eBuf in
+        var result = evals
+        result.withUnsafeMutableBytes { rBuf in
             withUnsafeBytes(of: value) { vBuf in
-                result.withUnsafeMutableBytes { outBuf in
-                    bn254_fr_fold_halves(
-                        eBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                        vBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                        outBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                        Int32(halfN))
-                }
+                bn254_fr_fold_halves_inplace(
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    vBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(halfN))
             }
         }
+        result.removeLast(halfN)
         return result
     }
 
@@ -757,19 +751,15 @@ public class GPUMultilinearEngine {
         for round in 0..<point.count {
             let halfN = table.count / 2
             let r = point[round]
-            var next = [Fr](repeating: Fr.zero, count: halfN)
-            table.withUnsafeBytes { tBuf in
+            table.withUnsafeMutableBytes { tBuf in
                 withUnsafeBytes(of: r) { rBuf in
-                    next.withUnsafeMutableBytes { outBuf in
-                        bn254_fr_fold_halves(
-                            tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            outBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                            Int32(halfN))
-                    }
+                    bn254_fr_fold_halves_inplace(
+                        tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(halfN))
                 }
             }
-            table = next
+            table.removeLast(halfN)
         }
         return table[0]
     }

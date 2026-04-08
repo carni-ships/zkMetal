@@ -4,6 +4,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 public class FRIEngine {
     public static let version = Versions.fri
@@ -533,24 +534,22 @@ public class FRIEngine {
     public static func cpuFold(evals: [Fr], beta: Fr, logN: Int) -> [Fr] {
         let n = evals.count
         let half = n / 2
-        let omega = frRootOfUnity(logN: logN)
-        let omegaInv = frInverse(omega)
+        let invTwiddles = precomputeInverseTwiddles(logN: logN)
 
-        var folded = [Fr](repeating: Fr.zero, count: half)
-        var w_inv = Fr.one
-
-        for i in 0..<half {
-            let a = evals[i]
-            let b = evals[i + half]
-            let sum = frAdd(a, b)
-            let diff = frSub(a, b)
-            let beta_w = frMul(beta, w_inv)
-            let term = frMul(beta_w, diff)
-            folded[i] = frAdd(sum, term)
-            w_inv = frMul(w_inv, omegaInv)
+        var result = evals
+        result.withUnsafeMutableBytes { eBuf in
+            withUnsafeBytes(of: beta) { bBuf in
+                invTwiddles.withUnsafeBytes { tBuf in
+                    bn254_fr_fri_fold_inplace(
+                        eBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(half))
+                }
+            }
         }
-
-        return folded
+        result.removeLast(half)
+        return result
     }
 
     /// CPU FRI fold-by-4 for correctness verification.
