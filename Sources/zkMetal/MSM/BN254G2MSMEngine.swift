@@ -297,7 +297,16 @@ public class BN254G2MSM {
             return cpuMSM(points: points, scalars: scalars)
         }
 
-        let msmScalars = scalars.map { Self.reduceModR($0) }
+        let msmScalars: [[UInt32]]
+        if n >= 4096 {
+            var par = [[UInt32]](repeating: [], count: n)
+            DispatchQueue.concurrentPerform(iterations: n) { i in
+                par[i] = Self.reduceModR(scalars[i])
+            }
+            msmScalars = par
+        } else {
+            msmScalars = scalars.map { Self.reduceModR($0) }
+        }
         let scalarBits = 256
         let effectiveN = n
 

@@ -272,7 +272,16 @@ public class BLS12377MSM {
             return bls12377CpuMSM(points: points, scalars: msmScalars)
         }
 
-        let msmScalars = scalars.map { Self.reduceModR($0) }
+        let msmScalars: [[UInt32]]
+        if n >= 4096 {
+            var par = [[UInt32]](repeating: [], count: n)
+            DispatchQueue.concurrentPerform(iterations: n) { i in
+                par[i] = Self.reduceModR(scalars[i])
+            }
+            msmScalars = par
+        } else {
+            msmScalars = scalars.map { Self.reduceModR($0) }
+        }
         var scalarBits = 253
         var glvN = 0
 

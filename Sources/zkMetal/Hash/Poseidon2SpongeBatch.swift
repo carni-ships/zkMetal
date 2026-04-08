@@ -81,11 +81,32 @@ public func batchSpongeHashBb(
     inputs: [[Bb]],
     domainTag: UInt32 = 0
 ) -> [Bb] {
-    var results = [Bb]()
-    results.reserveCapacity(inputs.count * 8)
-    for msg in inputs {
-        let h = Poseidon2BbSponge.hash(msg, domainTag: domainTag)
-        results.append(contentsOf: h)
+    let n = inputs.count
+    guard n > 0 else { return [] }
+
+    let outputPerMsg = 8
+    if n < 64 {
+        var results = [Bb]()
+        results.reserveCapacity(n * outputPerMsg)
+        for msg in inputs {
+            let h = Poseidon2BbSponge.hash(msg, domainTag: domainTag)
+            results.append(contentsOf: h)
+        }
+        return results
+    }
+
+    // Large batch: parallel via GCD
+    var results = [Bb](repeating: Bb(v: 0), count: n * outputPerMsg)
+    let chunkSize = max(1, n / ProcessInfo.processInfo.activeProcessorCount)
+    DispatchQueue.concurrentPerform(iterations: (n + chunkSize - 1) / chunkSize) { chunk in
+        let start = chunk * chunkSize
+        let end = min(start + chunkSize, n)
+        for i in start..<end {
+            let h = Poseidon2BbSponge.hash(inputs[i], domainTag: domainTag)
+            for j in 0..<outputPerMsg {
+                results[i * outputPerMsg + j] = h[j]
+            }
+        }
     }
     return results
 }

@@ -303,7 +303,16 @@ public class Secp256k1MSM {
             return cSecpPippengerMSM(points: points, scalars: scalars)
         }
 
-        let msmScalars = scalars.map { Self.reduceModN($0) }
+        let msmScalars: [[UInt32]]
+        if n >= 4096 {
+            var par = [[UInt32]](repeating: [], count: n)
+            DispatchQueue.concurrentPerform(iterations: n) { i in
+                par[i] = Self.reduceModN(scalars[i])
+            }
+            msmScalars = par
+        } else {
+            msmScalars = scalars.map { Self.reduceModN($0) }
+        }
         var scalarBits = 256
 
         var glvN: Int = 0
