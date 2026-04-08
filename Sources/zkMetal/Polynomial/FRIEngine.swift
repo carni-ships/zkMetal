@@ -15,6 +15,7 @@ public class FRIEngine {
     let foldFused4Function: MTLComputePipelineState
     let foldBy4Function: MTLComputePipelineState
     let foldBy8Function: MTLComputePipelineState
+    let foldCascadeFunction: MTLComputePipelineState
     let queryExtractFunction: MTLComputePipelineState
     let cosetShiftFunction: MTLComputePipelineState
     let cosetUnshiftFunction: MTLComputePipelineState
@@ -81,6 +82,7 @@ public class FRIEngine {
               let foldFused4Fn = library.makeFunction(name: "fri_fold_fused4"),
               let foldBy4Fn = library.makeFunction(name: "fri_fold_by4"),
               let foldBy8Fn = library.makeFunction(name: "fri_fold_by8"),
+              let foldCascadeFn = library.makeFunction(name: "fri_fold_cascade"),
               let queryFn = library.makeFunction(name: "fri_query_extract"),
               let shiftFn = library.makeFunction(name: "fri_coset_shift"),
               let unshiftFn = library.makeFunction(name: "fri_coset_unshift") else {
@@ -92,6 +94,7 @@ public class FRIEngine {
         self.foldFused4Function = try device.makeComputePipelineState(function: foldFused4Fn)
         self.foldBy4Function = try device.makeComputePipelineState(function: foldBy4Fn)
         self.foldBy8Function = try device.makeComputePipelineState(function: foldBy8Fn)
+        self.foldCascadeFunction = try device.makeComputePipelineState(function: foldCascadeFn)
         self.queryExtractFunction = try device.makeComputePipelineState(function: queryFn)
         self.cosetShiftFunction = try device.makeComputePipelineState(function: shiftFn)
         self.cosetUnshiftFunction = try device.makeComputePipelineState(function: unshiftFn)
@@ -253,12 +256,43 @@ public class FRIEngine {
 
         let enc = cmdBuf.makeComputeCommandEncoder()!
         var i = 0
+        // Cascade threshold: max elements that fit in 32KB threadgroup shared memory
+        // Each Fr is 32 bytes, so 1024 elements = 32KB
+        let cascadeMaxN = 1024
         while i < betas.count {
             let curN = 1 << (logN - i)
             let curLogN = logN - i
             let outputBuf = useA ? foldBufA! : foldBufB!
 
-            if i + 3 < betas.count && curN >= 16 {
+            // Cascade: when remaining data fits in shared memory, do ALL remaining
+            // rounds in a single kernel dispatch
+            let remainingRounds = betas.count - i
+            if curN <= cascadeMaxN && remainingRounds >= 2 {
+                let invTwiddles = getInvTwiddles(logN: curLogN)
+                var nVal = UInt32(curN)
+                var numRoundsVal = UInt32(remainingRounds)
+
+                // Pack remaining betas into contiguous array
+                var remainingBetas = Array(betas[i..<betas.count])
+                enc.setComputePipelineState(foldCascadeFunction)
+                enc.setBuffer(currentBuf, offset: 0, index: 0)
+                enc.setBuffer(outputBuf, offset: 0, index: 1)
+                enc.setBuffer(invTwiddles, offset: 0, index: 2)
+                remainingBetas.withUnsafeMutableBytes { ptr in
+                    enc.setBytes(ptr.baseAddress!, length: ptr.count, index: 3)
+                }
+                enc.setBytes(&nVal, length: 4, index: 4)
+                enc.setBytes(&numRoundsVal, length: 4, index: 5)
+
+                let halfN = curN / 2
+                // Single threadgroup with n/2 threads
+                enc.dispatchThreadgroups(MTLSize(width: 1, height: 1, depth: 1),
+                                        threadsPerThreadgroup: MTLSize(width: halfN, height: 1, depth: 1))
+
+                currentBuf = outputBuf
+                useA = !useA
+                i = betas.count  // consumed all remaining rounds
+            } else if i + 3 < betas.count && curN >= 16 {
                 // Fused 4-round fold
                 let sixteenthN = curN / 16
                 let invTwiddles = getInvTwiddles(logN: curLogN)

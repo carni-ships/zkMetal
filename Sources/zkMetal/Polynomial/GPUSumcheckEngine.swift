@@ -45,8 +45,10 @@ public class GPUSumcheckEngine {
     private var partialBuf: MTLBuffer?
     private var partialBufCapacity: Int = 0  // in bytes
 
-    // CPU fallback threshold
-    private static let gpuThreshold = 1024
+    // CPU fallback threshold: below this element count, use C kernels on CPU.
+    // At 4096 elements (128KB for BN254 Fr), data fits in L1/L2 cache and
+    // CPU execution is faster than GPU dispatch overhead (~0.5ms per dispatch).
+    private static let gpuThreshold = 4096
 
     public init() throws {
         guard let device = MTLCreateSystemDefaultDevice() else {

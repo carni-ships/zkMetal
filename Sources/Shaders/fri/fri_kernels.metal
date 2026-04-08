@@ -490,6 +490,72 @@ kernel void fri_coset_shift(
     evals[gid] = fr_mul(evals[gid], shift_powers[gid]);
 }
 
+// Fused multi-round FRI fold cascade: loads all data into threadgroup shared memory,
+// performs multiple fold-by-2 rounds entirely in shared memory, writes only the final
+// result to global memory. Eliminates per-round GPU dispatch overhead for small polynomials.
+//
+// Constraints:
+// - n must be a power of 2 and <= 1024 (32KB shared memory / 32 bytes per Fr)
+// - num_rounds fold-by-2 rounds are performed (n -> n/2^num_rounds)
+// - betas[k] is the challenge for round k
+// - inv_twiddles are for the domain of size n (twiddle stride doubles each round)
+// - Dispatched as a SINGLE threadgroup of n/2 threads
+//
+// After all rounds, the first (n >> num_rounds) elements are written to result.
+kernel void fri_fold_cascade(
+    device const Fr* evals          [[buffer(0)]],  // size n
+    device Fr* result               [[buffer(1)]],  // size n >> num_rounds
+    device const Fr* inv_twiddles   [[buffer(2)]],  // omega_n^{-i} for i in [0, n)
+    constant Fr* betas              [[buffer(3)]],  // num_rounds challenges (contiguous)
+    constant uint& n                [[buffer(4)]],  // current domain size (power of 2, <= 1024)
+    constant uint& num_rounds       [[buffer(5)]],  // number of fold rounds to perform
+    uint tid                        [[thread_index_in_threadgroup]],
+    uint tg_size                    [[threads_per_threadgroup]]
+) {
+    // Shared memory for in-place folding (max 1024 Fr elements = 32KB)
+    threadgroup Fr shared_data[1024];
+
+    // Load data into shared memory — each thread loads 2 elements
+    // (we have n/2 threads for n elements)
+    uint half_n = n >> 1;
+    if (tid < half_n) {
+        shared_data[tid] = evals[tid];
+        shared_data[tid + half_n] = evals[tid + half_n];
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Iteratively fold in shared memory
+    uint cur_sz = n;
+    uint tw_stride = 1;  // twiddle stride doubles each round
+
+    for (uint round = 0; round < num_rounds; round++) {
+        uint half_sz = cur_sz >> 1;
+
+        if (tid < half_sz) {
+            Fr a = shared_data[tid];
+            Fr b = shared_data[tid + half_sz];
+            Fr sum = fr_add(a, b);
+            Fr diff = fr_sub(a, b);
+
+            Fr beta_val = betas[round];
+            Fr tw = inv_twiddles[tid * tw_stride];
+            Fr term = fr_mul(fr_mul(beta_val, tw), diff);
+
+            shared_data[tid] = fr_add(sum, term);
+        }
+
+        cur_sz = cur_sz >> 1;
+        tw_stride = tw_stride << 1;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    // Write final result to global memory
+    uint final_size = n >> num_rounds;
+    if (tid < final_size) {
+        result[tid] = shared_data[tid];
+    }
+}
+
 // Coset unshift: inverse of coset_shift
 kernel void fri_coset_unshift(
     device Fr* evals                [[buffer(0)]],

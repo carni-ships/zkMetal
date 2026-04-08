@@ -303,30 +303,29 @@ public class BasefoldEngine {
             currentN = layerN
         }
 
-        // Build Merkle trees with overlapped GPU command buffers.
-        var smallIdxs: [Int] = []
-        var largeIdxs: [Int] = []
+        // Build all Merkle trees in a single command buffer.
+        // Trees use independent buffers so no cross-tree barriers are needed;
+        // encoding them into one CB eliminates per-tree dispatch overhead (~0.5ms each).
+        var treeIdxs: [Int] = []
         for (idx, sz) in treeSizesArr.enumerated() {
             guard sz > 0 else { continue }
-            if sz >= 8192 { largeIdxs.append(idx) } else { smallIdxs.append(idx) }
+            treeIdxs.append(idx)
         }
 
-        // Submit each tree as a separate command buffer for maximum GPU pipelining.
-        // Trees use independent buffers so no cross-tree barriers are needed.
-        var allCBs: [(Int, MTLCommandBuffer)] = []
-        let allIdxs = largeIdxs + smallIdxs
-        for idx in allIdxs {
-            guard let cb = commandQueue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
-            let e = cb.makeComputeCommandEncoder()!
-            merkleEngine.encodeMerkleRoot(encoder: e, treeBuf: treeBufPtrs[idx]!, treeOffset: 0, n: treeSizesArr[idx])
-            e.endEncoding()
-            cb.commit()
-            allCBs.append((idx, cb))
+        if !treeIdxs.isEmpty {
+            guard let merkleCB = commandQueue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
+            let merkleEnc = merkleCB.makeComputeCommandEncoder()!
+            for idx in treeIdxs {
+                merkleEngine.encodeMerkleRoot(encoder: merkleEnc, treeBuf: treeBufPtrs[idx]!, treeOffset: 0, n: treeSizesArr[idx])
+                merkleEnc.memoryBarrier(scope: .buffers)
+            }
+            merkleEnc.endEncoding()
+            merkleCB.commit()
+            merkleCB.waitUntilCompleted()
+            if let err = merkleCB.error { throw MSMError.gpuError("Merkle: \(err.localizedDescription)") }
         }
 
-        for (idx, cb) in allCBs {
-            cb.waitUntilCompleted()
-            if let err = cb.error { throw MSMError.gpuError("Merkle[\(idx)]: \(err.localizedDescription)") }
+        for idx in treeIdxs {
             let tsz = treeNodeCounts[idx]
             let ptr = treeBufPtrs[idx]!.contents().bindMemory(to: Fr.self, capacity: tsz)
             roots[idx] = ptr[tsz - 1]
