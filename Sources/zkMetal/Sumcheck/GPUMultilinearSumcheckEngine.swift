@@ -405,8 +405,18 @@ public final class GPUMultilinearSumcheckEngine {
         var combined = [Fr](repeating: Fr.zero, count: n)
         for j in 0..<k {
             let w = batchWeights[j]
-            for i in 0..<n {
-                combined[i] = frAdd(combined[i], frMul(w, polys[j][i]))
+            polys[j].withUnsafeBytes { pBuf in
+                withUnsafeBytes(of: w) { wBuf in
+                    combined.withUnsafeMutableBytes { cBuf in
+                        let cp = cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                        bn254_fr_batch_linear_combine(
+                            cp,
+                            wBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            cp,
+                            Int32(n))
+                    }
+                }
             }
         }
 
