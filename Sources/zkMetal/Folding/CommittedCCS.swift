@@ -7,6 +7,7 @@
 // checking a degree-1 (linear) constraint, deferring the actual proof.
 
 import Foundation
+import NeonFieldOps
 
 // MARK: - Multilinear Extension
 
@@ -22,11 +23,16 @@ public func multilinearEval(evals: [Fr], point: [Fr]) -> Fr {
         let half = current.count / 2
         var next = [Fr](repeating: .zero, count: half)
         let ri = point[i]
-        let oneMinusR = frSub(Fr.one, ri)
-        for j in 0..<half {
-            // f(r_i) = (1 - r_i) * f(..., 0, ...) + r_i * f(..., 1, ...)
-            next[j] = frAdd(frMul(oneMinusR, current[2 * j]),
-                            frMul(ri, current[2 * j + 1]))
+        current.withUnsafeBytes { cBuf in
+            withUnsafeBytes(of: ri) { rBuf in
+                next.withUnsafeMutableBytes { outBuf in
+                    bn254_fr_fold_interleaved(
+                        cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        outBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(half))
+                }
+            }
         }
         current = next
     }

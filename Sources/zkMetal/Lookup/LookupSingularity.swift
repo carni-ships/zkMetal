@@ -17,6 +17,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 // MARK: - Proof
 
@@ -413,9 +414,16 @@ public class LookupSingularityVerifier {
         for r in point {
             let half = current.count / 2
             var next = [Fr](repeating: Fr.zero, count: half)
-            let oneMinusR = frSub(Fr.one, r)
-            for i in 0..<half {
-                next[i] = frAdd(frMul(oneMinusR, current[i]), frMul(r, current[half + i]))
+            current.withUnsafeBytes { cBuf in
+                withUnsafeBytes(of: r) { rBuf in
+                    next.withUnsafeMutableBytes { outBuf in
+                        bn254_fr_fold_halves(
+                            cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            outBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(half))
+                    }
+                }
             }
             current = next
         }

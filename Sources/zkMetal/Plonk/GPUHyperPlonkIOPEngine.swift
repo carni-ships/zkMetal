@@ -389,10 +389,17 @@ public final class GPUHyperPlonkIOPEngine {
         for i in 0..<numVars {
             let half = current.count / 2
             let ri = point[i]
-            let oneMinusRi = frSub(Fr.one, ri)
             var next = [Fr](repeating: Fr.zero, count: half)
-            for j in 0..<half {
-                next[j] = frAdd(frMul(oneMinusRi, current[j]), frMul(ri, current[j + half]))
+            current.withUnsafeBytes { cBuf in
+                withUnsafeBytes(of: ri) { rBuf in
+                    next.withUnsafeMutableBytes { outBuf in
+                        bn254_fr_fold_halves(
+                            cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            outBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(half))
+                    }
+                }
             }
             current = next
         }
@@ -409,10 +416,17 @@ public final class GPUHyperPlonkIOPEngine {
                 current = gpuFoldTable(table: current, challenge: point[i], halfSize: half)
             } else {
                 let ri = point[i]
-                let oneMinusRi = frSub(Fr.one, ri)
                 var next = [Fr](repeating: Fr.zero, count: half)
-                for j in 0..<half {
-                    next[j] = frAdd(frMul(oneMinusRi, current[j]), frMul(ri, current[j + half]))
+                current.withUnsafeBytes { cBuf in
+                    withUnsafeBytes(of: ri) { rBuf in
+                        next.withUnsafeMutableBytes { outBuf in
+                            bn254_fr_fold_halves(
+                                cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                outBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                Int32(half))
+                        }
+                    }
                 }
                 current = next
             }
@@ -1180,10 +1194,17 @@ public func evaluateMLEAtPoint(evals: [Fr], point: [Fr]) -> Fr {
     for i in 0..<numVars {
         let half = current.count / 2
         let ri = point[i]
-        let oneMinusRi = frSub(Fr.one, ri)
         var next = [Fr](repeating: Fr.zero, count: half)
-        for j in 0..<half {
-            next[j] = frAdd(frMul(oneMinusRi, current[j]), frMul(ri, current[j + half]))
+        current.withUnsafeBytes { cBuf in
+            withUnsafeBytes(of: ri) { rBuf in
+                next.withUnsafeMutableBytes { outBuf in
+                    bn254_fr_fold_halves(
+                        cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        outBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(half))
+                }
+            }
         }
         current = next
     }
