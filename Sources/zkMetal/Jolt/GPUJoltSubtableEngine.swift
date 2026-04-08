@@ -31,6 +31,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 // MARK: - Instruction Type for Subtable Generation
 
@@ -455,25 +456,16 @@ public final class GPUJoltSubtableEngine {
             let half = evals.count / 2
             var folded = [Fr](repeating: Fr.zero, count: half)
             let ri = point[i]
-            let oneMinusRi = frAdd(Fr.one, frNeg(ri))
-
-            if half >= GPUJoltSubtableEngine.gpuThreshold, device != nil {
-                // GPU-like parallel folding
-                let blockSize = 512
-                let numBlocks = (half + blockSize - 1) / blockSize
-                DispatchQueue.concurrentPerform(iterations: numBlocks) { block in
-                    let start = block * blockSize
-                    let end = min(start + blockSize, half)
-                    for j in start..<end {
-                        // f_folded[j] = (1-r_i)*f[2j] + r_i*f[2j+1]
-                        folded[j] = frAdd(frMul(oneMinusRi, evals[2 * j]),
-                                          frMul(ri, evals[2 * j + 1]))
+            // bn254_fr_fold_interleaved auto-parallelizes for n >= 4096
+            evals.withUnsafeBytes { eBuf in
+                withUnsafeBytes(of: ri) { rBuf in
+                    folded.withUnsafeMutableBytes { outBuf in
+                        bn254_fr_fold_interleaved(
+                            eBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            outBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(half))
                     }
-                }
-            } else {
-                for j in 0..<half {
-                    folded[j] = frAdd(frMul(oneMinusRi, evals[2 * j]),
-                                      frMul(ri, evals[2 * j + 1]))
                 }
             }
             evals = folded

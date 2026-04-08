@@ -31,6 +31,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 // MARK: - Structured Table Types
 
@@ -488,12 +489,17 @@ public class GPULassoEngine {
         for v in 0..<numVars {
             let half = size / 2
             let r = point[v]
-            let oneMinusR = frSub(Fr.one, r)
             var next = [Fr](repeating: Fr.zero, count: half)
-            for i in 0..<half {
-                // next[i] = current[2i] * (1 - r) + current[2i+1] * r
-                next[i] = frAdd(frMul(current[2 * i], oneMinusR),
-                                frMul(current[2 * i + 1], r))
+            current.withUnsafeBytes { cBuf in
+                withUnsafeBytes(of: r) { rBuf in
+                    next.withUnsafeMutableBytes { outBuf in
+                        bn254_fr_fold_interleaved(
+                            cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            outBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(half))
+                    }
+                }
             }
             current = next
             size = half
