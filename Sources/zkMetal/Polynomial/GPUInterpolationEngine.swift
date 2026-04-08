@@ -1,4 +1,5 @@
 // GPU-accelerated polynomial interpolation engine
+import NeonFieldOps
 //
 // Recovers polynomial coefficients from evaluation points {(x_i, y_i)}.
 //
@@ -149,12 +150,11 @@ public class GPUInterpolationEngine {
         let n = points.count
         let elemSize = 32 // 8 x UInt32 = 32 bytes per Fr
 
-        // Flatten points for GPU buffer
-        let pointWords = flattenFr(points)
-
-        // Allocate GPU buffers
-        guard let pointsBuf = device.makeBuffer(bytes: pointWords, length: n * elemSize,
-                                                 options: .storageModeShared),
+        // Allocate GPU buffers — pass Fr bytes directly, no flatMap copy
+        guard let pointsBuf = points.withUnsafeBytes({ buf in
+                  device.makeBuffer(bytes: buf.baseAddress!, length: n * elemSize,
+                                    options: .storageModeShared)
+              }),
               let denomsBuf = device.makeBuffer(length: n * elemSize,
                                                  options: .storageModeShared) else {
             throw MSMError.gpuError("Failed to allocate interpolation buffers")
@@ -182,17 +182,20 @@ public class GPUInterpolationEngine {
             throw MSMError.gpuError(error.localizedDescription)
         }
 
-        // Read back denominators
-        let denomPtr = denomsBuf.contents().bindMemory(to: UInt32.self, capacity: n * 8)
-        var denoms = [Fr](repeating: .zero, count: n)
-        for i in 0..<n {
-            let base = i * 8
-            denoms[i] = Fr(v: (denomPtr[base], denomPtr[base+1], denomPtr[base+2], denomPtr[base+3],
-                               denomPtr[base+4], denomPtr[base+5], denomPtr[base+6], denomPtr[base+7]))
-        }
+        // Read back denominators — direct memory bind, no per-element reconstruction
+        let denomFrPtr = denomsBuf.contents().bindMemory(to: Fr.self, capacity: n)
+        let denoms = Array(UnsafeBufferPointer(start: denomFrPtr, count: n))
 
-        // Phase 2: CPU batch inversion (1 inversion + 3n muls)
-        let invDenoms = frBatchInverse(denoms)
+        // Phase 2: CPU batch inversion via C kernel
+        var invDenoms = [Fr](repeating: .zero, count: n)
+        denoms.withUnsafeBytes { dBuf in
+            invDenoms.withUnsafeMutableBytes { iBuf in
+                bn254_fr_batch_inverse(
+                    dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(n),
+                    iBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+            }
+        }
 
         // Phase 3: CPU accumulate Lagrange basis polynomials
         // For each i, compute basis polynomial L_i(x) = prod_{j!=i}(x - x_j) / denom_i
@@ -284,7 +287,15 @@ public class GPUInterpolationEngine {
                 denoms[i] = frMul(denoms[i], frSub(points[i], points[j]))
             }
         }
-        let weights = frBatchInverse(denoms)
+        var weights = [Fr](repeating: .zero, count: n)
+        denoms.withUnsafeBytes { dBuf in
+            weights.withUnsafeMutableBytes { wBuf in
+                bn254_fr_batch_inverse(
+                    dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(n),
+                    wBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+            }
+        }
 
         // Barycentric formula: p(z) = [sum y_i * w_i / (z - x_i)] / [sum w_i / (z - x_i)]
         // Check if z equals any x_i
@@ -292,37 +303,75 @@ public class GPUInterpolationEngine {
             if points[i] == z { return values[i] }
         }
 
-        var numer = Fr.zero
-        var denom = Fr.zero
-        for i in 0..<n {
-            let diff = frSub(z, points[i])
-            let invDiff = frInverse(diff)
-            let wOverDiff = frMul(weights[i], invDiff)
-            numer = frAdd(numer, frMul(values[i], wOverDiff))
-            denom = frAdd(denom, wOverDiff)
+        // Batch compute diffs: diffs[i] = z - points[i]
+        var diffs = [Fr](repeating: .zero, count: n)
+        var zCopy = z
+        points.withUnsafeBytes { pBuf in
+            diffs.withUnsafeMutableBytes { dBuf in
+                withUnsafeBytes(of: &zCopy) { zBuf in
+                    bn254_fr_batch_scalar_sub_neon(
+                        dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        zBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
         }
 
-        return frMul(numer, frInverse(denom))
+        // Batch invert diffs
+        var invDiffs = [Fr](repeating: .zero, count: n)
+        diffs.withUnsafeBytes { dBuf in
+            invDiffs.withUnsafeMutableBytes { iBuf in
+                bn254_fr_batch_inverse(
+                    dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(n),
+                    iBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+            }
+        }
+
+        // Batch compute wOverDiff[i] = weights[i] * invDiffs[i]
+        var wOverDiff = [Fr](repeating: .zero, count: n)
+        weights.withUnsafeBytes { wBuf in
+            invDiffs.withUnsafeBytes { iBuf in
+                wOverDiff.withUnsafeMutableBytes { oBuf in
+                    bn254_fr_batch_mul_neon(
+                        oBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        wBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        iBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
+        }
+
+        // Compute numer = sum(values[i] * wOverDiff[i]) via inner product
+        var numerResult = Fr.zero
+        values.withUnsafeBytes { vBuf in
+            wOverDiff.withUnsafeBytes { wBuf in
+                withUnsafeMutableBytes(of: &numerResult) { rBuf in
+                    bn254_fr_inner_product(
+                        vBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        wBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                }
+            }
+        }
+
+        // Compute denom = sum(wOverDiff[i]) via vector sum
+        var denomResult = Fr.zero
+        wOverDiff.withUnsafeBytes { wBuf in
+            withUnsafeMutableBytes(of: &denomResult) { rBuf in
+                bn254_fr_vector_sum(
+                    wBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(n),
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+            }
+        }
+
+        return frMul(numerResult, frInverse(denomResult))
     }
 
     // MARK: - Helpers
-
-    /// Flatten Fr array to UInt32 array for GPU buffers.
-    private func flattenFr(_ arr: [Fr]) -> [UInt32] {
-        var words = [UInt32](repeating: 0, count: arr.count * 8)
-        for i in 0..<arr.count {
-            let base = i * 8
-            words[base]   = arr[i].v.0
-            words[base+1] = arr[i].v.1
-            words[base+2] = arr[i].v.2
-            words[base+3] = arr[i].v.3
-            words[base+4] = arr[i].v.4
-            words[base+5] = arr[i].v.5
-            words[base+6] = arr[i].v.6
-            words[base+7] = arr[i].v.7
-        }
-        return words
-    }
 
     /// CPU Lagrange interpolation (private, delegates to static method).
     private func cpuLagrangeInterpolate(points: [Fr], values: [Fr]) -> [Fr] {
