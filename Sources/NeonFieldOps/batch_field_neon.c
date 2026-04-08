@@ -462,6 +462,23 @@ void bn254_fr_fold_interleaved(const uint64_t *evals, const uint64_t *challenge,
     }
 }
 
+/// ZM fold interleaved: result[i] = evals[2i] + challenge * evals[2i+1]
+/// For Zeromorph/Gemini where the formula is lo + c*hi (NOT lo + c*(hi-lo)).
+void bn254_fr_fold_zm_interleaved(const uint64_t *evals, const uint64_t *challenge,
+                                   uint64_t *result, int halfN)
+{
+    uint64_t scaled[4];
+    for (int i = 0; i < halfN; i++) {
+        if (i + 2 < halfN) {
+            __builtin_prefetch(&evals[(2 * (i + 2)) * 4], 0, 1);
+        }
+        const uint64_t *lo = &evals[(2 * i) * 4];
+        const uint64_t *hi = &evals[(2 * i + 1) * 4];
+        fr_mont_mul(challenge, hi, scaled);
+        fr_add_branchless(lo, scaled, &result[i * 4]);
+    }
+}
+
 /// Fold halves: result[i] = arr[i] + challenge * (arr[i + halfN] - arr[i])
 /// For non-interleaved layout where first half = arr[0..halfN-1],
 /// second half = arr[halfN..2*halfN-1].

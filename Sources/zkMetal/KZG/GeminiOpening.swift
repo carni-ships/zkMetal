@@ -95,10 +95,15 @@ public class GeminiOpener {
             let uk = point[n - 1 - k]
             let halfLen = current.count / 2
             var folded = [Fr](repeating: Fr.zero, count: halfLen)
-            for i in 0..<halfLen {
-                // even part = current[2*i], odd part = current[2*i + 1]
-                folded[i] = frAdd(current[2 * i], frMul(uk, current[2 * i + 1]))
-            }
+            current.withUnsafeBytes { cBuf in
+            withUnsafeBytes(of: uk) { uBuf in
+            folded.withUnsafeMutableBytes { fBuf in
+                bn254_fr_fold_zm_interleaved(
+                    cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    uBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    fBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(halfLen))
+            }}}
             foldPolynomials.append(folded)
             current = folded
         }
@@ -258,9 +263,15 @@ public class GeminiOpener {
             let halfLen = current.count / 2
             let uk = point[k]
             var folded = [Fr](repeating: Fr.zero, count: halfLen)
-            for i in 0..<halfLen {
-                folded[i] = frAdd(current[2 * i], frMul(uk, current[2 * i + 1]))
-            }
+            current.withUnsafeBytes { cBuf in
+            withUnsafeBytes(of: uk) { uBuf in
+            folded.withUnsafeMutableBytes { fBuf in
+                bn254_fr_fold_zm_interleaved(
+                    cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    uBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    fBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(halfLen))
+            }}}
             current = folded
         }
         return current[0]
