@@ -435,12 +435,36 @@ public class GPURangeProofProtocolEngine {
         transcript.appendLabel("x")
         let x = transcript.challenge()
 
-        // Evaluate l, r at x
+        // Evaluate l, r at x: lVec[i] = l0[i] + x*l1[i], rVec[i] = r0[i] + x*r1[i]
         var lVec = [Fr](repeating: Fr.zero, count: n)
         var rVec = [Fr](repeating: Fr.zero, count: n)
-        for i in 0..<n {
-            lVec[i] = frAdd(l0[i], frMul(l1[i], x))
-            rVec[i] = frAdd(r0[i], frMul(r1[i], x))
+        l0.withUnsafeBytes { l0Buf in
+            withUnsafeBytes(of: x) { xBuf in
+                l1.withUnsafeBytes { l1Buf in
+                    lVec.withUnsafeMutableBytes { lBuf in
+                        bn254_fr_batch_linear_combine(
+                            l0Buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            xBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            l1Buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            lBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
+            }
+        }
+        r0.withUnsafeBytes { r0Buf in
+            withUnsafeBytes(of: x) { xBuf in
+                r1.withUnsafeBytes { r1Buf in
+                    rVec.withUnsafeMutableBytes { rBuf in
+                        bn254_fr_batch_linear_combine(
+                            r0Buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            xBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            r1Buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
+            }
         }
 
         let tHat = innerProduct(lVec, rVec)

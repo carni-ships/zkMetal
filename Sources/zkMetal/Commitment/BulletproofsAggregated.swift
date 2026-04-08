@@ -219,12 +219,36 @@ public class BulletproofsAggregatedProver {
         let x = transcript.challenge()
         let x2 = frMul(x, x)
 
-        // Evaluate l, r at x
+        // Evaluate l, r at x: lVec[i] = l0[i] + x*sL[i], rVec[i] = r0[i] + x*r1[i]
         var lVec = [Fr](repeating: Fr.zero, count: padN)
         var rVec = [Fr](repeating: Fr.zero, count: padN)
-        for i in 0..<padN {
-            lVec[i] = frAdd(l0[i], frMul(sL[i], x))
-            rVec[i] = frAdd(r0[i], frMul(r1[i], x))
+        l0.withUnsafeBytes { l0Buf in
+            withUnsafeBytes(of: x) { xBuf in
+                sL.withUnsafeBytes { slBuf in
+                    lVec.withUnsafeMutableBytes { lBuf in
+                        bn254_fr_batch_linear_combine(
+                            l0Buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            xBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            slBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            lBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(padN))
+                    }
+                }
+            }
+        }
+        r0.withUnsafeBytes { r0Buf in
+            withUnsafeBytes(of: x) { xBuf in
+                r1.withUnsafeBytes { r1Buf in
+                    rVec.withUnsafeMutableBytes { rBuf in
+                        bn254_fr_batch_linear_combine(
+                            r0Buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            xBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            r1Buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(padN))
+                    }
+                }
+            }
         }
 
         let tHat = frInnerProductPad(lVec, rVec)

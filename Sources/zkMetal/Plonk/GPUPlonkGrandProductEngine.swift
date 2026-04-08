@@ -236,15 +236,27 @@ public class GPUPlonkGrandProductEngine {
 
         // Compute ratios: ratio[i] = num[i] * invDen[i]
         var ratios = [Fr](repeating: Fr.zero, count: n)
-        for i in 0..<n {
-            ratios[i] = frMul(numerators[i], invDen[i])
+        numerators.withUnsafeBytes { numBuf in
+            invDen.withUnsafeBytes { denBuf in
+                ratios.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_mul(
+                        numBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        denBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
         }
 
-        // Prefix product: z[0] = 1, z[i+1] = z[i] * ratio[i]
+        // Prefix product: z[0] = 1, z[i] = z[i-1] * ratios[i-1]
         var z = [Fr](repeating: Fr.zero, count: n)
-        z[0] = Fr.one
-        for i in 1..<n {
-            z[i] = frMul(z[i - 1], ratios[i - 1])
+        ratios.withUnsafeBytes { rBuf in
+            z.withUnsafeMutableBytes { zBuf in
+                bn254_fr_prefix_product(
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    zBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(n))
+            }
         }
 
         return PlonkGrandProductResult(

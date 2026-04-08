@@ -1466,4 +1466,23 @@ void bn254_fr_gp_sumcheck_round(
     const uint64_t *eq, const uint64_t *left, const uint64_t *right,
     int half, uint64_t s0[4], uint64_t s1[4], uint64_t s2[4], uint64_t s3[4]);
 
+/// Batch element-wise multiply: result[i] = a[i] * b[i]
+void bn254_fr_batch_mul(const uint64_t *a, const uint64_t *b,
+                         uint64_t *result, int n);
+
+/// Prefix product: result[0] = 1, result[i] = result[i-1] * a[i-1]
+void bn254_fr_prefix_product(const uint64_t *a, uint64_t *result, int n);
+
+/// Batch linear combine: result[i] = a[i] + scalar * b[i]
+void bn254_fr_batch_linear_combine(const uint64_t *a, const uint64_t *scalar,
+                                    const uint64_t *b, uint64_t *result, int n);
+
+/// Batch sub: result[i] = a[i] - b[i]
+void bn254_fr_batch_sub(const uint64_t *a, const uint64_t *b,
+                          uint64_t *result, int n);
+
+/// Batch add: result[i] = a[i] + b[i]
+void bn254_fr_batch_add(const uint64_t *a, const uint64_t *b,
+                          uint64_t *result, int n);
+
 #endif // NEON_FIELD_OPS_H

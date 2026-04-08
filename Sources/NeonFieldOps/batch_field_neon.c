@@ -1021,3 +1021,72 @@ void bn254_fr_batch_mul_powers(uint64_t *result, const uint64_t *a,
         rPtr += 4;
     }
 }
+
+/// Batch element-wise multiply: result[i] = a[i] * b[i]
+void bn254_fr_batch_mul(const uint64_t *a, const uint64_t *b,
+                         uint64_t *result, int n)
+{
+    for (int i = 0; i < n; i++) {
+        if (i + 2 < n) {
+            __builtin_prefetch(&a[(i + 2) * 4], 0, 1);
+            __builtin_prefetch(&b[(i + 2) * 4], 0, 1);
+        }
+        fr_mont_mul(&a[i * 4], &b[i * 4], &result[i * 4]);
+    }
+}
+
+/// Prefix product: result[0] = 1, result[i] = result[i-1] * a[i-1]
+void bn254_fr_prefix_product(const uint64_t *a, uint64_t *result, int n)
+{
+    if (n <= 0) return;
+    // result[0] = Montgomery(1)
+    static const uint64_t ONE[4] = {
+        0xac96341c4ffffffbULL, 0x36fc76959f60cd29ULL,
+        0x666ea36f7879462eULL, 0x0e0a77c19a07df2fULL
+    };
+    memcpy(result, ONE, 32);
+    for (int i = 1; i < n; i++) {
+        fr_mont_mul(&result[(i - 1) * 4], &a[(i - 1) * 4], &result[i * 4]);
+    }
+}
+
+/// Batch linear combine: result[i] = a[i] + scalar * b[i]
+void bn254_fr_batch_linear_combine(const uint64_t *a, const uint64_t *scalar,
+                                    const uint64_t *b, uint64_t *result, int n)
+{
+    uint64_t tmp[4];
+    for (int i = 0; i < n; i++) {
+        if (i + 2 < n) {
+            __builtin_prefetch(&a[(i + 2) * 4], 0, 1);
+            __builtin_prefetch(&b[(i + 2) * 4], 0, 1);
+        }
+        fr_mont_mul(scalar, &b[i * 4], tmp);
+        fr_add_branchless(&a[i * 4], tmp, &result[i * 4]);
+    }
+}
+
+/// Batch sub: result[i] = a[i] - b[i]
+void bn254_fr_batch_sub(const uint64_t *a, const uint64_t *b,
+                          uint64_t *result, int n)
+{
+    for (int i = 0; i < n; i++) {
+        if (i + 2 < n) {
+            __builtin_prefetch(&a[(i + 2) * 4], 0, 1);
+            __builtin_prefetch(&b[(i + 2) * 4], 0, 1);
+        }
+        fr_sub_branchless(&a[i * 4], &b[i * 4], &result[i * 4]);
+    }
+}
+
+/// Batch add: result[i] = a[i] + b[i]
+void bn254_fr_batch_add(const uint64_t *a, const uint64_t *b,
+                          uint64_t *result, int n)
+{
+    for (int i = 0; i < n; i++) {
+        if (i + 2 < n) {
+            __builtin_prefetch(&a[(i + 2) * 4], 0, 1);
+            __builtin_prefetch(&b[(i + 2) * 4], 0, 1);
+        }
+        fr_add_branchless(&a[i * 4], &b[i * 4], &result[i * 4]);
+    }
+}
