@@ -7,15 +7,14 @@
 //
 // The multiproof protocol:
 //   1. Collect all (commitment, child_index, value) tuples across all queried paths
-//   2. Derive a random evaluation point r via Fiat-Shamir transcript
-//   3. Combine all opening polynomials at r into a single aggregated polynomial
-//   4. Produce one IPA proof for the aggregated opening
-//   5. Verifier reconstructs the same combination and checks the single IPA
+//   2. Deduplicate identical openings across queries
+//   3. Produce one IPA proof per unique opening: <nodeValues, e_{childIndex}> = value
+//   4. Verifier checks each opening's IPA proof independently
 //
-// This is more efficient than N independent proofs because:
-//   - Shared internal nodes are deduplicated (one commitment, one opening)
-//   - The single aggregated IPA proof replaces N separate IPA proofs
-//   - GPU MSM batching amortizes dispatch overhead across all commitments
+// Per-opening IPA proofs are necessary because aggregating openings with different
+// childIndex values into a single IPA breaks the inner product relation due to cross terms.
+//
+// Shared internal nodes are still deduplicated (one commitment, one opening, one IPA).
 //
 // Architecture:
 //   - GPUVerkleMultiproofEngine wraps a GPUVerkleTreeEngine for tree operations
@@ -69,10 +68,11 @@ public struct MultiproofOpening: Equatable {
 
 // MARK: - Compressed Multiproof
 
-/// A compressed multiproof: a single aggregated IPA proof covering all openings.
+/// A compressed multiproof: per-opening IPA proofs covering all openings.
 ///
-/// Instead of N separate IPA proofs, the prover combines all opening polynomials
-/// using powers of a random challenge r, and produces one IPA proof for the sum.
+/// Each opening gets its own IPA proof demonstrating <nodeValues, e_{childIndex}> = value
+/// where e_{childIndex} is the unit vector. This avoids cross-term issues when openings
+/// have different childIndex values.
 public struct CompressedMultiproof {
     /// Unique node commitments referenced across all query paths (deduplicated).
     public let commitments: [PointProjective]
@@ -84,16 +84,12 @@ public struct CompressedMultiproof {
     public let queryOpeningIndices: [[Int]]
     /// Per-query: leaf index.
     public let queryLeafIndices: [Int]
-    /// The aggregated IPA proof (L, R vectors and final scalar).
-    public let aggregatedL: [PointProjective]
-    public let aggregatedR: [PointProjective]
-    public let aggregatedFinalA: Fr
-    /// The random evaluation point used for aggregation.
-    public let evaluationPoint: Fr
-    /// The aggregated commitment (weighted sum of all opened commitments).
-    public let aggregatedCommitment: PointProjective
-    /// The aggregated value (weighted sum of all opened values).
-    public let aggregatedValue: Fr
+    /// Per-opening IPA proof L vectors.
+    public let ipaLs: [[PointProjective]]
+    /// Per-opening IPA proof R vectors.
+    public let ipaRs: [[PointProjective]]
+    /// Per-opening IPA proof final scalars.
+    public let ipaAs: [Fr]
     /// Root commitment for verification.
     public let root: PointProjective
 
@@ -102,26 +98,29 @@ public struct CompressedMultiproof {
                 values: [Fr],
                 queryOpeningIndices: [[Int]],
                 queryLeafIndices: [Int],
-                aggregatedL: [PointProjective],
-                aggregatedR: [PointProjective],
-                aggregatedFinalA: Fr,
-                evaluationPoint: Fr,
-                aggregatedCommitment: PointProjective,
-                aggregatedValue: Fr,
+                ipaLs: [[PointProjective]],
+                ipaRs: [[PointProjective]],
+                ipaAs: [Fr],
                 root: PointProjective) {
         self.commitments = commitments
         self.childIndices = childIndices
         self.values = values
         self.queryOpeningIndices = queryOpeningIndices
         self.queryLeafIndices = queryLeafIndices
-        self.aggregatedL = aggregatedL
-        self.aggregatedR = aggregatedR
-        self.aggregatedFinalA = aggregatedFinalA
-        self.evaluationPoint = evaluationPoint
-        self.aggregatedCommitment = aggregatedCommitment
-        self.aggregatedValue = aggregatedValue
+        self.ipaLs = ipaLs
+        self.ipaRs = ipaRs
+        self.ipaAs = ipaAs
         self.root = root
     }
+
+    // MARK: - Legacy Accessors (backward compatibility)
+
+    /// Legacy accessor: returns the first opening's L vector (or empty).
+    public var aggregatedL: [PointProjective] { ipaLs.first ?? [] }
+    /// Legacy accessor: returns the first opening's R vector (or empty).
+    public var aggregatedR: [PointProjective] { ipaRs.first ?? [] }
+    /// Legacy accessor: returns the first opening's final scalar (or zero).
+    public var aggregatedFinalA: Fr { ipaAs.first ?? Fr.zero }
 }
 
 // MARK: - Serialized Compressed Multiproof
@@ -140,13 +139,11 @@ public struct CompressedMultiproof {
 ///     [1 byte] number of opening indices
 ///     [N bytes] opening indices (1 byte each)
 ///     [4 bytes] leaf index (little-endian u32)
-///   [1 byte] log(width) = number of L/R pairs
-///   [32 * logW bytes] aggregated L points (affine x only, 32 bytes each)
-///   [32 * logW bytes] aggregated R points
-///   [32 bytes] aggregated final scalar a
-///   [32 bytes] evaluation point r
-///   [64 bytes] aggregated commitment (affine x,y)
-///   [32 bytes] aggregated value
+///   [1 byte] log(width) = number of L/R pairs per IPA proof
+///   For each opening:
+///     [64 * logW bytes] L points (affine x,y)
+///     [64 * logW bytes] R points (affine x,y)
+///     [32 bytes] final scalar a
 ///   [64 bytes] root commitment
 public struct SerializedCompressedMultiproof {
     public let data: [UInt8]
@@ -327,13 +324,7 @@ public final class GPUVerkleMultiproofEngine {
     /// Protocol:
     ///   1. For each query, walk the tree path and collect (commitment, childIndex, value) openings
     ///   2. Deduplicate identical openings across queries
-    ///   3. Build a Fiat-Shamir transcript from all openings
-    ///   4. Derive random evaluation point r
-    ///   5. Compute aggregated polynomial: f(x) = sum_i r^i * f_i(x)
-    ///      where f_i is the opening polynomial for opening i
-    ///   6. Compute aggregated commitment: C_agg = sum_i r^i * C_i
-    ///   7. Compute aggregated value: v_agg = sum_i r^i * v_i
-    ///   8. Produce a single IPA proof for (C_agg, f_agg, v_agg)
+    ///   3. Produce one IPA proof per unique opening: <nodeValues, e_{childIndex}> = value
     ///
     /// - Parameter queries: array of MultiproofQuery
     /// - Returns: a CompressedMultiproof
@@ -415,54 +406,22 @@ public final class GPUVerkleMultiproofEngine {
             queryOpeningIndices.append(thisQueryOpenings)
         }
 
-        // Step 2: Build Fiat-Shamir transcript
-        var transcript = MultiproofTranscript()
-        transcript.absorbPoint(rootCommitment())
-        transcript.absorbInt(allOpenings.count)
+        // Step 2: Generate one IPA proof per unique opening
+        // Each opening proves <nodeValues, e_{childIndex}> = value
+        var ipaLs = [[PointProjective]]()
+        var ipaRs = [[PointProjective]]()
+        var ipaAs = [Fr]()
 
         for opening in allOpenings {
-            transcript.absorbPoint(opening.commitment)
-            transcript.absorbByte(UInt8(opening.childIndex))
-            transcript.absorbFr(opening.value)
+            // Build unit vector b with 1 at childIndex
+            var b = [Fr](repeating: Fr.zero, count: branchingFactor)
+            b[opening.childIndex] = Fr.one
+
+            let ipaProof = try ipaEngine.createProof(a: opening.nodeValues, b: b)
+            ipaLs.append(ipaProof.L)
+            ipaRs.append(ipaProof.R)
+            ipaAs.append(ipaProof.a)
         }
-
-        // Step 3: Derive random evaluation point r
-        let r = transcript.squeezeFr()
-
-        // Step 4: Compute aggregated polynomial
-        // f_agg(x) = sum_i r^i * f_i(x) where f_i has nodeValues[j] at position j
-        // The evaluation vector b for opening i has 1 at childIndex[i] and 0 elsewhere
-        // So the aggregated vector a = sum_i r^i * nodeValues_i
-        // And the aggregated b = sum_i r^i * b_i (pointwise)
-        var aggA = [Fr](repeating: Fr.zero, count: branchingFactor)
-        var aggB = [Fr](repeating: Fr.zero, count: branchingFactor)
-        var aggValue = Fr.zero
-        var rPower = Fr.one  // r^0 = 1
-
-        for opening in allOpenings {
-            // Accumulate a = sum r^i * nodeValues_i
-            for j in 0..<branchingFactor {
-                aggA[j] = frAdd(aggA[j], frMul(rPower, opening.nodeValues[j]))
-            }
-            // Accumulate b: b_i has 1 at childIndex, so aggB[childIndex] += r^i
-            aggB[opening.childIndex] = frAdd(aggB[opening.childIndex], rPower)
-            // Accumulate value
-            aggValue = frAdd(aggValue, frMul(rPower, opening.value))
-
-            rPower = frMul(rPower, r)
-        }
-
-        // Step 5: Compute aggregated commitment C_agg = sum_i r^i * C_i
-        var aggCommitment = PointProjective(x: .one, y: .one, z: .zero) // identity
-        rPower = Fr.one
-        for opening in allOpenings {
-            let scaled = cPointScalarMul(opening.commitment, rPower)
-            aggCommitment = pointAdd(aggCommitment, scaled)
-            rPower = frMul(rPower, r)
-        }
-
-        // Step 6: Generate single IPA proof for (aggA, aggB)
-        let ipaProof = try ipaEngine.createProof(a: aggA, b: aggB)
 
         // Extract unique commitments (preserving order)
         let uniqueCommitments = allOpenings.map { $0.commitment }
@@ -475,12 +434,9 @@ public final class GPUVerkleMultiproofEngine {
             values: values,
             queryOpeningIndices: queryOpeningIndices,
             queryLeafIndices: queryLeafIndices,
-            aggregatedL: ipaProof.L,
-            aggregatedR: ipaProof.R,
-            aggregatedFinalA: ipaProof.a,
-            evaluationPoint: r,
-            aggregatedCommitment: aggCommitment,
-            aggregatedValue: aggValue,
+            ipaLs: ipaLs,
+            ipaRs: ipaRs,
+            ipaAs: ipaAs,
             root: rootCommitment()
         )
     }
@@ -490,64 +446,46 @@ public final class GPUVerkleMultiproofEngine {
     /// Verify a compressed multiproof.
     ///
     /// Protocol:
-    ///   1. Reconstruct the Fiat-Shamir transcript from the proof data
-    ///   2. Re-derive the random evaluation point r
-    ///   3. Recompute the aggregated commitment and value using r
-    ///   4. Verify the single IPA proof against the aggregated commitment/value
+    ///   1. Check structural validity of the proof
+    ///   2. Verify each opening's IPA proof independently:
+    ///      for opening i, verify <nodeValues, e_{childIndex_i}> = value_i
     ///
     /// - Parameter proof: the CompressedMultiproof to verify
-    /// - Returns: true if the proof is valid
+    /// - Returns: true if all per-opening IPA proofs are valid
     public func verifyCompressedMultiproof(_ proof: CompressedMultiproof) -> Bool {
         let numOpenings = proof.commitments.count
         guard numOpenings > 0 else { return false }
         guard proof.childIndices.count == numOpenings else { return false }
         guard proof.values.count == numOpenings else { return false }
-        guard proof.aggregatedL.count == logWidth else { return false }
-        guard proof.aggregatedR.count == logWidth else { return false }
+        guard proof.ipaLs.count == numOpenings else { return false }
+        guard proof.ipaRs.count == numOpenings else { return false }
+        guard proof.ipaAs.count == numOpenings else { return false }
 
-        // Step 1: Reconstruct transcript
-        var transcript = MultiproofTranscript()
-        transcript.absorbPoint(proof.root)
-        transcript.absorbInt(numOpenings)
-
-        for i in 0..<numOpenings {
-            transcript.absorbPoint(proof.commitments[i])
-            transcript.absorbByte(UInt8(proof.childIndices[i]))
-            transcript.absorbFr(proof.values[i])
+        // Check root binding: proof root must match the tree root
+        if treeBuilt {
+            let expectedRoot = rootCommitment()
+            if !pointEqual(proof.root, expectedRoot) { return false }
         }
 
-        // Step 2: Re-derive r
-        let r = transcript.squeezeFr()
-
-        // Check that r matches the proof's evaluation point
-        guard frEqual(r, proof.evaluationPoint) else { return false }
-
-        // Step 3: Recompute aggregated commitment and value
-        var aggCommitment = PointProjective(x: .one, y: .one, z: .zero)
-        var aggValue = Fr.zero
-        var aggB = [Fr](repeating: Fr.zero, count: branchingFactor)
-        var rPower = Fr.one
-
+        // Verify each opening's IPA proof independently
         for i in 0..<numOpenings {
-            let scaled = cPointScalarMul(proof.commitments[i], rPower)
-            aggCommitment = pointAdd(aggCommitment, scaled)
-            aggValue = frAdd(aggValue, frMul(rPower, proof.values[i]))
-            aggB[proof.childIndices[i]] = frAdd(aggB[proof.childIndices[i]], rPower)
-            rPower = frMul(rPower, r)
+            guard proof.ipaLs[i].count == logWidth else { return false }
+            guard proof.ipaRs[i].count == logWidth else { return false }
+
+            // Build unit vector b with 1 at childIndex
+            var b = [Fr](repeating: Fr.zero, count: branchingFactor)
+            b[proof.childIndices[i]] = Fr.one
+
+            let valid = ipaEngine.verify(
+                commitment: proof.commitments[i],
+                b: b,
+                innerProductValue: proof.values[i],
+                proof: IPAProof(L: proof.ipaLs[i], R: proof.ipaRs[i], a: proof.ipaAs[i])
+            )
+            if !valid { return false }
         }
 
-        // Verify aggregated commitment matches
-        guard pointEqual(aggCommitment, proof.aggregatedCommitment) else { return false }
-        // Verify aggregated value matches
-        guard frEqual(aggValue, proof.aggregatedValue) else { return false }
-
-        // Step 4: Verify IPA proof (pass raw commitment — verify computes Cbound internally)
-        return ipaEngine.verify(
-            commitment: aggCommitment,
-            b: aggB,
-            innerProductValue: aggValue,
-            proof: IPAProof(L: proof.aggregatedL, R: proof.aggregatedR, a: proof.aggregatedFinalA)
-        )
+        return true
     }
 
     // MARK: - Proof Size Analysis
@@ -666,19 +604,14 @@ public final class GPUVerkleMultiproofEngine {
             appendU32(&bytes, UInt32(proof.queryLeafIndices[i]))
         }
 
-        // Aggregated IPA: L, R, finalA
-        let logW = UInt8(proof.aggregatedL.count)
+        // Per-opening IPA proofs
+        let logW = UInt8(proof.ipaLs.first?.count ?? 0)
         bytes.append(logW)
-        for l in proof.aggregatedL { appendPoint(&bytes, l) }
-        for r in proof.aggregatedR { appendPoint(&bytes, r) }
-        appendFr(&bytes, proof.aggregatedFinalA)
-
-        // Evaluation point
-        appendFr(&bytes, proof.evaluationPoint)
-
-        // Aggregated commitment and value
-        appendPoint(&bytes, proof.aggregatedCommitment)
-        appendFr(&bytes, proof.aggregatedValue)
+        for i in 0..<Int(numO) {
+            for l in proof.ipaLs[i] { appendPoint(&bytes, l) }
+            for r in proof.ipaRs[i] { appendPoint(&bytes, r) }
+            appendFr(&bytes, proof.ipaAs[i])
+        }
 
         // Root
         appendPoint(&bytes, proof.root)
@@ -729,28 +662,29 @@ public final class GPUVerkleMultiproofEngine {
             queryLeafIndices.append(Int(li))
         }
 
-        // IPA proof
+        // Per-opening IPA proofs
         guard offset < bytes.count else { return nil }
         let logW = Int(bytes[offset]); offset += 1
 
-        var aggL = [PointProjective]()
-        for _ in 0..<logW {
-            guard let pt = readPointVal(bytes, &offset) else { return nil }
-            aggL.append(pt)
+        var ipaLs = [[PointProjective]]()
+        var ipaRs = [[PointProjective]]()
+        var ipaAs = [Fr]()
+        for _ in 0..<Int(numO) {
+            var ls = [PointProjective]()
+            for _ in 0..<logW {
+                guard let pt = readPointVal(bytes, &offset) else { return nil }
+                ls.append(pt)
+            }
+            var rs = [PointProjective]()
+            for _ in 0..<logW {
+                guard let pt = readPointVal(bytes, &offset) else { return nil }
+                rs.append(pt)
+            }
+            guard let a = readFrVal(bytes, &offset) else { return nil }
+            ipaLs.append(ls)
+            ipaRs.append(rs)
+            ipaAs.append(a)
         }
-        var aggR = [PointProjective]()
-        for _ in 0..<logW {
-            guard let pt = readPointVal(bytes, &offset) else { return nil }
-            aggR.append(pt)
-        }
-        guard let aggFinalA = readFrVal(bytes, &offset) else { return nil }
-
-        // Evaluation point
-        guard let evalPt = readFrVal(bytes, &offset) else { return nil }
-
-        // Aggregated commitment and value
-        guard let aggCommit = readPointVal(bytes, &offset) else { return nil }
-        guard let aggVal = readFrVal(bytes, &offset) else { return nil }
 
         // Root
         guard let root = readPointVal(bytes, &offset) else { return nil }
@@ -761,12 +695,9 @@ public final class GPUVerkleMultiproofEngine {
             values: values,
             queryOpeningIndices: queryOpeningIndices,
             queryLeafIndices: queryLeafIndices,
-            aggregatedL: aggL,
-            aggregatedR: aggR,
-            aggregatedFinalA: aggFinalA,
-            evaluationPoint: evalPt,
-            aggregatedCommitment: aggCommit,
-            aggregatedValue: aggVal,
+            ipaLs: ipaLs,
+            ipaRs: ipaRs,
+            ipaAs: ipaAs,
             root: root
         )
     }

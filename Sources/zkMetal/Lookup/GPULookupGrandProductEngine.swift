@@ -262,9 +262,20 @@ public class GPULookupGrandProductEngine {
             _tPhase = _t
         }
 
-        // Step 4: Build sorted vector
-        let sorted = try buildSortedVector(witness: compressedWitness,
-                                            table: compressedTable)
+        // Step 4: Pad witness/table to common domain size D = max(n, N)
+        // Plookup split-half formulation requires equal-length sequences
+        let D = max(n, N)
+        var paddedW = compressedWitness
+        while paddedW.count < D {
+            paddedW.append(compressedTable[0])  // dummy lookups (exist in table)
+        }
+        var paddedT = compressedTable
+        while paddedT.count < D {
+            paddedT.append(compressedTable[N - 1])  // repeat last table entry
+        }
+
+        // Step 5: Build sorted vector from padded arrays (length 2D)
+        let sorted = try buildSortedVector(witness: paddedW, table: paddedT)
 
         if profile {
             let _t = CFAbsoluteTimeGetCurrent()
@@ -273,7 +284,7 @@ public class GPULookupGrandProductEngine {
             _tPhase = _t
         }
 
-        // Step 5: Build helper column (optional)
+        // Step 6: Build helper column (optional)
         var helperH: [Fr]? = nil
         if config.computeHelper {
             helperH = buildHelperColumn(sorted: sorted)
@@ -286,9 +297,9 @@ public class GPULookupGrandProductEngine {
             }
         }
 
-        // Step 6: Build grand product accumulator z
+        // Step 7: Build grand product accumulator z
         let (accZ, nums, dens) = try buildAccumulator(
-            witness: compressedWitness, table: compressedTable,
+            witness: paddedW, table: paddedT,
             sorted: sorted, beta: betaVal, gamma: gammaVal)
 
         if profile {
@@ -349,30 +360,36 @@ public class GPULookupGrandProductEngine {
 
         let n = witnessColumns[0].count
         let N = tableColumns[0].count
+        let D = max(n, N)
         let s = proof.sortedVector
 
-        // Check 1: sorted vector length
-        guard s.count == n + N else {
+        // Check 1: sorted vector length = 2D
+        guard s.count == 2 * D else {
             return LookupGrandProductVerification(
                 valid: false,
-                failedCheck: "sorted vector length: expected \(n + N), got \(s.count)")
+                failedCheck: "sorted vector length: expected \(2 * D), got \(s.count)")
         }
 
-        // Check 2: recompute compressed columns and verify multiset
+        // Check 2: recompute compressed columns, pad, and verify multiset
         let compW = compressColumns(witnessColumns, alpha: proof.alpha, count: n)
         let compT = compressColumns(tableColumns, alpha: proof.alpha, count: N)
 
-        if !validateSortedMerge(witness: compW, table: compT, sorted: s) {
+        var paddedW = compW
+        while paddedW.count < D { paddedW.append(compT[0]) }
+        var paddedT = compT
+        while paddedT.count < D { paddedT.append(compT[N - 1]) }
+
+        if !validateSortedMerge(witness: paddedW, table: paddedT, sorted: s) {
             return LookupGrandProductVerification(
                 valid: false, failedCheck: "sorted merge multiset mismatch")
         }
 
         // Check 3: accumulator boundary constraints
         let accZ = proof.accumulatorZ
-        guard accZ.count == n + 1 else {
+        guard accZ.count == D + 1 else {
             return LookupGrandProductVerification(
                 valid: false,
-                failedCheck: "accumulator length: expected \(n + 1), got \(accZ.count)")
+                failedCheck: "accumulator length: expected \(D + 1), got \(accZ.count)")
         }
 
         guard frEqual(accZ[0], Fr.one) else {
@@ -382,30 +399,28 @@ public class GPULookupGrandProductEngine {
 
         guard frEqual(proof.finalAccumulator, Fr.one) else {
             return LookupGrandProductVerification(
-                valid: false, failedCheck: "z[n] != 1 (accumulator does not close)")
+                valid: false, failedCheck: "z[D] != 1 (accumulator does not close)")
         }
 
-        // Check 4: transition constraints
+        // Check 4: transition constraints using split-half Plookup formula
         let beta = proof.beta
         let gamma = proof.gamma
         let onePlusBeta = frAdd(Fr.one, beta)
         let gammaTimesBetaPlusOne = frMul(gamma, onePlusBeta)
 
-        for i in 0..<n {
-            let fTerm = frAdd(gamma, compW[i])
-            let tIdx = i % N
-            let tIdxNext = (i + 1) % N
+        for i in 0..<D {
+            let fTerm = frAdd(gamma, paddedW[i])
             let tTerm = frAdd(gammaTimesBetaPlusOne,
-                              frAdd(compT[tIdx], frMul(beta, compT[tIdxNext])))
+                              frAdd(paddedT[i], frMul(beta, paddedT[(i + 1) % D])))
             let num = frMul(onePlusBeta, frMul(fTerm, tTerm))
 
-            let s2i = 2 * i
+            let h1i = s[2 * i]
+            let h2i = s[2 * i + 1]
+            let h1next = s[2 * ((i + 1) % D)]
             let sTerm1 = frAdd(gammaTimesBetaPlusOne,
-                               frAdd(s[s2i], frMul(beta, s[s2i + 1])))
-            let s2i1 = 2 * i + 1
-            let sIdx2 = min(s2i1 + 1, s.count - 1)
+                               frAdd(h1i, frMul(beta, h2i)))
             let sTerm2 = frAdd(gammaTimesBetaPlusOne,
-                               frAdd(s[s2i1], frMul(beta, s[sIdx2])))
+                               frAdd(h2i, frMul(beta, h1next)))
             let den = frMul(sTerm1, sTerm2)
 
             let lhs = frMul(accZ[i + 1], den)
@@ -676,37 +691,43 @@ public class GPULookupGrandProductEngine {
     internal func buildAccumulator(witness: [Fr], table: [Fr],
                                     sorted: [Fr], beta: Fr,
                                     gamma: Fr) throws -> ([Fr], [Fr], [Fr]) {
-        let n = witness.count
-        let N = table.count
+        let D = witness.count  // padded domain size (witness and table both length D)
+        precondition(table.count == D, "Padded witness and table must have equal length")
+        precondition(sorted.count == 2 * D, "Sorted vector must have length 2D")
         let onePlusBeta = frAdd(Fr.one, beta)
         let gammaTimesBetaPlusOne = frMul(gamma, onePlusBeta)
 
-        var numerators = [Fr](repeating: Fr.zero, count: n)
-        var denominators = [Fr](repeating: Fr.zero, count: n)
+        // Plookup split-half formulation:
+        //   h1[i] = sorted[2i], h2[i] = sorted[2i+1]
+        //   z[i+1] = z[i] * (1+β)(γ+f[i])(γ(1+β)+t[i]+β·t[(i+1)%D])
+        //            / ((γ(1+β)+h1[i]+β·h2[i])(γ(1+β)+h2[i]+β·h1[(i+1)%D]))
+        var numerators = [Fr](repeating: Fr.zero, count: D)
+        var denominators = [Fr](repeating: Fr.zero, count: D)
 
-        for i in 0..<n {
-            // Numerator
+        for i in 0..<D {
             let fTerm = frAdd(gamma, witness[i])
-            let tIdx = i % N
-            let tIdxNext = (i + 1) % N
             let tTerm = frAdd(gammaTimesBetaPlusOne,
-                              frAdd(table[tIdx], frMul(beta, table[tIdxNext])))
+                              frAdd(table[i], frMul(beta, table[(i + 1) % D])))
             numerators[i] = frMul(onePlusBeta, frMul(fTerm, tTerm))
 
-            // Denominator
-            let s2i = 2 * i
+            let h1i = sorted[2 * i]
+            let h2i = sorted[2 * i + 1]
+            let h1next = sorted[2 * ((i + 1) % D)]
             let sTerm1 = frAdd(gammaTimesBetaPlusOne,
-                               frAdd(sorted[s2i], frMul(beta, sorted[s2i + 1])))
-            let s2i1 = 2 * i + 1
-            let sIdx2 = min(s2i1 + 1, sorted.count - 1)
+                               frAdd(h1i, frMul(beta, h2i)))
             let sTerm2 = frAdd(gammaTimesBetaPlusOne,
-                               frAdd(sorted[s2i1], frMul(beta, sorted[sIdx2])))
+                               frAdd(h2i, frMul(beta, h1next)))
             denominators[i] = frMul(sTerm1, sTerm2)
         }
 
-        // GPU-accelerated prefix product of ratios
-        let accZ = grandProductEngine.permutationProduct(
+        // GPU-accelerated prefix product of ratios (returns D elements)
+        var accZ = grandProductEngine.permutationProduct(
             numerators: numerators, denominators: denominators)
+        // Append z[D] = z[D-1] * num[D-1] / den[D-1]
+        if D > 0 {
+            let lastRatio = frMul(numerators[D - 1], frInverse(denominators[D - 1]))
+            accZ.append(frMul(accZ[D - 1], lastRatio))
+        }
 
         return (accZ, numerators, denominators)
     }
@@ -747,7 +768,9 @@ public class GPULookupGrandProductEngine {
     public func evaluateTransitionConstraint(proof: LookupGrandProductProof,
                                               witness: [Fr], table: [Fr],
                                               index i: Int) -> Fr {
+        let n = witness.count
         let N = table.count
+        let D = max(n, N)
         let s = proof.sortedVector
         let accZ = proof.accumulatorZ
         let beta = proof.beta
@@ -755,20 +778,24 @@ public class GPULookupGrandProductEngine {
         let onePlusBeta = frAdd(Fr.one, beta)
         let gammaTimesBetaPlusOne = frMul(gamma, onePlusBeta)
 
-        let fTerm = frAdd(gamma, witness[i])
-        let tIdx = i % N
-        let tIdxNext = (i + 1) % N
+        // Pad
+        var paddedW = witness
+        while paddedW.count < D { paddedW.append(table[0]) }
+        var paddedT = table
+        while paddedT.count < D { paddedT.append(table[N - 1]) }
+
+        let fTerm = frAdd(gamma, paddedW[i])
         let tTerm = frAdd(gammaTimesBetaPlusOne,
-                          frAdd(table[tIdx], frMul(beta, table[tIdxNext])))
+                          frAdd(paddedT[i], frMul(beta, paddedT[(i + 1) % D])))
         let num = frMul(onePlusBeta, frMul(fTerm, tTerm))
 
-        let s2i = 2 * i
+        let h1i = s[2 * i]
+        let h2i = s[2 * i + 1]
+        let h1next = s[2 * ((i + 1) % D)]
         let sTerm1 = frAdd(gammaTimesBetaPlusOne,
-                           frAdd(s[s2i], frMul(beta, s[s2i + 1])))
-        let s2i1 = 2 * i + 1
-        let sIdx2 = min(s2i1 + 1, s.count - 1)
+                           frAdd(h1i, frMul(beta, h2i)))
         let sTerm2 = frAdd(gammaTimesBetaPlusOne,
-                           frAdd(s[s2i1], frMul(beta, s[sIdx2])))
+                           frAdd(h2i, frMul(beta, h1next)))
         let den = frMul(sTerm1, sTerm2)
 
         let lhs = frMul(accZ[i + 1], den)
@@ -781,9 +808,9 @@ public class GPULookupGrandProductEngine {
     /// All should be zero for a valid proof.
     public func evaluateAllTransitions(proof: LookupGrandProductProof,
                                         witness: [Fr], table: [Fr]) -> [Fr] {
-        let n = witness.count
-        var results = [Fr](repeating: Fr.zero, count: n)
-        for i in 0..<n {
+        let D = max(witness.count, table.count)
+        var results = [Fr](repeating: Fr.zero, count: D)
+        for i in 0..<D {
             results[i] = evaluateTransitionConstraint(proof: proof,
                                                        witness: witness,
                                                        table: table, index: i)
@@ -799,26 +826,32 @@ public class GPULookupGrandProductEngine {
                                     sorted: [Fr], beta: Fr, gamma: Fr) -> Bool {
         let n = witness.count
         let N = table.count
+        let D = max(n, N)
         let onePlusBeta = frAdd(Fr.one, beta)
         let gammaTimesBetaPlusOne = frMul(gamma, onePlusBeta)
 
+        var paddedW = witness
+        while paddedW.count < D { paddedW.append(table[0]) }
+        var paddedT = table
+        while paddedT.count < D { paddedT.append(table[N - 1]) }
+
+        guard sorted.count == 2 * D else { return false }
+
         var product = Fr.one
 
-        for i in 0..<n {
-            let fTerm = frAdd(gamma, witness[i])
-            let tIdx = i % N
-            let tIdxNext = (i + 1) % N
+        for i in 0..<D {
+            let fTerm = frAdd(gamma, paddedW[i])
             let tTerm = frAdd(gammaTimesBetaPlusOne,
-                              frAdd(table[tIdx], frMul(beta, table[tIdxNext])))
+                              frAdd(paddedT[i], frMul(beta, paddedT[(i + 1) % D])))
             let num = frMul(onePlusBeta, frMul(fTerm, tTerm))
 
-            let s2i = 2 * i
+            let h1i = sorted[2 * i]
+            let h2i = sorted[2 * i + 1]
+            let h1next = sorted[2 * ((i + 1) % D)]
             let sTerm1 = frAdd(gammaTimesBetaPlusOne,
-                               frAdd(sorted[s2i], frMul(beta, sorted[s2i + 1])))
-            let s2i1 = 2 * i + 1
-            let sIdx2 = min(s2i1 + 1, sorted.count - 1)
+                               frAdd(h1i, frMul(beta, h2i)))
             let sTerm2 = frAdd(gammaTimesBetaPlusOne,
-                               frAdd(sorted[s2i1], frMul(beta, sorted[sIdx2])))
+                               frAdd(h2i, frMul(beta, h1next)))
             let den = frMul(sTerm1, sTerm2)
 
             let ratio = frMul(num, frInverse(den))

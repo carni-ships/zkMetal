@@ -97,7 +97,7 @@ private func testAccumulatorBoundary() {
         // sorted vector length = n + N
         expectEqual(proof.sortedVector.count, 8, "Sorted vector length == n + N")
         // accumulator length = n + 1
-        expectEqual(proof.accumulatorZ.count, 5, "Accumulator length == n + 1")
+        expectEqual(proof.accumulatorZ.count, 5, "Accumulator length == D + 1")
     } catch {
         expect(false, "AccumulatorBoundary threw: \(error)")
     }
@@ -266,7 +266,7 @@ private func testTransitionConstraints() {
             proof: proof,
             witness: proof.compressedWitness,
             table: proof.compressedTable)
-        expectEqual(transitions.count, witness.count, "Transition count == n")
+        expectEqual(transitions.count, max(witness.count, table.count), "Transition count == D")
 
         for i in 0..<transitions.count {
             expect(frEqual(transitions[i], Fr.zero),
@@ -411,8 +411,8 @@ private func testSortedVectorOrdering() {
         let proof = try engine.prove(witness: witness, table: table)
         let s = proof.sortedVector
 
-        // Length should be n + N = 4 + 3 = 7
-        expectEqual(s.count, 7, "Sorted vector length == 7")
+        // Length should be 2*D = 2*max(4,3) = 8 (padded for Plookup)
+        expectEqual(s.count, 8, "Sorted vector length == 8")
 
         // The sorted vector should group identical values together:
         // e.g., all 100s together, all 200s together, all 300s together
@@ -460,7 +460,7 @@ private func testLargerSingleColumn() {
         let result = engine.verify(proof: proof, witness: witness, table: table)
         expect(result.valid, "Larger single-col (n=128, N=256)")
         expect(frEqual(proof.finalAccumulator, Fr.one), "Larger accumulator closes")
-        expectEqual(proof.sortedVector.count, n + N, "Sorted length == n + N")
+        expectEqual(proof.sortedVector.count, 2 * max(n, N), "Sorted length == 2*D")
     } catch {
         expect(false, "LargerSingleColumn threw: \(error)")
     }
@@ -686,14 +686,14 @@ private func testProofStructureFields() {
         expectEqual(proof.compressedWitness.count, 3, "compressedWitness length")
         expectEqual(proof.compressedTable.count, 3, "compressedTable length")
         expectEqual(proof.sortedVector.count, 6, "sortedVector length")
-        expectEqual(proof.accumulatorZ.count, 4, "accumulatorZ length (n+1)")
+        expectEqual(proof.accumulatorZ.count, 4, "accumulatorZ length (D+1)")
         expectEqual(proof.multiplicities.count, 3, "multiplicities length")
 
         // Challenges should match what was passed
         expect(frEqual(proof.beta, beta), "Beta matches input")
         expect(frEqual(proof.gamma, gamma), "Gamma matches input")
 
-        // Transition arrays (if present) should have length n
+        // Transition arrays (if present) should have length D
         if let nums = proof.transitionNumerators {
             expectEqual(nums.count, 3, "transitionNumerators length")
         }
