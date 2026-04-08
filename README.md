@@ -344,12 +344,12 @@ NTT-free multilinear polynomial commitment via recursive sumcheck-based folding.
 
 | Trace Size | Prove | Verify | Proof Size |
 |-----------|-------|--------|------------|
-| 2^8 | 109ms | 15ms | 39 KB |
-| 2^10 | 24ms | 14ms | 53 KB |
-| 2^12 | 22ms | 16ms | 69 KB |
-| 2^14 | 21ms | 28ms | 87 KB |
+| 2^8 | 5.8ms | 9ms | 40 KB |
+| 2^10 | 4.9ms | 14ms | 54 KB |
+| 2^12 | 7.6ms | 16ms | 70 KB |
+| 2^14 | 17ms | 20ms | 89 KB |
 
-Full GPU pipeline: Circle NTT for LDE, GPU constraint evaluation, GPU Keccak Merkle trees, CPU FRI fold. Optimized: batched CBs, trace caching, LDE 0.9ms (was 5ms). Profile at 2^14: LDE 0.9ms, commit 6ms, constraint eval 2ms, FRI 12ms.
+Full GPU pipeline: Circle NTT for LDE, GPU constraint evaluation, GPU Keccak Merkle trees, CPU FRI fold. Profile at 2^14: trace+commit 4ms, constraint+compose 3ms, FRI 11ms (fold 0.3ms + Merkle 9ms + query 0.1ms), query 0.2ms.
 
 ### Plonk (BN254, KZG)
 
@@ -525,7 +525,7 @@ Methodology: Compute-bound = total_ops / 3.6T flops (BN254 mul = ~64 32-bit muls
 | 12 | BLS12-377 MSM 2^18 | 218ms | ~35ms | Wider limbs (253-bit), less optimized window sizes | ~6x |
 | 13 | Keccak Merkle 2^20 | 13ms | ~2.2ms | Compute (24 rounds x 64-bit) + 20 levels | ~6x |
 | 14 | Blake3 Batch 2^20 | 3.5ms | ~0.6ms | Bandwidth (2^20 x 64B) | ~6x |
-| 15 | Circle STARK prove 2^14 | 21ms | ~10ms | Batched CBs, trace caching (56ms→21ms, **2.7x**) | ~2x |
+| 15 | Circle STARK prove 2^14 | 17ms | ~10ms | Profile: FRI 11ms dominates (Merkle 9ms) | ~1.7x |
 | 16 | HyperNova per-fold | 0.09ms | ~0.07ms | Near floor: C CIOS + Keccak + pre-computed affine (40x from 3.6ms) | ~1.3x |
 | 17 | secp256k1 MSM 2^18 | 113ms | ~30ms | No GLV, buffer caching + mixed-add unsafe (**10x** from 1133ms) | ~4x |
 | 18 | Poseidon2 batch 2^16 | 8.1ms | ~1.8ms | Compute (390 ops/elem, 22 sequential rounds limit parallelism) | ~4.5x |
