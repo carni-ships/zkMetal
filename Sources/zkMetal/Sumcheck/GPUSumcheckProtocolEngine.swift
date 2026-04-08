@@ -37,8 +37,21 @@ public struct SumcheckClaim {
 
     /// Convenience: compute claimed sum from evaluations.
     public static func withComputedSum(evals: [Fr]) -> SumcheckClaim {
-        var s = Fr.zero
-        for e in evals { s = frAdd(s, e) }
+        let s: Fr
+        if evals.count >= 256 {
+            var limbs: [UInt64] = [0, 0, 0, 0]
+            evals.withUnsafeBytes { src in
+                bn254_fr_vector_sum(
+                    src.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(evals.count),
+                    &limbs)
+            }
+            s = Fr.from64(limbs)
+        } else {
+            var acc = Fr.zero
+            for e in evals { acc = frAdd(acc, e) }
+            s = acc
+        }
         return SumcheckClaim(evals: evals, claimedSum: s)
     }
 

@@ -61,13 +61,19 @@ extension PolyEngine {
         let rootSize = N + 1 // degree N polynomial has N+1 coefficients
         let rootPtr = tree[rootLevel].contents().bindMemory(to: Fr.self, capacity: rootSize)
         var rootPoly = [Fr](repeating: Fr.zero, count: rootSize)
-        for i in 0..<rootSize { rootPoly[i] = rootPtr[i] }
+        rootPoly.withUnsafeMutableBytes { dst in
+            memcpy(dst.baseAddress!, rootPtr, rootSize * MemoryLayout<Fr>.stride)
+        }
 
         let mPrime = polyDerivative(rootPoly)
 
         // Step 3: Multi-point evaluate M'(x) at all points → weights w_i = M'(z_i)
-        var mPrimePadded = mPrime
-        while mPrimePadded.count < N { mPrimePadded.append(Fr.zero) }
+        var mPrimePadded = [Fr](repeating: Fr.zero, count: N)
+        mPrimePadded.withUnsafeMutableBytes { dst in
+            mPrime.withUnsafeBytes { src in
+                memcpy(dst.baseAddress!, src.baseAddress!, mPrime.count * MemoryLayout<Fr>.stride)
+            }
+        }
         let weights = try remainderTreeDescent(poly: mPrimePadded, tree: tree, logN: logN)
 
         // Step 4: Compute scaled values s_i = y_i / w_i
@@ -138,23 +144,24 @@ extension PolyEngine {
             }
         }
 
+        var basis = [Fr](repeating: Fr.zero, count: n)
+        var basisTmp = [Fr](repeating: Fr.zero, count: n)
         for i in 0..<n {
             let weight = frMul(values[i], denomInvs[i])
 
             // Build numerator polynomial: product_{j!=i} (x - z_j)
-            var basis = [Fr](repeating: Fr.zero, count: n)
+            for k in 0..<n { basis[k] = Fr.zero }
             basis[0] = Fr.one
             var basisLen = 1
             for j in 0..<n where j != i {
                 let negZj = frSub(Fr.zero, points[j])
-                var newBasis = [Fr](repeating: Fr.zero, count: basisLen + 1)
                 for k in 0...basisLen {
                     var val = Fr.zero
                     if k > 0 { val = frAdd(val, basis[k - 1]) }
                     if k < basisLen { val = frAdd(val, frMul(negZj, basis[k])) }
-                    newBasis[k] = val
+                    basisTmp[k] = val
                 }
-                for k in 0..<newBasis.count { basis[k] = newBasis[k] }
+                for k in 0...basisLen { basis[k] = basisTmp[k] }
                 basisLen += 1
             }
 
@@ -186,7 +193,11 @@ extension PolyEngine {
         // Level 0 (leaves): each polynomial is just the scalar s_i (degree 0)
         // Stored as N polynomials of 1 coefficient each.
         var currentLevel = [Fr](repeating: Fr.zero, count: N)
-        for i in 0..<N { currentLevel[i] = scaledValues[i] }
+        currentLevel.withUnsafeMutableBytes { dst in
+            scaledValues.withUnsafeBytes { src in
+                memcpy(dst.baseAddress!, src.baseAddress!, min(N, scaledValues.count) * stride)
+            }
+        }
 
         // Ascend: at level k, we have N/(2^k) polynomials of degree < 2^k
         for k in 0..<logN {
@@ -326,18 +337,15 @@ extension PolyEngine {
     private func multiplyGPU(_ a: [Fr], _ b: [Fr], nttLogN: Int) throws -> [Fr] {
         let nttN = 1 << nttLogN
 
-        // Pad to NTT size
-        var aPad = a
-        while aPad.count < nttN { aPad.append(Fr.zero) }
-        var bPad = b
-        while bPad.count < nttN { bPad.append(Fr.zero) }
-
         let stride = MemoryLayout<Fr>.stride
         let bufSize = nttN * stride
         let aBuf = getCachedBuffer(slot: "mulA", minBytes: bufSize)
         let bBuf = getCachedBuffer(slot: "mulB", minBytes: bufSize)
-        aPad.withUnsafeBytes { src in memcpy(aBuf.contents(), src.baseAddress!, bufSize) }
-        bPad.withUnsafeBytes { src in memcpy(bBuf.contents(), src.baseAddress!, bufSize) }
+        // Zero-fill then copy data directly into GPU buffers (skip intermediate arrays)
+        memset(aBuf.contents(), 0, bufSize)
+        memset(bBuf.contents(), 0, bufSize)
+        a.withUnsafeBytes { src in memcpy(aBuf.contents(), src.baseAddress!, a.count * stride) }
+        b.withUnsafeBytes { src in memcpy(bBuf.contents(), src.baseAddress!, b.count * stride) }
 
         guard let cmdBuf = nttEngine.commandQueue.makeCommandBuffer() else {
             throw MSMError.noCommandBuffer

@@ -522,8 +522,12 @@ public class FRIEngine {
         let n = d * blowupFactor
         precondition(n > 0 && (n & (n - 1)) == 0, "LDE size must be power of 2")
 
-        var padded = coeffs
-        padded.append(contentsOf: [Fr](repeating: Fr.zero, count: n - d))
+        var padded = [Fr](repeating: Fr.zero, count: n)
+        padded.withUnsafeMutableBytes { dst in
+            coeffs.withUnsafeBytes { src in
+                memcpy(dst.baseAddress!, src.baseAddress!, d * MemoryLayout<Fr>.stride)
+            }
+        }
 
         return try nttEngine.ntt(padded)
     }
@@ -904,6 +908,13 @@ public class FRIEngine {
         let merkle = merkleEngine
         let numQueries = queryIndices.count
 
+        // Pre-build Merkle trees for all layers (avoid rebuilding per query)
+        var layerTrees = [[Fr]]()
+        layerTrees.reserveCapacity(commitment.layers.count - 1)
+        for layer in 0..<commitment.layers.count - 1 {
+            layerTrees.append(try merkle.buildTree(commitment.layers[layer]))
+        }
+
         var proofs = [FRIQueryProof]()
         proofs.reserveCapacity(numQueries)
 
@@ -925,8 +936,7 @@ public class FRIEngine {
                 layerEvals.append((evalA, evalB))
 
                 // Get Merkle path for this index
-                let tree = try merkle.buildTree(evals)
-                let path = extractMerklePath(tree: tree, leafCount: n, index: Int(idx))
+                let path = extractMerklePath(tree: layerTrees[layer], leafCount: n, index: Int(idx))
                 merklePaths.append([path])
 
                 // Derive next layer's index: fold maps to lower half
@@ -1215,6 +1225,13 @@ public class FRIEngine {
         let numQueries = queryIndices.count
         let merkle = merkleEngine
 
+        // Pre-build Merkle trees for all layers (avoid rebuilding per query)
+        var layerTrees = [[Fr]]()
+        layerTrees.reserveCapacity(commitment.layers.count - 1)
+        for layer in 0..<commitment.layers.count - 1 {
+            layerTrees.append(try merkle.buildTree(commitment.layers[layer]))
+        }
+
         var proofs = [FRIQueryProof]()
         proofs.reserveCapacity(numQueries)
 
@@ -1227,6 +1244,7 @@ public class FRIEngine {
                 let evals = commitment.layers[layer]
                 let n = evals.count
                 let nextN = commitment.layers[layer + 1].count
+                let tree = layerTrees[layer]
 
                 if nextN == n / 2 {
                     // Fold-by-2 layer
@@ -1235,7 +1253,6 @@ public class FRIEngine {
                     let upperIdx = lowerIdx + halfN
                     layerEvals.append((evals[Int(lowerIdx)], evals[Int(upperIdx)]))
 
-                    let tree = try merkle.buildTree(evals)
                     let path = extractMerklePath(tree: tree, leafCount: n, index: Int(idx))
                     merklePaths.append([path])
 
@@ -1253,7 +1270,6 @@ public class FRIEngine {
                     layerEvals.append((e0, e1))
                     layerEvals.append((e2, e3))
 
-                    let tree = try merkle.buildTree(evals)
                     let path0 = extractMerklePath(tree: tree, leafCount: n, index: Int(baseIdx))
                     let path1 = extractMerklePath(tree: tree, leafCount: n, index: Int(baseIdx + quarterN))
                     let path2 = extractMerklePath(tree: tree, leafCount: n, index: Int(baseIdx + 2 * quarterN))
@@ -1923,6 +1939,13 @@ public class FRIEngine {
         let numQueries = queryIndices.count
         let merkle = merkleEngine
 
+        // Pre-build Merkle trees for all layers (avoid rebuilding per query)
+        var layerTrees = [[Fr]]()
+        layerTrees.reserveCapacity(commitment.layers.count - 1)
+        for layer in 0..<commitment.layers.count - 1 {
+            layerTrees.append(try merkle.buildTree(commitment.layers[layer]))
+        }
+
         var proofs = [FRIQueryProof]()
         proofs.reserveCapacity(numQueries)
 
@@ -1935,6 +1958,7 @@ public class FRIEngine {
                 let evals = commitment.layers[layer]
                 let n = evals.count
                 let nextN = commitment.layers[layer + 1].count
+                let tree = layerTrees[layer]
 
                 if nextN == n / 2 {
                     // Fold-by-2 layer
@@ -1943,7 +1967,6 @@ public class FRIEngine {
                     let upperIdx = lowerIdx + halfN
                     layerEvals.append((evals[Int(lowerIdx)], evals[Int(upperIdx)]))
 
-                    let tree = try merkle.buildTree(evals)
                     let path = extractMerklePath(tree: tree, leafCount: n, index: Int(idx))
                     merklePaths.append([path])
 
@@ -1960,7 +1983,6 @@ public class FRIEngine {
                     layerEvals.append((e0, e1))
                     layerEvals.append((e2, e3))
 
-                    let tree = try merkle.buildTree(evals)
                     let path0 = extractMerklePath(tree: tree, leafCount: n, index: Int(baseIdx))
                     let path1 = extractMerklePath(tree: tree, leafCount: n, index: Int(baseIdx + quarterN))
                     let path2 = extractMerklePath(tree: tree, leafCount: n, index: Int(baseIdx + 2 * quarterN))
@@ -1974,7 +1996,6 @@ public class FRIEngine {
                     let baseIdx = idx % eighthN
                     var octEvals: [Fr] = []
                     var octPaths: [[Fr]] = []
-                    let tree = try merkle.buildTree(evals)
                     for k in 0..<8 {
                         let evalIdx = Int(baseIdx + UInt32(k) * eighthN)
                         octEvals.append(evals[evalIdx])
