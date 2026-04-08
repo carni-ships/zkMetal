@@ -21,6 +21,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 // MARK: - GPU STARK Configuration
 
@@ -321,23 +322,18 @@ public class GPUBabyBearSTARKProver {
         let cosetShiftN = bbPow(cosetShift, UInt32(traceLen))
         let omegaN = bbPow(omega, UInt32(traceLen))  // (ldeLen/traceLen)-th root of unity
         var vanishingVals = [Bb](repeating: Bb.zero, count: ldeLen)
-        var omegaNpow = cosetShiftN  // cosetShift^N * (omega^N)^0
-        for i in 0..<ldeLen {
-            vanishingVals[i] = bbSub(omegaNpow, Bb.one)
-            omegaNpow = bbMul(omegaNpow, omegaN)
+        vanishingVals.withUnsafeMutableBytes { buf in
+            bb_vanishing_poly(cosetShiftN.v, omegaN.v, Bb.one.v,
+                              buf.baseAddress!.assumingMemoryBound(to: UInt32.self),
+                              Int32(ldeLen))
         }
-        // Montgomery batch inversion: compute all 1/zh[i] with 3(n-1) muls + 1 inverse
+        // Batch inversion via C kernel
         var vanishingInv = [Bb](repeating: Bb.zero, count: ldeLen)
-        var prefix = [Bb](repeating: Bb.one, count: ldeLen)
-        for i in 1..<ldeLen {
-            prefix[i] = vanishingVals[i - 1].v == 0 ? prefix[i - 1] : bbMul(prefix[i - 1], vanishingVals[i - 1])
-        }
-        let lastNonZero = vanishingVals[ldeLen - 1].v == 0 ? prefix[ldeLen - 1] : bbMul(prefix[ldeLen - 1], vanishingVals[ldeLen - 1])
-        var inv = bbInverse(lastNonZero)  // single inversion
-        for i in stride(from: ldeLen - 1, through: 0, by: -1) {
-            if vanishingVals[i].v != 0 {
-                vanishingInv[i] = bbMul(inv, prefix[i])
-                inv = bbMul(inv, vanishingVals[i])
+        vanishingVals.withUnsafeBytes { src in
+            vanishingInv.withUnsafeMutableBytes { dst in
+                bb_batch_inverse(src.baseAddress!.assumingMemoryBound(to: UInt32.self),
+                                 dst.baseAddress!.assumingMemoryBound(to: UInt32.self),
+                                 Int32(ldeLen))
             }
         }
 
@@ -450,50 +446,31 @@ public class GPUBabyBearSTARKProver {
             var omegaPows = [Bb](repeating: Bb.one, count: half)
             for i in 1..<half { omegaPows[i] = bbMul(omegaPows[i - 1], omega) }
 
-            // Batch inversion of oddDenoms = 2 * omega^i
+            // Batch inversion of oddDenoms = 2 * omega^i via C kernel
             var oddDenoms = [Bb](repeating: Bb.zero, count: half)
             for i in 0..<half { oddDenoms[i] = bbMul(Bb(v: 2), omegaPows[i]) }
-            var denomPrefix = [Bb](repeating: Bb.one, count: half)
-            for i in 1..<half {
-                denomPrefix[i] = oddDenoms[i - 1].v == 0 ? denomPrefix[i - 1] : bbMul(denomPrefix[i - 1], oddDenoms[i - 1])
-            }
-            let denomLast = oddDenoms[half - 1].v == 0 ? denomPrefix[half - 1] : bbMul(denomPrefix[half - 1], oddDenoms[half - 1])
-            var denomInv = bbInverse(denomLast)
             var oddDenomInvs = [Bb](repeating: Bb.zero, count: half)
-            for i in stride(from: half - 1, through: 0, by: -1) {
-                if oddDenoms[i].v != 0 {
-                    oddDenomInvs[i] = bbMul(denomInv, denomPrefix[i])
-                    denomInv = bbMul(denomInv, oddDenoms[i])
+            oddDenoms.withUnsafeBytes { src in
+                oddDenomInvs.withUnsafeMutableBytes { dst in
+                    bb_batch_inverse(
+                        src.baseAddress!.assumingMemoryBound(to: UInt32.self),
+                        dst.baseAddress!.assumingMemoryBound(to: UInt32.self),
+                        Int32(half))
                 }
             }
 
+            // FRI fold via C kernel
             var folded = [Bb](repeating: Bb.zero, count: half)
-
-            if half >= config.gpuFRIFoldThreshold {
-                let chunkSize = max(1, half / ProcessInfo.processInfo.activeProcessorCount)
-                let chunks = stride(from: 0, to: half, by: chunkSize).map { start in
-                    (start, min(start + chunkSize, half))
-                }
-
-                folded.withUnsafeMutableBufferPointer { outBuf in
-                    DispatchQueue.concurrentPerform(iterations: chunks.count) { chunkIdx in
-                        let (start, end) = chunks[chunkIdx]
-                        for i in start..<end {
-                            let f0 = currentEvals[i]
-                            let f1 = currentEvals[i + half]
-                            let even = bbMul(bbAdd(f0, f1), inv2)
-                            let odd = bbMul(bbSub(f0, f1), oddDenomInvs[i])
-                            outBuf[i] = bbAdd(even, bbMul(beta, odd))
-                        }
+            currentEvals.withUnsafeBytes { fBuf in
+                oddDenomInvs.withUnsafeBytes { idBuf in
+                    folded.withUnsafeMutableBytes { outBuf in
+                        bb_fri_fold(
+                            fBuf.baseAddress!.assumingMemoryBound(to: UInt32.self),
+                            idBuf.baseAddress!.assumingMemoryBound(to: UInt32.self),
+                            inv2.v, beta.v,
+                            outBuf.baseAddress!.assumingMemoryBound(to: UInt32.self),
+                            Int32(half))
                     }
-                }
-            } else {
-                for i in 0..<half {
-                    let f0 = currentEvals[i]
-                    let f1 = currentEvals[i + half]
-                    let even = bbMul(bbAdd(f0, f1), inv2)
-                    let odd = bbMul(bbSub(f0, f1), oddDenomInvs[i])
-                    folded[i] = bbAdd(even, bbMul(beta, odd))
                 }
             }
 
