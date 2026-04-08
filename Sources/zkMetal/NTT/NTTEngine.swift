@@ -4,6 +4,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 public class NTTEngine {
     public static let version = Versions.nttBN254
@@ -1378,9 +1379,15 @@ public class NTTEngine {
         data = bitReverse(data, logN: logN)
 
         // Scale by 1/n
-        let invN = frInverse(frFromInt(UInt64(n)))
-        for i in 0..<n {
-            data[i] = frMul(data[i], invN)
+        var invN = frInverse(frFromInt(UInt64(n)))
+        data.withUnsafeMutableBytes { dBuf in
+            withUnsafeBytes(of: &invN) { sBuf in
+                bn254_fr_batch_mul_scalar_neon(
+                    dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(n))
+            }
         }
         return data
     }

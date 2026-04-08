@@ -213,22 +213,56 @@ public class NovaFoldProver {
         // Fold public input: x' = x1 + r * x2
         let numPub = runningInstance.x.count
         var foldedX = [Fr](repeating: .zero, count: numPub)
-        for k in 0..<numPub {
-            foldedX[k] = frAdd(runningInstance.x[k], frMul(r, newInstance.x[k]))
+        var rr = r
+        runningInstance.x.withUnsafeBytes { aBuf in
+            newInstance.x.withUnsafeBytes { bBuf in
+                foldedX.withUnsafeMutableBytes { rBuf in
+                    withUnsafeBytes(of: &rr) { rhoBuf in
+                        bn254_fr_linear_combine(
+                            aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rhoBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(numPub))
+                    }
+                }
+            }
         }
 
         // Fold witness: W' = W1 + r * W2
         let witLen = runningWitness.W.count
         var foldedW = [Fr](repeating: .zero, count: witLen)
-        for k in 0..<witLen {
-            foldedW[k] = frAdd(runningWitness.W[k], frMul(r, newWitness.W[k]))
+        runningWitness.W.withUnsafeBytes { aBuf in
+            newWitness.W.withUnsafeBytes { bBuf in
+                foldedW.withUnsafeMutableBytes { rBuf in
+                    withUnsafeBytes(of: &rr) { rhoBuf in
+                        bn254_fr_linear_combine(
+                            aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rhoBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(witLen))
+                    }
+                }
+            }
         }
 
         // Fold error: E' = E1 + r * T
         let m = shape.numConstraints
         var foldedE = [Fr](repeating: .zero, count: m)
-        for k in 0..<m {
-            foldedE[k] = frAdd(runningWitness.E[k], frMul(r, T[k]))
+        runningWitness.E.withUnsafeBytes { aBuf in
+            T.withUnsafeBytes { bBuf in
+                foldedE.withUnsafeMutableBytes { rBuf in
+                    withUnsafeBytes(of: &rr) { rhoBuf in
+                        bn254_fr_linear_combine(
+                            aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rhoBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(m))
+                    }
+                }
+            }
         }
 
         let foldedInst = NovaRelaxedInstance(
