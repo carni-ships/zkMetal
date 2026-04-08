@@ -68,9 +68,21 @@ public class ZeromorphPCS {
             }
             stepQuotients.append(fOdd)
             let uk = point[k]
+            // Batch: folded[i] = fEven[i] + uk * fOdd[i]
             var folded = [Fr](repeating: Fr.zero, count: halfLen)
-            for i in 0..<halfLen {
-                folded[i] = frAdd(fEven[i], frMul(uk, fOdd[i]))
+            fEven.withUnsafeBytes { aBuf in
+                withUnsafeBytes(of: uk) { sBuf in
+                    fOdd.withUnsafeBytes { bBuf in
+                        folded.withUnsafeMutableBytes { outBuf in
+                            bn254_fr_batch_linear_combine(
+                                aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                outBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                Int32(halfLen))
+                        }
+                    }
+                }
             }
             f = folded
         }
@@ -89,8 +101,7 @@ public class ZeromorphPCS {
         // Step 4: Build linearized polynomial L(X) = f(X) - v - sum_s phi_s * q^(s)(X)
         // where phi_s = zeta^{2^s} - u_{n-1-s}
         var zetaPow = zeta
-        var L = [Fr](repeating: Fr.zero, count: N)
-        for i in 0..<N { L[i] = evaluations[i] }
+        var L = evaluations  // copy evaluations into L
         L[0] = frSub(L[0], v)
 
         for s in 0..<n {
@@ -98,10 +109,25 @@ public class ZeromorphPCS {
             let phi = frSub(zetaPow, point[k])
             zetaPow = frMul(zetaPow, zetaPow)  // advance to zeta^{2^{s+1}}
             let q = stepQuotients[s]
-            for j in 0..<q.count {
-                // Subtract phi_s * q^(s)[j] from coefficient j
-                if j < N {
-                    L[j] = frSub(L[j], frMul(phi, q[j]))
+            let qLen = q.count
+            // L[0..<qLen] -= phi * q, using batch mul_scalar + batch sub
+            var phiQ = [Fr](repeating: Fr.zero, count: qLen)
+            q.withUnsafeBytes { qBuf in
+                withUnsafeBytes(of: phi) { sBuf in
+                    phiQ.withUnsafeMutableBytes { outBuf in
+                        bn254_fr_batch_mul_scalar_neon(
+                            outBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            qBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(qLen))
+                    }
+                }
+            }
+            L.withUnsafeMutableBytes { lBuf in
+                let lPtr = lBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                phiQ.withUnsafeBytes { pBuf in
+                    let pPtr = pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    bn254_fr_batch_sub_neon(lPtr, lPtr, pPtr, Int32(qLen))
                 }
             }
         }
@@ -197,8 +223,19 @@ public class ZeromorphPCS {
             stepQuotients.append(fOdd)
             let uk = point[k]
             var folded = [Fr](repeating: Fr.zero, count: halfLen)
-            for i in 0..<halfLen {
-                folded[i] = frAdd(fEven[i], frMul(uk, fOdd[i]))
+            fEven.withUnsafeBytes { aBuf in
+                withUnsafeBytes(of: uk) { sBuf in
+                    fOdd.withUnsafeBytes { bBuf in
+                        folded.withUnsafeMutableBytes { outBuf in
+                            bn254_fr_batch_linear_combine(
+                                aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                outBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                Int32(halfLen))
+                        }
+                    }
+                }
             }
             f = folded
         }
@@ -220,8 +257,7 @@ public class ZeromorphPCS {
         }
 
         // Rebuild L(X) and verify KZG proof
-        var L = [Fr](repeating: Fr.zero, count: N)
-        for i in 0..<N { L[i] = evaluations[i] }
+        var L = evaluations  // copy evaluations into L
         L[0] = frSub(L[0], value)
 
         zetaPow = zeta
@@ -230,9 +266,24 @@ public class ZeromorphPCS {
             let phi = frSub(zetaPow, point[k])
             zetaPow = frMul(zetaPow, zetaPow)
             let q = stepQuotients[s]
-            for j in 0..<q.count {
-                if j < N {
-                    L[j] = frSub(L[j], frMul(phi, q[j]))
+            let qLen = q.count
+            var phiQ = [Fr](repeating: Fr.zero, count: qLen)
+            q.withUnsafeBytes { qBuf in
+                withUnsafeBytes(of: phi) { sBuf in
+                    phiQ.withUnsafeMutableBytes { outBuf in
+                        bn254_fr_batch_mul_scalar_neon(
+                            outBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            qBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(qLen))
+                    }
+                }
+            }
+            L.withUnsafeMutableBytes { lBuf in
+                let lPtr = lBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                phiQ.withUnsafeBytes { pBuf in
+                    let pPtr = pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    bn254_fr_batch_sub_neon(lPtr, lPtr, pPtr, Int32(qLen))
                 }
             }
         }

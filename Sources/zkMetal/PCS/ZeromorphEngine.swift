@@ -88,9 +88,21 @@ public class ZeromorphEngine {
             }
             stepQuotients.append(fOdd)
             let uk = point[k]
+            // Batch: folded[i] = fEven[i] + uk * fOdd[i]
             var folded = [Fr](repeating: Fr.zero, count: halfLen)
-            for i in 0..<halfLen {
-                folded[i] = frAdd(fEven[i], frMul(uk, fOdd[i]))
+            fEven.withUnsafeBytes { aBuf in
+                withUnsafeBytes(of: uk) { sBuf in
+                    fOdd.withUnsafeBytes { bBuf in
+                        folded.withUnsafeMutableBytes { outBuf in
+                            bn254_fr_batch_linear_combine(
+                                aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                outBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                Int32(halfLen))
+                        }
+                    }
+                }
             }
             f = folded
         }
@@ -179,8 +191,19 @@ public class ZeromorphEngine {
             stepQuotients.append(fOdd)
             let uk = point[k]
             var folded = [Fr](repeating: Fr.zero, count: halfLen)
-            for i in 0..<halfLen {
-                folded[i] = frAdd(fEven[i], frMul(uk, fOdd[i]))
+            fEven.withUnsafeBytes { aBuf in
+                withUnsafeBytes(of: uk) { sBuf in
+                    fOdd.withUnsafeBytes { bBuf in
+                        folded.withUnsafeMutableBytes { outBuf in
+                            bn254_fr_batch_linear_combine(
+                                aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                outBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                Int32(halfLen))
+                        }
+                    }
+                }
             }
             f = folded
         }
@@ -274,8 +297,7 @@ public class ZeromorphEngine {
     /// where product_s(X) = (X^{2^s} - u_{n-1-s}) * q^(s)_shifted(X)
     private func buildCombinedPolynomial(evaluations: [Fr], value: Fr, point: [Fr],
                                           stepQuotients: [[Fr]], N: Int, n: Int) -> [Fr] {
-        var P = [Fr](repeating: Fr.zero, count: N)
-        for i in 0..<N { P[i] = evaluations[i] }
+        var P = evaluations  // copy evaluations into P
         P[0] = frSub(P[0], value)
 
         for s in 0..<n {
