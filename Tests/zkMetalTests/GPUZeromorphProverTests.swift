@@ -463,15 +463,16 @@ private func testEvalZMFoldMatchesMLE() {
     expect(frEqual(zmVal00, mleVal00), "ZMFold == MLE at (0,0)")
 
     // Verify ZM fold gives correct values per its own formula
-    // ZM(0,1) = 1 + 0 + 3 + 0 = 4
+    // Variable ordering: point[0] is MSB, point[1] is LSB (fold iterates k from n-1 to 0)
+    // ZM(0,1): point[1]=1 folds LSB first (even+odd), point[0]=0 selects even → 3
     let point01 = [Fr.zero, Fr.one]
     let zmVal01 = GPUZeromorphProverEngine.evaluateZMFold(evaluations: evals, point: point01)
-    expect(frEqual(zmVal01, frFromInt(4)), "ZMFold(0,1) = 4")
+    expect(frEqual(zmVal01, frFromInt(3)), "ZMFold(0,1) = 3")
 
-    // ZM(1,0) = 1 + 2 + 0 + 0 = 3
+    // ZM(1,0): point[1]=0 selects even, point[0]=1 folds (even+odd) → 4
     let point10 = [Fr.one, Fr.zero]
     let zmVal10 = GPUZeromorphProverEngine.evaluateZMFold(evaluations: evals, point: point10)
-    expect(frEqual(zmVal10, frFromInt(3)), "ZMFold(1,0) = 3")
+    expect(frEqual(zmVal10, frFromInt(4)), "ZMFold(1,0) = 4")
 
     // ZM(1,1) = 1 + 2 + 3 + 4 = 10
     let point11 = [Fr.one, Fr.one]
@@ -479,11 +480,14 @@ private func testEvalZMFoldMatchesMLE() {
     expect(frEqual(zmVal11, frFromInt(10)), "ZMFold(1,1) = 10")
 
     // Verify MLE gives standard multilinear values at Boolean points
+    // Same variable ordering: point[0]=MSB, point[1]=LSB
+    // MLE(0,1): point[1]=1 selects odd, point[0]=0 selects low → evals[1] = 2
     let mleVal01 = GPUZeromorphProverEngine.evaluateMLE(evaluations: evals, point: point01)
-    expect(frEqual(mleVal01, frFromInt(3)), "MLE(0,1) = evals[2] = 3")
+    expect(frEqual(mleVal01, frFromInt(2)), "MLE(0,1) = evals[1] = 2")
 
+    // MLE(1,0): point[1]=0 selects even, point[0]=1 selects high → evals[2] = 3
     let mleVal10 = GPUZeromorphProverEngine.evaluateMLE(evaluations: evals, point: point10)
-    expect(frEqual(mleVal10, frFromInt(2)), "MLE(1,0) = evals[1] = 2")
+    expect(frEqual(mleVal10, frFromInt(3)), "MLE(1,0) = evals[2] = 3")
 
     let mleVal11 = GPUZeromorphProverEngine.evaluateMLE(evaluations: evals, point: point11)
     expect(frEqual(mleVal11, frFromInt(4)), "MLE(1,1) = evals[3] = 4")

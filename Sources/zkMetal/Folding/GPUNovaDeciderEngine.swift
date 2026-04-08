@@ -371,8 +371,8 @@ public final class GPUNovaDeciderEngine {
             gEvals[j] = frSub(frSub(ab, ucz), witness.E[j])
         }
 
-        // Step 3: Pad to power of 2
-        let logM = novaDeciderCeilLog2(m)
+        // Step 3: Pad to power of 2 (sumcheck needs at least 1 round)
+        let logM = max(novaDeciderCeilLog2(m), 1)
         let paddedM = 1 << logM
         if gEvals.count < paddedM {
             let orig = gEvals
