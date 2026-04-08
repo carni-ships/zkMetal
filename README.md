@@ -276,26 +276,26 @@ BabyBear at 2^24: **7.3B elements/sec** (native 32-bit arithmetic). Goldilocks: 
 | 2^20 | 1.96ms | 542ms | **276x** |
 | 2^22 | 7.52ms | 2.2s | **295x** |
 
-Full fold-to-constant: 2^20 in 3.0ms (20 rounds, fused 4-round kernels).
+Full fold-to-constant: 2^20 in 2.3ms (20 rounds, fused cascade kernels).
 
 **FRI commit phase (fold + Merkle, full protocol):**
 
 | Size | Fold-by-2 | Fold-by-4 | Fold-by-8 | 8/2 speedup |
 |------|-----------|-----------|-----------|-------------|
-| 2^15 | 66ms | 36ms | 19ms | **3.4x** |
-| 2^16 | 78ms | 36ms | 31ms | **2.5x** |
-| 2^18 | 135ms | 57ms | 32ms | **4.2x** |
-| 2^20 | 323ms | 126ms | 99ms | **3.3x** |
+| 2^15 | 68ms | 37ms | 20ms | **3.5x** |
+| 2^16 | 81ms | 37ms | 33ms | **2.5x** |
+| 2^18 | 137ms | 59ms | 36ms | **3.9x** |
+| 2^20 | 392ms | 132ms | 121ms | **3.2x** |
 
 ### Sumcheck (BN254 Fr)
 
-| Variables | GPU | CPU | Speedup |
-|-----------|-----|-----|---------|
-| 2^14 | 0.89ms | 21ms | **24x** |
-| 2^16 | 0.85ms | 83ms | **98x** |
-| 2^18 | 2.2ms | 337ms | **153x** |
-| 2^20 | 7.3ms | 1.3s | **178x** |
-| 2^22 | 16ms | 5.2s | **325x** |
+| Variables | GPU | C Kernel | Vanilla | GPU vs Vanilla |
+|-----------|-----|----------|---------|----------------|
+| 2^14 | 0.75ms | 0.89ms | 0.8ms | **1x** |
+| 2^16 | 1.1ms | 2.0ms | 2.4ms | **2x** |
+| 2^18 | 2.7ms | 6.2ms | 10.7ms | **4x** |
+| 2^20 | 7.3ms | 18ms | 31ms | **4x** |
+| 2^22 | 17ms | 70ms | 100ms | **6x** |
 
 **Sparse sumcheck** at 1% density: 8-9x faster than dense. At 10%: ~2x faster.
 
@@ -334,9 +334,9 @@ C CIOS Horner evaluation + fused eval/division, cached SRS affine points, CPU MS
 
 | Size | Commit | Open | Verify | Total |
 |------|--------|------|--------|-------|
-| 2^10 | 7.6ms | 18ms | 0.00ms | 26ms |
-| 2^14 | 11ms | 34ms | 0.00ms | 45ms |
-| 2^18 | 46ms | 99ms | 0.00ms | 145ms |
+| 2^10 | 7.4ms | 31ms | 0.00ms | 38ms |
+| 2^14 | 10ms | 64ms | 0.00ms | 74ms |
+| 2^18 | 46ms | 138ms | 0.00ms | 184ms |
 
 NTT-free multilinear polynomial commitment via recursive sumcheck-based folding.
 
