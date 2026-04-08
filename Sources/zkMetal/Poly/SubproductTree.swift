@@ -408,8 +408,13 @@ extension PolyEngine {
         let tg = 256
 
         // Prepare f buffer (padded to nttN)
-        var fPad = Array(f.prefix(modDeg))
-        while fPad.count < nttN { fPad.append(Fr.zero) }
+        var fPad = [Fr](repeating: Fr.zero, count: nttN)
+        let fCopyLen = min(modDeg, f.count)
+        fPad.withUnsafeMutableBytes { p in
+            f.withUnsafeBytes { s in
+                memcpy(p.baseAddress!, s.baseAddress!, fCopyLen * MemoryLayout<Fr>.stride)
+            }
+        }
         let fBuf = createBuffer(fPad)
 
         // h starts as [1/f[0], 0, 0, ...]

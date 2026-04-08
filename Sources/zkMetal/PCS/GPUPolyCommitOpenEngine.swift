@@ -520,8 +520,12 @@ public class GPUPolyCommitOpenEngine {
         let targetN = nextPowerOf2(polynomial.count)
         guard targetN <= generators.count else { throw MSMError.invalidInput }
 
-        var padded = polynomial
-        while padded.count < targetN { padded.append(Fr.zero) }
+        var padded = [Fr](repeating: Fr.zero, count: targetN)
+        padded.withUnsafeMutableBytes { p in
+            polynomial.withUnsafeBytes { s in
+                memcpy(p.baseAddress!, s.baseAddress!, polynomial.count * MemoryLayout<Fr>.stride)
+            }
+        }
         let n = padded.count
         let logN = Int(log2(Double(n)))
 
