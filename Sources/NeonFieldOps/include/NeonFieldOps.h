@@ -315,6 +315,11 @@ void bn254_fr_spartan_sumcheck_deg3(const uint64_t *eq, const uint64_t *az,
 void bn254_fr_fold_interleaved(const uint64_t *evals, const uint64_t *challenge,
                                 uint64_t *result, int halfN);
 
+/// Fold halves: result[i] = arr[i] + challenge * (arr[i + halfN] - arr[i]).
+/// Non-interleaved: first half arr[0..halfN-1], second half arr[halfN..2*halfN-1].
+void bn254_fr_fold_halves(const uint64_t *arr, const uint64_t *challenge,
+                           uint64_t *result, int halfN);
+
 /// Batch FMA: result[i] = result[i] * scalar + other[i] for i in 0..n-1.
 void bn254_fr_batch_fma_scalar(uint64_t *result, const uint64_t *scalar,
                                 const uint64_t *other, int n);

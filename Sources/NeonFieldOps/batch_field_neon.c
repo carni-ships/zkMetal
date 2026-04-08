@@ -462,6 +462,48 @@ void bn254_fr_fold_interleaved(const uint64_t *evals, const uint64_t *challenge,
     }
 }
 
+/// Fold halves: result[i] = arr[i] + challenge * (arr[i + halfN] - arr[i])
+/// For non-interleaved layout where first half = arr[0..halfN-1],
+/// second half = arr[halfN..2*halfN-1].
+void bn254_fr_fold_halves(const uint64_t *arr, const uint64_t *challenge,
+                           uint64_t *result, int halfN)
+{
+    if (halfN >= BATCH_THREAD_THRESHOLD) {
+        int nChunks = MAX_THREADS;
+        if (halfN < nChunks * 1024) nChunks = 4;
+        int chunkSize = halfN / nChunks;
+        int total = halfN;
+        const uint64_t *sa = arr, *sc = challenge;
+        uint64_t *sr = result;
+        dispatch_apply(nChunks, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+            ^(size_t idx) {
+                int start = (int)idx * chunkSize;
+                int end = ((int)idx == nChunks - 1) ? total : start + chunkSize;
+                uint64_t diff[4], scaled[4];
+                for (int i = start; i < end; i++) {
+                    if (i + 2 < end) {
+                        __builtin_prefetch(&sa[(i + 2) * 4], 0, 1);
+                        __builtin_prefetch(&sa[(i + 2 + total) * 4], 0, 1);
+                    }
+                    fr_sub_branchless(&sa[(i + total) * 4], &sa[i * 4], diff);
+                    fr_mont_mul(sc, diff, scaled);
+                    fr_add_branchless(&sa[i * 4], scaled, &sr[i * 4]);
+                }
+            });
+        return;
+    }
+    uint64_t diff[4], scaled[4];
+    for (int i = 0; i < halfN; i++) {
+        if (i + 2 < halfN) {
+            __builtin_prefetch(&arr[(i + 2) * 4], 0, 1);
+            __builtin_prefetch(&arr[(i + 2 + halfN) * 4], 0, 1);
+        }
+        fr_sub_branchless(&arr[(i + halfN) * 4], &arr[i * 4], diff);
+        fr_mont_mul(challenge, diff, scaled);
+        fr_add_branchless(&arr[i * 4], scaled, &result[i * 4]);
+    }
+}
+
 /// Spartan degree-2 sumcheck round:
 ///   s0 = sum_{i<h} w[i]*z[i]
 ///   s1 = sum_{i<h} w[i+h]*z[i+h]

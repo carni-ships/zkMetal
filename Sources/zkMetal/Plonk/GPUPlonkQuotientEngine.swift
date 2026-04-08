@@ -698,14 +698,60 @@ public class GPUPlonkQuotientEngine {
         let qCCoset = evaluateOnCoset(coeffs: qCCoeffs, coset: coset)
 
         // Gate constraint on coset: qL*a + qR*b + qO*c + qM*a*b + qC
+        // Decompose into batch ops: 5 batch_mul + 4 batch_add
+        var qLa = [Fr](repeating: Fr.zero, count: n)
+        var qRb = [Fr](repeating: Fr.zero, count: n)
+        var qOc = [Fr](repeating: Fr.zero, count: n)
+        var ab = [Fr](repeating: Fr.zero, count: n)
+        var qMab = [Fr](repeating: Fr.zero, count: n)
+        // Batch multiplies (auto-parallel for n >= 4096)
+        qLCoset.withUnsafeBytes { a in aCoset.withUnsafeBytes { b in qLa.withUnsafeMutableBytes { r in
+            bn254_fr_batch_mul(a.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                               b.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                               r.baseAddress!.assumingMemoryBound(to: UInt64.self), Int32(n))
+        }}}
+        qRCoset.withUnsafeBytes { a in bCoset.withUnsafeBytes { b in qRb.withUnsafeMutableBytes { r in
+            bn254_fr_batch_mul(a.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                               b.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                               r.baseAddress!.assumingMemoryBound(to: UInt64.self), Int32(n))
+        }}}
+        qOCoset.withUnsafeBytes { a in cCoset.withUnsafeBytes { b in qOc.withUnsafeMutableBytes { r in
+            bn254_fr_batch_mul(a.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                               b.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                               r.baseAddress!.assumingMemoryBound(to: UInt64.self), Int32(n))
+        }}}
+        aCoset.withUnsafeBytes { a in bCoset.withUnsafeBytes { b in ab.withUnsafeMutableBytes { r in
+            bn254_fr_batch_mul(a.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                               b.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                               r.baseAddress!.assumingMemoryBound(to: UInt64.self), Int32(n))
+        }}}
+        qMCoset.withUnsafeBytes { a in ab.withUnsafeBytes { b in qMab.withUnsafeMutableBytes { r in
+            bn254_fr_batch_mul(a.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                               b.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                               r.baseAddress!.assumingMemoryBound(to: UInt64.self), Int32(n))
+        }}}
+        // Sum: gateEvals = qLa + qRb + qOc + qMab + qC
         var gateEvals = [Fr](repeating: Fr.zero, count: n)
-        for i in 0..<n {
-            let qLa = frMul(qLCoset[i], aCoset[i])
-            let qRb = frMul(qRCoset[i], bCoset[i])
-            let qOc = frMul(qOCoset[i], cCoset[i])
-            let qMab = frMul(qMCoset[i], frMul(aCoset[i], bCoset[i]))
-            gateEvals[i] = frAdd(frAdd(frAdd(qLa, qRb), frAdd(qOc, qMab)), qCCoset[i])
-        }
+        qLa.withUnsafeBytes { a in qRb.withUnsafeBytes { b in gateEvals.withUnsafeMutableBytes { r in
+            bn254_fr_batch_add(a.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                               b.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                               r.baseAddress!.assumingMemoryBound(to: UInt64.self), Int32(n))
+        }}}
+        qOc.withUnsafeBytes { a in gateEvals.withUnsafeMutableBytes { r in
+            bn254_fr_batch_add(r.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                               a.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                               r.baseAddress!.assumingMemoryBound(to: UInt64.self), Int32(n))
+        }}
+        qMab.withUnsafeBytes { a in gateEvals.withUnsafeMutableBytes { r in
+            bn254_fr_batch_add(r.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                               a.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                               r.baseAddress!.assumingMemoryBound(to: UInt64.self), Int32(n))
+        }}
+        qCCoset.withUnsafeBytes { a in gateEvals.withUnsafeMutableBytes { r in
+            bn254_fr_batch_add(r.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                               a.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                               r.baseAddress!.assumingMemoryBound(to: UInt64.self), Int32(n))
+        }}
 
         // Divide by Z_H pointwise
         var quotientEvals = [Fr](repeating: Fr.zero, count: n)

@@ -237,9 +237,16 @@ public struct HypercubeEvaluator {
     public func fold(_ arr: [Fr], challenge r: Fr) -> [Fr] {
         let h = arr.count / 2
         var result = [Fr](repeating: Fr.zero, count: h)
-        for i in 0..<h {
-            let diff = frSub(arr[i + h], arr[i])
-            result[i] = frAdd(arr[i], frMul(r, diff))
+        arr.withUnsafeBytes { aBuf in
+            withUnsafeBytes(of: r) { rBuf in
+                result.withUnsafeMutableBytes { outBuf in
+                    bn254_fr_fold_halves(
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        outBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(h))
+                }
+            }
         }
         return result
     }
