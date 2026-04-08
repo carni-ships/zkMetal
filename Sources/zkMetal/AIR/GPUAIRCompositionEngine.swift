@@ -4,6 +4,7 @@
 // chunks for FRI. Supports single-trace and multi-trace (auxiliary) constraints.
 
 import Foundation
+import NeonFieldOps
 
 // MARK: - Composition Domain
 
@@ -814,13 +815,14 @@ public final class GPUAIRCompositionEngine {
             basisValues[onDomain] = Fr.one
         } else {
             // Batch-invert all diffs
-            var bPfx = [Fr](repeating: Fr.one, count: n)
-            for i in 1..<n { bPfx[i] = frMul(bPfx[i - 1], diffs[i - 1]) }
-            var bAcc = frInverse(frMul(bPfx[n - 1], diffs[n - 1]))
             var diffInvs = [Fr](repeating: Fr.zero, count: n)
-            for i in Swift.stride(from: n - 1, through: 0, by: -1) {
-                diffInvs[i] = frMul(bAcc, bPfx[i])
-                bAcc = frMul(bAcc, diffs[i])
+            diffs.withUnsafeBytes { src in
+                diffInvs.withUnsafeMutableBytes { dst in
+                    bn254_fr_batch_inverse(
+                        src.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n),
+                        dst.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                }
             }
             let vanNInv = frMul(vanishing, nInv)
             for i in 0..<n {

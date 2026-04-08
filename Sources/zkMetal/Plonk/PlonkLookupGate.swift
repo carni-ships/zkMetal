@@ -145,19 +145,15 @@ public class PlonkLookupArgument {
             lookupDens[i] = frSqr(den1)
         }
 
-        // Montgomery batch inversion of denominators (nn-1 entries)
+        // Montgomery batch inversion of denominators (C kernel, nn-1 entries)
         let m = nn - 1
-        var lkPrefix = [Fr](repeating: Fr.one, count: m)
-        for i in 1..<m {
-            lkPrefix[i] = lookupDens[i - 1] == Fr.zero ? lkPrefix[i - 1] : frMul(lkPrefix[i - 1], lookupDens[i - 1])
-        }
-        let lkLast = lookupDens[m - 1] == Fr.zero ? lkPrefix[m - 1] : frMul(lkPrefix[m - 1], lookupDens[m - 1])
-        var lkInv = frInverse(lkLast)
         var lookupDenInvs = [Fr](repeating: Fr.zero, count: m)
-        for i in stride(from: m - 1, through: 0, by: -1) {
-            if lookupDens[i] != Fr.zero {
-                lookupDenInvs[i] = frMul(lkInv, lkPrefix[i])
-                lkInv = frMul(lkInv, lookupDens[i])
+        lookupDens.withUnsafeBytes { src in
+            lookupDenInvs.withUnsafeMutableBytes { dst in
+                bn254_fr_batch_inverse_safe(
+                    src.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(m),
+                    dst.baseAddress!.assumingMemoryBound(to: UInt64.self))
             }
         }
         for i in 0..<m {

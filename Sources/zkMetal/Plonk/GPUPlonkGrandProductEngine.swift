@@ -434,17 +434,13 @@ public class GPUPlonkGrandProductEngine {
                 }
             }
 
-            var bPrefix = [Fr](repeating: Fr.one, count: n)
-            for j in 1..<n {
-                bPrefix[j] = diffs[j - 1] == Fr.zero ? bPrefix[j - 1] : frMul(bPrefix[j - 1], diffs[j - 1])
-            }
-            let bLast = diffs[n - 1] == Fr.zero ? bPrefix[n - 1] : frMul(bPrefix[n - 1], diffs[n - 1])
-            var bInv = frInverse(bLast)
             var diffInvs = [Fr](repeating: Fr.zero, count: n)
-            for j in stride(from: n - 1, through: 0, by: -1) {
-                if diffs[j] != Fr.zero {
-                    diffInvs[j] = frMul(bInv, bPrefix[j])
-                    bInv = frMul(bInv, diffs[j])
+            diffs.withUnsafeBytes { src in
+                diffInvs.withUnsafeMutableBytes { dst in
+                    bn254_fr_batch_inverse_safe(
+                        src.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n),
+                        dst.baseAddress!.assumingMemoryBound(to: UInt64.self))
                 }
             }
 
@@ -988,17 +984,13 @@ public class GPUPlonkGrandProductEngine {
         guard n == denominators.count, n > 0 else { return Fr.one }
 
         // Montgomery batch inversion of all denominators
-        var prefix = [Fr](repeating: Fr.one, count: n)
-        for i in 1..<n {
-            prefix[i] = denominators[i - 1] == Fr.zero ? prefix[i - 1] : frMul(prefix[i - 1], denominators[i - 1])
-        }
-        let last = denominators[n - 1] == Fr.zero ? prefix[n - 1] : frMul(prefix[n - 1], denominators[n - 1])
-        var inv = frInverse(last)
         var denInvs = [Fr](repeating: Fr.zero, count: n)
-        for i in stride(from: n - 1, through: 0, by: -1) {
-            if denominators[i] != Fr.zero {
-                denInvs[i] = frMul(inv, prefix[i])
-                inv = frMul(inv, denominators[i])
+        denominators.withUnsafeBytes { src in
+            denInvs.withUnsafeMutableBytes { dst in
+                bn254_fr_batch_inverse_safe(
+                    src.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(n),
+                    dst.baseAddress!.assumingMemoryBound(to: UInt64.self))
             }
         }
 

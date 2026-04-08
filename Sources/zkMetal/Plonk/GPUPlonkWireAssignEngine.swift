@@ -693,18 +693,14 @@ public final class GPUPlonkWireAssignEngine {
             zhVals[i] = vanishingPolyEval(point: cosetPoint, domainSize: n)
             cosetPoint = frMul(cosetPoint, omega)
         }
-        // Montgomery batch inversion of vanishing poly values
-        var zhPfx = [Fr](repeating: Fr.one, count: n)
-        for i in 1..<n {
-            zhPfx[i] = zhVals[i - 1] == Fr.zero ? zhPfx[i - 1] : frMul(zhPfx[i - 1], zhVals[i - 1])
-        }
-        let zhL = zhVals[n - 1] == Fr.zero ? zhPfx[n - 1] : frMul(zhPfx[n - 1], zhVals[n - 1])
-        var zhI = frInverse(zhL)
+        // Montgomery batch inversion of vanishing poly values (C kernel)
         var zhInvs = [Fr](repeating: Fr.zero, count: n)
-        for i in stride(from: n - 1, through: 0, by: -1) {
-            if zhVals[i] != Fr.zero {
-                zhInvs[i] = frMul(zhI, zhPfx[i])
-                zhI = frMul(zhI, zhVals[i])
+        zhVals.withUnsafeBytes { src in
+            zhInvs.withUnsafeMutableBytes { dst in
+                bn254_fr_batch_inverse_safe(
+                    src.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(n),
+                    dst.baseAddress!.assumingMemoryBound(to: UInt64.self))
             }
         }
         for i in 0..<n {
