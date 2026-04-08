@@ -182,15 +182,58 @@ public class BulletproofsAggregatedProver {
         // r(x) = y^{M*n} . (a_R + z*1^{M*n} + s_R*x) + sum_j z^{j+2} * (0...0, 2^n, 0...0)
         //         where the 2^n block is in position j
 
-        var l0 = [Fr](repeating: Fr.zero, count: padN)
-        var r0 = [Fr](repeating: Fr.zero, count: padN)
-        var r1 = [Fr](repeating: Fr.zero, count: padN)
-
-        for i in 0..<padN {
-            l0[i] = frSub(aL[i], z)
-            let aRpZ = frAdd(aR[i], z)
-            r0[i] = frMul(yPow[i], aRpZ)
-            r1[i] = frMul(yPow[i], sR[i])
+        // l0[i] = aL[i] - z
+        var l0 = [Fr](repeating: .zero, count: padN)
+        var zCopy = z
+        aL.withUnsafeBytes { aBuf in
+            l0.withUnsafeMutableBytes { lBuf in
+                withUnsafeBytes(of: &zCopy) { zBuf in
+                    bn254_fr_batch_sub_scalar(
+                        lBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        zBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(padN))
+                }
+            }
+        }
+        // aRpZ[i] = aR[i] + z
+        var aRpZ = [Fr](repeating: .zero, count: padN)
+        aR.withUnsafeBytes { aBuf in
+            aRpZ.withUnsafeMutableBytes { rBuf in
+                withUnsafeBytes(of: &zCopy) { zBuf in
+                    bn254_fr_batch_add_scalar_neon(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        zBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(padN))
+                }
+            }
+        }
+        // r0[i] = yPow[i] * aRpZ[i]
+        var r0 = [Fr](repeating: .zero, count: padN)
+        yPow.withUnsafeBytes { yBuf in
+            aRpZ.withUnsafeBytes { aBuf in
+                r0.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_mul_neon(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        yBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(padN))
+                }
+            }
+        }
+        // r1[i] = yPow[i] * sR[i]
+        var r1 = [Fr](repeating: .zero, count: padN)
+        yPow.withUnsafeBytes { yBuf in
+            sR.withUnsafeBytes { sBuf in
+                r1.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_mul_neon(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        yBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(padN))
+                }
+            }
         }
 
         // Add z^{j+2} * 2^{i mod n} terms to r0

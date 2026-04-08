@@ -408,16 +408,83 @@ public class GPURangeProofProtocolEngine {
         // Compute polynomial coefficient vectors (Hadamard products)
         var l0 = [Fr](repeating: Fr.zero, count: n)
         var l1 = sL  // l1 = sL
-        var r0 = [Fr](repeating: Fr.zero, count: n)
-        var r1 = [Fr](repeating: Fr.zero, count: n)
-        for i in 0..<n {
-            // l0[i] = aL[i] - z
-            l0[i] = frSub(aL[i], z)
-            // r0[i] = y^i * (aR[i] + z) + z^2 * 2^i
-            let aRpZ = frAdd(aR[i], z)
-            r0[i] = frAdd(frMul(yPow[i], aRpZ), frMul(z2, twoPow[i]))
-            // r1[i] = y^i * sR[i]
-            r1[i] = frMul(yPow[i], sR[i])
+        // l0[i] = aL[i] - z
+        var zCopy = z
+        aL.withUnsafeBytes { aBuf in
+            l0.withUnsafeMutableBytes { lBuf in
+                withUnsafeBytes(of: &zCopy) { zBuf in
+                    bn254_fr_batch_sub_scalar(
+                        lBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        zBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
+        }
+        // aRpZ[i] = aR[i] + z, tmp1[i] = yPow[i] * aRpZ[i]
+        var aRpZ = [Fr](repeating: .zero, count: n)
+        aR.withUnsafeBytes { aBuf in
+            aRpZ.withUnsafeMutableBytes { rBuf in
+                withUnsafeBytes(of: &zCopy) { zBuf in
+                    bn254_fr_batch_add_scalar_neon(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        zBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
+        }
+        var tmp1 = [Fr](repeating: .zero, count: n)
+        yPow.withUnsafeBytes { yBuf in
+            aRpZ.withUnsafeBytes { aBuf in
+                tmp1.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_mul_neon(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        yBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
+        }
+        // tmp2[i] = z2 * twoPow[i]
+        var tmp2 = [Fr](repeating: .zero, count: n)
+        var z2Copy = z2
+        twoPow.withUnsafeBytes { tBuf in
+            tmp2.withUnsafeMutableBytes { rBuf in
+                withUnsafeBytes(of: &z2Copy) { zBuf in
+                    bn254_fr_batch_mul_scalar_neon(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        zBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
+        }
+        // r0[i] = tmp1[i] + tmp2[i]
+        var r0 = [Fr](repeating: .zero, count: n)
+        tmp1.withUnsafeBytes { aBuf in
+            tmp2.withUnsafeBytes { bBuf in
+                r0.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_add_neon(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
+        }
+        // r1[i] = yPow[i] * sR[i]
+        var r1 = [Fr](repeating: .zero, count: n)
+        yPow.withUnsafeBytes { yBuf in
+            sR.withUnsafeBytes { sBuf in
+                r1.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_mul_neon(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        yBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
         }
 
         // Inner products for t(X) = <l(X), r(X)> = t0 + t1*X + t2*X^2

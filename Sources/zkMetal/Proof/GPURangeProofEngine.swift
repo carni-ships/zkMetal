@@ -475,14 +475,82 @@ public class GPURangeProofEngine {
         z: Fr, z2: Fr, n: Int,
         l0: inout [Fr], r0: inout [Fr], r1: inout [Fr]
     ) {
-        // Element-wise Hadamard product operations
-        // These are naturally parallel and benefit from SIMD on CPU;
-        // for very large n, could be dispatched to GPU compute shader.
-        for i in 0..<n {
-            l0[i] = frSub(aL[i], z)
-            let aRpZ = frAdd(aR[i], z)
-            r0[i] = frAdd(frMul(yPow[i], aRpZ), frMul(z2, twoPow[i]))
-            r1[i] = frMul(yPow[i], sR[i])
+        // Batch: l0[i] = aL[i] - z
+        var zCopy = z
+        aL.withUnsafeBytes { aBuf in
+            l0.withUnsafeMutableBytes { lBuf in
+                withUnsafeBytes(of: &zCopy) { zBuf in
+                    bn254_fr_batch_sub_scalar(
+                        lBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        zBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
+        }
+        // aRpZ[i] = aR[i] + z
+        var aRpZ = [Fr](repeating: .zero, count: n)
+        aR.withUnsafeBytes { aBuf in
+            aRpZ.withUnsafeMutableBytes { rBuf in
+                withUnsafeBytes(of: &zCopy) { zBuf in
+                    bn254_fr_batch_add_scalar_neon(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        zBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
+        }
+        // tmp1[i] = yPow[i] * aRpZ[i]
+        var tmp1 = [Fr](repeating: .zero, count: n)
+        yPow.withUnsafeBytes { yBuf in
+            aRpZ.withUnsafeBytes { aBuf in
+                tmp1.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_mul_neon(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        yBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
+        }
+        // tmp2[i] = z2 * twoPow[i]
+        var tmp2 = [Fr](repeating: .zero, count: n)
+        var z2Copy = z2
+        twoPow.withUnsafeBytes { tBuf in
+            tmp2.withUnsafeMutableBytes { rBuf in
+                withUnsafeBytes(of: &z2Copy) { zBuf in
+                    bn254_fr_batch_mul_scalar_neon(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        zBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
+        }
+        // r0[i] = tmp1[i] + tmp2[i]
+        tmp1.withUnsafeBytes { aBuf in
+            tmp2.withUnsafeBytes { bBuf in
+                r0.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_add_neon(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
+        }
+        // r1[i] = yPow[i] * sR[i]
+        yPow.withUnsafeBytes { yBuf in
+            sR.withUnsafeBytes { sBuf in
+                r1.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_mul_neon(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        yBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
         }
     }
 
