@@ -188,13 +188,8 @@ public class GPUHornerEval {
             throw MSMError.gpuError(error.localizedDescription)
         }
 
-        let outCount = numPoints * 8
-        let ptr = resultBuf.contents().bindMemory(to: UInt32.self, capacity: outCount)
-        let raw = Array(UnsafeBufferPointer(start: ptr, count: outCount))
-        return stride(from: 0, to: raw.count, by: 8).map { base in
-            Fr(v: (raw[base], raw[base+1], raw[base+2], raw[base+3],
-                   raw[base+4], raw[base+5], raw[base+6], raw[base+7]))
-        }
+        let frPtr = resultBuf.contents().bindMemory(to: Fr.self, capacity: numPoints)
+        return Array(UnsafeBufferPointer(start: frPtr, count: numPoints))
     }
 
     // MARK: - GPU dispatch: batch evaluate
@@ -243,13 +238,8 @@ public class GPUHornerEval {
             throw MSMError.gpuError(error.localizedDescription)
         }
 
-        let outCount = numPolys * 8
-        let ptr = resultBuf.contents().bindMemory(to: UInt32.self, capacity: outCount)
-        let raw = Array(UnsafeBufferPointer(start: ptr, count: outCount))
-        return stride(from: 0, to: raw.count, by: 8).map { base in
-            Fr(v: (raw[base], raw[base+1], raw[base+2], raw[base+3],
-                   raw[base+4], raw[base+5], raw[base+6], raw[base+7]))
-        }
+        let frPtr = resultBuf.contents().bindMemory(to: Fr.self, capacity: numPolys)
+        return Array(UnsafeBufferPointer(start: frPtr, count: numPolys))
     }
 
     // MARK: - Fr conversion helpers
