@@ -344,10 +344,16 @@ public class SumcheckTranscriptCompressor {
                 let r = proof.challenges[globalRound]
 
                 var folded = [Fr](repeating: Fr.zero, count: half)
-                for i in 0..<half {
-                    let lo = currentEvals[2 * i]
-                    let hi = currentEvals[2 * i + 1]
-                    folded[i] = frAdd(lo, frMul(r, frSub(hi, lo)))
+                currentEvals.withUnsafeBytes { eBuf in
+                    withUnsafeBytes(of: r) { rBuf in
+                        folded.withUnsafeMutableBytes { outBuf in
+                            bn254_fr_fold_interleaved(
+                                eBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                outBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                Int32(half))
+                        }
+                    }
                 }
                 currentEvals = folded
             }

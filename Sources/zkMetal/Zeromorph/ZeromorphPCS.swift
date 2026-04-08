@@ -265,10 +265,16 @@ public class ZeromorphPCS {
             let half = current.count / 2
             var folded = [Fr](repeating: Fr.zero, count: half)
             let uk = point[k]
-            for i in 0..<half {
-                let lo = current[2 * i]
-                let hi = current[2 * i + 1]
-                folded[i] = frAdd(lo, frMul(uk, frSub(hi, lo)))
+            current.withUnsafeBytes { eBuf in
+                withUnsafeBytes(of: uk) { rBuf in
+                    folded.withUnsafeMutableBytes { outBuf in
+                        bn254_fr_fold_interleaved(
+                            eBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            outBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(half))
+                    }
+                }
             }
             current = folded
         }

@@ -17,6 +17,7 @@
 //   This is assembled into P(X) with P(zeta)=0 and proven via single KZG opening.
 
 import Foundation
+import NeonFieldOps
 
 // MARK: - Data Structures
 
@@ -226,10 +227,16 @@ public class ZeromorphEngine {
             let half = current.count / 2
             var folded = [Fr](repeating: Fr.zero, count: half)
             let uk = point[k]
-            for i in 0..<half {
-                let lo = current[2 * i]
-                let hi = current[2 * i + 1]
-                folded[i] = frAdd(lo, frMul(uk, frSub(hi, lo)))
+            current.withUnsafeBytes { eBuf in
+                withUnsafeBytes(of: uk) { rBuf in
+                    folded.withUnsafeMutableBytes { outBuf in
+                        bn254_fr_fold_interleaved(
+                            eBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            outBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(half))
+                    }
+                }
             }
             current = folded
         }
@@ -245,8 +252,16 @@ public class ZeromorphEngine {
             let half = current.count / 2
             var folded = [Fr](repeating: Fr.zero, count: half)
             let uk = point[k]
-            for i in 0..<half {
-                folded[i] = frAdd(current[2 * i], frMul(uk, current[2 * i + 1]))
+            current.withUnsafeBytes { eBuf in
+                withUnsafeBytes(of: uk) { rBuf in
+                    folded.withUnsafeMutableBytes { outBuf in
+                        bn254_fr_fold_interleaved(
+                            eBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            outBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(half))
+                    }
+                }
             }
             current = folded
         }
