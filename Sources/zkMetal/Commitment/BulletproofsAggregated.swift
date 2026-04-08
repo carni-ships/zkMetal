@@ -323,8 +323,16 @@ public class BulletproofsAggregatedProver {
     private static func frInnerProductPad(_ a: [Fr], _ b: [Fr]) -> Fr {
         let n = min(a.count, b.count)
         var result = Fr.zero
-        for i in 0..<n {
-            result = frAdd(result, frMul(a[i], b[i]))
+        a.withUnsafeBytes { aBuf in
+            b.withUnsafeBytes { bBuf in
+                withUnsafeMutableBytes(of: &result) { rBuf in
+                    bn254_fr_inner_product(
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                }
+            }
         }
         return result
     }

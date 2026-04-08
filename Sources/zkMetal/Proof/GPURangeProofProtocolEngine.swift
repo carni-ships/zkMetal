@@ -1180,9 +1180,18 @@ public class GPURangeProofProtocolEngine {
     /// Fr inner product: <a, b> = sum(a[i] * b[i])
     private func innerProduct(_ a: [Fr], _ b: [Fr]) -> Fr {
         precondition(a.count == b.count)
+        let n = a.count
         var result = Fr.zero
-        for i in 0..<a.count {
-            result = frAdd(result, frMul(a[i], b[i]))
+        a.withUnsafeBytes { aBuf in
+            b.withUnsafeBytes { bBuf in
+                withUnsafeMutableBytes(of: &result) { rBuf in
+                    bn254_fr_inner_product(
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                }
+            }
         }
         return result
     }
