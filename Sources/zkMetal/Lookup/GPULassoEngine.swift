@@ -585,15 +585,15 @@ public class GPULassoEngine {
         let initInvs = try inverseEngine.batchInverseFr(initDenoms)
         let finalInvs = try inverseEngine.batchInverseFr(finalDenoms)
 
-        // LHS = sum(readInvs) + sum(initInvs)
+        // LHS = sum(readInvs) + sum(finalInvs)
         var lhs = Fr.zero
         for v in readInvs { lhs = frAdd(lhs, v) }
-        for v in initInvs { lhs = frAdd(lhs, v) }
+        for v in finalInvs { lhs = frAdd(lhs, v) }
 
-        // RHS = sum(writeInvs) + sum(finalInvs)
+        // RHS = sum(writeInvs) + sum(initInvs)
         var rhs = Fr.zero
         for v in writeInvs { rhs = frAdd(rhs, v) }
-        for v in finalInvs { rhs = frAdd(rhs, v) }
+        for v in initInvs { rhs = frAdd(rhs, v) }
 
         return frEqual(lhs, rhs)
     }
