@@ -947,13 +947,14 @@ public class SumcheckEngine {
                 denoms[i] = frMul(denoms[i], frSub(points[i], points[j]))
             }
         }
-        var dPfx = [Fr](repeating: Fr.one, count: n)
-        for i in 1..<n { dPfx[i] = frMul(dPfx[i - 1], denoms[i - 1]) }
-        var dAcc = frInverse(frMul(dPfx[n - 1], denoms[n - 1]))
         var denomInvs = [Fr](repeating: Fr.zero, count: n)
-        for i in Swift.stride(from: n - 1, through: 0, by: -1) {
-            denomInvs[i] = frMul(dAcc, dPfx[i])
-            dAcc = frMul(dAcc, denoms[i])
+        denoms.withUnsafeBytes { src in
+            denomInvs.withUnsafeMutableBytes { dst in
+                bn254_fr_batch_inverse(
+                    src.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(n),
+                    dst.baseAddress!.assumingMemoryBound(to: UInt64.self))
+            }
         }
         var result = Fr.zero
         for i in 0..<n {

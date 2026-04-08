@@ -73,13 +73,14 @@ extension PolyEngine {
         // Step 4: Compute scaled values s_i = y_i / w_i
         // Batch-invert all n weights (padding weights are unused since value=0)
         let activeWeights = Array(weights.prefix(n))
-        var wPrefix = [Fr](repeating: Fr.one, count: n)
-        for i in 1..<n { wPrefix[i] = frMul(wPrefix[i - 1], activeWeights[i - 1]) }
-        var wAcc = frInverse(frMul(wPrefix[n - 1], activeWeights[n - 1]))
         var weightInvs = [Fr](repeating: Fr.zero, count: n)
-        for i in Swift.stride(from: n - 1, through: 0, by: -1) {
-            weightInvs[i] = frMul(wAcc, wPrefix[i])
-            wAcc = frMul(wAcc, activeWeights[i])
+        activeWeights.withUnsafeBytes { src in
+            weightInvs.withUnsafeMutableBytes { dst in
+                bn254_fr_batch_inverse(
+                    src.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(n),
+                    dst.baseAddress!.assumingMemoryBound(to: UInt64.self))
+            }
         }
         var scaledValues = [Fr](repeating: Fr.zero, count: N)
         vals.withUnsafeBytes { vBuf in
@@ -127,13 +128,14 @@ extension PolyEngine {
                 denoms[i] = frMul(denoms[i], frSub(points[i], points[j]))
             }
         }
-        var dPrefix = [Fr](repeating: Fr.one, count: n)
-        for i in 1..<n { dPrefix[i] = frMul(dPrefix[i - 1], denoms[i - 1]) }
-        var dAcc = frInverse(frMul(dPrefix[n - 1], denoms[n - 1]))
         var denomInvs = [Fr](repeating: Fr.zero, count: n)
-        for i in Swift.stride(from: n - 1, through: 0, by: -1) {
-            denomInvs[i] = frMul(dAcc, dPrefix[i])
-            dAcc = frMul(dAcc, denoms[i])
+        denoms.withUnsafeBytes { src in
+            denomInvs.withUnsafeMutableBytes { dst in
+                bn254_fr_batch_inverse(
+                    src.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(n),
+                    dst.baseAddress!.assumingMemoryBound(to: UInt64.self))
+            }
         }
 
         for i in 0..<n {

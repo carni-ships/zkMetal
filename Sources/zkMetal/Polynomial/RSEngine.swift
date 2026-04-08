@@ -9,6 +9,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 // MARK: - RSEngineError
 
@@ -224,14 +225,14 @@ public class ReedSolomonEngine {
                 denoms[i] = frMul(denoms[i], frSub(points[i], points[j]))
             }
         }
-        // Montgomery batch inversion: n inverses → 1 inverse + 3(n-1) muls
-        var prefix = [Fr](repeating: Fr.one, count: n)
-        for i in 1..<n { prefix[i] = frMul(prefix[i - 1], denoms[i - 1]) }
-        var acc = frInverse(frMul(prefix[n - 1], denoms[n - 1]))
         var denomInvs = [Fr](repeating: Fr.zero, count: n)
-        for i in Swift.stride(from: n - 1, through: 0, by: -1) {
-            denomInvs[i] = frMul(acc, prefix[i])
-            acc = frMul(acc, denoms[i])
+        denoms.withUnsafeBytes { src in
+            denomInvs.withUnsafeMutableBytes { dst in
+                bn254_fr_batch_inverse(
+                    src.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(n),
+                    dst.baseAddress!.assumingMemoryBound(to: UInt64.self))
+            }
         }
 
         for i in 0..<n {
