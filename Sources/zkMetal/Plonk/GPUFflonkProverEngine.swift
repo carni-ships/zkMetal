@@ -339,8 +339,21 @@ public class GPUFflonkProverEngine {
 
         // Step 5: Compute numerator P(X) - R(X)
         var numerator = combined
-        for i in 0..<min(remainder.count, numerator.count) {
-            numerator[i] = frSub(numerator[i], remainder[i])
+        let subCount = min(remainder.count, numerator.count)
+        if subCount >= 4 {
+            numerator.withUnsafeMutableBytes { nBuf in
+                remainder.withUnsafeBytes { rBuf in
+                    bn254_fr_batch_sub_neon(
+                        nBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        nBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(subCount))
+                }
+            }
+        } else {
+            for i in 0..<subCount {
+                numerator[i] = frSub(numerator[i], remainder[i])
+            }
         }
 
         // Step 6: Divide by vanishing polynomial Z(X) = X^k - z^k
@@ -502,9 +515,26 @@ public class GPUFflonkProverEngine {
         let maxDeg = polynomials.map { $0.count }.max() ?? 0
         var linPoly = [Fr](repeating: Fr.zero, count: maxDeg)
         for i in 0..<k {
-            let (scaled, _) = polyMulScalar(polynomials[i], by: gammaPowers[i])
-            for j in 0..<scaled.count {
-                linPoly[j] = frAdd(linPoly[j], scaled[j])
+            let pi = polynomials[i]
+            let piCount = pi.count
+            if piCount >= 4 {
+                linPoly.withUnsafeMutableBytes { lBuf in
+                    pi.withUnsafeBytes { pBuf in
+                        withUnsafeBytes(of: gammaPowers[i]) { gBuf in
+                            bn254_fr_batch_linear_combine(
+                                lBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                gBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                lBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                Int32(piCount))
+                        }
+                    }
+                }
+            } else {
+                let (scaled, _) = polyMulScalar(pi, by: gammaPowers[i])
+                for j in 0..<scaled.count {
+                    linPoly[j] = frAdd(linPoly[j], scaled[j])
+                }
             }
         }
 

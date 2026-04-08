@@ -356,12 +356,37 @@ public class GPUPlonkGateEngine {
         // Combine with powers of alpha:
         //   combined = arith + alpha * range + alpha^2 * poseidon
         let alpha2 = frSqr(alpha)
-        var combined = [Fr](repeating: Fr.zero, count: n)
-        for i in 0..<n {
-            var val = arithEvals[i]
-            val = frAdd(val, frMul(alpha, rangeEvals[i]))
-            val = frAdd(val, frMul(alpha2, poseidonEvals[i]))
-            combined[i] = val
+        var combined = arithEvals
+        if n >= 4 {
+            combined.withUnsafeMutableBytes { cBuf in
+                rangeEvals.withUnsafeBytes { rBuf in
+                    withUnsafeBytes(of: alpha) { aBuf in
+                        bn254_fr_batch_linear_combine(
+                            cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
+            }
+            combined.withUnsafeMutableBytes { cBuf in
+                poseidonEvals.withUnsafeBytes { pBuf in
+                    withUnsafeBytes(of: alpha2) { aBuf in
+                        bn254_fr_batch_linear_combine(
+                            cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
+            }
+        } else {
+            for i in 0..<n {
+                combined[i] = frAdd(combined[i], frMul(alpha, rangeEvals[i]))
+                combined[i] = frAdd(combined[i], frMul(alpha2, poseidonEvals[i]))
+            }
         }
 
         // Convert to coefficient form via iNTT

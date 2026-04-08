@@ -516,9 +516,27 @@ public class GPUHalo2BackendEngine {
         // 1. Gate constraints
         for gate in cs.gates {
             for poly in gate.polys {
+                var gateEvals = [Fr](repeating: Fr.zero, count: n)
                 for row in 0..<n {
-                    let val = evaluateExpression(poly, at: row, store: store)
-                    combined[row] = frAdd(combined[row], frMul(alphaPower, val))
+                    gateEvals[row] = evaluateExpression(poly, at: row, store: store)
+                }
+                if n >= 4 {
+                    combined.withUnsafeMutableBytes { cBuf in
+                        gateEvals.withUnsafeBytes { gBuf in
+                            withUnsafeBytes(of: alphaPower) { aBuf in
+                                bn254_fr_batch_linear_combine(
+                                    cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                    aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                    gBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                    cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                    Int32(n))
+                            }
+                        }
+                    }
+                } else {
+                    for row in 0..<n {
+                        combined[row] = frAdd(combined[row], frMul(alphaPower, gateEvals[row]))
+                    }
                 }
                 alphaPower = frMul(alphaPower, alpha)
                 numGateConstraints += 1

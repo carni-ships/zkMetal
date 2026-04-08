@@ -22,6 +22,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 // MARK: - R1CS Solver Result
 
@@ -302,12 +303,33 @@ public class GPUR1CSSolverEngine {
         let bz = sparseMatVec(entries: r1cs.bEntries, witness: witness, numRows: n)
         let cz = sparseMatVec(entries: r1cs.cEntries, witness: witness, numRows: n)
 
+        var ab = [Fr](repeating: .zero, count: n)
         var residuals = [Fr](repeating: .zero, count: n)
         var unsatisfied = [Int]()
 
+        az.withUnsafeBytes { azBuf in
+            bz.withUnsafeBytes { bzBuf in
+                ab.withUnsafeMutableBytes { abBuf in
+                    bn254_fr_batch_mul_neon(
+                        abBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        azBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        bzBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
+        }
+        ab.withUnsafeBytes { abBuf in
+            cz.withUnsafeBytes { czBuf in
+                residuals.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_sub_neon(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        abBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        czBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
+        }
         for i in 0..<n {
-            let ab = frMul(az[i], bz[i])
-            residuals[i] = frSub(ab, cz[i])
             if !residuals[i].isZero {
                 unsatisfied.append(i)
             }
@@ -328,9 +350,29 @@ public class GPUR1CSSolverEngine {
         let bz = sparseMatVec(entries: r1cs.bEntries, witness: witness, numRows: n)
         let cz = sparseMatVec(entries: r1cs.cEntries, witness: witness, numRows: n)
 
+        var ab = [Fr](repeating: .zero, count: n)
         var res = [Fr](repeating: .zero, count: n)
-        for i in 0..<n {
-            res[i] = frSub(frMul(az[i], bz[i]), cz[i])
+        az.withUnsafeBytes { azBuf in
+            bz.withUnsafeBytes { bzBuf in
+                ab.withUnsafeMutableBytes { abBuf in
+                    bn254_fr_batch_mul_neon(
+                        abBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        azBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        bzBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
+        }
+        ab.withUnsafeBytes { abBuf in
+            cz.withUnsafeBytes { czBuf in
+                res.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_sub_neon(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        abBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        czBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
         }
         return res
     }
