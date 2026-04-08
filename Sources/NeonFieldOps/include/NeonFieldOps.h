@@ -901,6 +901,7 @@ void pallas_point_add_mixed(const uint64_t p[12], const uint64_t q_aff[8], uint6
 void pallas_scalar_mul(const uint64_t p[12], const uint64_t scalar[4], uint64_t r[12]);
 void pallas_pippenger_msm(const uint64_t *points, const uint32_t *scalars,
                            int n, uint64_t *result);
+void pallas_fp_batch_inverse(const uint64_t *in, uint64_t *out, int n);
 
 // ============================================================
 // Vesta curve (y^2 = x^3 + 5 over Fp)
@@ -917,6 +918,7 @@ void vesta_point_add_mixed(const uint64_t p[12], const uint64_t q_aff[8], uint64
 void vesta_scalar_mul(const uint64_t p[12], const uint64_t scalar[4], uint64_t r[12]);
 void vesta_pippenger_msm(const uint64_t *points, const uint32_t *scalars,
                           int n, uint64_t *result);
+void vesta_fp_batch_inverse(const uint64_t *in, uint64_t *out, int n);
 
 // ============================================================
 // BLS12-381 Fr (scalar field, 4-limb)
@@ -927,6 +929,9 @@ void bls12_381_fr_sqr(const uint64_t a[4], uint64_t r[4]);
 void bls12_381_fr_add(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]);
 void bls12_381_fr_sub(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]);
 void bls12_381_fr_neg(const uint64_t a[4], uint64_t r[4]);
+void bls12_381_fr_ntt(uint64_t *data, int logN);
+void bls12_381_fr_intt(uint64_t *data, int logN);
+void bls12_381_fr_batch_inverse(const uint64_t *in, uint64_t *out, int n);
 
 // ============================================================
 // BLS12-381 Fp (base field, 6-limb)
@@ -1048,6 +1053,12 @@ void bls12_377_fr_ntt(uint64_t *data, int logN);
 
 /// Inverse NTT on BLS12-377 Fr field (Gentleman-Sande DIF + bit-reversal + 1/n scaling).
 void bls12_377_fr_intt(uint64_t *data, int logN);
+
+/// Batch inverse for BLS12-377 Fq (6-limb) via Montgomery's trick.
+void bls12_377_fq_batch_inverse(const uint64_t *in, uint64_t *out, int n);
+
+/// Batch inverse for BLS12-377 Fr (4-limb) via Montgomery's trick.
+void bls12_377_fr_batch_inverse(const uint64_t *in, uint64_t *out, int n);
 
 // ============================================================
 // BLS12-377 G1 point ops (Jacobian projective, y²=x³+1)

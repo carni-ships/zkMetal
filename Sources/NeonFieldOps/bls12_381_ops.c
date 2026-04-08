@@ -12,6 +12,7 @@
 #include "NeonFieldOps.h"
 #include <string.h>
 #include <stdlib.h>
+#include <pthread.h>
 #include <dispatch/dispatch.h>
 
 typedef unsigned __int128 uint128_t;
@@ -206,6 +207,253 @@ void bls12_381_fr_sqr(const uint64_t a[4], uint64_t r[4]) { fr_sqr(a, r); }
 void bls12_381_fr_add(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]) { fr_add(a, b, r); }
 void bls12_381_fr_sub(const uint64_t a[4], const uint64_t b[4], uint64_t r[4]) { fr_sub(a, b, r); }
 void bls12_381_fr_neg(const uint64_t a[4], uint64_t r[4]) { fr_neg(a, r); }
+
+// ============================================================
+// BLS12-381 Fr NTT (Cooley-Tukey DIT / Gentleman-Sande DIF)
+// ============================================================
+
+// R^2 mod r: 2^512 mod r
+static const uint64_t FR381_R2[4] = {
+    0xc999e990f3f29c6dULL, 0x2b6cedcb87925c23ULL,
+    0x05d314967254398fULL, 0x0748d9d99f59ff11ULL
+};
+
+// Primitive 2^32-th root of unity in STANDARD form (not Montgomery).
+// = 7^((r-1)/2^32) mod r
+static const uint64_t FR381_ROOT_2_32[4] = {
+    0x3829971f439f0d2bULL, 0xb63683508c2280b9ULL,
+    0xd09b681922c813b4ULL, 0x16a2a19edfe81f20ULL
+};
+static const int FR381_TWO_ADICITY = 32;
+
+static void fr381_pow(const uint64_t base[4], uint64_t exp_val, uint64_t result[4]) {
+    memcpy(result, FR_ONE, 32);
+    uint64_t b[4];
+    memcpy(b, base, 32);
+    while (exp_val > 0) {
+        if (exp_val & 1)
+            fr_mul(result, b, result);
+        fr_mul(b, b, b);
+        exp_val >>= 1;
+    }
+}
+
+static void fr381_inv(const uint64_t a[4], uint64_t result[4]) {
+    // Fermat's little theorem: a^(p-2) mod p
+    uint64_t pm2[4];
+    pm2[0] = FR_P[0] - 2;
+    pm2[1] = FR_P[1];
+    pm2[2] = FR_P[2];
+    pm2[3] = FR_P[3];
+
+    memcpy(result, FR_ONE, 32);
+    uint64_t b[4];
+    memcpy(b, a, 32);
+    for (int i = 0; i < 4; i++) {
+        for (int bit = 0; bit < 64; bit++) {
+            if ((pm2[i] >> bit) & 1)
+                fr_mul(result, b, result);
+            fr_mul(b, b, b);
+        }
+    }
+}
+
+// ---- Twiddle cache ----
+
+typedef struct { uint64_t *fwd; uint64_t *inv; int logN; } fr381_tw_t;
+static fr381_tw_t fr381_cached[33] = {{0}};
+static pthread_mutex_t fr381_cache_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void fr381_ensure_twiddles(int logN) {
+    if (fr381_cached[logN].fwd) return;
+
+    pthread_mutex_lock(&fr381_cache_lock);
+    if (fr381_cached[logN].fwd) { pthread_mutex_unlock(&fr381_cache_lock); return; }
+
+    int n = 1 << logN;
+
+    // Convert root from standard to Montgomery form
+    uint64_t root_mont[4];
+    fr_mul(FR381_ROOT_2_32, FR381_R2, root_mont);
+
+    // omega = root^(2^(TWO_ADICITY - logN))
+    uint64_t omega[4];
+    memcpy(omega, root_mont, 32);
+    for (int i = 0; i < FR381_TWO_ADICITY - logN; i++)
+        fr_mul(omega, omega, omega);
+
+    uint64_t omega_inv[4];
+    fr381_inv(omega, omega_inv);
+
+    uint64_t *fwd = (uint64_t *)malloc((size_t)(n - 1) * 32);
+    uint64_t *inv = (uint64_t *)malloc((size_t)(n - 1) * 32);
+
+    for (int s = 0; s < logN; s++) {
+        int halfBlock = 1 << s;
+        int offset = halfBlock - 1;
+
+        uint64_t w_m[4], w_m_inv[4];
+        fr381_pow(omega, (uint64_t)(n >> (s + 1)), w_m);
+        fr381_pow(omega_inv, (uint64_t)(n >> (s + 1)), w_m_inv);
+
+        uint64_t w[4], wi[4];
+        memcpy(w, FR_ONE, 32);
+        memcpy(wi, FR_ONE, 32);
+
+        for (int j = 0; j < halfBlock; j++) {
+            memcpy(&fwd[(offset + j) * 4], w, 32);
+            memcpy(&inv[(offset + j) * 4], wi, 32);
+            fr_mul(w, w_m, w);
+            fr_mul(wi, w_m_inv, wi);
+        }
+    }
+
+    fr381_cached[logN].fwd = fwd;
+    fr381_cached[logN].inv = inv;
+    fr381_cached[logN].logN = logN;
+    pthread_mutex_unlock(&fr381_cache_lock);
+}
+
+static void fr381_bit_reverse_permute(uint64_t *data, int logN) {
+    int n = 1 << logN;
+    for (int i = 1, j = 0; i < n; i++) {
+        int bit = n >> 1;
+        for (; j & bit; bit >>= 1)
+            j ^= bit;
+        j ^= bit;
+        if (i < j) {
+            uint64_t t;
+            t = data[i*4+0]; data[i*4+0] = data[j*4+0]; data[j*4+0] = t;
+            t = data[i*4+1]; data[i*4+1] = data[j*4+1]; data[j*4+1] = t;
+            t = data[i*4+2]; data[i*4+2] = data[j*4+2]; data[j*4+2] = t;
+            t = data[i*4+3]; data[i*4+3] = data[j*4+3]; data[j*4+3] = t;
+        }
+    }
+}
+
+// Forward NTT: Cooley-Tukey DIT
+void bls12_381_fr_ntt(uint64_t *data, int logN) {
+    if (logN <= 0) return;
+    int n = 1 << logN;
+
+    fr381_ensure_twiddles(logN);
+    const uint64_t *tw = fr381_cached[logN].fwd;
+
+    fr381_bit_reverse_permute(data, logN);
+
+    for (int s = 0; s < logN; s++) {
+        int halfBlock = 1 << s;
+        int blockSize = halfBlock << 1;
+        int nBlocks = n / blockSize;
+        int twOffset = halfBlock - 1;
+
+        for (int bk = 0; bk < nBlocks; bk++) {
+            int base = bk * blockSize;
+            // j==0: twiddle==1, skip Montgomery mul
+            {
+                uint64_t *u = &data[base * 4];
+                uint64_t *vp = &data[(base + halfBlock) * 4];
+                uint64_t sum[4], diff[4];
+                fr_add(u, vp, sum);
+                fr_sub(u, vp, diff);
+                memcpy(u, sum, 32);
+                memcpy(vp, diff, 32);
+            }
+            for (int j = 1; j < halfBlock; j++) {
+                uint64_t *u = &data[(base + j) * 4];
+                uint64_t *vp = &data[(base + j + halfBlock) * 4];
+                const uint64_t *twj = &tw[(twOffset + j) * 4];
+                uint64_t v[4];
+                fr_mul(twj, vp, v);
+                uint64_t sum[4], diff[4];
+                fr_add(u, v, sum);
+                fr_sub(u, v, diff);
+                memcpy(u, sum, 32);
+                memcpy(vp, diff, 32);
+            }
+        }
+    }
+}
+
+// Inverse NTT: Gentleman-Sande DIF + bit-reverse + 1/n scaling
+void bls12_381_fr_intt(uint64_t *data, int logN) {
+    if (logN <= 0) return;
+    int n = 1 << logN;
+
+    fr381_ensure_twiddles(logN);
+    const uint64_t *tw = fr381_cached[logN].inv;
+
+    for (int si = 0; si < logN; si++) {
+        int s = logN - 1 - si;
+        int halfBlock = 1 << s;
+        int blockSize = halfBlock << 1;
+        int nBlocks = n / blockSize;
+        int twOffset = halfBlock - 1;
+
+        for (int bk = 0; bk < nBlocks; bk++) {
+            int base = bk * blockSize;
+            {
+                uint64_t *ap = &data[base * 4];
+                uint64_t *bp = &data[(base + halfBlock) * 4];
+                uint64_t a[4], b[4];
+                memcpy(a, ap, 32);
+                memcpy(b, bp, 32);
+                uint64_t sum[4], diff[4];
+                fr_add(a, b, sum);
+                fr_sub(a, b, diff);
+                memcpy(ap, sum, 32);
+                memcpy(bp, diff, 32);
+            }
+            for (int j = 1; j < halfBlock; j++) {
+                uint64_t *ap = &data[(base + j) * 4];
+                uint64_t *bp = &data[(base + j + halfBlock) * 4];
+                const uint64_t *twj = &tw[(twOffset + j) * 4];
+                uint64_t a[4], b[4];
+                memcpy(a, ap, 32);
+                memcpy(b, bp, 32);
+                uint64_t sum[4], diff[4], prod[4];
+                fr_add(a, b, sum);
+                fr_sub(a, b, diff);
+                fr_mul(diff, twj, prod);
+                memcpy(ap, sum, 32);
+                memcpy(bp, prod, 32);
+            }
+        }
+    }
+
+    fr381_bit_reverse_permute(data, logN);
+
+    // Scale by 1/n
+    uint64_t n_plain[4] = {(uint64_t)n, 0, 0, 0};
+    uint64_t n_mont[4];
+    fr_mul(n_plain, FR381_R2, n_mont);
+    uint64_t n_inv[4];
+    fr381_inv(n_mont, n_inv);
+    for (int i = 0; i < n; i++) {
+        fr_mul(&data[i * 4], n_inv, &data[i * 4]);
+    }
+}
+
+// Batch inverse via Montgomery's trick
+void bls12_381_fr_batch_inverse(const uint64_t *in, uint64_t *out, int n) {
+    if (n <= 0) return;
+    // Prefix products
+    memcpy(&out[0], &in[0], 32);
+    for (int i = 1; i < n; i++) {
+        fr_mul(&out[(i-1)*4], &in[i*4], &out[i*4]);
+    }
+    // Invert the accumulated product
+    uint64_t inv_acc[4];
+    fr381_inv(&out[(n-1)*4], inv_acc);
+    // Back-propagate
+    for (int i = n - 1; i > 0; i--) {
+        uint64_t tmp[4];
+        fr_mul(inv_acc, &out[(i-1)*4], tmp);
+        fr_mul(inv_acc, &in[i*4], inv_acc);
+        memcpy(&out[i*4], tmp, 32);
+    }
+    memcpy(&out[0], inv_acc, 32);
+}
 
 // ============================================================
 // BLS12-381 Fp (base field) constants

@@ -877,3 +877,36 @@ void FUNC_NAME( \
 
 PASTA_PIPPENGER(pallas_pippenger_msm, pa, pa_pt_set_id, pa_pt_dbl, pa_pt_add)
 PASTA_PIPPENGER(vesta_pippenger_msm, ve, ve_pt_set_id, ve_pt_dbl, ve_pt_add)
+
+// Batch inverse via Montgomery's trick
+void pallas_fp_batch_inverse(const uint64_t *in, uint64_t *out, int n) {
+    if (n <= 0) return;
+    memcpy(&out[0], &in[0], 32);
+    for (int i = 1; i < n; i++)
+        pa_mul(&out[(i-1)*4], &in[i*4], &out[i*4]);
+    uint64_t inv_acc[4];
+    pa_inv(&out[(n-1)*4], inv_acc);
+    for (int i = n - 1; i > 0; i--) {
+        uint64_t tmp[4];
+        pa_mul(inv_acc, &out[(i-1)*4], tmp);
+        pa_mul(inv_acc, &in[i*4], inv_acc);
+        memcpy(&out[i*4], tmp, 32);
+    }
+    memcpy(&out[0], inv_acc, 32);
+}
+
+void vesta_fp_batch_inverse(const uint64_t *in, uint64_t *out, int n) {
+    if (n <= 0) return;
+    memcpy(&out[0], &in[0], 32);
+    for (int i = 1; i < n; i++)
+        ve_mul(&out[(i-1)*4], &in[i*4], &out[i*4]);
+    uint64_t inv_acc[4];
+    ve_inv(&out[(n-1)*4], inv_acc);
+    for (int i = n - 1; i > 0; i--) {
+        uint64_t tmp[4];
+        ve_mul(inv_acc, &out[(i-1)*4], tmp);
+        ve_mul(inv_acc, &in[i*4], inv_acc);
+        memcpy(&out[i*4], tmp, 32);
+    }
+    memcpy(&out[0], inv_acc, 32);
+}

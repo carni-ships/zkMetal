@@ -1543,3 +1543,37 @@ void bls12_377_g1_pippenger_msm(
 
     free(tasks);
 }
+
+// Batch inverse for Fq (6-limb) via Montgomery's trick
+void bls12_377_fq_batch_inverse(const uint64_t *in, uint64_t *out, int n) {
+    if (n <= 0) return;
+    memcpy(&out[0], &in[0], 48);
+    for (int i = 1; i < n; i++)
+        fq_mul(&out[(i-1)*6], &in[i*6], &out[i*6]);
+    uint64_t inv_acc[6];
+    fq_inverse(&out[(n-1)*6], inv_acc);
+    for (int i = n - 1; i > 0; i--) {
+        uint64_t tmp[6];
+        fq_mul(inv_acc, &out[(i-1)*6], tmp);
+        fq_mul(inv_acc, &in[i*6], inv_acc);
+        memcpy(&out[i*6], tmp, 48);
+    }
+    memcpy(&out[0], inv_acc, 48);
+}
+
+// Batch inverse for Fr (4-limb) via Montgomery's trick
+void bls12_377_fr_batch_inverse(const uint64_t *in, uint64_t *out, int n) {
+    if (n <= 0) return;
+    memcpy(&out[0], &in[0], 32);
+    for (int i = 1; i < n; i++)
+        fr_mul(&out[(i-1)*4], &in[i*4], &out[i*4]);
+    uint64_t inv_acc[4];
+    fr377_inv(&out[(n-1)*4], inv_acc);
+    for (int i = n - 1; i > 0; i--) {
+        uint64_t tmp[4];
+        fr_mul(inv_acc, &out[(i-1)*4], tmp);
+        fr_mul(inv_acc, &in[i*4], inv_acc);
+        memcpy(&out[i*4], tmp, 32);
+    }
+    memcpy(&out[0], inv_acc, 32);
+}

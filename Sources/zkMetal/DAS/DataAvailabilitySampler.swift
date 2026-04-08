@@ -368,75 +368,26 @@ public class EIP4844DataAvailabilitySampler {
         return msm381(points: Array(rsEngine.srs.prefix(quotient.count)), scalars: quotient)
     }
 
-    /// Forward NTT over BLS12-381 Fr (Cooley-Tukey radix-2 DIT).
+    /// Forward NTT over BLS12-381 Fr (C CIOS implementation).
     private func cpuNTT381Forward(_ input: [Fr381], logN: Int) -> [Fr381] {
         let n = 1 << logN
         precondition(input.count == n)
-
-        // Bit-reversal permutation
-        var data = [Fr381](repeating: .zero, count: n)
-        for i in 0..<n {
-            let rev = bitReverse(i, bits: logN)
-            data[rev] = input[i]
-        }
-
-        let omega = fr381RootOfUnity(logN: logN)
-
-        // Butterfly stages
-        var m = 1
-        for _ in 0..<logN {
-            let wm = fr381Pow(omega, UInt64(n / (2 * m)))
-            var k = 0
-            while k < n {
-                var w = Fr381.one
-                for j in 0..<m {
-                    let t = fr381Mul(w, data[k + j + m])
-                    let u = data[k + j]
-                    data[k + j] = fr381Add(u, t)
-                    data[k + j + m] = fr381Sub(u, t)
-                    w = fr381Mul(w, wm)
-                }
-                k += 2 * m
-            }
-            m *= 2
+        var data = input
+        data.withUnsafeMutableBytes { buf in
+            let ptr = buf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+            bls12_381_fr_ntt(ptr, Int32(logN))
         }
         return data
     }
 
-    /// Inverse NTT over BLS12-381 Fr.
+    /// Inverse NTT over BLS12-381 Fr (C CIOS implementation).
     private func cpuINTT381(_ input: [Fr381], logN: Int) -> [Fr381] {
         let n = 1 << logN
         precondition(input.count == n)
-
-        var data = [Fr381](repeating: .zero, count: n)
-        for i in 0..<n {
-            let rev = bitReverse(i, bits: logN)
-            data[rev] = input[i]
-        }
-
-        let omega = fr381Inverse(fr381RootOfUnity(logN: logN))
-
-        var m = 1
-        for _ in 0..<logN {
-            let wm = fr381Pow(omega, UInt64(n / (2 * m)))
-            var k = 0
-            while k < n {
-                var w = Fr381.one
-                for j in 0..<m {
-                    let t = fr381Mul(w, data[k + j + m])
-                    let u = data[k + j]
-                    data[k + j] = fr381Add(u, t)
-                    data[k + j + m] = fr381Sub(u, t)
-                    w = fr381Mul(w, wm)
-                }
-                k += 2 * m
-            }
-            m *= 2
-        }
-
-        let nInv = fr381Inverse(fr381FromInt(UInt64(n)))
-        for i in 0..<n {
-            data[i] = fr381Mul(data[i], nInv)
+        var data = input
+        data.withUnsafeMutableBytes { buf in
+            let ptr = buf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+            bls12_381_fr_intt(ptr, Int32(logN))
         }
         return data
     }
