@@ -232,7 +232,15 @@ public class GPUPlonkGrandProductEngine {
         }
 
         // Batch invert denominators
-        let invDen = frBatchInverse(denominators)
+        var invDen = [Fr](repeating: .zero, count: n)
+        denominators.withUnsafeBytes { dBuf in
+            invDen.withUnsafeMutableBytes { iBuf in
+                bn254_fr_batch_inverse(
+                    dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(n),
+                    iBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+            }
+        }
 
         // Compute ratios: ratio[i] = num[i] * invDen[i]
         var ratios = [Fr](repeating: Fr.zero, count: n)
@@ -720,7 +728,15 @@ public class GPUPlonkGrandProductEngine {
             }
 
             // Prefix product for this partition
-            let invPartDen = frBatchInverse(partDen)
+            var invPartDen = [Fr](repeating: .zero, count: n)
+            partDen.withUnsafeBytes { dBuf in
+                invPartDen.withUnsafeMutableBytes { iBuf in
+                    bn254_fr_batch_inverse(
+                        dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n),
+                        iBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                }
+            }
             var partRatios = [Fr](repeating: Fr.zero, count: n)
             partNum.withUnsafeBytes { aBuf in
                 invPartDen.withUnsafeBytes { bBuf in

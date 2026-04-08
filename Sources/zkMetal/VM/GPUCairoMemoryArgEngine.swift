@@ -25,6 +25,7 @@
 // Reference: Cairo whitepaper Section 9.7 (Memory)
 
 import Foundation
+import NeonFieldOps
 
 // MARK: - Memory Access Record
 
@@ -693,13 +694,29 @@ public final class GPUCairoMemoryArgEngine {
         let sortFactors = computeSortedPermutationFactors(sorted)
 
         // Compute inverse of sorted factors
-        let sortInverses = frBatchInverse(sortFactors)
+        var sortInverses = [Fr](repeating: .zero, count: sortFactors.count)
+        sortFactors.withUnsafeBytes { sBuf in
+            sortInverses.withUnsafeMutableBytes { iBuf in
+                bn254_fr_batch_inverse(
+                    sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(sortFactors.count),
+                    iBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+            }
+        }
 
         // Ratio factors: origFactors[i] * sortInverses[i]
         let n = accesses.count
-        var ratioFactors = [Fr](repeating: Fr.zero, count: n)
-        for i in 0..<n {
-            ratioFactors[i] = frMul(origFactors[i], sortInverses[i])
+        var ratioFactors = [Fr](repeating: .zero, count: n)
+        origFactors.withUnsafeBytes { aBuf in
+            sortInverses.withUnsafeBytes { bBuf in
+                ratioFactors.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_mul_neon(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
         }
 
         return accumulateProduct(ratioFactors)

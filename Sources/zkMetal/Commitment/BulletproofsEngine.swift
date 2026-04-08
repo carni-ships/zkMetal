@@ -681,7 +681,15 @@ public class BulletproofsVerifier {
         }
 
         // Precompute challenge inverses
-        let challengeInvs = frBatchInverse(challenges)
+        var challengeInvs = [Fr](repeating: .zero, count: challenges.count)
+        challenges.withUnsafeBytes { cBuf in
+            challengeInvs.withUnsafeMutableBytes { iBuf in
+                bn254_fr_batch_inverse(
+                    cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(challenges.count),
+                    iBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+            }
+        }
 
         // Compute s-vector: s[i] = product of challenges based on bit decomposition
         var s = [Fr](repeating: Fr.one, count: n)
@@ -705,7 +713,15 @@ public class BulletproofsVerifier {
         }
 
         // H_final = sum(s[i]^(-1) * H[i])
-        let sInvs = frBatchInverse(s)
+        var sInvs = [Fr](repeating: .zero, count: n)
+        s.withUnsafeBytes { sBuf in
+            sInvs.withUnsafeMutableBytes { iBuf in
+                bn254_fr_batch_inverse(
+                    sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(n),
+                    iBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+            }
+        }
         var hFinal = pointIdentity()
         for i in 0..<n {
             hFinal = pointAdd(hFinal, cPointScalarMul(pointFromAffine(H[i]), sInvs[i]))

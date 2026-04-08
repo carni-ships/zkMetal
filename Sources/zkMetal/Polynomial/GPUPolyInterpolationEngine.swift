@@ -12,6 +12,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 // MARK: - GPUPolyInterpolationEngine
 
@@ -124,7 +125,15 @@ public final class GPUPolyInterpolationEngine {
         }
 
         // Batch invert to get weights
-        let weights = frBatchInverse(denoms)
+        var weights = [Fr](repeating: .zero, count: denoms.count)
+        denoms.withUnsafeBytes { dBuf in
+            weights.withUnsafeMutableBytes { wBuf in
+                bn254_fr_batch_inverse(
+                    dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(denoms.count),
+                    wBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+            }
+        }
         return BarycentricWeights(points: points, weights: weights)
     }
 
@@ -140,32 +149,72 @@ public final class GPUPolyInterpolationEngine {
             if weights.points[i] == z { return values[i] }
         }
 
-        // Batch-invert all (z - x_i) denominators
-        var beDiffs = [Fr](repeating: Fr.zero, count: n)
-        for i in 0..<n { beDiffs[i] = frSub(z, weights.points[i]) }
-        var bePrefix = [Fr](repeating: Fr.one, count: n)
-        for i in 1..<n {
-            bePrefix[i] = beDiffs[i - 1] == Fr.zero ? bePrefix[i - 1] : frMul(bePrefix[i - 1], beDiffs[i - 1])
-        }
-        let beLast = beDiffs[n - 1] == Fr.zero ? bePrefix[n - 1] : frMul(bePrefix[n - 1], beDiffs[n - 1])
-        var beInv = frInverse(beLast)
-        var beDiffInvs = [Fr](repeating: Fr.zero, count: n)
-        for i in stride(from: n - 1, through: 0, by: -1) {
-            if beDiffs[i] != Fr.zero {
-                beDiffInvs[i] = frMul(beInv, bePrefix[i])
-                beInv = frMul(beInv, beDiffs[i])
+        // Batch compute diffs: diffs[i] = z - points[i]
+        var beDiffs = [Fr](repeating: .zero, count: n)
+        var zCopy = z
+        weights.points.withUnsafeBytes { pBuf in
+            beDiffs.withUnsafeMutableBytes { dBuf in
+                withUnsafeBytes(of: &zCopy) { zBuf in
+                    bn254_fr_batch_scalar_sub_neon(
+                        dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        zBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
             }
         }
 
-        var numer = Fr.zero
-        var denom = Fr.zero
-        for i in 0..<n {
-            let wOverDiff = frMul(weights.weights[i], beDiffInvs[i])
-            numer = frAdd(numer, frMul(values[i], wOverDiff))
-            denom = frAdd(denom, wOverDiff)
+        // Batch invert (safe handles zeros)
+        var beDiffInvs = [Fr](repeating: .zero, count: n)
+        beDiffs.withUnsafeBytes { dBuf in
+            beDiffInvs.withUnsafeMutableBytes { iBuf in
+                bn254_fr_batch_inverse_safe(
+                    dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(n),
+                    iBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+            }
         }
 
-        return frMul(numer, frInverse(denom))
+        // Batch compute wOverDiff[i] = weights[i] * diffInvs[i]
+        var wOverDiff = [Fr](repeating: .zero, count: n)
+        weights.weights.withUnsafeBytes { wBuf in
+            beDiffInvs.withUnsafeBytes { iBuf in
+                wOverDiff.withUnsafeMutableBytes { oBuf in
+                    bn254_fr_batch_mul_neon(
+                        oBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        wBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        iBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
+        }
+
+        // numer = sum(values[i] * wOverDiff[i])
+        var numerResult = Fr.zero
+        values.withUnsafeBytes { vBuf in
+            wOverDiff.withUnsafeBytes { wBuf in
+                withUnsafeMutableBytes(of: &numerResult) { rBuf in
+                    bn254_fr_inner_product(
+                        vBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        wBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                }
+            }
+        }
+
+        // denom = sum(wOverDiff[i])
+        var denomResult = Fr.zero
+        wOverDiff.withUnsafeBytes { wBuf in
+            withUnsafeMutableBytes(of: &denomResult) { rBuf in
+                bn254_fr_vector_sum(
+                    wBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(n),
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+            }
+        }
+
+        return frMul(numerResult, frInverse(denomResult))
     }
 
     /// Evaluate the interpolated polynomial at point z without precomputed weights.
@@ -195,13 +244,20 @@ public final class GPUPolyInterpolationEngine {
         }
 
         // Compute inverse denominators once
-        var invDenoms: [Fr]
+        let denoms: [Fr]
         if n >= GPUPolyInterpolationEngine.cpuThreshold {
-            let denoms = try gpuComputeDenominators(points: points)
-            invDenoms = frBatchInverse(denoms)
+            denoms = try gpuComputeDenominators(points: points)
         } else {
-            let denoms = cpuComputeDenominators(points: points)
-            invDenoms = frBatchInverse(denoms)
+            denoms = cpuComputeDenominators(points: points)
+        }
+        var invDenoms = [Fr](repeating: .zero, count: n)
+        denoms.withUnsafeBytes { dBuf in
+            invDenoms.withUnsafeMutableBytes { iBuf in
+                bn254_fr_batch_inverse(
+                    dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(n),
+                    iBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+            }
         }
 
         // Interpolate each value set using shared inverse denominators

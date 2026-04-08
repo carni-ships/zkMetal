@@ -737,7 +737,15 @@ public final class GPUHyperPlonkIOPEngine {
         }
 
         // Batch-invert denominators
-        let invDen = frBatchInverse(denominators)
+        var invDen = [Fr](repeating: .zero, count: n)
+        denominators.withUnsafeBytes { dBuf in
+            invDen.withUnsafeMutableBytes { iBuf in
+                bn254_fr_batch_inverse(
+                    dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(n),
+                    iBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+            }
+        }
 
         // Compute ratios: ratio[i] = num[i] / den[i]
         var ratios = [Fr](repeating: Fr.zero, count: n)
@@ -802,29 +810,76 @@ public final class GPUHyperPlonkIOPEngine {
         let beta = transcript.squeeze()
 
         // Step 3: Compute query inverse terms: 1/(beta - q_j)
-        var queryDiffs = [Fr](repeating: Fr.zero, count: numQueries)
-        for i in 0..<numQueries {
-            queryDiffs[i] = frSub(beta, queries[i])
+        var queryDiffs = [Fr](repeating: .zero, count: numQueries)
+        var betaCopy = beta
+        queries.withUnsafeBytes { qBuf in
+            queryDiffs.withUnsafeMutableBytes { dBuf in
+                withUnsafeBytes(of: &betaCopy) { bBuf in
+                    bn254_fr_batch_scalar_sub_neon(
+                        dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        qBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(numQueries))
+                }
+            }
         }
-        let queryInvs = frBatchInverse(queryDiffs)
+        var queryInvs = [Fr](repeating: .zero, count: numQueries)
+        queryDiffs.withUnsafeBytes { dBuf in
+            queryInvs.withUnsafeMutableBytes { iBuf in
+                bn254_fr_batch_inverse(
+                    dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(numQueries),
+                    iBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+            }
+        }
 
         // Sum of query terms
         var querySum = Fr.zero
-        for inv in queryInvs {
-            querySum = frAdd(querySum, inv)
+        queryInvs.withUnsafeBytes { qBuf in
+            withUnsafeMutableBytes(of: &querySum) { rBuf in
+                bn254_fr_vector_sum(
+                    qBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(numQueries),
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+            }
         }
 
         // Step 4: Compute table inverse terms: m_i / (beta - t_i)
-        var tableDiffs = [Fr](repeating: Fr.zero, count: numTableEntries)
-        for i in 0..<numTableEntries {
-            tableDiffs[i] = frSub(beta, table.entries[i])
+        var tableDiffs = [Fr](repeating: .zero, count: numTableEntries)
+        var betaCopy2 = beta
+        table.entries.withUnsafeBytes { tBuf in
+            tableDiffs.withUnsafeMutableBytes { dBuf in
+                withUnsafeBytes(of: &betaCopy2) { bBuf in
+                    bn254_fr_batch_scalar_sub_neon(
+                        dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(numTableEntries))
+                }
+            }
         }
-        let tableInvs = frBatchInverse(tableDiffs)
+        var tableInvs = [Fr](repeating: .zero, count: numTableEntries)
+        tableDiffs.withUnsafeBytes { dBuf in
+            tableInvs.withUnsafeMutableBytes { iBuf in
+                bn254_fr_batch_inverse(
+                    dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(numTableEntries),
+                    iBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+            }
+        }
 
         // Weighted sum: sum m_i / (beta - t_i)
         var tableSum = Fr.zero
-        for i in 0..<numTableEntries {
-            tableSum = frAdd(tableSum, frMul(multiplicities[i], tableInvs[i]))
+        multiplicities.withUnsafeBytes { mBuf in
+            tableInvs.withUnsafeBytes { iBuf in
+                withUnsafeMutableBytes(of: &tableSum) { rBuf in
+                    bn254_fr_inner_product(
+                        mBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        iBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(numTableEntries),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                }
+            }
         }
 
         // Step 5: The log-derivative relation: querySum - tableSum should be zero
