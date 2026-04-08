@@ -380,16 +380,37 @@ public class GPUIPAProverEngine {
         var halfLen = n / 2
 
         for _ in 0..<logN {
-            let aLo = Array(a.prefix(halfLen))
-            let aHi = Array(a.suffix(from: halfLen).prefix(halfLen))
-            let bLo = Array(b.prefix(halfLen))
-            let bHi = Array(b.suffix(from: halfLen).prefix(halfLen))
+            // Use slices for MSM and generator fold (need array copies for those APIs)
             let gLo = Array(gens.prefix(halfLen))
             let gHi = Array(gens.suffix(from: halfLen).prefix(halfLen))
 
-            // Cross inner products
-            let crossL = innerProduct(aLo, bHi)
-            let crossR = innerProduct(aHi, bLo)
+            // Cross inner products using pointer offsets (no array copy)
+            var crossL = Fr.zero
+            var crossR = Fr.zero
+            a.withUnsafeBytes { aBuf in
+                b.withUnsafeBytes { bBuf in
+                    let aBase = aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    let bBase = bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    withUnsafeMutableBytes(of: &crossL) { clBuf in
+                        bn254_fr_inner_product(
+                            aBase,
+                            bBase.advanced(by: halfLen * 4),
+                            Int32(halfLen),
+                            clBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                    }
+                    withUnsafeMutableBytes(of: &crossR) { crBuf in
+                        bn254_fr_inner_product(
+                            aBase.advanced(by: halfLen * 4),
+                            bBase,
+                            Int32(halfLen),
+                            crBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                    }
+                }
+            }
+
+            // MSM still needs array slices for the point API
+            let aLo = Array(a.prefix(halfLen))
+            let aHi = Array(a.suffix(from: halfLen).prefix(halfLen))
 
             // L = MSM(G_hi, a_lo) + crossL * U
             // R = MSM(G_lo, a_hi) + crossR * U
@@ -408,11 +429,43 @@ public class GPUIPAProverEngine {
             let x = transcript.deriveChallenge()
             let xInv = frInverse(x)
 
-            // Fold a: a'[i] = a_lo[i] * x + a_hi[i] * x^{-1}
-            a = cFrVectorFold(aLo, aHi, x: x, xInv: xInv)
-
-            // Fold b: b'[i] = b_lo[i] * x^{-1} + b_hi[i] * x
-            b = cFrVectorFold(bLo, bHi, x: xInv, xInv: x)
+            // Fold a and b using pointer offsets (no separate bLo/bHi copies)
+            a.withUnsafeBytes { aBuf in
+                let aBase = aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                var out = [Fr](repeating: Fr.zero, count: halfLen)
+                out.withUnsafeMutableBytes { oBuf in
+                    var xx = x; var xi = xInv
+                    withUnsafeBytes(of: &xx) { xBuf in
+                        withUnsafeBytes(of: &xi) { xiBuf in
+                            bn254_fr_vector_fold(
+                                aBase, aBase.advanced(by: halfLen * 4),
+                                xBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                xiBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                Int32(halfLen),
+                                oBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                        }
+                    }
+                }
+                a = out
+            }
+            b.withUnsafeBytes { bBuf in
+                let bBase = bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                var out = [Fr](repeating: Fr.zero, count: halfLen)
+                out.withUnsafeMutableBytes { oBuf in
+                    var xi = xInv; var xx = x
+                    withUnsafeBytes(of: &xi) { xiBuf in
+                        withUnsafeBytes(of: &xx) { xBuf in
+                            bn254_fr_vector_fold(
+                                bBase, bBase.advanced(by: halfLen * 4),
+                                xiBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                xBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                Int32(halfLen),
+                                oBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                        }
+                    }
+                }
+                b = out
+            }
 
             // Fold generators: G'[i] = x^{-1} * G_lo[i] + x * G_hi[i]
             gens = foldGenerators(gLo: gLo, gHi: gHi, x: xInv, xInv: x)
