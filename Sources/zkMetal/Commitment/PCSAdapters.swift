@@ -325,7 +325,12 @@ public final class FRIUnifiedPCS: PCSProtocol {
         // Pad polynomial to domain size
         var evals: [Fr]
         if poly.count < domainSize {
-            evals = poly + [Fr](repeating: Fr.zero, count: domainSize - poly.count)
+            evals = [Fr](repeating: Fr.zero, count: domainSize)
+            poly.withUnsafeBytes { src in
+                evals.withUnsafeMutableBytes { dst in
+                    memcpy(dst.baseAddress!, src.baseAddress!, poly.count * MemoryLayout<Fr>.stride)
+                }
+            }
         } else {
             evals = Array(poly.prefix(domainSize))
         }
@@ -346,7 +351,12 @@ public final class FRIUnifiedPCS: PCSProtocol {
         // Pad and NTT
         var evals: [Fr]
         if poly.count < domainSize {
-            evals = poly + [Fr](repeating: Fr.zero, count: domainSize - poly.count)
+            evals = [Fr](repeating: Fr.zero, count: domainSize)
+            poly.withUnsafeBytes { src in
+                evals.withUnsafeMutableBytes { dst in
+                    memcpy(dst.baseAddress!, src.baseAddress!, poly.count * MemoryLayout<Fr>.stride)
+                }
+            }
         } else {
             evals = Array(poly.prefix(domainSize))
         }

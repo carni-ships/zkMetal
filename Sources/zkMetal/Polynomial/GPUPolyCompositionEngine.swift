@@ -247,13 +247,14 @@ public class GPUPolyCompositionEngine {
 
         let pipeline = degree <= 512 ? cachedPipeline : hornerPipeline
 
-        let coeffsU32 = coeffs.flatMap { frToU32($0) }
-        let pointsU32 = points.flatMap { frToU32($0) }
-
-        let coeffsBuf = device.makeBuffer(bytes: coeffsU32, length: degree * elemSize,
-                                            options: .storageModeShared)!
-        let pointsBuf = device.makeBuffer(bytes: pointsU32, length: numPoints * elemSize,
-                                            options: .storageModeShared)!
+        let coeffsBuf = coeffs.withUnsafeBytes { buf in
+            device.makeBuffer(bytes: buf.baseAddress!, length: degree * elemSize,
+                              options: .storageModeShared)!
+        }
+        let pointsBuf = points.withUnsafeBytes { buf in
+            device.makeBuffer(bytes: buf.baseAddress!, length: numPoints * elemSize,
+                              options: .storageModeShared)!
+        }
         let resultBuf = device.makeBuffer(length: numPoints * elemSize, options: .storageModeShared)!
 
         guard let cmdBuf = commandQueue.makeCommandBuffer() else {

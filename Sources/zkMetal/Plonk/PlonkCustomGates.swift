@@ -132,8 +132,16 @@ extension CustomGate {
         // Build evaluation of the gate constraint at each row
         var gateEvals = [Fr](repeating: Fr.zero, count: n)
         let selectorEvals = try ntt.ntt(
-            selectorPoly.count >= n ? Array(selectorPoly.prefix(n))
-                                    : selectorPoly + [Fr](repeating: Fr.zero, count: n - selectorPoly.count))
+            {
+                if selectorPoly.count >= n { return Array(selectorPoly.prefix(n)) }
+                var padded = [Fr](repeating: Fr.zero, count: n)
+                selectorPoly.withUnsafeBytes { src in
+                    padded.withUnsafeMutableBytes { dst in
+                        memcpy(dst.baseAddress!, src.baseAddress!, selectorPoly.count * MemoryLayout<Fr>.stride)
+                    }
+                }
+                return padded
+            }())
 
         for i in 0..<n {
             // Skip rows where selector is zero (optimization)

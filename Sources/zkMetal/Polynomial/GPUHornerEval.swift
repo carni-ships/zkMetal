@@ -154,13 +154,14 @@ public class GPUHornerEval {
         let pipeline = degree <= 512 ? cachedPipeline : hornerPipeline
 
         // Pack coefficients as raw bytes
-        let coeffsU32 = coeffs.flatMap { frToU32($0) }
-        let pointsU32 = points.flatMap { frToU32($0) }
-
-        let coeffsBuf = device.makeBuffer(bytes: coeffsU32, length: degree * elemSize,
-                                            options: .storageModeShared)!
-        let pointsBuf = device.makeBuffer(bytes: pointsU32, length: numPoints * elemSize,
-                                            options: .storageModeShared)!
+        let coeffsBuf = coeffs.withUnsafeBytes { buf in
+            device.makeBuffer(bytes: buf.baseAddress!, length: degree * elemSize,
+                              options: .storageModeShared)!
+        }
+        let pointsBuf = points.withUnsafeBytes { buf in
+            device.makeBuffer(bytes: buf.baseAddress!, length: numPoints * elemSize,
+                              options: .storageModeShared)!
+        }
         let resultBuf = device.makeBuffer(length: numPoints * elemSize, options: .storageModeShared)!
 
         guard let cmdBuf = commandQueue.makeCommandBuffer() else {
@@ -203,21 +204,19 @@ public class GPUHornerEval {
         let degree = polys[0].count
         let elemSize = 32
 
-        // Pack all polynomials contiguously
-        var packedU32 = [UInt32]()
-        packedU32.reserveCapacity(numPolys * degree * 8)
-        for poly in polys {
-            for c in poly {
-                packedU32.append(contentsOf: frToU32(c))
+        // Pack all polynomials contiguously into GPU buffer
+        let totalBytes = numPolys * degree * elemSize
+        let polysBuf = device.makeBuffer(length: totalBytes, options: .storageModeShared)!
+        let dst = polysBuf.contents()
+        for (pi, poly) in polys.enumerated() {
+            poly.withUnsafeBytes { src in
+                memcpy(dst + pi * degree * elemSize, src.baseAddress!, degree * elemSize)
             }
         }
 
-        let pointU32 = frToU32(point)
-
-        let polysBuf = device.makeBuffer(bytes: packedU32, length: numPolys * degree * elemSize,
-                                           options: .storageModeShared)!
-        let pointBuf = device.makeBuffer(bytes: pointU32, length: elemSize,
-                                          options: .storageModeShared)!
+        let pointBuf: MTLBuffer = withUnsafeBytes(of: point) { buf in
+            device.makeBuffer(bytes: buf.baseAddress!, length: elemSize, options: .storageModeShared)!
+        }
         let resultBuf = device.makeBuffer(length: numPolys * elemSize, options: .storageModeShared)!
 
         guard let cmdBuf = commandQueue.makeCommandBuffer() else {

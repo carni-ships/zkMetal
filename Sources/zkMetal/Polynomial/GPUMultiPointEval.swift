@@ -143,13 +143,10 @@ public class GPUMultiPointEval {
 
     /// Convenience for Fr arrays.
     public func evaluate(poly: [Fr], points: [Fr]) throws -> [Fr] {
-        let coeffsU32 = poly.flatMap { frToU32($0) }
-        let pointsU32 = points.flatMap { frToU32($0) }
+        let coeffsU32 = poly.withUnsafeBytes { Array($0.bindMemory(to: UInt32.self)) }
+        let pointsU32 = points.withUnsafeBytes { Array($0.bindMemory(to: UInt32.self)) }
         let resultU32 = try evaluate(poly: coeffsU32, points: pointsU32, field: .bn254)
-        return stride(from: 0, to: resultU32.count, by: 8).map { base in
-            Fr(v: (resultU32[base], resultU32[base+1], resultU32[base+2], resultU32[base+3],
-                   resultU32[base+4], resultU32[base+5], resultU32[base+6], resultU32[base+7]))
-        }
+        return resultU32.withUnsafeBytes { Array($0.bindMemory(to: Fr.self)) }
     }
 
     // MARK: - batchEvaluate(polys:point:) — many polys at one point
@@ -179,13 +176,10 @@ public class GPUMultiPointEval {
 
     /// Convenience for Fr arrays.
     public func batchEvaluate(polys: [[Fr]], point: Fr) throws -> [Fr] {
-        let polysU32 = polys.map { $0.flatMap { frToU32($0) } }
+        let polysU32 = polys.map { p in p.withUnsafeBytes { Array($0.bindMemory(to: UInt32.self)) } }
         let pointU32 = frToU32(point)
         let resultU32 = try batchEvaluate(polys: polysU32, point: pointU32, field: .bn254)
-        return stride(from: 0, to: resultU32.count, by: 8).map { base in
-            Fr(v: (resultU32[base], resultU32[base+1], resultU32[base+2], resultU32[base+3],
-                   resultU32[base+4], resultU32[base+5], resultU32[base+6], resultU32[base+7]))
-        }
+        return resultU32.withUnsafeBytes { Array($0.bindMemory(to: Fr.self)) }
     }
 
     // MARK: - crossEvaluate(polys:points:) — M x N evaluation matrix
@@ -218,15 +212,10 @@ public class GPUMultiPointEval {
 
     /// Convenience for Fr arrays.
     public func crossEvaluate(polys: [[Fr]], points: [Fr]) throws -> [[Fr]] {
-        let polysU32 = polys.map { $0.flatMap { frToU32($0) } }
-        let pointsU32 = points.flatMap { frToU32($0) }
+        let polysU32 = polys.map { p in p.withUnsafeBytes { Array($0.bindMemory(to: UInt32.self)) } }
+        let pointsU32 = points.withUnsafeBytes { Array($0.bindMemory(to: UInt32.self)) }
         let resultRows = try crossEvaluate(polys: polysU32, points: pointsU32, field: .bn254)
-        return resultRows.map { row in
-            stride(from: 0, to: row.count, by: 8).map { base in
-                Fr(v: (row[base], row[base+1], row[base+2], row[base+3],
-                       row[base+4], row[base+5], row[base+6], row[base+7]))
-            }
-        }
+        return resultRows.map { row in row.withUnsafeBytes { Array($0.bindMemory(to: Fr.self)) } }
     }
 
     // MARK: - GPU dispatch: Horner (single poly, many points)
