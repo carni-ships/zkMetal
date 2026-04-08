@@ -707,14 +707,17 @@ public class GPUPlonkLinearizeEngine {
         // Flatten terms into parallel arrays for GPU
         let numTerms = terms.count
         var scalarsFlat = [Fr]()
-        var coeffsFlat = [Fr]()
-        for (scalar, coeffs) in terms {
+        var coeffsFlat = [Fr](repeating: Fr.zero, count: numTerms * size)
+        for (idx, (scalar, coeffs)) in terms.enumerated() {
             scalarsFlat.append(scalar)
-            var padded = coeffs
-            if padded.count < size {
-                padded += [Fr](repeating: Fr.zero, count: size - padded.count)
+            let offset = idx * size
+            let copyLen = min(coeffs.count, size)
+            coeffsFlat.withUnsafeMutableBytes { cBuf in
+                coeffs.withUnsafeBytes { sBuf in
+                    memcpy(cBuf.baseAddress! + offset * MemoryLayout<Fr>.stride,
+                           sBuf.baseAddress!, copyLen * MemoryLayout<Fr>.stride)
+                }
             }
-            coeffsFlat.append(contentsOf: padded.prefix(size))
         }
 
         // Create buffers

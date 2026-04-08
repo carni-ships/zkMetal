@@ -512,9 +512,26 @@ public class GPUIPAProverEngine {
         var bFolded = bVec
         var halfLen = n / 2
         for round in 0..<logN {
-            let bL = Array(bFolded.prefix(halfLen))
-            let bR = Array(bFolded.suffix(from: halfLen).prefix(halfLen))
-            bFolded = cFrVectorFold(bL, bR, x: challengeInvs[round], xInv: challenges[round])
+            var xi = challengeInvs[round]
+            var xiInv = challenges[round]
+            bFolded.withUnsafeBytes { bBuf in
+                let base = bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                var out = [Fr](repeating: Fr.zero, count: halfLen)
+                out.withUnsafeMutableBytes { oBuf in
+                    withUnsafeBytes(of: &xi) { xBuf in
+                        withUnsafeBytes(of: &xiInv) { xiBuf in
+                            bn254_fr_vector_fold(
+                                base,
+                                base.advanced(by: halfLen * 4),
+                                xBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                xiBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                Int32(halfLen),
+                                oBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                        }
+                    }
+                }
+                bFolded = out
+            }
             halfLen /= 2
         }
         let bFinal = bFolded[0]
