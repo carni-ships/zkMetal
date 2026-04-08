@@ -511,36 +511,36 @@ Methodology: Compute-bound = total_ops / 3.6T flops (BN254 mul = ~64 32-bit muls
 
 | Rank | Primitive | Current | Theoretical Floor | Bottleneck | Headroom |
 |------|-----------|---------|-------------------|------------|----------|
-| 1 | Groth16 prove 256 | 14ms | ~10ms | MSM dominated (cached affine + CPU NTT) | ~1.4x |
-| 2 | Lasso prove 2^18 | 29ms | ~20ms | Near floor — C-accelerated + fused GPU | ~1.5x |
-| 3 | GKR 2^10 d=4 | 6.4ms | ~5ms | C CIOS + pre-computed wiring topology (near floor) | ~1.3x |
-| 4 | Plonk prove 1024 | 50ms | ~15ms | C CIOS + Keccak transcript + batched poly ops | ~3x |
-| 5 | NTT BN254 2^22 | 26ms | ~2.9ms | Compute + strided BW (256-bit: 64 muls/elem) | ~9x |
-| 6 | MSM BN254 2^18 | 54ms | ~5ms | Random-access BW (scatter bucket accumulation) | ~11x |
-| 7 | KZG commit 2^10 | 0.7ms | ~0.5ms | C Horner + fused eval/div, cached affine SRS | ~1.4x |
-| 8 | Sumcheck 2^20 | 7.3ms | ~0.85ms | Bandwidth (2^20 x 32B per round) | ~9x |
-| 9 | ECDSA batch 64 (CPU) | 1.7ms | ~0.5ms | C CIOS Fr + fused batch prepare (was 8ms) | ~3x |
-| 10 | Basefold open 2^18 | 99ms | ~20ms | Iterative fold+commit (18 rounds x Merkle) | ~5x |
-| 11 | FRI Fold 2^20 | 1.96ms | ~0.3ms | Bandwidth (2^20 x 32B read+write) | ~7x |
-| 12 | BLS12-377 MSM 2^18 | 218ms | ~35ms | Wider limbs (253-bit), less optimized window sizes | ~6x |
-| 13 | Keccak Merkle 2^20 | 13ms | ~2.2ms | Compute (24 rounds x 64-bit) + 20 levels | ~6x |
-| 14 | Blake3 Batch 2^20 | 3.5ms | ~0.6ms | Bandwidth (2^20 x 64B) | ~6x |
-| 15 | Circle STARK prove 2^14 | 17ms | ~10ms | Profile: FRI 11ms dominates (Merkle 9ms) | ~1.7x |
-| 16 | HyperNova per-fold | 0.09ms | ~0.07ms | Near floor: C CIOS + Keccak + pre-computed affine (40x from 3.6ms) | ~1.3x |
-| 17 | secp256k1 MSM 2^18 | 113ms | ~30ms | No GLV, buffer caching + mixed-add unsafe (**10x** from 1133ms) | ~4x |
-| 18 | Poseidon2 batch 2^16 | 8.1ms | ~1.8ms | Compute (390 ops/elem, 22 sequential rounds limit parallelism) | ~4.5x |
-| 19 | Radix Sort 2^20 | 2.1ms | ~1ms | Vectorized histogram + flat clearing | ~2x |
-| 20 | Binius FFT 2^16 (CPU) | 21ms | ~5ms | CPU only; XOR-add is free but table mul is serial | ~4x |
-| 21 | Constraint IR 2^16 | 5.3ms | ~1.5ms | Compute (20 constraints x 65K rows, pipeline compile overhead) | ~3.5x |
-| 22 | Witness Gen BN254 2^18 | 3.0ms | ~0.9ms | Memory bandwidth (10 cols x 262K x 32B = 84MB) | ~3.3x |
-| 23 | Keccak Batch 2^18 | 1.4ms | ~0.5ms | Compute (24 rounds Keccak-f per hash) | ~3x |
-| 24 | P2 Merkle 2^18 | 46ms | ~16ms | Compute (262K hashes, level-by-level at n>65K) | ~2.9x |
-| 25 | P2 Merkle 2^16 | 22ms | ~8ms | Compute (65K hashes, fused subtree 1.7x over level-by-level) | ~2.8x |
-| 26 | Streaming verify 2^16 | 11ms | ~4ms | Task-queue overhead + Merkle verification | ~2.8x |
-| 27 | Verkle proof 256 (CPU) | 3.8ms | ~2ms | IPA dominated (C scalar mul) | ~1.9x |
-| 28 | Incremental Merkle batch 256 | 13ms | ~6ms | Path updates (log(N) hashes per leaf) | ~2.2x |
-| 29 | NTT Goldilocks 2^24 | 3.0ms | ~1.8ms | Compute ~= BW (64-bit) | ~1.7x |
-| 30 | Lattice Kyber NTT 10K | 5.6M NTTs/s | ~8M NTTs/s | Compute (256-pt NTT, 32-bit) | ~1.4x |
+| 1 | MSM BN254 2^18 | 54ms | ~5ms | Random-access BW (scatter bucket accumulation) | ~11x |
+| 2 | NTT BN254 2^22 | 26ms | ~2.9ms | Compute + strided BW (256-bit: 64 muls/elem) | ~9x |
+| 3 | Sumcheck 2^20 | 7.3ms | ~0.85ms | Bandwidth (2^20 x 32B per round) | ~9x |
+| 4 | FRI Fold 2^20 | 1.96ms | ~0.3ms | Bandwidth (2^20 x 32B read+write) | ~7x |
+| 5 | BLS12-377 MSM 2^18 | 218ms | ~35ms | Wider limbs (253-bit), less optimized window sizes | ~6x |
+| 6 | Keccak Merkle 2^20 | 13ms | ~2.2ms | Compute (24 rounds x 64-bit) + 20 levels | ~6x |
+| 7 | Blake3 Batch 2^20 | 3.5ms | ~0.6ms | Bandwidth (2^20 x 64B) | ~6x |
+| 8 | Basefold open 2^18 | 99ms | ~20ms | Iterative fold+commit (18 rounds x Merkle) | ~5x |
+| 9 | Poseidon2 batch 2^16 | 8.1ms | ~1.8ms | Compute (390 ops/elem, 22 sequential rounds limit parallelism) | ~4.5x |
+| 10 | secp256k1 MSM 2^18 | 113ms | ~30ms | No GLV, buffer caching + mixed-add unsafe | ~4x |
+| 11 | Binius FFT 2^16 (CPU) | 21ms | ~5ms | CPU only; XOR-add is free but table mul is serial | ~4x |
+| 12 | Constraint IR 2^16 | 5.3ms | ~1.5ms | Compute (20 constraints x 65K rows, pipeline compile overhead) | ~3.5x |
+| 13 | Witness Gen BN254 2^18 | 3.0ms | ~0.9ms | Memory bandwidth (10 cols x 262K x 32B = 84MB) | ~3.3x |
+| 14 | Plonk prove 1024 | 50ms | ~15ms | C CIOS + Keccak transcript + batched poly ops | ~3x |
+| 15 | ECDSA batch 64 (CPU) | 1.7ms | ~0.5ms | C CIOS Fr + fused batch prepare | ~3x |
+| 16 | Keccak Batch 2^18 | 1.4ms | ~0.5ms | Compute (24 rounds Keccak-f per hash) | ~3x |
+| 17 | P2 Merkle 2^18 | 46ms | ~16ms | Compute (262K hashes, level-by-level at n>65K) | ~2.9x |
+| 18 | P2 Merkle 2^16 | 22ms | ~8ms | Compute (65K hashes, fused subtree 1.7x over level-by-level) | ~2.8x |
+| 19 | Streaming verify 2^16 | 11ms | ~4ms | Task-queue overhead + Merkle verification | ~2.8x |
+| 20 | Incremental Merkle batch 256 | 13ms | ~6ms | Path updates (log(N) hashes per leaf) | ~2.2x |
+| 21 | Radix Sort 2^20 | 2.1ms | ~1ms | Vectorized histogram + flat clearing | ~2x |
+| 22 | Verkle proof 256 (CPU) | 3.8ms | ~2ms | IPA dominated (C scalar mul) | ~1.9x |
+| 23 | Circle STARK prove 2^14 | 17ms | ~10ms | Profile: FRI 11ms dominates (Merkle 9ms) | ~1.7x |
+| 24 | NTT Goldilocks 2^24 | 3.0ms | ~1.8ms | Compute ~= BW (64-bit) | ~1.7x |
+| 25 | Lasso prove 2^18 | 29ms | ~20ms | Near floor — C-accelerated + fused GPU | ~1.5x |
+| 26 | Groth16 prove 256 | 14ms | ~10ms | MSM dominated (cached affine + CPU NTT) | ~1.4x |
+| 27 | KZG commit 2^10 | 0.7ms | ~0.5ms | C Horner + fused eval/div, cached affine SRS | ~1.4x |
+| 28 | Lattice Kyber NTT 10K | 5.6M NTTs/s | ~8M NTTs/s | Compute (256-pt NTT, 32-bit) | ~1.4x |
+| 29 | GKR 2^10 d=4 | 6.4ms | ~5ms | C CIOS + pre-computed wiring topology (near floor) | ~1.3x |
+| 30 | HyperNova per-fold | 0.09ms | ~0.07ms | Near floor: C CIOS + Keccak + pre-computed affine | ~1.3x |
 | 31 | Circle NTT 2^20 | 4.0ms | ~3ms | Compute ~= BW (32-bit elements, single-word) | ~1.3x |
 | 32 | IPA prove n=256 | 13ms | ~10ms | C scalar mul + GPU batch fold | ~1.3x |
 | 33 | NTT BabyBear 2^24 | 2.0ms | ~1.7ms | Bandwidth (2^24 x 4B) | ~1.2x |
