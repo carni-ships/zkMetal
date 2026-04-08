@@ -83,11 +83,15 @@ public final class KZGUnifiedPCS: PCSBatchProtocol {
         let batch = try engine.batchOpen(polynomials: polys, point: point, gamma: gamma)
         // Encode combined evaluation into the proof for verification
         var combinedEval = Fr.zero
-        var gammaPow = Fr.one
-        for i in 0..<batch.evaluations.count {
-            combinedEval = frAdd(combinedEval, frMul(gammaPow, batch.evaluations[i]))
-            if i < batch.evaluations.count - 1 {
-                gammaPow = frMul(gammaPow, gamma)
+        batch.evaluations.withUnsafeBytes { eBuf in
+            withUnsafeBytes(of: gamma) { gBuf in
+                withUnsafeMutableBytes(of: &combinedEval) { rBuf in
+                    bn254_fr_horner_eval(
+                        eBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(batch.evaluations.count),
+                        gBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                }
             }
         }
         return KZGProof(evaluation: combinedEval, witness: batch.proof)

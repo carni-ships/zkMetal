@@ -266,13 +266,17 @@ public class GPUKZGEngine {
             }
         }
 
-        // Step 4: Combined evaluation y = sum_i gamma^i * y_i
+        // Step 4: Combined evaluation y = sum_i gamma^i * y_i (= Horner eval)
         var combinedEval = Fr.zero
-        gammaPow = Fr.one
-        for i in 0..<n {
-            combinedEval = frAdd(combinedEval, frMul(gammaPow, evaluations[i]))
-            if i < n - 1 {
-                gammaPow = frMul(gammaPow, gamma)
+        evaluations.withUnsafeBytes { eBuf in
+            withUnsafeBytes(of: gamma) { gBuf in
+                withUnsafeMutableBytes(of: &combinedEval) { rBuf in
+                    bn254_fr_horner_eval(
+                        eBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n),
+                        gBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                }
             }
         }
 

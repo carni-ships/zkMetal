@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
+#include <dispatch/dispatch.h>
 
 typedef unsigned __int128 uint128_t;
 
@@ -372,6 +373,36 @@ static void bit_reverse_permute256(uint64_t *data, int logN) {
 
 // Forward NTT for BN254 Fr
 // data: array of n elements, each 4×64-bit limbs in Montgomery form
+// Single NTT butterfly block (DIT): process one block at base offset
+static inline void ntt_dit_block(uint64_t *data, const uint64_t *tw,
+                                  int base, int halfBlock, int twOffset)
+{
+    // j==0: twiddle==1, skip Montgomery mul
+    {
+        uint64_t *u = &data[base * 4];
+        uint64_t *vp = &data[(base + halfBlock) * 4];
+        uint64_t sum[4], diff[4];
+        mont_add_4limb(u, vp, BN254_FR_P, sum);
+        mont_sub_4limb(u, vp, BN254_FR_P, diff);
+        memcpy(u, sum, 32);
+        memcpy(vp, diff, 32);
+    }
+    for (int j = 1; j < halfBlock; j++) {
+        uint64_t *u = &data[(base + j) * 4];
+        uint64_t *vp = &data[(base + j + halfBlock) * 4];
+        const uint64_t *twj = &tw[(twOffset + j) * 4];
+        uint64_t v[4];
+        mont_mul_4limb(twj, vp, BN254_FR_P, BN254_FR_INV, v);
+        uint64_t sum[4], diff[4];
+        mont_add_4limb(u, v, BN254_FR_P, sum);
+        mont_sub_4limb(u, v, BN254_FR_P, diff);
+        memcpy(u, sum, 32);
+        memcpy(vp, diff, 32);
+    }
+}
+
+#define NTT_PARALLEL_THRESHOLD 4096
+
 void bn254_fr_ntt(uint64_t *data, int logN) {
     if (logN <= 0) return;
     int n = 1 << logN;
@@ -387,37 +418,51 @@ void bn254_fr_ntt(uint64_t *data, int logN) {
         int nBlocks = n / blockSize;
         int twOffset = halfBlock - 1;
 
-        for (int bk = 0; bk < nBlocks; bk++) {
-            int base = bk * blockSize;
-            // Twiddle skip: j==0 has twiddle==1 (Montgomery identity),
-            // skip expensive 256-bit Montgomery mul
-            {
-                uint64_t *u = &data[base * 4];
-                uint64_t *vp = &data[(base + halfBlock) * 4];
-
-                uint64_t sum[4], diff[4];
-                mont_add_4limb(u, vp, BN254_FR_P, sum);
-                mont_sub_4limb(u, vp, BN254_FR_P, diff);
-
-                memcpy(u, sum, 32);
-                memcpy(vp, diff, 32);
-            }
-            for (int j = 1; j < halfBlock; j++) {
-                uint64_t *u = &data[(base + j) * 4];
-                uint64_t *vp = &data[(base + j + halfBlock) * 4];
-                const uint64_t *twj = &tw[(twOffset + j) * 4];
-
-                uint64_t v[4];
-                mont_mul_4limb(twj, vp, BN254_FR_P, BN254_FR_INV, v);
-
-                uint64_t sum[4], diff[4];
-                mont_add_4limb(u, v, BN254_FR_P, sum);
-                mont_sub_4limb(u, v, BN254_FR_P, diff);
-
-                memcpy(u, sum, 32);
-                memcpy(vp, diff, 32);
+        if (n >= NTT_PARALLEL_THRESHOLD && nBlocks >= 4) {
+            // Parallel: dispatch blocks across threads
+            int nb = nBlocks, bs = blockSize, hb = halfBlock, two = twOffset;
+            uint64_t *d = data;
+            const uint64_t *t = tw;
+            dispatch_apply(nb, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+                ^(size_t idx) {
+                    int base = (int)idx * bs;
+                    ntt_dit_block(d, t, base, hb, two);
+                });
+        } else {
+            for (int bk = 0; bk < nBlocks; bk++) {
+                int base = bk * blockSize;
+                ntt_dit_block(data, tw, base, halfBlock, twOffset);
             }
         }
+    }
+}
+
+// Single INTT butterfly block (DIF): process one block at base offset
+static inline void intt_dif_block(uint64_t *data, const uint64_t *tw,
+                                   int base, int halfBlock, int twOffset)
+{
+    // j==0: twiddle==1, skip Montgomery mul
+    {
+        uint64_t *ap = &data[base * 4];
+        uint64_t *bp = &data[(base + halfBlock) * 4];
+        uint64_t a[4], b[4];
+        memcpy(a, ap, 32); memcpy(b, bp, 32);
+        uint64_t sum[4], diff[4];
+        mont_add_4limb(a, b, BN254_FR_P, sum);
+        mont_sub_4limb(a, b, BN254_FR_P, diff);
+        memcpy(ap, sum, 32); memcpy(bp, diff, 32);
+    }
+    for (int j = 1; j < halfBlock; j++) {
+        uint64_t *ap = &data[(base + j) * 4];
+        uint64_t *bp = &data[(base + j + halfBlock) * 4];
+        const uint64_t *twj = &tw[(twOffset + j) * 4];
+        uint64_t a[4], b[4];
+        memcpy(a, ap, 32); memcpy(b, bp, 32);
+        uint64_t sum[4], diff[4], prod[4];
+        mont_add_4limb(a, b, BN254_FR_P, sum);
+        mont_sub_4limb(a, b, BN254_FR_P, diff);
+        mont_mul_4limb(diff, twj, BN254_FR_P, BN254_FR_INV, prod);
+        memcpy(ap, sum, 32); memcpy(bp, prod, 32);
     }
 }
 
@@ -437,59 +482,28 @@ void bn254_fr_intt(uint64_t *data, int logN) {
         int nBlocks = n / blockSize;
         int twOffset = halfBlock - 1;
 
-        for (int bk = 0; bk < nBlocks; bk++) {
-            int base = bk * blockSize;
-            // Twiddle skip: j==0 has twiddle==1 (Montgomery identity)
-            {
-                uint64_t *ap = &data[base * 4];
-                uint64_t *bp = &data[(base + halfBlock) * 4];
-
-                uint64_t a[4], b[4];
-                memcpy(a, ap, 32);
-                memcpy(b, bp, 32);
-
-                uint64_t sum[4], diff[4];
-                mont_add_4limb(a, b, BN254_FR_P, sum);
-                mont_sub_4limb(a, b, BN254_FR_P, diff);
-
-                memcpy(ap, sum, 32);
-                memcpy(bp, diff, 32);
-            }
-            for (int j = 1; j < halfBlock; j++) {
-                uint64_t *ap = &data[(base + j) * 4];
-                uint64_t *bp = &data[(base + j + halfBlock) * 4];
-                const uint64_t *twj = &tw[(twOffset + j) * 4];
-
-                uint64_t a[4], b[4];
-                memcpy(a, ap, 32);
-                memcpy(b, bp, 32);
-
-                uint64_t sum[4], diff[4], prod[4];
-                mont_add_4limb(a, b, BN254_FR_P, sum);
-                mont_sub_4limb(a, b, BN254_FR_P, diff);
-                mont_mul_4limb(diff, twj, BN254_FR_P, BN254_FR_INV, prod);
-
-                memcpy(ap, sum, 32);
-                memcpy(bp, prod, 32);
+        if (n >= NTT_PARALLEL_THRESHOLD && nBlocks >= 4) {
+            int nb = nBlocks, bs = blockSize, hb = halfBlock, two = twOffset;
+            uint64_t *d = data;
+            const uint64_t *t = tw;
+            dispatch_apply(nb, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+                ^(size_t idx) {
+                    int base = (int)idx * bs;
+                    intt_dif_block(d, t, base, hb, two);
+                });
+        } else {
+            for (int bk = 0; bk < nBlocks; bk++) {
+                int base = bk * blockSize;
+                intt_dif_block(data, tw, base, halfBlock, twOffset);
             }
         }
     }
 
     bit_reverse_permute256(data, logN);
 
-    // Scale by 1/n (in Montgomery form)
-    // Compute n_inv = n^{-1} mod p in Montgomery form
-    // First, convert n to Montgomery form: n_mont = n * R mod p
-    // Then invert: n_inv_mont = n_mont^{-1} in Montgomery form
-    // Simpler: compute frFromInt(n) then invert
+    // Scale by 1/n using batch_mul_scalar for parallel execution
     uint64_t n_mont[4];
-    memcpy(n_mont, BN254_FR_ONE, 32);
-    // Multiply ONE by n to get n in Montgomery form
-    // ONE is already R mod p, so n * ONE = n * R mod p... no.
-    // Actually n_mont = mont_mul(n_plain, R2) where n_plain is just n.
-    // But we need n as 4 limbs first.
     uint64_t n_plain[4] = {(uint64_t)n, 0, 0, 0};
-    // R^2 mod p for BN254 Fr
     static const uint64_t BN254_FR_R2[4] = {
         0x1bb8e645ae216da7ULL, 0x53fe3ab1e35c59e3ULL,
         0x8c49833d53bb8085ULL, 0x0216d0b17f4e44a5ULL
@@ -499,9 +513,7 @@ void bn254_fr_intt(uint64_t *data, int logN) {
     uint64_t n_inv[4];
     fr_inv(n_mont, n_inv);
 
-    for (int i = 0; i < n; i++) {
-        mont_mul_4limb(&data[i * 4], n_inv, BN254_FR_P, BN254_FR_INV, &data[i * 4]);
-    }
+    bn254_fr_batch_mul_scalar(data, n_inv, data, n);
 }
 
 // ============================================================
