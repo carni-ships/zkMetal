@@ -16,6 +16,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 public class GPUGrandProductEngine {
     public static let version = Versions.gpuGrandProduct
@@ -162,8 +163,21 @@ public class GPUGrandProductEngine {
         if let r = gpuElemMul(numerators, invDen) {
             ratios = r
         } else {
-            // CPU fallback for elem mul
-            ratios = (0..<n).map { frMul(numerators[$0], invDen[$0]) }
+            // CPU fallback for elem mul via batch C kernel
+            var fallbackResult = [Fr](repeating: .zero, count: n)
+            numerators.withUnsafeBytes { nBuf in
+                invDen.withUnsafeBytes { dBuf in
+                    fallbackResult.withUnsafeMutableBytes { rBuf in
+                        bn254_fr_batch_mul(
+                            nBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n)
+                        )
+                    }
+                }
+            }
+            ratios = fallbackResult
         }
 
         // Step 3: Prefix product of ratios
@@ -404,8 +418,16 @@ public class GPUGrandProductEngine {
 
         // Compute ratios and prefix product
         var ratios = [Fr](repeating: Fr.zero, count: n)
-        for i in 0..<n {
-            ratios[i] = frMul(numerators[i], invDen[i])
+        numerators.withUnsafeBytes { aBuf in
+            invDen.withUnsafeBytes { bBuf in
+                ratios.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_mul(
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
         }
         return cpuPartialProducts(ratios)
     }

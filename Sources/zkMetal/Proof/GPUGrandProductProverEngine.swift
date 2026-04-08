@@ -482,8 +482,16 @@ public final class GPUGrandProductProverEngine {
         let invDen = batchInverse(denominators)
 
         var ratios = [Fr](repeating: Fr.zero, count: n)
-        for i in 0..<n {
-            ratios[i] = frMul(numerators[i], invDen[i])
+        numerators.withUnsafeBytes { aBuf in
+            invDen.withUnsafeBytes { bBuf in
+                ratios.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_mul(
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
         }
         return ratios
     }
@@ -494,8 +502,16 @@ public final class GPUGrandProductProverEngine {
         let n = numPrefix.count
         let invDen = batchInverse(denPrefix)
         var result = [Fr](repeating: Fr.zero, count: n)
-        for i in 0..<n {
-            result[i] = frMul(numPrefix[i], invDen[i])
+        numPrefix.withUnsafeBytes { aBuf in
+            invDen.withUnsafeBytes { bBuf in
+                result.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_mul(
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
         }
         return result
     }

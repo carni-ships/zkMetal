@@ -56,6 +56,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 // MARK: - Configuration
 
@@ -482,15 +483,25 @@ public class GPULookupGrandProductEngine {
             return columns[0]
         }
 
-        var result = [Fr](repeating: Fr.zero, count: n)
+        // Horner via chained batch_linear_combine:
+        // result = cols[c-1]
+        // for col in (c-2)...0: result[i] = cols[col][i] + alpha * result[i]
+        var result = columns[c - 1]
 
-        // Horner evaluation: start from last column
-        for i in 0..<n {
-            var acc = columns[c - 1][i]
-            for col in stride(from: c - 2, through: 0, by: -1) {
-                acc = frAdd(columns[col][i], frMul(alpha, acc))
+        withUnsafeBytes(of: alpha) { sBuf in
+            let scalarPtr = sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+            for col in Swift.stride(from: c - 2, through: 0, by: -1) {
+                columns[col].withUnsafeBytes { aBuf in
+                    result.withUnsafeMutableBytes { rBuf in
+                        let aPtr = aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                        let rPtr = rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                        // result[i] = cols[col][i] + alpha * result[i]
+                        // batch_linear_combine(a, scalar, b, result, n) => result[i] = a[i] + scalar*b[i]
+                        // Here b = result (input) and result = result (output), safe because tmp is used internally
+                        bn254_fr_batch_linear_combine(aPtr, scalarPtr, rPtr, rPtr, Int32(n))
+                    }
+                }
             }
-            result[i] = acc
         }
 
         return result

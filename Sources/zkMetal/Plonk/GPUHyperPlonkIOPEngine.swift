@@ -527,8 +527,16 @@ public final class GPUHyperPlonkIOPEngine {
             hEvals = gpuPointwiseMul(eqEvals, constraintEvals, count: n)
         } else {
             hEvals = [Fr](repeating: Fr.zero, count: n)
-            for i in 0..<n {
-                hEvals[i] = frMul(eqEvals[i], constraintEvals[i])
+            eqEvals.withUnsafeBytes { aBuf in
+                constraintEvals.withUnsafeBytes { bBuf in
+                    hEvals.withUnsafeMutableBytes { rBuf in
+                        bn254_fr_batch_mul(
+                            aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
             }
         }
 
@@ -727,8 +735,16 @@ public final class GPUHyperPlonkIOPEngine {
 
         // Compute ratios: ratio[i] = num[i] / den[i]
         var ratios = [Fr](repeating: Fr.zero, count: n)
-        for i in 0..<n {
-            ratios[i] = frMul(numerators[i], invDen[i])
+        numerators.withUnsafeBytes { aBuf in
+            invDen.withUnsafeBytes { bBuf in
+                ratios.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_mul(
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
         }
 
         // Compute grand product (sequential prefix product in a specific order)
@@ -918,8 +934,16 @@ public final class GPUHyperPlonkIOPEngine {
         let n = 1 << numVars
         precondition(a.count == n && b.count == n)
         var c = [Fr](repeating: Fr.zero, count: n)
-        for i in 0..<n {
-            c[i] = frMul(a[i], b[i])
+        a.withUnsafeBytes { aBuf in
+            b.withUnsafeBytes { bBuf in
+                c.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_mul(
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
         }
         return HyperPlonkWitness(columns: [a, b, c], numVars: numVars)
     }

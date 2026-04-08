@@ -1485,4 +1485,8 @@ void bn254_fr_batch_sub(const uint64_t *a, const uint64_t *b,
 void bn254_fr_batch_add(const uint64_t *a, const uint64_t *b,
                           uint64_t *result, int n);
 
+/// Batch scalar multiply: result[i] = scalar * a[i]
+void bn254_fr_batch_mul_scalar(const uint64_t *a, const uint64_t *scalar,
+                                uint64_t *result, int n);
+
 #endif // NEON_FIELD_OPS_H

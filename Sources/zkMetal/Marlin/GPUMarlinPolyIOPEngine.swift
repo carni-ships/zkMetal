@@ -802,7 +802,20 @@ public class GPUMarlinPolyIOPEngine {
 
     /// Multiply polynomial by scalar.
     public func polyScalarMul(_ a: [Fr], _ s: Fr) -> [Fr] {
-        return a.map { frMul($0, s) }
+        var result = [Fr](repeating: .zero, count: a.count)
+        a.withUnsafeBytes { aBuf in
+            result.withUnsafeMutableBytes { rBuf in
+                withUnsafeBytes(of: s) { sBuf in
+                    bn254_fr_batch_mul_scalar(
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(a.count)
+                    )
+                }
+            }
+        }
+        return result
     }
 
     /// Multiply two polynomials using GPU NTT on a 2x domain.
@@ -819,8 +832,16 @@ public class GPUMarlinPolyIOPEngine {
         let bEvals = try ntt.ntt(bPad)
 
         var cEvals = [Fr](repeating: .zero, count: domainSize)
-        for i in 0..<domainSize {
-            cEvals[i] = frMul(aEvals[i], bEvals[i])
+        aEvals.withUnsafeBytes { aBuf in
+            bEvals.withUnsafeBytes { bBuf in
+                cEvals.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_mul(
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(domainSize))
+                }
+            }
         }
 
         let cCoeffs = try ntt.intt(cEvals)

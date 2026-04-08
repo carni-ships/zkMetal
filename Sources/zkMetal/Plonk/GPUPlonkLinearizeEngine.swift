@@ -665,13 +665,29 @@ public class GPUPlonkLinearizeEngine {
             if scalar.isZero { continue }
             let len = min(coeffs.count, size)
             if frEqual(scalar, Fr.one) {
-                // Optimization: skip multiplication when scalar is 1
-                for j in 0..<len {
-                    result[j] = frAdd(result[j], coeffs[j])
+                result.withUnsafeMutableBytes { rBuf in
+                    coeffs.withUnsafeBytes { cBuf in
+                        bn254_fr_batch_add(
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(len)
+                        )
+                    }
                 }
             } else {
-                for j in 0..<len {
-                    result[j] = frAdd(result[j], frMul(scalar, coeffs[j]))
+                result.withUnsafeMutableBytes { rBuf in
+                    coeffs.withUnsafeBytes { cBuf in
+                        withUnsafeBytes(of: scalar) { sBuf in
+                            bn254_fr_batch_linear_combine(
+                                rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                Int32(len)
+                            )
+                        }
+                    }
                 }
             }
         }

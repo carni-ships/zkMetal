@@ -12,6 +12,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 // MARK: - GPURLCEngine
 
@@ -99,7 +100,20 @@ public class GPURLCEngine {
         // Single vector: just scalar multiply
         if k == 1 {
             let w = powers[0]
-            return vectors[0].map { frMul($0, w) }
+            var result = [Fr](repeating: .zero, count: n)
+            vectors[0].withUnsafeBytes { vBuf in
+                result.withUnsafeMutableBytes { rBuf in
+                    withUnsafeBytes(of: w) { wBuf in
+                        bn254_fr_batch_mul_scalar(
+                            vBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            wBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n)
+                        )
+                    }
+                }
+            }
+            return result
         }
 
         if n < cpuThreshold {

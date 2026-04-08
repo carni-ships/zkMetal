@@ -435,10 +435,18 @@ public class GPUFflonkProverEngine {
             }
         }
 
-        // CPU fallback
+        // CPU fallback using batch C kernel
         var result = [Fr](repeating: Fr.zero, count: n)
-        for i in 0..<n {
-            result[i] = frMul(poly[i], scalar)
+        poly.withUnsafeBytes { pBuf in
+            withUnsafeBytes(of: scalar) { sBuf in
+                result.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_mul_scalar(
+                        pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
         }
         return (result, false)
     }

@@ -372,8 +372,14 @@ public class HyperNovaProver {
                 )
             }
         }
-        for i in 0..<size {
-            crossTermEvals[i] = frMul(crossTermEvals[i], eqR[i])
+        crossTermEvals.withUnsafeMutableBytes { rBuf in
+            eqR.withUnsafeBytes { eBuf in
+                bn254_fr_batch_mul(
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    eBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(size))
+            }
         }
 
         // Run sumcheck rounds in-place

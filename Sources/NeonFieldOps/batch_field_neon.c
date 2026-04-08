@@ -1090,3 +1090,15 @@ void bn254_fr_batch_add(const uint64_t *a, const uint64_t *b,
         fr_add_branchless(&a[i * 4], &b[i * 4], &result[i * 4]);
     }
 }
+
+/// Batch scalar multiply: result[i] = scalar * a[i]
+void bn254_fr_batch_mul_scalar(const uint64_t *a, const uint64_t *scalar,
+                                uint64_t *result, int n)
+{
+    for (int i = 0; i < n; i++) {
+        if (i + 2 < n) {
+            __builtin_prefetch(&a[(i + 2) * 4], 0, 1);
+        }
+        fr_mont_mul(&a[i * 4], scalar, &result[i * 4]);
+    }
+}

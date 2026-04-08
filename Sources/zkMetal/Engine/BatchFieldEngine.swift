@@ -11,6 +11,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 // MARK: - BatchFieldEngine
 
@@ -260,9 +261,18 @@ public class BatchFieldEngine {
     }
 
     private func batchMulCPU_BN254(_ a: [Fr], _ b: [Fr]) -> [Fr] {
-        var result = [Fr](repeating: Fr.zero, count: a.count)
-        for i in 0..<a.count {
-            result[i] = frMul(a[i], b[i])
+        let n = a.count
+        var result = [Fr](repeating: Fr.zero, count: n)
+        a.withUnsafeBytes { aBuf in
+            b.withUnsafeBytes { bBuf in
+                result.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_mul(
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
         }
         return result
     }
@@ -289,9 +299,18 @@ public class BatchFieldEngine {
     }
 
     private func batchAddCPU_BN254(_ a: [Fr], _ b: [Fr]) -> [Fr] {
-        var result = [Fr](repeating: Fr.zero, count: a.count)
-        for i in 0..<a.count {
-            result[i] = frAdd(a[i], b[i])
+        let n = a.count
+        var result = [Fr](repeating: Fr.zero, count: n)
+        a.withUnsafeBytes { aBuf in
+            b.withUnsafeBytes { bBuf in
+                result.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_add(
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
         }
         return result
     }
