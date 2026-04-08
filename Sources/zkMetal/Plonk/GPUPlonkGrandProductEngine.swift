@@ -565,10 +565,16 @@ public class GPUPlonkGrandProductEngine {
         }
 
         // Combine: z[i] = product of all subZPolys[p][i]
-        var z = [Fr](repeating: Fr.one, count: n)
-        for p in 0..<numPartitions {
-            for i in 0..<n {
-                z[i] = frMul(z[i], subZPolys[p][i])
+        var z = subZPolys[0]
+        for p in 1..<numPartitions {
+            z.withUnsafeMutableBytes { zBuf in
+                subZPolys[p].withUnsafeBytes { sBuf in
+                    bn254_fr_batch_mul(
+                        zBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        zBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
             }
         }
 
@@ -752,8 +758,16 @@ public class GPUPlonkGrandProductEngine {
 
         var sigma = [[Fr]](repeating: [Fr](repeating: Fr.zero, count: n), count: numWires)
         for j in 0..<numWires {
-            for i in 0..<n {
-                sigma[j][i] = frMul(cosetMuls[j], domain[i])
+            withUnsafeBytes(of: cosetMuls[j]) { sBuf in
+                domain.withUnsafeBytes { dBuf in
+                    sigma[j].withUnsafeMutableBytes { rBuf in
+                        bn254_fr_batch_mul_scalar(
+                            dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
             }
         }
         return sigma

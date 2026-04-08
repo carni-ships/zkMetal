@@ -14,6 +14,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 // MARK: - GPUCosetLDEEngine
 
@@ -448,10 +449,14 @@ public class GPUCosetLDEEngine {
         for i in 0..<n { padded[i] = coeffs[i] }
 
         // Step 3: Coset shift: padded[i] *= g^i
-        var gPow = Fr.one
-        for i in 0..<m {
-            padded[i] = frMul(padded[i], gPow)
-            gPow = frMul(gPow, cosetShift)
+        padded.withUnsafeMutableBytes { rBuf in
+            withUnsafeBytes(of: cosetShift) { gBuf in
+                bn254_fr_batch_mul_powers(
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    gBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(m))
+            }
         }
 
         // Step 4: Forward NTT

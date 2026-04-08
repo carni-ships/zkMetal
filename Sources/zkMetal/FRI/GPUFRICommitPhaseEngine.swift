@@ -845,8 +845,14 @@ public final class GPUFRICommitPhaseEngine {
 
         // Multiply by 1/n
         let nInv = frInverse(frFromInt(UInt64(n)))
-        for i in 0..<n {
-            coeffs[i] = frMul(coeffs[i], nInv)
+        coeffs.withUnsafeMutableBytes { rBuf in
+            withUnsafeBytes(of: nInv) { sBuf in
+                bn254_fr_batch_mul_scalar(
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(n))
+            }
         }
 
         return coeffs

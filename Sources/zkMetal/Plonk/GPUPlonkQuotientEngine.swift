@@ -271,10 +271,14 @@ public class GPUPlonkQuotientEngine {
         for i in 0..<copyLen { padded[i] = coeffs[i] }
 
         // Coset NTT: multiply c_k by g^k, then NTT
-        var gPow = Fr.one
-        for k in 0..<n {
-            padded[k] = frMul(padded[k], gPow)
-            gPow = frMul(gPow, coset.generator)
+        padded.withUnsafeMutableBytes { rBuf in
+            withUnsafeBytes(of: coset.generator) { gBuf in
+                bn254_fr_batch_mul_powers(
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    gBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(n))
+            }
         }
 
         // Use CPU C NTT for the forward transform
@@ -311,10 +315,14 @@ public class GPUPlonkQuotientEngine {
 
         // Undo coset shift: divide c_k by g^k
         let gInv = frInverse(coset.generator)
-        var gInvPow = Fr.one
-        for k in 0..<n {
-            data[k] = frMul(data[k], gInvPow)
-            gInvPow = frMul(gInvPow, gInv)
+        data.withUnsafeMutableBytes { rBuf in
+            withUnsafeBytes(of: gInv) { gBuf in
+                bn254_fr_batch_mul_powers(
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    gBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(n))
+            }
         }
 
         return data
@@ -401,10 +409,33 @@ public class GPUPlonkQuotientEngine {
     /// - Returns: Boundary constraint evaluations at each coset point.
     public func evaluateBoundaryConstraint(inputs: CosetConstraintInputs) -> [Fr] {
         let n = inputs.zEvals.count
+        // result[i] = (zEvals[i] - 1) * l1Evals[i]
+        // Step 1: tmp[i] = zEvals[i] - 1 = (-1) + zEvals[i]
+        let negOne = frNeg(Fr.one)
+        var tmp = [Fr](repeating: Fr.zero, count: n)
+        withUnsafeBytes(of: negOne) { sBuf in
+            inputs.zEvals.withUnsafeBytes { zBuf in
+                tmp.withUnsafeMutableBytes { tBuf in
+                    bn254_fr_batch_add_scalar_neon(
+                        tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        zBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
+        }
+        // Step 2: result[i] = tmp[i] * l1Evals[i]
         var result = [Fr](repeating: Fr.zero, count: n)
-        for i in 0..<n {
-            let zMinus1 = frSub(inputs.zEvals[i], Fr.one)
-            result[i] = frMul(zMinus1, inputs.l1Evals[i])
+        tmp.withUnsafeBytes { tBuf in
+            inputs.l1Evals.withUnsafeBytes { lBuf in
+                result.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_mul(
+                        tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        lBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
         }
         return result
     }
@@ -444,20 +475,49 @@ public class GPUPlonkQuotientEngine {
         let permEvals = evaluatePermutationArgument(inputs: inputs, beta: beta, gamma: gamma)
         let boundaryEvals = evaluateBoundaryConstraint(inputs: inputs)
 
-        // Step 2: Combine with challenge powers
+        // Step 2: Combine with challenge powers using C batch kernels
         let alpha2 = frSqr(alpha)
+        // numerator[i] = gateEvals[i] + alpha * permEvals[i]
         var numeratorEvals = [Fr](repeating: Fr.zero, count: n)
-        for i in 0..<n {
-            let gatePart = gateEvals[i]
-            let permPart = frMul(alpha, permEvals[i])
-            let boundPart = frMul(alpha2, boundaryEvals[i])
-            numeratorEvals[i] = frAdd(frAdd(gatePart, permPart), boundPart)
+        gateEvals.withUnsafeBytes { gBuf in
+            withUnsafeBytes(of: alpha) { aBuf in
+                permEvals.withUnsafeBytes { pBuf in
+                    numeratorEvals.withUnsafeMutableBytes { rBuf in
+                        bn254_fr_batch_linear_combine(
+                            gBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
+            }
+        }
+        // numerator[i] += alpha2 * boundaryEvals[i]
+        withUnsafeBytes(of: alpha2) { a2Buf in
+            boundaryEvals.withUnsafeBytes { bBuf in
+                numeratorEvals.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_fma_scalar(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        a2Buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
         }
 
         // Step 3: Divide by Z_H pointwise (multiply by precomputed inverses)
         var quotientEvals = [Fr](repeating: Fr.zero, count: n)
-        for i in 0..<n {
-            quotientEvals[i] = frMul(numeratorEvals[i], coset.vanishingInvs[i])
+        numeratorEvals.withUnsafeBytes { nBuf in
+            coset.vanishingInvs.withUnsafeBytes { vBuf in
+                quotientEvals.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_mul(
+                        nBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        vBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
         }
 
         // Step 4: Convert back to coefficient form via coset iNTT
@@ -649,8 +709,16 @@ public class GPUPlonkQuotientEngine {
 
         // Divide by Z_H pointwise
         var quotientEvals = [Fr](repeating: Fr.zero, count: n)
-        for i in 0..<n {
-            quotientEvals[i] = frMul(gateEvals[i], coset.vanishingInvs[i])
+        gateEvals.withUnsafeBytes { gBuf in
+            coset.vanishingInvs.withUnsafeBytes { vBuf in
+                quotientEvals.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_mul(
+                        gBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        vBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
         }
 
         // Convert back to coefficient form

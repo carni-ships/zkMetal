@@ -14,6 +14,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 // MARK: - Field type enum for CosetLDE
 
@@ -665,10 +666,14 @@ public class CosetLDEEngine {
         for i in 0..<n { padded[i] = coeffs[i] }
 
         let g = frFromInt(Fr.GENERATOR)
-        var gPow = Fr.one
-        for i in 0..<m {
-            padded[i] = frMul(padded[i], gPow)
-            gPow = frMul(gPow, g)
+        padded.withUnsafeMutableBytes { rBuf in
+            withUnsafeBytes(of: g) { gBuf in
+                bn254_fr_batch_mul_powers(
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    gBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(m))
+            }
         }
 
         return NTTEngine.cpuNTT(padded, logN: logM)

@@ -14,6 +14,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 // MARK: - CosetDomainEngine
 
@@ -469,8 +470,16 @@ public class CosetDomainEngine {
 
         if n <= CosetDomainEngine.cpuThresholdBn254 {
             var result = [Fr](repeating: Fr.zero, count: n)
-            for i in 0..<n {
-                result[i] = frMul(evals[i], zhInv)
+            evals.withUnsafeBytes { eBuf in
+                withUnsafeBytes(of: zhInv) { sBuf in
+                    result.withUnsafeMutableBytes { rBuf in
+                        bn254_fr_batch_mul_scalar(
+                            eBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
             }
             return result
         }
@@ -601,10 +610,16 @@ public class CosetDomainEngine {
     private func cpuCosetShiftFr(evals: [Fr], generator: Fr) -> [Fr] {
         let n = evals.count
         var result = [Fr](repeating: Fr.zero, count: n)
-        var gPow = Fr.one
-        for i in 0..<n {
-            result[i] = frMul(evals[i], gPow)
-            gPow = frMul(gPow, generator)
+        evals.withUnsafeBytes { eBuf in
+            withUnsafeBytes(of: generator) { gBuf in
+                result.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_mul_powers(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        eBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        gBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
         }
         return result
     }
@@ -613,10 +628,16 @@ public class CosetDomainEngine {
         let n = evals.count
         let gInv = frInverse(generator)
         var result = [Fr](repeating: Fr.zero, count: n)
-        var gPow = Fr.one
-        for i in 0..<n {
-            result[i] = frMul(evals[i], gPow)
-            gPow = frMul(gPow, gInv)
+        evals.withUnsafeBytes { eBuf in
+            withUnsafeBytes(of: gInv) { gBuf in
+                result.withUnsafeMutableBytes { rBuf in
+                    bn254_fr_batch_mul_powers(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        eBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        gBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
         }
         return result
     }
