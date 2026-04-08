@@ -380,23 +380,27 @@ public final class GPUFRICommitPhaseEngine {
             // Batch-invert all y-coordinates
             var yVals = [Fr](repeating: Fr.zero, count: half)
             for i in 0..<half { yVals[i] = currentDomain[i].y }
-            var yPfx = [Fr](repeating: Fr.one, count: half)
-            for i in 1..<half { yPfx[i] = frMul(yPfx[i - 1], yVals[i - 1]) }
-            var yAcc = frInverse(frMul(yPfx[half - 1], yVals[half - 1]))
             var yInvs = [Fr](repeating: Fr.zero, count: half)
-            for i in Swift.stride(from: half - 1, through: 0, by: -1) {
-                yInvs[i] = frMul(yAcc, yPfx[i])
-                yAcc = frMul(yAcc, yVals[i])
+            yVals.withUnsafeBytes { src in
+                yInvs.withUnsafeMutableBytes { dst in
+                    bn254_fr_batch_inverse(
+                        src.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(half),
+                        dst.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                }
             }
             var folded = [Fr](repeating: Fr.zero, count: half)
-            for i in 0..<half {
-                let a = currentEvals[i]
-                let b = currentEvals[i + half]
-                let sum = frAdd(a, b)
-                let diff = frSub(a, b)
-                let term = frMul(challenge, frMul(diff, yInvs[i]))
-                folded[i] = frAdd(sum, term)
-            }
+            currentEvals.withUnsafeBytes { eBuf in
+            withUnsafeBytes(of: challenge) { cBuf in
+            yInvs.withUnsafeBytes { tBuf in
+            folded.withUnsafeMutableBytes { rBuf in
+                bn254_fr_fri_fold(
+                    eBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(half))
+            }}}}
             currentEvals = folded
 
             // Double the domain points for the next round
@@ -765,9 +769,13 @@ public final class GPUFRICommitPhaseEngine {
         let n = domain.count
         let half = n / 2
         var halved = [Fr](repeating: Fr.zero, count: half)
-        for i in 0..<half {
-            halved[i] = frMul(domain[i], domain[i])
-        }
+        domain.withUnsafeBytes { dBuf in
+        halved.withUnsafeMutableBytes { hBuf in
+            let dp = dBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+            bn254_fr_batch_mul(dp, dp,
+                hBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                Int32(half))
+        }}
         return halved
     }
 
