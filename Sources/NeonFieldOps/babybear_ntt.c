@@ -10,6 +10,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
+#include <dispatch/dispatch.h>
+
+#define BB_NTT_PAR_THRESHOLD 4096
 
 // ============================================================
 // Constants
@@ -264,24 +267,58 @@ void babybear_ntt_neon(uint32_t *data, int logN) {
         int twOffset = halfBlock - 1;
 
         if (halfBlock >= 4) {
-            // NEON path: 4 butterflies per iteration
-            for (int bk = 0; bk < nBlocks; bk++) {
-                int base = bk * blockSize;
-                int j = 0;
-                for (; j + 3 < halfBlock; j += 4) {
-                    int32x4_t tw_vec = vld1q_s32((const int32_t *)&tw[twOffset + j]);
-                    int32x4_t u = vld1q_s32((const int32_t *)&data[base + j]);
-                    int32x4_t v_raw = vld1q_s32((const int32_t *)&data[base + j + halfBlock]);
-                    int32x4_t v = monty_mul_neon(tw_vec, v_raw, p_inv, pv);
-                    vst1q_s32((int32_t *)&data[base + j], monty_add_neon(u, v, pv));
-                    vst1q_s32((int32_t *)&data[base + j + halfBlock], monty_sub_neon(u, v, pv));
-                }
-                // Scalar tail
-                for (; j < halfBlock; j++) {
-                    uint32_t u = data[base + j];
-                    uint32_t v = monty_mul(tw[twOffset + j], data[base + j + halfBlock]);
-                    data[base + j] = monty_add(u, v);
-                    data[base + j + halfBlock] = monty_sub(u, v);
+            if (nBlocks >= BB_NTT_PAR_THRESHOLD / halfBlock && nBlocks >= 8) {
+                // Parallel NEON path
+                int nChunks = 8;
+                if (nBlocks < nChunks * 4) nChunks = 4;
+                int chunk = nBlocks / nChunks;
+                uint32_t *sd = data;
+                const uint32_t *st = tw;
+                int shb = halfBlock, sbs = blockSize, sto = twOffset;
+                dispatch_apply(nChunks, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+                    ^(size_t idx) {
+                        int32x4_t lp_inv = vdupq_n_s32(P_INV_S);
+                        int32x4_t lpv = vdupq_n_s32(BB_P_S);
+                        int start = (int)idx * chunk;
+                        int end = ((int)idx == nChunks - 1) ? nBlocks : start + chunk;
+                        for (int bk = start; bk < end; bk++) {
+                            int base = bk * sbs;
+                            int j = 0;
+                            for (; j + 3 < shb; j += 4) {
+                                int32x4_t tw_vec = vld1q_s32((const int32_t *)&st[sto + j]);
+                                int32x4_t u = vld1q_s32((const int32_t *)&sd[base + j]);
+                                int32x4_t v_raw = vld1q_s32((const int32_t *)&sd[base + j + shb]);
+                                int32x4_t v = monty_mul_neon(tw_vec, v_raw, lp_inv, lpv);
+                                vst1q_s32((int32_t *)&sd[base + j], monty_add_neon(u, v, lpv));
+                                vst1q_s32((int32_t *)&sd[base + j + shb], monty_sub_neon(u, v, lpv));
+                            }
+                            for (; j < shb; j++) {
+                                uint32_t u = sd[base + j];
+                                uint32_t v = monty_mul(st[sto + j], sd[base + j + shb]);
+                                sd[base + j] = monty_add(u, v);
+                                sd[base + j + shb] = monty_sub(u, v);
+                            }
+                        }
+                    });
+            } else {
+                // Serial NEON path
+                for (int bk = 0; bk < nBlocks; bk++) {
+                    int base = bk * blockSize;
+                    int j = 0;
+                    for (; j + 3 < halfBlock; j += 4) {
+                        int32x4_t tw_vec = vld1q_s32((const int32_t *)&tw[twOffset + j]);
+                        int32x4_t u = vld1q_s32((const int32_t *)&data[base + j]);
+                        int32x4_t v_raw = vld1q_s32((const int32_t *)&data[base + j + halfBlock]);
+                        int32x4_t v = monty_mul_neon(tw_vec, v_raw, p_inv, pv);
+                        vst1q_s32((int32_t *)&data[base + j], monty_add_neon(u, v, pv));
+                        vst1q_s32((int32_t *)&data[base + j + halfBlock], monty_sub_neon(u, v, pv));
+                    }
+                    for (; j < halfBlock; j++) {
+                        uint32_t u = data[base + j];
+                        uint32_t v = monty_mul(tw[twOffset + j], data[base + j + halfBlock]);
+                        data[base + j] = monty_add(u, v);
+                        data[base + j + halfBlock] = monty_sub(u, v);
+                    }
                 }
             }
         } else {
@@ -306,14 +343,34 @@ void babybear_ntt_neon(uint32_t *data, int logN) {
     }
 
     // Convert back from Montgomery form
-    {
+    if (n >= BB_NTT_PAR_THRESHOLD) {
+        uint32_t *sd = data;
+        int sn = n;
+        int nChunks = 8;
+        int chunk = (n + nChunks - 1) / nChunks;
+        chunk = (chunk + 3) & ~3;  // align to 4
+        dispatch_apply(nChunks, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+            ^(size_t idx) {
+                int32x4_t lp_inv = vdupq_n_s32(P_INV_S);
+                int32x4_t lpv = vdupq_n_s32(BB_P_S);
+                int32x4_t ones = vdupq_n_s32(1);
+                int start = (int)idx * chunk;
+                int end = start + chunk;
+                if (end > sn) end = sn;
+                int i = start;
+                for (; i + 3 < end; i += 4) {
+                    int32x4_t v = vld1q_s32((const int32_t *)&sd[i]);
+                    v = monty_mul_neon(v, ones, lp_inv, lpv);
+                    vst1q_s32((int32_t *)&sd[i], v);
+                }
+                for (; i < end; i++)
+                    sd[i] = from_monty(sd[i]);
+            });
+    } else {
         int i = 0;
+        int32x4_t ones = vdupq_n_s32(1);
         for (; i + 3 < n; i += 4) {
             int32x4_t v = vld1q_s32((const int32_t *)&data[i]);
-            // from_monty: multiply by 1 (= monty_reduce64(v))
-            // Equivalent to monty_mul(v, 1) but 1 in non-Montgomery = just reduce
-            // We use the NEON mul with ones = vdupq_n_s32(1)
-            int32x4_t ones = vdupq_n_s32(1);
             v = monty_mul_neon(v, ones, p_inv, pv);
             vst1q_s32((int32_t *)&data[i], v);
         }
@@ -360,24 +417,60 @@ void babybear_intt_neon(uint32_t *data, int logN) {
         int twOffset = halfBlock - 1;
 
         if (halfBlock >= 4) {
-            for (int bk = 0; bk < nBlocks; bk++) {
-                int base = bk * blockSize;
-                int j = 0;
-                for (; j + 3 < halfBlock; j += 4) {
-                    int32x4_t tw_vec = vld1q_s32((const int32_t *)&tw[twOffset + j]);
-                    int32x4_t a = vld1q_s32((const int32_t *)&data[base + j]);
-                    int32x4_t b = vld1q_s32((const int32_t *)&data[base + j + halfBlock]);
-                    int32x4_t sum = monty_add_neon(a, b, pv);
-                    int32x4_t diff = monty_sub_neon(a, b, pv);
-                    vst1q_s32((int32_t *)&data[base + j], sum);
-                    vst1q_s32((int32_t *)&data[base + j + halfBlock],
-                              monty_mul_neon(diff, tw_vec, p_inv, pv));
-                }
-                for (; j < halfBlock; j++) {
-                    uint32_t a = data[base + j];
-                    uint32_t b = data[base + j + halfBlock];
-                    data[base + j] = monty_add(a, b);
-                    data[base + j + halfBlock] = monty_mul(monty_sub(a, b), tw[twOffset + j]);
+            if (nBlocks >= BB_NTT_PAR_THRESHOLD / halfBlock && nBlocks >= 8) {
+                int nChunks = 8;
+                if (nBlocks < nChunks * 4) nChunks = 4;
+                int chunk = nBlocks / nChunks;
+                uint32_t *sd = data;
+                const uint32_t *st = tw;
+                int shb = halfBlock, sbs = blockSize, sto = twOffset;
+                dispatch_apply(nChunks, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+                    ^(size_t idx) {
+                        int32x4_t lp_inv = vdupq_n_s32(P_INV_S);
+                        int32x4_t lpv = vdupq_n_s32(BB_P_S);
+                        int start = (int)idx * chunk;
+                        int end = ((int)idx == nChunks - 1) ? nBlocks : start + chunk;
+                        for (int bk = start; bk < end; bk++) {
+                            int base = bk * sbs;
+                            int j = 0;
+                            for (; j + 3 < shb; j += 4) {
+                                int32x4_t tw_vec = vld1q_s32((const int32_t *)&st[sto + j]);
+                                int32x4_t a = vld1q_s32((const int32_t *)&sd[base + j]);
+                                int32x4_t b = vld1q_s32((const int32_t *)&sd[base + j + shb]);
+                                int32x4_t sum = monty_add_neon(a, b, lpv);
+                                int32x4_t diff = monty_sub_neon(a, b, lpv);
+                                vst1q_s32((int32_t *)&sd[base + j], sum);
+                                vst1q_s32((int32_t *)&sd[base + j + shb],
+                                          monty_mul_neon(diff, tw_vec, lp_inv, lpv));
+                            }
+                            for (; j < shb; j++) {
+                                uint32_t a = sd[base + j];
+                                uint32_t b = sd[base + j + shb];
+                                sd[base + j] = monty_add(a, b);
+                                sd[base + j + shb] = monty_mul(monty_sub(a, b), st[sto + j]);
+                            }
+                        }
+                    });
+            } else {
+                for (int bk = 0; bk < nBlocks; bk++) {
+                    int base = bk * blockSize;
+                    int j = 0;
+                    for (; j + 3 < halfBlock; j += 4) {
+                        int32x4_t tw_vec = vld1q_s32((const int32_t *)&tw[twOffset + j]);
+                        int32x4_t a = vld1q_s32((const int32_t *)&data[base + j]);
+                        int32x4_t b = vld1q_s32((const int32_t *)&data[base + j + halfBlock]);
+                        int32x4_t sum = monty_add_neon(a, b, pv);
+                        int32x4_t diff = monty_sub_neon(a, b, pv);
+                        vst1q_s32((int32_t *)&data[base + j], sum);
+                        vst1q_s32((int32_t *)&data[base + j + halfBlock],
+                                  monty_mul_neon(diff, tw_vec, p_inv, pv));
+                    }
+                    for (; j < halfBlock; j++) {
+                        uint32_t a = data[base + j];
+                        uint32_t b = data[base + j + halfBlock];
+                        data[base + j] = monty_add(a, b);
+                        data[base + j + halfBlock] = monty_mul(monty_sub(a, b), tw[twOffset + j]);
+                    }
                 }
             }
         } else {

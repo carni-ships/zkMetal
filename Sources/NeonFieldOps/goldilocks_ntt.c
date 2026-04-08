@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
+#include <dispatch/dispatch.h>
 
 // ============================================================
 // Constants
@@ -171,6 +172,28 @@ static void gl_ensure_twiddles(int logN) {
 // Forward NTT — Cooley-Tukey DIT
 // ============================================================
 
+#define GL_NTT_PAR_THRESHOLD 4096  // parallelize when n/2 butterflies >= this
+
+static void gl_ntt_dit_stage(uint64_t *data, const uint64_t *tw,
+                              int halfBlock, int blockSize, int nBlocks, int twOffset)
+{
+    for (int bk = 0; bk < nBlocks; bk++) {
+        int base = bk * blockSize;
+        {
+            uint64_t u = data[base];
+            uint64_t v = data[base + halfBlock];
+            data[base] = gl_add(u, v);
+            data[base + halfBlock] = gl_sub(u, v);
+        }
+        for (int j = 1; j < halfBlock; j++) {
+            uint64_t u = data[base + j];
+            uint64_t v = gl_mul(tw[twOffset + j], data[base + j + halfBlock]);
+            data[base + j] = gl_add(u, v);
+            data[base + j + halfBlock] = gl_sub(u, v);
+        }
+    }
+}
+
 void goldilocks_ntt(uint64_t *data, int logN) {
     if (logN <= 0) return;
     int n = 1 << logN;
@@ -186,21 +209,36 @@ void goldilocks_ntt(uint64_t *data, int logN) {
         int nBlocks = n / blockSize;
         int twOffset = halfBlock - 1;
 
-        for (int bk = 0; bk < nBlocks; bk++) {
-            int base = bk * blockSize;
-            // Twiddle skip: j==0 always has twiddle==1, skip expensive 64-bit mul
-            {
-                uint64_t u = data[base];
-                uint64_t v = data[base + halfBlock];
-                data[base] = gl_add(u, v);
-                data[base + halfBlock] = gl_sub(u, v);
-            }
-            for (int j = 1; j < halfBlock; j++) {
-                uint64_t u = data[base + j];
-                uint64_t v = gl_mul(tw[twOffset + j], data[base + j + halfBlock]);
-                data[base + j] = gl_add(u, v);
-                data[base + j + halfBlock] = gl_sub(u, v);
-            }
+        if (nBlocks >= GL_NTT_PAR_THRESHOLD) {
+            // Many small blocks: parallelize over blocks
+            int nChunks = 8;
+            if (nBlocks < nChunks * 64) nChunks = 4;
+            int chunk = nBlocks / nChunks;
+            uint64_t *sd = data;
+            const uint64_t *st = tw;
+            int shb = halfBlock, sbs = blockSize, sto = twOffset;
+            dispatch_apply(nChunks, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+                ^(size_t idx) {
+                    int start = (int)idx * chunk;
+                    int end = ((int)idx == nChunks - 1) ? nBlocks : start + chunk;
+                    for (int bk = start; bk < end; bk++) {
+                        int base = bk * sbs;
+                        {
+                            uint64_t u = sd[base];
+                            uint64_t v = sd[base + shb];
+                            sd[base] = gl_add(u, v);
+                            sd[base + shb] = gl_sub(u, v);
+                        }
+                        for (int j = 1; j < shb; j++) {
+                            uint64_t u = sd[base + j];
+                            uint64_t v = gl_mul(st[sto + j], sd[base + j + shb]);
+                            sd[base + j] = gl_add(u, v);
+                            sd[base + j + shb] = gl_sub(u, v);
+                        }
+                    }
+                });
+        } else {
+            gl_ntt_dit_stage(data, tw, halfBlock, blockSize, nBlocks, twOffset);
         }
     }
 }
@@ -224,29 +262,71 @@ void goldilocks_intt(uint64_t *data, int logN) {
         int nBlocks = n / blockSize;
         int twOffset = halfBlock - 1;
 
-        for (int bk = 0; bk < nBlocks; bk++) {
-            int base = bk * blockSize;
-            // Twiddle skip: j==0 has twiddle==1, diff * 1 = diff (skip mul)
-            {
-                uint64_t a = data[base];
-                uint64_t b = data[base + halfBlock];
-                data[base] = gl_add(a, b);
-                data[base + halfBlock] = gl_sub(a, b);
-            }
-            for (int j = 1; j < halfBlock; j++) {
-                uint64_t a = data[base + j];
-                uint64_t b = data[base + j + halfBlock];
-                data[base + j] = gl_add(a, b);
-                data[base + j + halfBlock] = gl_mul(gl_sub(a, b), tw[twOffset + j]);
+        if (nBlocks >= GL_NTT_PAR_THRESHOLD) {
+            int nChunks = 8;
+            if (nBlocks < nChunks * 64) nChunks = 4;
+            int chunk = nBlocks / nChunks;
+            uint64_t *sd = data;
+            const uint64_t *st = tw;
+            int shb = halfBlock, sbs = blockSize, sto = twOffset;
+            dispatch_apply(nChunks, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+                ^(size_t idx) {
+                    int start = (int)idx * chunk;
+                    int end = ((int)idx == nChunks - 1) ? nBlocks : start + chunk;
+                    for (int bk = start; bk < end; bk++) {
+                        int base = bk * sbs;
+                        {
+                            uint64_t a = sd[base];
+                            uint64_t b = sd[base + shb];
+                            sd[base] = gl_add(a, b);
+                            sd[base + shb] = gl_sub(a, b);
+                        }
+                        for (int j = 1; j < shb; j++) {
+                            uint64_t a = sd[base + j];
+                            uint64_t b = sd[base + j + shb];
+                            sd[base + j] = gl_add(a, b);
+                            sd[base + j + shb] = gl_mul(gl_sub(a, b), st[sto + j]);
+                        }
+                    }
+                });
+        } else {
+            for (int bk = 0; bk < nBlocks; bk++) {
+                int base = bk * blockSize;
+                {
+                    uint64_t a = data[base];
+                    uint64_t b = data[base + halfBlock];
+                    data[base] = gl_add(a, b);
+                    data[base + halfBlock] = gl_sub(a, b);
+                }
+                for (int j = 1; j < halfBlock; j++) {
+                    uint64_t a = data[base + j];
+                    uint64_t b = data[base + j + halfBlock];
+                    data[base + j] = gl_add(a, b);
+                    data[base + j + halfBlock] = gl_mul(gl_sub(a, b), tw[twOffset + j]);
+                }
             }
         }
     }
 
     bit_reverse_permute64(data, logN);
 
-    // Scale by 1/n
+    // Scale by 1/n (parallelize for large n)
     uint64_t n_inv = gl_inv((uint64_t)n);
-    for (int i = 0; i < n; i++) {
-        data[i] = gl_mul(data[i], n_inv);
+    if (n >= GL_NTT_PAR_THRESHOLD) {
+        uint64_t *sd = data;
+        uint64_t sni = n_inv;
+        int sn = n;
+        int nChunks = 8;
+        int chunk = n / nChunks;
+        dispatch_apply(nChunks, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+            ^(size_t idx) {
+                int start = (int)idx * chunk;
+                int end = ((int)idx == nChunks - 1) ? sn : start + chunk;
+                for (int i = start; i < end; i++)
+                    sd[i] = gl_mul(sd[i], sni);
+            });
+    } else {
+        for (int i = 0; i < n; i++)
+            data[i] = gl_mul(data[i], n_inv);
     }
 }
