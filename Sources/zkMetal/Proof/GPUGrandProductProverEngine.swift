@@ -521,32 +521,14 @@ public final class GPUGrandProductProverEngine {
     private func batchInverse(_ values: [Fr]) -> [Fr] {
         let n = values.count
         guard n > 0 else { return [] }
-
-        // Forward pass: compute prefix products
-        var prefix = [Fr](repeating: Fr.zero, count: n)
-        var running = Fr.one
-        for i in 0..<n {
-            if !values[i].isZero {
-                running = frMul(running, values[i])
-            }
-            prefix[i] = running
-        }
-
-        // Invert the total product
-        var inv = frInverse(running)
-
-        // Backward pass: extract individual inverses
         var result = [Fr](repeating: Fr.zero, count: n)
-        for i in stride(from: n - 1, through: 0, by: -1) {
-            if values[i].isZero {
-                result[i] = Fr.zero
-            } else {
-                if i > 0 {
-                    result[i] = frMul(inv, prefix[i - 1])
-                } else {
-                    result[i] = inv
-                }
-                inv = frMul(inv, values[i])
+        values.withUnsafeBytes { aBuf in
+            result.withUnsafeMutableBytes { rBuf in
+                bn254_fr_batch_inverse_safe(
+                    aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(n),
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                )
             }
         }
         return result

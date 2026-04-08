@@ -16,6 +16,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 // MARK: - GPU Solve Info (mirrors Metal struct layout)
 
@@ -502,33 +503,16 @@ public class Groth16GPUWitness {
         let n = elements.count
         if n == 0 { return [] }
         if n == 1 { return [frInverse(elements[0])] }
-
-        // Forward pass: accumulate products
-        var products = [Fr](repeating: Fr.zero, count: n)
-        products[0] = elements[0]
-        for i in 1..<n {
-            if elements[i].isZero {
-                products[i] = products[i - 1]
-            } else {
-                products[i] = frMul(products[i - 1], elements[i])
-            }
-        }
-
-        // Single inversion
-        var inv = frInverse(products[n - 1])
-
-        // Backward pass: extract individual inverses
         var result = [Fr](repeating: Fr.zero, count: n)
-        for i in stride(from: n - 1, through: 1, by: -1) {
-            if elements[i].isZero {
-                result[i] = Fr.zero
-            } else {
-                result[i] = frMul(inv, products[i - 1])
-                inv = frMul(inv, elements[i])
+        elements.withUnsafeBytes { aBuf in
+            result.withUnsafeMutableBytes { rBuf in
+                bn254_fr_batch_inverse_safe(
+                    aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(n),
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                )
             }
         }
-        result[0] = elements[0].isZero ? Fr.zero : inv
-
         return result
     }
 

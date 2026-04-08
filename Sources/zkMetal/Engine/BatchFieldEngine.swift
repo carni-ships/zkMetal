@@ -218,24 +218,16 @@ public class BatchFieldEngine {
     private func batchInverseCPU_BN254(_ a: [Fr]) -> [Fr] {
         let n = a.count
         guard n > 0 else { return [] }
-
-        // Phase 1: prefix products
-        var prefix = [Fr](repeating: Fr.zero, count: n)
-        prefix[0] = a[0]
-        for i in 1..<n {
-            prefix[i] = frMul(prefix[i - 1], a[i])
-        }
-
-        // Phase 2: single inverse
-        var inv = frInverse(prefix[n - 1])
-
-        // Phase 3: backward sweep
         var result = [Fr](repeating: Fr.zero, count: n)
-        for i in stride(from: n - 1, through: 1, by: -1) {
-            result[i] = frMul(inv, prefix[i - 1])
-            inv = frMul(inv, a[i])
+        a.withUnsafeBytes { aBuf in
+            result.withUnsafeMutableBytes { rBuf in
+                bn254_fr_batch_inverse(
+                    aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(n),
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                )
+            }
         }
-        result[0] = inv
         return result
     }
 

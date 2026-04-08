@@ -8,6 +8,7 @@
 
 import Foundation
 import Metal
+import NeonFieldOps
 
 // MARK: - GPUBatchInverseEngine
 
@@ -334,32 +335,14 @@ public class GPUBatchInverseEngine {
     private func batchInverseCPU_FrTyped(_ a: [Fr]) -> [Fr] {
         let n = a.count
         guard n > 0 else { return [] }
-
-        // Phase 1: prefix products (skip zeros)
-        var prefix = [Fr](repeating: Fr.zero, count: n)
-        var running = Fr.one
-        for i in 0..<n {
-            if !frIsZero(a[i]) {
-                running = frMul(running, a[i])
-            }
-            prefix[i] = running
-        }
-
-        // Phase 2: single inverse
-        var inv = frInverse(running)
-
-        // Phase 3: backward sweep
         var result = [Fr](repeating: Fr.zero, count: n)
-        for i in stride(from: n - 1, through: 0, by: -1) {
-            if frIsZero(a[i]) {
-                result[i] = Fr.zero
-            } else {
-                if i > 0 {
-                    result[i] = frMul(inv, prefix[i - 1])
-                } else {
-                    result[i] = inv
-                }
-                inv = frMul(inv, a[i])
+        a.withUnsafeBytes { aBuf in
+            result.withUnsafeMutableBytes { rBuf in
+                bn254_fr_batch_inverse_safe(
+                    aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(n),
+                    rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                )
             }
         }
         return result

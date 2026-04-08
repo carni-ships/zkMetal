@@ -1489,4 +1489,8 @@ void bn254_fr_batch_add(const uint64_t *a, const uint64_t *b,
 void bn254_fr_batch_mul_scalar(const uint64_t *a, const uint64_t *scalar,
                                 uint64_t *result, int n);
 
+/// Zero-safe batch inverse: out[i] = a[i]^{-1} if a[i] != 0, else 0.
+/// Uses Montgomery's trick with single modular inverse.
+void bn254_fr_batch_inverse_safe(const uint64_t *a, int n, uint64_t *out);
+
 #endif // NEON_FIELD_OPS_H

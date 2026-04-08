@@ -1102,3 +1102,46 @@ void bn254_fr_batch_mul_scalar(const uint64_t *a, const uint64_t *scalar,
         fr_mont_mul(&a[i * 4], scalar, &result[i * 4]);
     }
 }
+
+/// Zero-safe batch inverse using Montgomery's trick.
+/// out[i] = a[i]^{-1} if a[i] != 0, else 0.
+void bn254_fr_batch_inverse_safe(const uint64_t *a, int n, uint64_t *out)
+{
+    if (n == 0) return;
+
+    // Phase 1: prefix products, skipping zeros
+    uint64_t running[4] = {0xac96341c4ffffffbULL, 0x36fc76959f60cd29ULL,
+                           0x666ea36f7879462eULL, 0x0e0a77c19a07df2fULL};
+    // Use out[] as scratch for prefix products
+    for (int i = 0; i < n; i++) {
+        int is_zero = (a[i*4] == 0 && a[i*4+1] == 0 && a[i*4+2] == 0 && a[i*4+3] == 0);
+        if (!is_zero) {
+            fr_mont_mul(running, &a[i*4], running);
+        }
+        memcpy(&out[i*4], running, 32);
+    }
+
+    // Phase 2: single inverse of total product
+    uint64_t inv[4];
+    bn254_fr_inverse(running, inv);
+
+    // Phase 3: backward sweep
+    for (int i = n - 1; i >= 0; i--) {
+        int is_zero = (a[i*4] == 0 && a[i*4+1] == 0 && a[i*4+2] == 0 && a[i*4+3] == 0);
+        if (is_zero) {
+            memset(&out[i*4], 0, 32);
+        } else {
+            uint64_t tmp[4];
+            if (i > 0) {
+                fr_mont_mul(inv, &out[(i-1)*4], tmp);
+            } else {
+                memcpy(tmp, inv, 32);
+            }
+            // update inv = inv * a[i]
+            uint64_t new_inv[4];
+            fr_mont_mul(inv, &a[i*4], new_inv);
+            memcpy(inv, new_inv, 32);
+            memcpy(&out[i*4], tmp, 32);
+        }
+    }
+}
