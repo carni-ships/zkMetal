@@ -642,15 +642,32 @@ public class GPUProofBatchAggregationEngine {
         let foldChallenge = transcript.squeeze()
 
         // Fold: acc = outer + r * inner
-        var accPoly = [Fr](repeating: Fr.zero, count: n)
-        for i in 0..<n {
-            accPoly[i] = frAdd(outerPoly[i], frMul(foldChallenge, innerPoly[i]))
+        var accPoly = outerPoly
+        var foldCopy = foldChallenge
+        accPoly.withUnsafeMutableBytes { rBuf in
+            withUnsafeBytes(of: &foldCopy) { sBuf in
+                innerPoly.withUnsafeBytes { xBuf in
+                    bn254_fr_batch_axpy(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        xBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
         }
 
         // Compute cross-term: <outer, inner>
         var crossTerm = Fr.zero
-        for i in 0..<n {
-            crossTerm = frAdd(crossTerm, frMul(outerPoly[i], innerPoly[i]))
+        outerPoly.withUnsafeBytes { aBuf in
+            innerPoly.withUnsafeBytes { bBuf in
+                withUnsafeMutableBytes(of: &crossTerm) { rBuf in
+                    bn254_fr_inner_product(
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                }
+            }
         }
 
         // Error = r^2 * cross_term
@@ -751,13 +768,30 @@ public class GPUProofBatchAggregationEngine {
 
             // Cross term
             var crossTerm = Fr.zero
-            for i in 0..<n {
-                crossTerm = frAdd(crossTerm, frMul(accPoly[i], polynomials[k][i]))
+            accPoly.withUnsafeBytes { aBuf in
+                polynomials[k].withUnsafeBytes { bBuf in
+                    withUnsafeMutableBytes(of: &crossTerm) { rBuf in
+                        bn254_fr_inner_product(
+                            aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n),
+                            rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                    }
+                }
             }
 
-            // Fold polynomial
-            for i in 0..<n {
-                accPoly[i] = frAdd(accPoly[i], frMul(r, polynomials[k][i]))
+            // Fold polynomial: accPoly += r * polynomials[k]
+            var rCopy = r
+            accPoly.withUnsafeMutableBytes { aBuf in
+                withUnsafeBytes(of: &rCopy) { sBuf in
+                    polynomials[k].withUnsafeBytes { xBuf in
+                        bn254_fr_batch_axpy(
+                            aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            xBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(n))
+                    }
+                }
             }
 
             // Update error

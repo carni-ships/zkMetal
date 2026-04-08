@@ -216,14 +216,31 @@ public class GPUProofCompositionEngine {
 
         // Compute cross term: <acc, new>
         var crossTerm = Fr.zero
-        for i in 0..<n {
-            crossTerm = frAdd(crossTerm, frMul(accumulator.accPoly[i], newPoly[i]))
+        accumulator.accPoly.withUnsafeBytes { aBuf in
+            newPoly.withUnsafeBytes { bBuf in
+                withUnsafeMutableBytes(of: &crossTerm) { rBuf in
+                    bn254_fr_inner_product(
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                }
+            }
         }
 
         // acc' = acc + r * new
-        var newAcc = [Fr](repeating: Fr.zero, count: n)
-        for i in 0..<n {
-            newAcc[i] = frAdd(accumulator.accPoly[i], frMul(challenge, newPoly[i]))
+        var newAcc = accumulator.accPoly
+        var challengeCopy = challenge
+        newAcc.withUnsafeMutableBytes { rBuf in
+            withUnsafeBytes(of: &challengeCopy) { sBuf in
+                newPoly.withUnsafeBytes { xBuf in
+                    bn254_fr_batch_axpy(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        xBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
         }
 
         // error' = error + r^2 * cross_term

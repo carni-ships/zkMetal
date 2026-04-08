@@ -397,14 +397,31 @@ public final class GPURecursiveCompositionEngine {
 
         // Cross term: <acc, nodePoly>
         var crossTerm = Fr.zero
-        for i in 0..<n {
-            crossTerm = frAdd(crossTerm, frMul(accumulator.accPoly[i], nodePoly[i]))
+        accumulator.accPoly.withUnsafeBytes { aBuf in
+            nodePoly.withUnsafeBytes { bBuf in
+                withUnsafeMutableBytes(of: &crossTerm) { rBuf in
+                    bn254_fr_inner_product(
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                }
+            }
         }
 
         // acc' = acc + r * nodePoly
-        var newAcc = [Fr](repeating: Fr.zero, count: n)
-        for i in 0..<n {
-            newAcc[i] = frAdd(accumulator.accPoly[i], frMul(challenge, nodePoly[i]))
+        var newAcc = accumulator.accPoly
+        var challengeCopy = challenge
+        newAcc.withUnsafeMutableBytes { rBuf in
+            withUnsafeBytes(of: &challengeCopy) { sBuf in
+                nodePoly.withUnsafeBytes { xBuf in
+                    bn254_fr_batch_axpy(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        xBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
         }
 
         // error' = error + r^2 * crossTerm
@@ -440,13 +457,30 @@ public final class GPURecursiveCompositionEngine {
         precondition(poly.count == n, "Polynomial sizes must match for folding")
 
         var crossTerm = Fr.zero
-        for i in 0..<n {
-            crossTerm = frAdd(crossTerm, frMul(accumulator.accPoly[i], poly[i]))
+        accumulator.accPoly.withUnsafeBytes { aBuf in
+            poly.withUnsafeBytes { bBuf in
+                withUnsafeMutableBytes(of: &crossTerm) { rBuf in
+                    bn254_fr_inner_product(
+                        aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n),
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                }
+            }
         }
 
-        var newAcc = [Fr](repeating: Fr.zero, count: n)
-        for i in 0..<n {
-            newAcc[i] = frAdd(accumulator.accPoly[i], frMul(challenge, poly[i]))
+        var newAcc = accumulator.accPoly
+        var challengeCopy = challenge
+        newAcc.withUnsafeMutableBytes { rBuf in
+            withUnsafeBytes(of: &challengeCopy) { sBuf in
+                poly.withUnsafeBytes { xBuf in
+                    bn254_fr_batch_axpy(
+                        rBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        sBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        xBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(n))
+                }
+            }
         }
 
         let r2 = frMul(challenge, challenge)
