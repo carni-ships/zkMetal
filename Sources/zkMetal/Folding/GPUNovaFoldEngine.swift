@@ -140,15 +140,86 @@ public class GPUNovaFoldEngine {
         let m = shape.numConstraints
         var T = [Fr](repeating: .zero, count: m)
 
-        let u1 = runningInstance.u
-        for i in 0..<m {
-            let cross1 = frMul(az1[i], bz2[i])
-            let cross2 = frMul(az2[i], bz1[i])
-            let uCz2 = frMul(u1, cz2[i])
-            var ti = frAdd(cross1, cross2)
-            ti = frSub(ti, uCz2)
-            ti = frSub(ti, cz1[i])
-            T[i] = ti
+        if m >= 4 {
+            let u1 = runningInstance.u
+            // T = az1*bz2 + az2*bz1 - u1*cz2 - cz1
+            // Step 1: T = az1 .* bz2
+            az1.withUnsafeBytes { az1Buf in
+            bz2.withUnsafeBytes { bz2Buf in
+            T.withUnsafeMutableBytes { tBuf in
+                bn254_fr_batch_mul_neon(
+                    tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    az1Buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    bz2Buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(m))
+            }}}
+
+            // Step 2: tmp = az2 .* bz1
+            var tmp = [Fr](repeating: .zero, count: m)
+            az2.withUnsafeBytes { az2Buf in
+            bz1.withUnsafeBytes { bz1Buf in
+            tmp.withUnsafeMutableBytes { tmpBuf in
+                bn254_fr_batch_mul_neon(
+                    tmpBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    az2Buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    bz1Buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(m))
+            }}}
+
+            // Step 3: T = T + tmp
+            T.withUnsafeMutableBytes { tBuf in
+            tmp.withUnsafeBytes { tmpBuf in
+                let tPtr = tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                bn254_fr_batch_add_neon(
+                    tPtr,
+                    tPtr,
+                    tmpBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(m))
+            }}
+
+            // Step 4: tmp = u1 * cz2
+            withUnsafeBytes(of: u1) { u1Buf in
+            cz2.withUnsafeBytes { cz2Buf in
+            tmp.withUnsafeMutableBytes { tmpBuf in
+                bn254_fr_batch_mul_scalar_neon(
+                    tmpBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    cz2Buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    u1Buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(m))
+            }}}
+
+            // Step 5: T = T - tmp
+            T.withUnsafeMutableBytes { tBuf in
+            tmp.withUnsafeBytes { tmpBuf in
+                let tPtr = tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                bn254_fr_batch_sub_neon(
+                    tPtr,
+                    tPtr,
+                    tmpBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(m))
+            }}
+
+            // Step 6: T = T - cz1
+            T.withUnsafeMutableBytes { tBuf in
+            cz1.withUnsafeBytes { cz1Buf in
+                let tPtr = tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                bn254_fr_batch_sub_neon(
+                    tPtr,
+                    tPtr,
+                    cz1Buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                    Int32(m))
+            }}
+        } else {
+            let u1 = runningInstance.u
+            for i in 0..<m {
+                let cross1 = frMul(az1[i], bz2[i])
+                let cross2 = frMul(az2[i], bz1[i])
+                let uCz2 = frMul(u1, cz2[i])
+                var ti = frAdd(cross1, cross2)
+                ti = frSub(ti, uCz2)
+                ti = frSub(ti, cz1[i])
+                T[i] = ti
+            }
         }
         return T
     }
