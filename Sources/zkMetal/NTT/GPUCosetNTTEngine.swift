@@ -221,7 +221,7 @@ public class GPUCosetNTTEngine {
 
         let engine = try getFrNTTEngine()
 
-        // GPU coset shift then NTT
+        // GPU coset shift in-place, then NTT on same buffer — no CPU roundtrip
         let powers = getFrShiftPowers(logN: logN, shift: shift)
         var data = coeffs
         let dataBuf = device.makeBuffer(bytes: &data, length: n * MemoryLayout<Fr>.stride,
@@ -246,12 +246,10 @@ public class GPUCosetNTTEngine {
             throw MSMError.gpuError(error.localizedDescription)
         }
 
-        // Read back shifted coefficients
+        // Forward NTT directly on GPU buffer — skip CPU array roundtrip
+        try engine.ntt(data: dataBuf, logN: logN)
         let ptr = dataBuf.contents().bindMemory(to: Fr.self, capacity: n)
-        let shifted = Array(UnsafeBufferPointer(start: ptr, count: n))
-
-        // Forward NTT
-        return try engine.ntt(shifted)
+        return Array(UnsafeBufferPointer(start: ptr, count: n))
     }
 
     // MARK: - Coset NTT (BabyBear)
@@ -292,9 +290,10 @@ public class GPUCosetNTTEngine {
             throw MSMError.gpuError(error.localizedDescription)
         }
 
+        // Forward NTT directly on GPU buffer — skip CPU array roundtrip
+        try engine.ntt(data: dataBuf, logN: logN)
         let ptr = dataBuf.contents().bindMemory(to: Bb.self, capacity: n)
-        let shifted = Array(UnsafeBufferPointer(start: ptr, count: n))
-        return try engine.ntt(shifted)
+        return Array(UnsafeBufferPointer(start: ptr, count: n))
     }
 
     // MARK: - Coset INTT (BN254 Fr)
@@ -312,14 +311,14 @@ public class GPUCosetNTTEngine {
 
         let engine = try getFrNTTEngine()
 
-        // Inverse NTT
-        let coeffs = try engine.intt(evals)
+        // INTT in-place on GPU buffer, then unshift on same buffer — no CPU roundtrip
+        var data = evals
+        let dataBuf = device.makeBuffer(bytes: &data, length: n * MemoryLayout<Fr>.stride,
+                                        options: .storageModeShared)!
+        try engine.intt(data: dataBuf, logN: logN)
 
         // GPU coset unshift
         let invPowers = getFrInvShiftPowers(logN: logN, shift: shift)
-        var data = coeffs
-        let dataBuf = device.makeBuffer(bytes: &data, length: n * MemoryLayout<Fr>.stride,
-                                        options: .storageModeShared)!
 
         guard let cmdBuf = commandQueue.makeCommandBuffer() else {
             throw MSMError.noCommandBuffer
@@ -357,12 +356,14 @@ public class GPUCosetNTTEngine {
         }
 
         let engine = try getBbNTTEngine()
-        let coeffs = try engine.intt(evals)
 
-        let invPowers = getBbInvShiftPowers(logN: logN, shift: shift)
-        var data = coeffs
+        // INTT in-place on GPU buffer, then unshift on same buffer — no CPU roundtrip
+        var data = evals
         let dataBuf = device.makeBuffer(bytes: &data, length: n * MemoryLayout<Bb>.stride,
                                         options: .storageModeShared)!
+        try engine.intt(data: dataBuf, logN: logN)
+
+        let invPowers = getBbInvShiftPowers(logN: logN, shift: shift)
 
         guard let cmdBuf = commandQueue.makeCommandBuffer() else {
             throw MSMError.noCommandBuffer
@@ -410,14 +411,14 @@ public class GPUCosetNTTEngine {
 
         let engine = try getFrNTTEngine()
 
-        // Step 1: INTT to get coefficients
-        let coeffs = try engine.intt(evals)
+        // Step 1: INTT to get coefficients — use buffer API to keep data on GPU
+        var evalsData = evals
+        let inttBuf = device.makeBuffer(bytes: &evalsData, length: n * MemoryLayout<Fr>.stride,
+                                        options: .storageModeShared)!
+        try engine.intt(data: inttBuf, logN: logN)
 
         // Step 2+3: Fused zero-pad + coset shift on GPU
         let cosetPowers = getFrShiftPowers(logN: logM, shift: shift)
-
-        let inputBuf = device.makeBuffer(bytes: coeffs, length: n * MemoryLayout<Fr>.stride,
-                                         options: .storageModeShared)!
         let outputBuf = device.makeBuffer(length: m * MemoryLayout<Fr>.stride,
                                           options: .storageModeShared)!
 
@@ -426,7 +427,7 @@ public class GPUCosetNTTEngine {
         }
         let enc = cmdBuf.makeComputeCommandEncoder()!
         enc.setComputePipelineState(zeroPadCosetShiftFr)
-        enc.setBuffer(inputBuf, offset: 0, index: 0)
+        enc.setBuffer(inttBuf, offset: 0, index: 0)
         enc.setBuffer(outputBuf, offset: 0, index: 1)
         enc.setBuffer(cosetPowers, offset: 0, index: 2)
         var nOrig = UInt32(n)
@@ -443,10 +444,10 @@ public class GPUCosetNTTEngine {
             throw MSMError.gpuError(error.localizedDescription)
         }
 
-        // Step 4: Forward NTT of size M
+        // Step 4: Forward NTT directly on GPU buffer — skip CPU array roundtrip
+        try engine.ntt(data: outputBuf, logN: logM)
         let ptr = outputBuf.contents().bindMemory(to: Fr.self, capacity: m)
-        let shifted = Array(UnsafeBufferPointer(start: ptr, count: m))
-        return try engine.ntt(shifted)
+        return Array(UnsafeBufferPointer(start: ptr, count: m))
     }
 
     /// Coset LDE with default shift (multiplicative generator).
@@ -475,12 +476,14 @@ public class GPUCosetNTTEngine {
         }
 
         let engine = try getBbNTTEngine()
-        let coeffs = try engine.intt(evals)
+
+        // INTT in-place on GPU buffer — no CPU roundtrip
+        var evalsData = evals
+        let inttBuf = device.makeBuffer(bytes: &evalsData, length: n * MemoryLayout<Bb>.stride,
+                                        options: .storageModeShared)!
+        try engine.intt(data: inttBuf, logN: logN)
 
         let cosetPowers = getBbShiftPowers(logN: logM, shift: shift)
-
-        let inputBuf = device.makeBuffer(bytes: coeffs, length: n * MemoryLayout<Bb>.stride,
-                                         options: .storageModeShared)!
         let outputBuf = device.makeBuffer(length: m * MemoryLayout<Bb>.stride,
                                           options: .storageModeShared)!
 
@@ -489,7 +492,7 @@ public class GPUCosetNTTEngine {
         }
         let enc = cmdBuf.makeComputeCommandEncoder()!
         enc.setComputePipelineState(zeroPadCosetShiftBb)
-        enc.setBuffer(inputBuf, offset: 0, index: 0)
+        enc.setBuffer(inttBuf, offset: 0, index: 0)
         enc.setBuffer(outputBuf, offset: 0, index: 1)
         enc.setBuffer(cosetPowers, offset: 0, index: 2)
         var nOrig = UInt32(n)
@@ -506,9 +509,10 @@ public class GPUCosetNTTEngine {
             throw MSMError.gpuError(error.localizedDescription)
         }
 
+        // Forward NTT directly on GPU buffer — skip CPU array roundtrip
+        try engine.ntt(data: outputBuf, logN: logM)
         let ptr = outputBuf.contents().bindMemory(to: Bb.self, capacity: m)
-        let shifted = Array(UnsafeBufferPointer(start: ptr, count: m))
-        return try engine.ntt(shifted)
+        return Array(UnsafeBufferPointer(start: ptr, count: m))
     }
 
     /// Coset LDE with default shift (BabyBear multiplicative generator).
