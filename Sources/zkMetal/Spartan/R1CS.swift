@@ -83,8 +83,13 @@ public struct SpartanR1CS {
 
     /// Build z_tilde: pad z to 2^logN for MLE over boolean hypercube.
     public func buildZTilde(z: [Fr]) -> [Fr] {
-        var zPadded = z
-        while zPadded.count < paddedN { zPadded.append(Fr.zero) }
+        if z.count >= paddedN { return z }
+        var zPadded = [Fr](repeating: Fr.zero, count: paddedN)
+        zPadded.withUnsafeMutableBytes { rBuf in
+            z.withUnsafeBytes { zBuf in
+                memcpy(rBuf.baseAddress!, zBuf.baseAddress!, z.count * MemoryLayout<Fr>.stride)
+            }
+        }
         return zPadded
     }
 }

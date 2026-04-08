@@ -173,7 +173,15 @@ public class ProtogalaxyDeciderProver {
 
         // Pad to power of 2
         let paddedN = 1 << logN
-        while fEvals.count < paddedN { fEvals.append(Fr.zero) }
+        if fEvals.count < paddedN {
+            let orig = fEvals
+            fEvals = [Fr](repeating: Fr.zero, count: paddedN)
+            fEvals.withUnsafeMutableBytes { p in
+                orig.withUnsafeBytes { o in
+                    memcpy(p.baseAddress!, o.baseAddress!, orig.count * MemoryLayout<Fr>.stride)
+                }
+            }
+        }
 
         // Step 6: Compute eq(tau, x) evaluations over the boolean hypercube
         let eqTau = eqEvals(point: tau)
@@ -269,8 +277,12 @@ public class ProtogalaxyDeciderProver {
         witnessEvals.reserveCapacity(config.numWitnessColumns)
 
         for col in 0..<config.numWitnessColumns {
-            var padded = witnesses[col]
-            while padded.count < paddedN { padded.append(Fr.zero) }
+            var padded = [Fr](repeating: Fr.zero, count: paddedN)
+            padded.withUnsafeMutableBytes { p in
+                witnesses[col].withUnsafeBytes { w in
+                    memcpy(p.baseAddress!, w.baseAddress!, witnesses[col].count * MemoryLayout<Fr>.stride)
+                }
+            }
             let eval = multilinearEval(evals: padded, point: sumcheckChallenges)
             witnessEvals.append(eval)
         }

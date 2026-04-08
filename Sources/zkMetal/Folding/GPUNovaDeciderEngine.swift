@@ -374,7 +374,15 @@ public final class GPUNovaDeciderEngine {
         // Step 3: Pad to power of 2
         let logM = novaDeciderCeilLog2(m)
         let paddedM = 1 << logM
-        while gEvals.count < paddedM { gEvals.append(.zero) }
+        if gEvals.count < paddedM {
+            let orig = gEvals
+            gEvals = [Fr](repeating: Fr.zero, count: paddedM)
+            gEvals.withUnsafeMutableBytes { pBuf in
+                orig.withUnsafeBytes { gBuf in
+                    memcpy(pBuf.baseAddress!, gBuf.baseAddress!, orig.count * MemoryLayout<Fr>.stride)
+                }
+            }
+        }
 
         // Step 4: Compute witness hash for transcript binding
         let witnessHash = computeWitnessHash(witness: witness)
@@ -472,12 +480,12 @@ public final class GPUNovaDeciderEngine {
 
         // Step 10: Compute matrix-vector evaluations at sumcheck point
         // Pad vectors to paddedM and evaluate as multilinear polynomials
-        var paddedAz = az
-        var paddedBz = bz
-        var paddedCz = cz
-        while paddedAz.count < paddedM { paddedAz.append(.zero) }
-        while paddedBz.count < paddedM { paddedBz.append(.zero) }
-        while paddedCz.count < paddedM { paddedCz.append(.zero) }
+        var paddedAz = [Fr](repeating: Fr.zero, count: paddedM)
+        var paddedBz = [Fr](repeating: Fr.zero, count: paddedM)
+        var paddedCz = [Fr](repeating: Fr.zero, count: paddedM)
+        paddedAz.withUnsafeMutableBytes { p in az.withUnsafeBytes { a in memcpy(p.baseAddress!, a.baseAddress!, az.count * MemoryLayout<Fr>.stride) } }
+        paddedBz.withUnsafeMutableBytes { p in bz.withUnsafeBytes { b in memcpy(p.baseAddress!, b.baseAddress!, bz.count * MemoryLayout<Fr>.stride) } }
+        paddedCz.withUnsafeMutableBytes { p in cz.withUnsafeBytes { c in memcpy(p.baseAddress!, c.baseAddress!, cz.count * MemoryLayout<Fr>.stride) } }
 
         let azEval = multilinearEval(evals: paddedAz, point: sumcheckChallenges)
         let bzEval = multilinearEval(evals: paddedBz, point: sumcheckChallenges)

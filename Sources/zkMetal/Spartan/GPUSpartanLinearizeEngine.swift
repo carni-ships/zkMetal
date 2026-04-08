@@ -357,11 +357,20 @@ public struct WitnessLinearization {
                              logN: Int) -> WitnessLinearization {
         let paddedN = 1 << logN
         var z = [Fr]()
-        z.reserveCapacity(paddedN)
-        z.append(Fr.one)
-        z.append(contentsOf: publicInputs)
-        z.append(contentsOf: witness)
-        while z.count < paddedN { z.append(Fr.zero) }
+        let zLen = 1 + publicInputs.count + witness.count
+        z = [Fr](repeating: Fr.zero, count: paddedN)
+        z[0] = Fr.one
+        z.withUnsafeMutableBytes { zBuf in
+            publicInputs.withUnsafeBytes { pBuf in
+                memcpy(zBuf.baseAddress! + MemoryLayout<Fr>.stride,
+                       pBuf.baseAddress!, publicInputs.count * MemoryLayout<Fr>.stride)
+            }
+            witness.withUnsafeBytes { wBuf in
+                memcpy(zBuf.baseAddress! + (1 + publicInputs.count) * MemoryLayout<Fr>.stride,
+                       wBuf.baseAddress!, witness.count * MemoryLayout<Fr>.stride)
+            }
+        }
+        _ = zLen  // suppress unused warning
         return WitnessLinearization(
             zTilde: z, logN: logN,
             numPublic: publicInputs.count, numWitness: witness.count)
