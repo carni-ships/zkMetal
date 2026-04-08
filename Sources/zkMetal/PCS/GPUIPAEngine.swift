@@ -302,16 +302,35 @@ public class GPUIPAEngine {
         var halfLen = n / 2
 
         for _ in 0..<logN {
+            // Cross inner products using pointer offsets (no Array copies)
+            var crossL = Fr.zero
+            var crossR = Fr.zero
+            a.withUnsafeBytes { aBuf in
+                b.withUnsafeBytes { bBuf in
+                    let aBase = aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    let bBase = bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    withUnsafeMutableBytes(of: &crossL) { clBuf in
+                        bn254_fr_inner_product(
+                            aBase,
+                            bBase.advanced(by: halfLen * 4),
+                            Int32(halfLen),
+                            clBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                    }
+                    withUnsafeMutableBytes(of: &crossR) { crBuf in
+                        bn254_fr_inner_product(
+                            aBase.advanced(by: halfLen * 4),
+                            bBase,
+                            Int32(halfLen),
+                            crBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                    }
+                }
+            }
+
+            // MSM still needs array copies for API compatibility
             let aLo = Array(a.prefix(halfLen))
             let aHi = Array(a.suffix(from: halfLen).prefix(halfLen))
-            let bLo = Array(b.prefix(halfLen))
-            let bHi = Array(b.suffix(from: halfLen).prefix(halfLen))
             let gLo = Array(gens.prefix(halfLen))
             let gHi = Array(gens.suffix(from: halfLen).prefix(halfLen))
-
-            // Cross inner products
-            let crossL = cFrInnerProduct(aLo, bHi)
-            let crossR = cFrInnerProduct(aHi, bLo)
 
             // L = MSM(G_hi, a_lo) + crossL * Q
             // R = MSM(G_lo, a_hi) + crossR * Q
@@ -342,11 +361,41 @@ public class GPUIPAEngine {
             let x = transcript.deriveChallenge()
             let xInv = frInverse(x)
 
-            // Fold a: a'[i] = a_lo[i] * x + a_hi[i] * x_inv
-            a = cFrVectorFold(aLo, aHi, x: x, xInv: xInv)
-
-            // Fold b: b'[i] = b_lo[i] * x_inv + b_hi[i] * x
-            b = cFrVectorFold(bLo, bHi, x: xInv, xInv: x)
+            // Fold a and b using pointer offsets (no extra copies)
+            a.withUnsafeBytes { aBuf in
+                let aBase = aBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                var out = [Fr](repeating: Fr.zero, count: halfLen)
+                out.withUnsafeMutableBytes { oBuf in
+                    withUnsafeBytes(of: x) { xBuf in
+                        withUnsafeBytes(of: xInv) { xiBuf in
+                            bn254_fr_vector_fold(
+                                aBase, aBase.advanced(by: halfLen * 4),
+                                xBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                xiBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                Int32(halfLen),
+                                oBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                        }
+                    }
+                }
+                a = out
+            }
+            b.withUnsafeBytes { bBuf in
+                let bBase = bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                var out = [Fr](repeating: Fr.zero, count: halfLen)
+                out.withUnsafeMutableBytes { oBuf in
+                    withUnsafeBytes(of: xInv) { xiBuf in
+                        withUnsafeBytes(of: x) { xBuf in
+                            bn254_fr_vector_fold(
+                                bBase, bBase.advanced(by: halfLen * 4),
+                                xiBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                xBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                Int32(halfLen),
+                                oBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                        }
+                    }
+                }
+                b = out
+            }
 
             // Fold generators: G'[i] = x_inv * G_lo[i] + x * G_hi[i]
             gens = foldGenerators(gLo: gLo, gHi: gHi, x: xInv, xInv: x)
@@ -410,15 +459,19 @@ public class GPUIPAEngine {
             Cprime = pointAdd(Cprime, pointAdd(lTerm, rTerm))
         }
 
-        // Compute s[i] = product of challenge factors based on bit decomposition
-        var s = [Fr](repeating: Fr.one, count: n)
+        // Compute s[i] = product of challenge factors using O(n) butterfly construction
+        // (was O(n * logN) with per-element bit decomposition)
+        var s = [Fr](repeating: Fr.zero, count: n)
+        s[0] = Fr.one
+        var half = 1
         for round in 0..<logN {
             let x = challenges[round]
             let xInv = challengeInvs[round]
-            for i in 0..<n {
-                let bit = (i >> (logN - 1 - round)) & 1
-                s[i] = frMul(s[i], bit == 1 ? x : xInv)
+            for i in stride(from: half - 1, through: 0, by: -1) {
+                s[2 * i + 1] = frMul(s[i], x)
+                s[2 * i]     = frMul(s[i], xInv)
             }
+            half *= 2
         }
 
         // G_final = MSM(G, s) using Pippenger
@@ -435,9 +488,23 @@ public class GPUIPAEngine {
         var bFolded = u
         var halfLen = n / 2
         for round in 0..<logN {
-            let bL = Array(bFolded.prefix(halfLen))
-            let bR = Array(bFolded.suffix(from: halfLen).prefix(halfLen))
-            bFolded = cFrVectorFold(bL, bR, x: challengeInvs[round], xInv: challenges[round])
+            bFolded.withUnsafeBytes { bBuf in
+                let bBase = bBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                var out = [Fr](repeating: Fr.zero, count: halfLen)
+                out.withUnsafeMutableBytes { oBuf in
+                    withUnsafeBytes(of: challengeInvs[round]) { xBuf in
+                        withUnsafeBytes(of: challenges[round]) { xiBuf in
+                            bn254_fr_vector_fold(
+                                bBase, bBase.advanced(by: halfLen * 4),
+                                xBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                xiBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                Int32(halfLen),
+                                oBuf.baseAddress!.assumingMemoryBound(to: UInt64.self))
+                        }
+                    }
+                }
+                bFolded = out
+            }
             halfLen /= 2
         }
         let bFinal = bFolded[0]

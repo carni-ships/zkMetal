@@ -705,8 +705,17 @@ public class GPUGKRProtocolEngine {
                 coeffs = eqVals
             } else {
                 coeffs = [Fr](repeating: Fr.zero, count: eqSize)
-                for i in 0..<eqSize {
-                    coeffs[i] = frMul(eqVals[i], wk)
+                eqVals.withUnsafeBytes { eBuf in
+                    coeffs.withUnsafeMutableBytes { cBuf in
+                        var w = wk
+                        withUnsafeBytes(of: &w) { wBuf in
+                            bn254_fr_batch_mul_scalar_neon(
+                                cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                eBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                wBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                Int32(eqSize))
+                        }
+                    }
                 }
             }
 
