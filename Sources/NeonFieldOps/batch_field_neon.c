@@ -14,6 +14,9 @@
 
 typedef unsigned __int128 uint128_t;
 
+#define BATCH_THREAD_THRESHOLD 4096
+#define MAX_THREADS 8
+
 static const uint64_t FR_P[4] = {
     0x43e1f593f0000001ULL, 0x2833e84879b97091ULL,
     0xb85045b68181585dULL, 0x30644e72e131a029ULL
@@ -408,6 +411,29 @@ void bn254_fr_fri_fold(const uint64_t *evals, const uint64_t *challenge,
 void bn254_fr_batch_fma_scalar(uint64_t *result, const uint64_t *scalar,
                                 const uint64_t *other, int n)
 {
+    if (n >= BATCH_THREAD_THRESHOLD) {
+        int nChunks = MAX_THREADS;
+        if (n < nChunks * 1024) nChunks = 4;
+        int chunkSize = n / nChunks;
+        int total = n;
+        uint64_t *sr = result;
+        const uint64_t *ss = scalar, *so = other;
+        dispatch_apply(nChunks, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+            ^(size_t idx) {
+                int start = (int)idx * chunkSize;
+                int end = ((int)idx == nChunks - 1) ? total : start + chunkSize;
+                uint64_t tmp[4];
+                for (int i = start; i < end; i++) {
+                    if (i + 2 < end) {
+                        __builtin_prefetch(&sr[(i + 2) * 4], 1, 1);
+                        __builtin_prefetch(&so[(i + 2) * 4], 0, 1);
+                    }
+                    fr_mont_mul(&sr[i * 4], ss, tmp);
+                    fr_add_branchless(tmp, &so[i * 4], &sr[i * 4]);
+                }
+            });
+        return;
+    }
     uint64_t tmp[4];
     for (int i = 0; i < n; i++) {
         if (i + 2 < n) {
@@ -552,9 +578,6 @@ void bn254_fr_spartan_sumcheck_deg3(const uint64_t *eq, const uint64_t *az,
 // ============================================================
 // Multi-threaded batch operations for large arrays
 // ============================================================
-
-#define BATCH_THREAD_THRESHOLD 4096
-#define MAX_THREADS 8
 
 static void batch_parallel(uint64_t *result, const uint64_t *a,
                             const uint64_t *b, const uint64_t *scalar,
@@ -1026,6 +1049,10 @@ void bn254_fr_batch_mul_powers(uint64_t *result, const uint64_t *a,
 void bn254_fr_batch_mul(const uint64_t *a, const uint64_t *b,
                          uint64_t *result, int n)
 {
+    if (n >= BATCH_THREAD_THRESHOLD) {
+        bn254_fr_batch_mul_parallel((uint64_t *)result, a, b, n);
+        return;
+    }
     for (int i = 0; i < n; i++) {
         if (i + 2 < n) {
             __builtin_prefetch(&a[(i + 2) * 4], 0, 1);
@@ -1054,6 +1081,29 @@ void bn254_fr_prefix_product(const uint64_t *a, uint64_t *result, int n)
 void bn254_fr_batch_linear_combine(const uint64_t *a, const uint64_t *scalar,
                                     const uint64_t *b, uint64_t *result, int n)
 {
+    if (n >= BATCH_THREAD_THRESHOLD) {
+        int nChunks = MAX_THREADS;
+        if (n < nChunks * 1024) nChunks = 4;
+        int chunkSize = n / nChunks;
+        int total = n;
+        const uint64_t *sa = a, *sb = b, *ss = scalar;
+        uint64_t *sr = result;
+        dispatch_apply(nChunks, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+            ^(size_t idx) {
+                int start = (int)idx * chunkSize;
+                int end = ((int)idx == nChunks - 1) ? total : start + chunkSize;
+                uint64_t tmp[4];
+                for (int i = start; i < end; i++) {
+                    if (i + 2 < end) {
+                        __builtin_prefetch(&sa[(i + 2) * 4], 0, 1);
+                        __builtin_prefetch(&sb[(i + 2) * 4], 0, 1);
+                    }
+                    fr_mont_mul(ss, &sb[i * 4], tmp);
+                    fr_add_branchless(&sa[i * 4], tmp, &sr[i * 4]);
+                }
+            });
+        return;
+    }
     uint64_t tmp[4];
     for (int i = 0; i < n; i++) {
         if (i + 2 < n) {
@@ -1069,6 +1119,10 @@ void bn254_fr_batch_linear_combine(const uint64_t *a, const uint64_t *scalar,
 void bn254_fr_batch_sub(const uint64_t *a, const uint64_t *b,
                           uint64_t *result, int n)
 {
+    if (n >= BATCH_THREAD_THRESHOLD) {
+        bn254_fr_batch_sub_parallel((uint64_t *)result, a, b, n);
+        return;
+    }
     for (int i = 0; i < n; i++) {
         if (i + 2 < n) {
             __builtin_prefetch(&a[(i + 2) * 4], 0, 1);
@@ -1082,6 +1136,10 @@ void bn254_fr_batch_sub(const uint64_t *a, const uint64_t *b,
 void bn254_fr_batch_add(const uint64_t *a, const uint64_t *b,
                           uint64_t *result, int n)
 {
+    if (n >= BATCH_THREAD_THRESHOLD) {
+        bn254_fr_batch_add_parallel((uint64_t *)result, a, b, n);
+        return;
+    }
     for (int i = 0; i < n; i++) {
         if (i + 2 < n) {
             __builtin_prefetch(&a[(i + 2) * 4], 0, 1);
@@ -1095,6 +1153,10 @@ void bn254_fr_batch_add(const uint64_t *a, const uint64_t *b,
 void bn254_fr_batch_mul_scalar(const uint64_t *a, const uint64_t *scalar,
                                 uint64_t *result, int n)
 {
+    if (n >= BATCH_THREAD_THRESHOLD) {
+        bn254_fr_batch_mul_scalar_parallel((uint64_t *)result, a, scalar, n);
+        return;
+    }
     for (int i = 0; i < n; i++) {
         if (i + 2 < n) {
             __builtin_prefetch(&a[(i + 2) * 4], 0, 1);
