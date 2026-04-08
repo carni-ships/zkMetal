@@ -903,16 +903,32 @@ public class ReedSolomon381Engine {
     private func lagrangeInterpolate381(points: [Fr381], values: [Fr381]) -> [Fr381] {
         let n = points.count
         var result = [Fr381](repeating: .zero, count: n)
+        var basis = [Fr381](repeating: .zero, count: n)
+
+        // Precompute all denominators, then batch-inverse
+        var denoms = [Fr381](repeating: Fr381.one, count: n)
+        for i in 0..<n {
+            for j in 0..<n {
+                if j == i { continue }
+                denoms[i] = fr381Mul(denoms[i], fr381Sub(points[i], points[j]))
+            }
+        }
+        var denomInvs = [Fr381](repeating: .zero, count: n)
+        denomInvs.withUnsafeMutableBytes { outBuf in
+            denoms.withUnsafeBytes { inBuf in
+                let inp = inBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                let outp = outBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                bls12_381_fr_batch_inverse(inp, outp, Int32(n))
+            }
+        }
 
         for i in 0..<n {
-            var basis = [Fr381](repeating: .zero, count: n)
+            for k in 0..<n { basis[k] = .zero }
             basis[0] = .one
-            var denom = Fr381.one
             var basisDeg = 0
 
             for j in 0..<n {
                 if j == i { continue }
-                denom = fr381Mul(denom, fr381Sub(points[i], points[j]))
                 basisDeg += 1
                 for d in stride(from: basisDeg, through: 1, by: -1) {
                     basis[d] = fr381Sub(basis[d - 1], fr381Mul(points[j], basis[d]))
@@ -920,7 +936,7 @@ public class ReedSolomon381Engine {
                 basis[0] = fr381Sub(.zero, fr381Mul(points[j], basis[0]))
             }
 
-            let scale = fr381Mul(values[i], fr381Inverse(denom))
+            let scale = fr381Mul(values[i], denomInvs[i])
             for d in 0..<n {
                 result[d] = fr381Add(result[d], fr381Mul(scale, basis[d]))
             }
