@@ -1300,6 +1300,18 @@ void bb_batch_to_monty_neon(const uint32_t *in, uint32_t *out, int n);
 /// Batch convert from Montgomery form.
 void bb_batch_from_monty_neon(const uint32_t *in, uint32_t *out, int n);
 
+/// Batch inversion (standard form): out[i] = 1/a[i]. Zero→zero.
+void bb_batch_inverse(const uint32_t *a, uint32_t *out, int n);
+
+/// FRI fold (standard form): out[i] = (f[i]+f[i+half])*inv2 + beta*(f[i]-f[i+half])*invDenom[i]
+void bb_fri_fold(const uint32_t *f, const uint32_t *invDenom,
+                 uint32_t inv2, uint32_t beta,
+                 uint32_t *out, int half);
+
+/// Vanishing polynomial (standard form): out[i] = base * gen^i - one_val
+void bb_vanishing_poly(uint32_t base, uint32_t gen, uint32_t one_val,
+                       uint32_t *out, int n);
+
 // ============================================================
 // Extended Goldilocks batch operations
 // ============================================================
@@ -1317,6 +1329,18 @@ void gl_linear_combine_neon(const uint64_t *a, const uint64_t *b,
 
 /// Batch negate: out[i] = -a[i] mod p.
 void gl_batch_neg_neon(const uint64_t *a, uint64_t *out, int n);
+
+/// Batch inversion (standard form): out[i] = 1/a[i]. Zero→zero.
+void gl_batch_inverse(const uint64_t *a, uint64_t *out, int n);
+
+/// FRI fold (standard form): out[i] = (f[i]+f[i+half])*inv2 + beta*(f[i]-f[i+half])*invDenom[i]
+void gl_fri_fold(const uint64_t *f, const uint64_t *invDenom,
+                 uint64_t inv2, uint64_t beta,
+                 uint64_t *out, int half);
+
+/// Vanishing polynomial (standard form): out[i] = base * gen^i - one_val
+void gl_vanishing_poly(uint64_t base, uint64_t gen, uint64_t one_val,
+                       uint64_t *out, int n);
 
 /// Goldilocks Fp2 = Fp[w]/(w^2 - 7): add. Elements are 2 x uint64_t.
 void gl_ext2_add_neon(const uint64_t a[2], const uint64_t b[2], uint64_t r[2]);

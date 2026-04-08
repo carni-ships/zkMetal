@@ -423,3 +423,60 @@ void goldilocks_intt_neon(uint64_t *data, int logN) {
         data[i] = gl_mul_scalar(data[i], n_inv);
     }
 }
+
+// ============================================================
+// Batch inversion (standard form) via Montgomery's trick
+// ============================================================
+
+void gl_batch_inverse(const uint64_t *a, uint64_t *out, int n) {
+    if (n == 0) return;
+    if (n == 1) { out[0] = a[0] == 0 ? 0 : gl_inv_scalar(a[0]); return; }
+
+    // Use out[] as scratch for prefix products
+    out[0] = a[0] == 0 ? 1 : a[0];
+    for (int i = 1; i < n; i++) {
+        out[i] = a[i] == 0 ? out[i - 1] : gl_mul_scalar(out[i - 1], a[i]);
+    }
+
+    uint64_t inv = gl_inv_scalar(out[n - 1]);
+
+    for (int i = n - 1; i > 0; i--) {
+        if (a[i] == 0) {
+            out[i] = 0;
+        } else {
+            out[i] = gl_mul_scalar(inv, out[i - 1]);
+            inv = gl_mul_scalar(inv, a[i]);
+        }
+    }
+    out[0] = a[0] == 0 ? 0 : inv;
+}
+
+// ============================================================
+// FRI fold (standard form):
+// out[i] = (f[i]+f[i+half])*inv2 + beta*(f[i]-f[i+half])*invDenom[i]
+// ============================================================
+
+void gl_fri_fold(const uint64_t *f, const uint64_t *invDenom,
+                 uint64_t inv2, uint64_t beta,
+                 uint64_t *out, int half) {
+    for (int i = 0; i < half; i++) {
+        uint64_t f0 = f[i], f1 = f[i + half];
+        uint64_t even = gl_mul_scalar(gl_add_scalar(f0, f1), inv2);
+        uint64_t odd = gl_mul_scalar(gl_sub_scalar(f0, f1), invDenom[i]);
+        out[i] = gl_add_scalar(even, gl_mul_scalar(beta, odd));
+    }
+}
+
+// ============================================================
+// Vanishing polynomial (standard form):
+// out[i] = base * gen^i - one_val
+// ============================================================
+
+void gl_vanishing_poly(uint64_t base, uint64_t gen, uint64_t one_val,
+                       uint64_t *out, int n) {
+    uint64_t acc = base;
+    for (int i = 0; i < n; i++) {
+        out[i] = gl_sub_scalar(acc, one_val);
+        acc = gl_mul_scalar(acc, gen);
+    }
+}

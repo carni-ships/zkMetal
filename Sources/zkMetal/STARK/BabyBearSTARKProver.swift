@@ -13,6 +13,7 @@
 // FRI: standard fold-by-2 with Poseidon2 Merkle commitments
 
 import Foundation
+import NeonFieldOps
 
 // MARK: - AIR Protocol for BabyBear STARKs
 
@@ -342,23 +343,18 @@ public class BabyBearSTARKProver {
         let cosetShiftN = bbPow(cosetShift, UInt32(traceLen))
         let omegaN = bbPow(omega, UInt32(traceLen))
         var vanishingVals = [Bb](repeating: Bb.zero, count: ldeLen)
-        var omegaNpow = cosetShiftN
-        for i in 0..<ldeLen {
-            vanishingVals[i] = bbSub(omegaNpow, Bb.one)
-            omegaNpow = bbMul(omegaNpow, omegaN)
+        vanishingVals.withUnsafeMutableBytes { buf in
+            bb_vanishing_poly(cosetShiftN.v, omegaN.v, Bb.one.v,
+                              buf.baseAddress!.assumingMemoryBound(to: UInt32.self),
+                              Int32(ldeLen))
         }
-        // Montgomery batch inversion: 3(n-1) muls + 1 inverse
+        // Montgomery batch inversion via C kernel
         var vanishingInv = [Bb](repeating: Bb.zero, count: ldeLen)
-        var prefix = [Bb](repeating: Bb.one, count: ldeLen)
-        for i in 1..<ldeLen {
-            prefix[i] = vanishingVals[i - 1].v == 0 ? prefix[i - 1] : bbMul(prefix[i - 1], vanishingVals[i - 1])
-        }
-        let lastNonZero = vanishingVals[ldeLen - 1].v == 0 ? prefix[ldeLen - 1] : bbMul(prefix[ldeLen - 1], vanishingVals[ldeLen - 1])
-        var inv = bbInverse(lastNonZero)
-        for i in stride(from: ldeLen - 1, through: 0, by: -1) {
-            if vanishingVals[i].v != 0 {
-                vanishingInv[i] = bbMul(inv, prefix[i])
-                inv = bbMul(inv, vanishingVals[i])
+        vanishingVals.withUnsafeBytes { src in
+            vanishingInv.withUnsafeMutableBytes { dst in
+                bb_batch_inverse(src.baseAddress!.assumingMemoryBound(to: UInt32.self),
+                                 dst.baseAddress!.assumingMemoryBound(to: UInt32.self),
+                                 Int32(ldeLen))
             }
         }
 
@@ -506,27 +502,30 @@ public class BabyBearSTARKProver {
             for i in 1..<half { omegaPows[i] = bbMul(omegaPows[i - 1], omega) }
             var oddDenoms = [Bb](repeating: Bb.zero, count: half)
             for i in 0..<half { oddDenoms[i] = bbMul(Bb(v: 2), omegaPows[i]) }
-            var denomPrefix = [Bb](repeating: Bb.one, count: half)
-            for i in 1..<half {
-                denomPrefix[i] = oddDenoms[i - 1].v == 0 ? denomPrefix[i - 1] : bbMul(denomPrefix[i - 1], oddDenoms[i - 1])
-            }
-            let denomLast = oddDenoms[half - 1].v == 0 ? denomPrefix[half - 1] : bbMul(denomPrefix[half - 1], oddDenoms[half - 1])
-            var denomInv = bbInverse(denomLast)
+            // Batch inversion of odd denominators via C kernel
             var oddDenomInvs = [Bb](repeating: Bb.zero, count: half)
-            for i in stride(from: half - 1, through: 0, by: -1) {
-                if oddDenoms[i].v != 0 {
-                    oddDenomInvs[i] = bbMul(denomInv, denomPrefix[i])
-                    denomInv = bbMul(denomInv, oddDenoms[i])
+            oddDenoms.withUnsafeBytes { src in
+                oddDenomInvs.withUnsafeMutableBytes { dst in
+                    bb_batch_inverse(
+                        src.baseAddress!.assumingMemoryBound(to: UInt32.self),
+                        dst.baseAddress!.assumingMemoryBound(to: UInt32.self),
+                        Int32(half))
                 }
             }
 
+            // FRI fold via C kernel
             var folded = [Bb](repeating: Bb.zero, count: half)
-            for i in 0..<half {
-                let f0 = currentEvals[i]
-                let f1 = currentEvals[i + half]
-                let even = bbMul(bbAdd(f0, f1), inv2)
-                let odd = bbMul(bbSub(f0, f1), oddDenomInvs[i])
-                folded[i] = bbAdd(even, bbMul(beta, odd))
+            currentEvals.withUnsafeBytes { fBuf in
+                oddDenomInvs.withUnsafeBytes { idBuf in
+                    folded.withUnsafeMutableBytes { outBuf in
+                        bb_fri_fold(
+                            fBuf.baseAddress!.assumingMemoryBound(to: UInt32.self),
+                            idBuf.baseAddress!.assumingMemoryBound(to: UInt32.self),
+                            inv2.v, beta.v,
+                            outBuf.baseAddress!.assumingMemoryBound(to: UInt32.self),
+                            Int32(half))
+                    }
+                }
             }
 
             currentEvals = folded

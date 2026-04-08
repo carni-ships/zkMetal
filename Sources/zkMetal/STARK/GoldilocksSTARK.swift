@@ -13,6 +13,7 @@
 // FRI: standard fold-by-2 with Poseidon Merkle commitments
 
 import Foundation
+import NeonFieldOps
 
 // MARK: - AIR Protocol for Goldilocks STARKs
 
@@ -483,23 +484,18 @@ public class GoldilocksSTARKProver {
         let cosetShiftN = glPow(cosetShift, UInt64(traceLen))
         let omegaN = glPow(omega, UInt64(traceLen))
         var vanishingVals = [Gl](repeating: Gl.zero, count: ldeLen)
-        var omegaNpow = cosetShiftN
-        for i in 0..<ldeLen {
-            vanishingVals[i] = glSub(omegaNpow, Gl.one)
-            omegaNpow = glMul(omegaNpow, omegaN)
+        vanishingVals.withUnsafeMutableBytes { buf in
+            gl_vanishing_poly(cosetShiftN.v, omegaN.v, Gl.one.v,
+                              buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                              Int32(ldeLen))
         }
-        // Montgomery batch inversion: 3(n-1) muls + 1 inverse
+        // Batch inversion via C kernel
         var vanishingInv = [Gl](repeating: Gl.zero, count: ldeLen)
-        var prefix = [Gl](repeating: Gl.one, count: ldeLen)
-        for i in 1..<ldeLen {
-            prefix[i] = vanishingVals[i - 1].isZero ? prefix[i - 1] : glMul(prefix[i - 1], vanishingVals[i - 1])
-        }
-        let lastNonZero = vanishingVals[ldeLen - 1].isZero ? prefix[ldeLen - 1] : glMul(prefix[ldeLen - 1], vanishingVals[ldeLen - 1])
-        var inv = glInverse(lastNonZero)
-        for i in stride(from: ldeLen - 1, through: 0, by: -1) {
-            if !vanishingVals[i].isZero {
-                vanishingInv[i] = glMul(inv, prefix[i])
-                inv = glMul(inv, vanishingVals[i])
+        vanishingVals.withUnsafeBytes { src in
+            vanishingInv.withUnsafeMutableBytes { dst in
+                gl_batch_inverse(src.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                 dst.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                                 Int32(ldeLen))
             }
         }
 
@@ -643,27 +639,30 @@ public class GoldilocksSTARKProver {
             for i in 1..<half { omegaPows[i] = glMul(omegaPows[i - 1], omega) }
             var oddDenoms = [Gl](repeating: Gl.zero, count: half)
             for i in 0..<half { oddDenoms[i] = glMul(Gl(v: 2), omegaPows[i]) }
-            var denomPrefix = [Gl](repeating: Gl.one, count: half)
-            for i in 1..<half {
-                denomPrefix[i] = oddDenoms[i - 1].isZero ? denomPrefix[i - 1] : glMul(denomPrefix[i - 1], oddDenoms[i - 1])
-            }
-            let denomLast = oddDenoms[half - 1].isZero ? denomPrefix[half - 1] : glMul(denomPrefix[half - 1], oddDenoms[half - 1])
-            var denomInv = glInverse(denomLast)
+            // Batch inversion of odd denominators via C kernel
             var oddDenomInvs = [Gl](repeating: Gl.zero, count: half)
-            for i in stride(from: half - 1, through: 0, by: -1) {
-                if !oddDenoms[i].isZero {
-                    oddDenomInvs[i] = glMul(denomInv, denomPrefix[i])
-                    denomInv = glMul(denomInv, oddDenoms[i])
+            oddDenoms.withUnsafeBytes { src in
+                oddDenomInvs.withUnsafeMutableBytes { dst in
+                    gl_batch_inverse(
+                        src.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        dst.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                        Int32(half))
                 }
             }
 
+            // FRI fold via C kernel
             var folded = [Gl](repeating: Gl.zero, count: half)
-            for i in 0..<half {
-                let f0 = currentEvals[i]
-                let f1 = currentEvals[i + half]
-                let even = glMul(glAdd(f0, f1), inv2)
-                let odd = glMul(glSub(f0, f1), oddDenomInvs[i])
-                folded[i] = glAdd(even, glMul(beta, odd))
+            currentEvals.withUnsafeBytes { fBuf in
+                oddDenomInvs.withUnsafeBytes { idBuf in
+                    folded.withUnsafeMutableBytes { outBuf in
+                        gl_fri_fold(
+                            fBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            idBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            inv2.v, beta.v,
+                            outBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(half))
+                    }
+                }
             }
 
             currentEvals = folded
