@@ -294,11 +294,11 @@ Full fold-to-constant: 2^20 in 2.3ms (20 rounds, fused cascade kernels).
 
 | Variables | GPU | C Kernel | Vanilla | GPU vs Vanilla |
 |-----------|-----|----------|---------|----------------|
-| 2^14 | 0.75ms | 0.89ms | 0.8ms | **1x** |
-| 2^16 | 1.1ms | 2.0ms | 2.4ms | **2x** |
-| 2^18 | 2.7ms | 6.2ms | 10.7ms | **4x** |
-| 2^20 | 7.3ms | 18ms | 31ms | **4x** |
-| 2^22 | 17ms | 70ms | 100ms | **6x** |
+| 2^14 | 0.66ms | 0.41ms | 0.4ms | **1x** |
+| 2^16 | 0.96ms | 1.1ms | 1.2ms | **1x** |
+| 2^18 | 2.0ms | 3.0ms | 3.9ms | **2x** |
+| 2^20 | 4.9ms | 10ms | 15ms | **3x** |
+| 2^22 | 10ms | 35ms | 50ms | **5x** |
 
 **Sparse sumcheck** at 1% density: 8-9x faster than dense. At 10%: ~2x faster.
 
@@ -516,7 +516,7 @@ Methodology: Compute-bound = total_ops / 3.6T flops (BN254 mul = ~64 32-bit muls
 |------|-----------|---------|-------------------|------------|----------|
 | 1 | MSM BN254 2^18 | 54ms | ~5ms | Random-access BW (scatter bucket accumulation) | ~11x |
 | 2 | NTT BN254 2^22 | 26ms | ~2.9ms | Compute + strided BW (256-bit: 64 muls/elem) | ~9x |
-| 3 | Sumcheck 2^20 | 7.3ms | ~0.85ms | Bandwidth (2^20 x 32B per round) | ~9x |
+| 3 | Sumcheck 2^20 | 4.9ms | ~0.85ms | Bandwidth (2^20 x 32B per round), fused CB | ~6x |
 | 4 | FRI Fold 2^20 | 1.96ms | ~0.3ms | Bandwidth (2^20 x 32B read+write) | ~7x |
 | 5 | BLS12-377 MSM 2^18 | 119ms | ~35ms | Wider 12-limb Fq, GLV disabled (net loss for GPU) | ~3.4x |
 | 6 | Keccak Merkle 2^20 | 7.7ms (4-ary) | ~2.2ms | 4-ary halves levels, compute-limited | ~3.5x |
