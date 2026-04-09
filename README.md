@@ -454,14 +454,14 @@ C CIOS Montgomery acceleration: pre-computed wiring topology, cached buffers, eq
 | KZG proof size | -- | 138 B |
 | IPA proof size (8 rounds) | -- | 1586 B |
 | FRI commitment (2^14) | -- | 1025 KB |
-| Blake3 batch GPU | 2^20 | 0.003 us/hash (**200x** vs CPU) |
+| Blake3 batch GPU | 2^20 | 0.001 us/hash (**900x** vs CPU), uint4 vectorized + cycle permute |
 
 ### Advanced Protocols
 
 | Primitive | Key Benchmark | Notes |
 |-----------|---------------|-------|
 | HyperNova fold | 0.09ms/fold (1000 steps), N=4: 0.21ms, N=8: 0.46ms | Keccak256 transcript + C CIOS + pre-computed affine: **40x** (3.6ms→0.09ms) |
-| Basefold open 2^18 | 99ms | C CIOS fold + zero-copy Merkle paths |
+| Basefold open 2^18 | 61ms | Fold-by-4 (halved rounds) + pipelined dual-queue Merkle overlap |
 | Brakedown PCS | -- | Crashes on some hardware (signal 139) |
 | Zeromorph PCS | -- | Crashes on some hardware (signal 139) |
 | IPA prove n=256 | 11.8ms | Log(n) halving rounds, C CIOS batch fold + Blake3 NEON + BGMW fixed-base commit |
@@ -517,11 +517,11 @@ Methodology: Compute-bound = total_ops / 3.6T flops (BN254 mul = ~64 32-bit muls
 | 1 | MSM BN254 2^18 | 54ms | ~5ms | Random-access BW (scatter bucket accumulation) | ~11x |
 | 2 | NTT BN254 2^22 | 26ms | ~2.9ms | Compute + strided BW (256-bit: 64 muls/elem) | ~9x |
 | 3 | Sumcheck 2^20 | 4.9ms | ~0.85ms | Bandwidth (2^20 x 32B per round), fused CB | ~6x |
-| 4 | FRI Fold 2^20 | 1.96ms | ~0.3ms | Bandwidth (2^20 x 32B read+write) | ~7x |
+| 4 | FRI Fold 2^20 | 1.96ms | ~0.3ms | Bandwidth (fold-by-4 + twiddle squaring) | ~7x |
 | 5 | BLS12-377 MSM 2^18 | 119ms | ~35ms | Wider 12-limb Fq, GLV disabled (net loss for GPU) | ~3.4x |
 | 6 | Keccak Merkle 2^20 | 7.7ms (4-ary) | ~2.2ms | 4-ary halves levels, compute-limited | ~3.5x |
-| 7 | Blake3 Batch 2^20 | 3.5ms | ~0.6ms | Bandwidth (2^20 x 64B) | ~6x |
-| 8 | Basefold open 2^18 | 138ms | ~20ms | Iterative fold+commit (18 rounds x Merkle) | ~7x |
+| 7 | Blake3 Batch 2^20 | 1.0ms | ~0.6ms | Bandwidth (2^20 x 64B), uint4 vectorized loads + cycle permute | ~1.7x |
+| 8 | Basefold open 2^18 | 61ms | ~20ms | Fold-by-4 + pipelined Merkle (9 rounds vs 18) | ~3x |
 | 9 | Poseidon2 batch 2^16 | 8.1ms | ~1.8ms | Compute (390 ops/elem, 22 sequential rounds limit parallelism) | ~4.5x |
 | 10 | secp256k1 MSM 2^18 | 113ms | ~30ms | No GLV, buffer caching + mixed-add unsafe | ~4x |
 | 11 | Binius FFT 2^16 (CPU) | 21ms | ~5ms | CPU only; XOR-add is free but table mul is serial | ~4x |

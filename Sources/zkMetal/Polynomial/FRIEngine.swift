@@ -375,6 +375,124 @@ public class FRIEngine {
         return Array(UnsafeBufferPointer(start: ptr, count: finalSize))
     }
 
+    /// Multi-round FRI fold: GPU-buffer in, GPU-buffer out.
+    /// Avoids the memcpy overhead of the array-based API. The input buffer must
+    /// contain n = 2^logN Fr elements in .storageModeShared. Returns the output buffer
+    /// containing 2^(logN - betas.count) elements. The returned buffer may alias
+    /// internal ping-pong buffers — copy before calling again if needed.
+    public func multiFoldBuffer(evals: MTLBuffer, logN: Int, betas: [Fr]) throws -> MTLBuffer {
+        let n = 1 << logN
+        precondition(n > 1 && betas.count <= logN)
+
+        try ensureFoldBuffers(maxElements: max(n / 4, n / 16))
+
+        guard let cmdBuf = commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
+        }
+
+        var currentBuf = evals
+        var useA = true
+
+        let enc = cmdBuf.makeComputeCommandEncoder()!
+        let stride = MemoryLayout<Fr>.stride
+        var i = 0
+        let cascadeMaxN = 1024
+        while i < betas.count {
+            let curN = 1 << (logN - i)
+            let curLogN = logN - i
+            let outputBuf = useA ? foldBufA! : foldBufB!
+
+            let remainingRounds = betas.count - i
+            if curN <= cascadeMaxN && remainingRounds >= 2 {
+                let invTwiddles = getInvTwiddles(logN: curLogN)
+                var nVal = UInt32(curN)
+                var numRoundsVal = UInt32(remainingRounds)
+                var remainingBetas = Array(betas[i..<betas.count])
+                enc.setComputePipelineState(foldCascadeFunction)
+                enc.setBuffer(currentBuf, offset: 0, index: 0)
+                enc.setBuffer(outputBuf, offset: 0, index: 1)
+                enc.setBuffer(invTwiddles, offset: 0, index: 2)
+                remainingBetas.withUnsafeMutableBytes { ptr in
+                    enc.setBytes(ptr.baseAddress!, length: ptr.count, index: 3)
+                }
+                enc.setBytes(&nVal, length: 4, index: 4)
+                enc.setBytes(&numRoundsVal, length: 4, index: 5)
+                let halfN = curN / 2
+                enc.dispatchThreadgroups(MTLSize(width: 1, height: 1, depth: 1),
+                                        threadsPerThreadgroup: MTLSize(width: halfN, height: 1, depth: 1))
+                currentBuf = outputBuf
+                useA = !useA
+                i = betas.count
+            } else if i + 3 < betas.count && curN >= 16 {
+                let sixteenthN = curN / 16
+                let invTwiddles = getInvTwiddles(logN: curLogN)
+                var betaArr = (betas[i], betas[i+1], betas[i+2], betas[i+3])
+                var nVal = UInt32(curN)
+                enc.setComputePipelineState(foldFused4Function)
+                enc.setBuffer(currentBuf, offset: 0, index: 0)
+                enc.setBuffer(outputBuf, offset: 0, index: 1)
+                enc.setBuffer(invTwiddles, offset: 0, index: 2)
+                enc.setBytes(&betaArr, length: 4 * stride, index: 3)
+                enc.setBytes(&nVal, length: 4, index: 4)
+                let tg = min(tuning.friThreadgroupSize, Int(foldFused4Function.maxTotalThreadsPerThreadgroup))
+                enc.dispatchThreads(MTLSize(width: sixteenthN, height: 1, depth: 1),
+                                   threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+                currentBuf = outputBuf
+                useA = !useA
+                i += 4
+            } else if i + 1 < betas.count && curN >= 4 {
+                let quarterN = curN / 4
+                var beta0 = betas[i]
+                var beta1 = betas[i + 1]
+                let invTwiddles = getInvTwiddles(logN: curLogN)
+                var nVal = UInt32(curN)
+                enc.setComputePipelineState(foldFused2Function)
+                enc.setBuffer(currentBuf, offset: 0, index: 0)
+                enc.setBuffer(outputBuf, offset: 0, index: 1)
+                enc.setBuffer(invTwiddles, offset: 0, index: 2)
+                enc.setBytes(&beta0, length: stride, index: 3)
+                enc.setBytes(&beta1, length: stride, index: 4)
+                enc.setBytes(&nVal, length: 4, index: 5)
+                let tg = min(tuning.friThreadgroupSize, Int(foldFused2Function.maxTotalThreadsPerThreadgroup))
+                enc.dispatchThreads(MTLSize(width: quarterN, height: 1, depth: 1),
+                                   threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+                currentBuf = outputBuf
+                useA = !useA
+                i += 2
+            } else {
+                let halfN = curN / 2
+                var beta = betas[i]
+                let invTwiddles = getInvTwiddles(logN: curLogN)
+                var nVal = UInt32(curN)
+                enc.setComputePipelineState(foldFunction)
+                enc.setBuffer(currentBuf, offset: 0, index: 0)
+                enc.setBuffer(outputBuf, offset: 0, index: 1)
+                enc.setBuffer(invTwiddles, offset: 0, index: 2)
+                enc.setBytes(&beta, length: stride, index: 3)
+                enc.setBytes(&nVal, length: 4, index: 4)
+                let tg = min(tuning.friThreadgroupSize, Int(foldFunction.maxTotalThreadsPerThreadgroup))
+                enc.dispatchThreads(MTLSize(width: halfN, height: 1, depth: 1),
+                                   threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+                currentBuf = outputBuf
+                useA = !useA
+                i += 1
+            }
+
+            if i < betas.count {
+                enc.memoryBarrier(scope: .buffers)
+            }
+        }
+        enc.endEncoding()
+
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+        if let error = cmdBuf.error {
+            throw MSMError.gpuError(error.localizedDescription)
+        }
+
+        return currentBuf
+    }
+
     // MARK: - FRI Fold-by-4
 
     /// Perform one FRI fold-by-4 step: reduce domain size by 4x.

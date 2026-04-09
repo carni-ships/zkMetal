@@ -226,6 +226,74 @@ public class GPUFRIFoldEngine {
         return try fold(evals: evals, domainInv: domainInv, challenge: challenge, n: n)
     }
 
+    // MARK: - Fused Fold-by-4 (Single Dispatch)
+
+    /// Fold by 4 in a single GPU dispatch using the fused 2-round kernel.
+    /// Input: evals buffer of size n (Fr elements), two challenges.
+    /// Output: new MTLBuffer of size n/4.
+    /// Requires two domain inverse buffers: one for round 1 (size n/2) and
+    /// one for round 2 (size n/4).
+    public func foldBy4(evals: MTLBuffer, domainInv: MTLBuffer,
+                        domainInv2: MTLBuffer, challenge0: Fr, challenge1: Fr,
+                        n: Int) throws -> MTLBuffer {
+        let quarter = n / 4
+        let stride = MemoryLayout<Fr>.stride
+
+        // CPU fallback for small inputs
+        if n < GPUFRIFoldEngine.cpuFallbackThreshold * 2 {
+            // Two sequential CPU folds
+            let midBuf = try cpuFold(evals: evals, domainInv: domainInv,
+                                     challenge: challenge0, n: n)
+            return try cpuFold(evals: midBuf, domainInv: domainInv2,
+                               challenge: challenge1, n: n / 2)
+        }
+
+        let outBuf = device.makeBuffer(length: quarter * stride, options: .storageModeShared)!
+
+        guard let cmdBuf = commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
+        }
+
+        var nVal = UInt32(n)
+        var c0 = challenge0
+        var c1 = challenge1
+        let enc = cmdBuf.makeComputeCommandEncoder()!
+        enc.setComputePipelineState(foldFused2Kernel)
+        enc.setBuffer(evals, offset: 0, index: 0)
+        enc.setBuffer(outBuf, offset: 0, index: 1)
+        enc.setBuffer(domainInv, offset: 0, index: 2)
+        enc.setBuffer(domainInv2, offset: 0, index: 3)
+        enc.setBytes(&c0, length: stride, index: 4)
+        enc.setBytes(&c1, length: stride, index: 5)
+        enc.setBytes(&nVal, length: 4, index: 6)
+
+        let tg = min(tuning.friThreadgroupSize,
+                     Int(foldFused2Kernel.maxTotalThreadsPerThreadgroup))
+        enc.dispatchThreads(MTLSize(width: quarter, height: 1, depth: 1),
+                           threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+        enc.endEncoding()
+
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+        if let error = cmdBuf.error {
+            throw MSMError.gpuError(error.localizedDescription)
+        }
+
+        return outBuf
+    }
+
+    /// Convenience: fold-by-4 using multiplicative domain (roots of unity).
+    /// Automatically precomputes and caches domain inverses for both sub-rounds.
+    public func foldBy4(evals: MTLBuffer, logN: Int,
+                        challenge0: Fr, challenge1: Fr) throws -> MTLBuffer {
+        precondition(logN >= 2, "Need logN >= 2 for fold-by-4")
+        let domainInv = getCachedDomainInverses(logN: logN)
+        let domainInv2 = getCachedDomainInverses(logN: logN - 1)
+        return try foldBy4(evals: evals, domainInv: domainInv,
+                           domainInv2: domainInv2, challenge0: challenge0,
+                           challenge1: challenge1, n: 1 << logN)
+    }
+
     // MARK: - Multi-Round Fold (GPU-Resident)
 
     /// Fold multiple rounds in a single command buffer, keeping data on GPU
@@ -255,33 +323,73 @@ public class GPUFRIFoldEngine {
 
         var currentBuf = evals
         var usePing = true
+        var currentLogN = logN
+        var round = 0
 
-        for round in 0..<numRounds {
-            let half = currentN / 2
-            let domainInv = getCachedDomainInverses(logN: logN - round)
-            let outBuf = usePing ? pingBuf! : pongBuf!
+        while round < numRounds {
+            // Use fused fold-by-4 kernel when we have 2+ rounds left and size >= 4
+            if round + 1 < numRounds && currentN >= 4 {
+                let quarter = currentN / 4
+                let domainInv = getCachedDomainInverses(logN: currentLogN)
+                let domainInv2 = getCachedDomainInverses(logN: currentLogN - 1)
+                let outBuf = usePing ? pingBuf! : pongBuf!
 
-            var nVal = UInt32(currentN)
-            var challengeVal = challenges[round]
-            enc.setComputePipelineState(foldKernel)
-            enc.setBuffer(currentBuf, offset: 0, index: 0)
-            enc.setBuffer(outBuf, offset: 0, index: 1)
-            enc.setBuffer(domainInv, offset: 0, index: 2)
-            enc.setBytes(&challengeVal, length: stride, index: 3)
-            enc.setBytes(&nVal, length: 4, index: 4)
+                var nVal = UInt32(currentN)
+                var c0 = challenges[round]
+                var c1 = challenges[round + 1]
+                enc.setComputePipelineState(foldFused2Kernel)
+                enc.setBuffer(currentBuf, offset: 0, index: 0)
+                enc.setBuffer(outBuf, offset: 0, index: 1)
+                enc.setBuffer(domainInv, offset: 0, index: 2)
+                enc.setBuffer(domainInv2, offset: 0, index: 3)
+                enc.setBytes(&c0, length: stride, index: 4)
+                enc.setBytes(&c1, length: stride, index: 5)
+                enc.setBytes(&nVal, length: 4, index: 6)
 
-            let tg = min(tuning.friThreadgroupSize,
-                         Int(foldKernel.maxTotalThreadsPerThreadgroup))
-            enc.dispatchThreads(MTLSize(width: half, height: 1, depth: 1),
-                               threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+                let tg = min(tuning.friThreadgroupSize,
+                             Int(foldFused2Kernel.maxTotalThreadsPerThreadgroup))
+                enc.dispatchThreads(MTLSize(width: quarter, height: 1, depth: 1),
+                                   threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
 
-            if round < numRounds - 1 {
-                enc.memoryBarrier(scope: .buffers)
+                if round + 2 < numRounds {
+                    enc.memoryBarrier(scope: .buffers)
+                }
+
+                currentBuf = outBuf
+                currentN = quarter
+                currentLogN -= 2
+                usePing = !usePing
+                round += 2
+            } else {
+                // Single fold-by-2 round
+                let half = currentN / 2
+                let domainInv = getCachedDomainInverses(logN: currentLogN)
+                let outBuf = usePing ? pingBuf! : pongBuf!
+
+                var nVal = UInt32(currentN)
+                var challengeVal = challenges[round]
+                enc.setComputePipelineState(foldKernel)
+                enc.setBuffer(currentBuf, offset: 0, index: 0)
+                enc.setBuffer(outBuf, offset: 0, index: 1)
+                enc.setBuffer(domainInv, offset: 0, index: 2)
+                enc.setBytes(&challengeVal, length: stride, index: 3)
+                enc.setBytes(&nVal, length: 4, index: 4)
+
+                let tg = min(tuning.friThreadgroupSize,
+                             Int(foldKernel.maxTotalThreadsPerThreadgroup))
+                enc.dispatchThreads(MTLSize(width: half, height: 1, depth: 1),
+                                   threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+
+                if round < numRounds - 1 {
+                    enc.memoryBarrier(scope: .buffers)
+                }
+
+                currentBuf = outBuf
+                currentN = half
+                currentLogN -= 1
+                usePing = !usePing
+                round += 1
             }
-
-            currentBuf = outBuf
-            currentN = half
-            usePing = !usePing
         }
 
         enc.endEncoding()
@@ -381,6 +489,7 @@ public class GPUFRIFoldEngine {
     /// GPU-resident multi-round fold: folds evals through all challenges,
     /// keeping data on GPU between rounds. Returns only the final result buffer.
     /// More efficient than foldAllRounds when intermediate layers are not needed.
+    /// Uses fused fold-by-4 kernel when possible (pairs of consecutive rounds).
     public func foldToFinal(evals: MTLBuffer, logN: Int,
                              challenges: [Fr]) throws -> MTLBuffer {
         precondition(challenges.count <= logN, "Too many challenges for domain size")
@@ -388,21 +497,30 @@ public class GPUFRIFoldEngine {
 
         var currentBuf = evals
         var currentLogN = logN
+        var i = 0
 
-        for i in 0..<challenges.count {
+        while i < challenges.count {
             let n = 1 << currentLogN
 
-            if n < GPUFRIFoldEngine.cpuFallbackThreshold {
+            // Use fused fold-by-4 when we have 2+ rounds left and size >= 4
+            if i + 1 < challenges.count && currentLogN >= 2 && n >= GPUFRIFoldEngine.cpuFallbackThreshold * 2 {
+                currentBuf = try foldBy4(evals: currentBuf, logN: currentLogN,
+                                         challenge0: challenges[i], challenge1: challenges[i + 1])
+                currentLogN -= 2
+                i += 2
+            } else if n < GPUFRIFoldEngine.cpuFallbackThreshold {
                 let domainInv = getCachedDomainInverses(logN: currentLogN)
                 currentBuf = try cpuFold(evals: currentBuf, domainInv: domainInv,
                                           challenge: challenges[i], n: n)
+                currentLogN -= 1
+                i += 1
             } else {
                 let domainInv = getCachedDomainInverses(logN: currentLogN)
                 currentBuf = try fold(evals: currentBuf, domainInv: domainInv,
                                        challenge: challenges[i], n: n)
+                currentLogN -= 1
+                i += 1
             }
-
-            currentLogN -= 1
         }
 
         return currentBuf

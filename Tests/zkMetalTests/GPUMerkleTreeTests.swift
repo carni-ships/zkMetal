@@ -138,6 +138,129 @@ func runGPUMerkleTreeTests() {
     }
 }
 
+func runBlake3FusedMerkleTests() {
+    suite("Blake3FusedMerkleEngine")
+
+    do {
+        let engine = try Blake3MerkleEngine()
+
+        // Helper: CPU Blake3 Merkle root for reference
+        func cpuBlake3MerkleRoot(_ leaves: [[UInt8]]) -> [UInt8] {
+            var level = leaves
+            while level.count > 1 {
+                var next = [[UInt8]]()
+                next.reserveCapacity(level.count / 2)
+                for i in stride(from: 0, to: level.count, by: 2) {
+                    next.append(blake3Parent(level[i] + level[i + 1]))
+                }
+                level = next
+            }
+            return level[0]
+        }
+
+        // Test 1: Small tree (4 leaves) — level-by-level path
+        var leaves4 = [[UInt8]]()
+        for i in 0..<4 {
+            var leaf = [UInt8](repeating: 0, count: 32)
+            leaf[0] = UInt8(i + 1)
+            leaves4.append(leaf)
+        }
+        let tree4 = try engine.buildTree(leaves4)
+        let treeNodes4 = tree4.count / 32
+        expectEqual(treeNodes4, 7, "4-leaf tree: 7 nodes")
+        let gpuRoot4 = Blake3MerkleEngine.node(tree4, at: treeNodes4 - 1)
+        let cpuRoot4 = cpuBlake3MerkleRoot(leaves4)
+        expect(gpuRoot4 == cpuRoot4, "4-leaf root matches CPU")
+
+        // Test 2: 1024 leaves — triggers fused subtree kernel (buildTree with full intermediate output)
+        var leaves1024 = [[UInt8]]()
+        for i in 0..<1024 {
+            var leaf = [UInt8](repeating: 0, count: 32)
+            let v = UInt32(i)
+            for b in 0..<4 { leaf[b] = UInt8((v >> (b * 8)) & 0xFF) }
+            leaves1024.append(leaf)
+        }
+        let tree1024 = try engine.buildTree(leaves1024)
+        let treeNodes1024 = tree1024.count / 32
+        expectEqual(treeNodes1024, 2047, "1024-leaf tree: 2047 nodes")
+        let gpuRoot1024 = Blake3MerkleEngine.node(tree1024, at: treeNodes1024 - 1)
+        let cpuRoot1024 = cpuBlake3MerkleRoot(leaves1024)
+        expect(gpuRoot1024 == cpuRoot1024, "1024-leaf fused root matches CPU")
+
+        // Verify intermediate nodes (spot check level 0: first pair)
+        let level0Parent = blake3Parent(leaves1024[0] + leaves1024[1])
+        let gpuLevel0 = Blake3MerkleEngine.node(tree1024, at: 1024)
+        expect(gpuLevel0 == level0Parent, "1024-leaf: level 0 intermediate node[0] matches CPU")
+
+        // Test 3: merkleRoot at 1024 — uses fused root-only kernel
+        let root1024 = try engine.merkleRoot(leaves1024)
+        expect(root1024 == cpuRoot1024, "1024-leaf merkleRoot matches CPU")
+        expect(root1024 == gpuRoot1024, "merkleRoot == buildTree root at 1024")
+
+        // Test 4: 2048 leaves — fused subtrees (2 subtrees of 1024) + level-by-level upper
+        var leaves2048 = [[UInt8]]()
+        for i in 0..<2048 {
+            var leaf = [UInt8](repeating: 0, count: 32)
+            let v = UInt32(i)
+            for b in 0..<4 { leaf[b] = UInt8((v >> (b * 8)) & 0xFF) }
+            leaves2048.append(leaf)
+        }
+        let tree2048 = try engine.buildTree(leaves2048)
+        let root2048 = try engine.merkleRoot(leaves2048)
+        let cpuRoot2048 = cpuBlake3MerkleRoot(leaves2048)
+        let gpuRoot2048 = Blake3MerkleEngine.node(tree2048, at: tree2048.count / 32 - 1)
+        expect(gpuRoot2048 == cpuRoot2048, "2048-leaf fused buildTree root matches CPU")
+        expect(root2048 == cpuRoot2048, "2048-leaf fused merkleRoot matches CPU")
+
+        // Test 5: 4096 leaves — 4 subtrees of 1024
+        var leaves4096 = [[UInt8]]()
+        for i in 0..<4096 {
+            var leaf = [UInt8](repeating: 0, count: 32)
+            let v = UInt32(i)
+            for b in 0..<4 { leaf[b] = UInt8((v >> (b * 8)) & 0xFF) }
+            leaves4096.append(leaf)
+        }
+        let root4096 = try engine.merkleRoot(leaves4096)
+        let tree4096 = try engine.buildTree(leaves4096)
+        let cpuRoot4096 = cpuBlake3MerkleRoot(leaves4096)
+        let gpuRoot4096 = Blake3MerkleEngine.node(tree4096, at: tree4096.count / 32 - 1)
+        expect(root4096 == cpuRoot4096, "4096-leaf fused merkleRoot matches CPU")
+        expect(gpuRoot4096 == cpuRoot4096, "4096-leaf fused buildTree root matches CPU")
+
+        // Verify proof extraction works with fused tree
+        // Check a mid-tree intermediate node at level 0 of subtree 1
+        let pair2048 = blake3Parent(leaves4096[2048] + leaves4096[2049])
+        let gpuPair2048 = Blake3MerkleEngine.node(tree4096, at: 4096 + 1024) // offset n + n/2 subtree_stride * tgid + tid
+        // Actually: level_offsets[0] = 4096, subtree_stride = 512, tgid=2, tid=0
+        // global_idx = 4096 + 2*512 + 0 = 5120
+        let gpuPair2048b = Blake3MerkleEngine.node(tree4096, at: 5120)
+        expect(gpuPair2048b == pair2048, "4096-leaf: intermediate node in subtree 2 matches CPU")
+
+        // Test 6: Determinism
+        let root4096b = try engine.merkleRoot(leaves4096)
+        expect(root4096 == root4096b, "deterministic: same leaves -> same root")
+
+        // Test 7: buildTree and merkleRoot consistency across all fused sizes
+        for logN in [10, 11, 12] {
+            let n = 1 << logN
+            var leaves = [[UInt8]]()
+            for i in 0..<n {
+                var leaf = [UInt8](repeating: 0, count: 32)
+                let v = UInt32(i)
+                for b in 0..<4 { leaf[b] = UInt8((v >> (b * 8)) & 0xFF) }
+                leaves.append(leaf)
+            }
+            let tree = try engine.buildTree(leaves)
+            let root = try engine.merkleRoot(leaves)
+            let treeRoot = Blake3MerkleEngine.node(tree, at: tree.count / 32 - 1)
+            expect(root == treeRoot, "2^\(logN)-leaf: merkleRoot == buildTree root")
+        }
+
+    } catch {
+        expect(false, "Blake3FusedMerkleEngine error: \(error)")
+    }
+}
+
 func runKeccak4aryMerkleTests() {
     suite("Keccak4aryMerkleEngine")
 

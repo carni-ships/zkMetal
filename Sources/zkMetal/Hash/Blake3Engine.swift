@@ -8,6 +8,10 @@ public class Blake3Engine {
     public let commandQueue: MTLCommandQueue
     let hash64Function: MTLComputePipelineState   // hash 64-byte inputs
     let hash32Function: MTLComputePipelineState   // hash 32-byte parent nodes
+    let merkleFusedFunction: MTLComputePipelineState  // fused 1024-leaf subtree → root only
+    let merkleFusedFullFunction: MTLComputePipelineState  // fused with all intermediate nodes
+
+    public static let merkleSubtreeSize = 1024
 
     // Cached buffers for hash64 array API
     private var cachedH64InputBuf: MTLBuffer?
@@ -27,11 +31,15 @@ public class Blake3Engine {
 
         let library = try Blake3Engine.compileShaders(device: device)
         guard let hash64Fn = library.makeFunction(name: "blake3_hash_64"),
-              let hash32Fn = library.makeFunction(name: "blake3_hash_32") else {
+              let hash32Fn = library.makeFunction(name: "blake3_hash_32"),
+              let merkleFusedFn = library.makeFunction(name: "blake3_merkle_fused"),
+              let merkleFusedFullFn = library.makeFunction(name: "blake3_merkle_fused_full") else {
             throw MSMError.missingKernel
         }
         self.hash64Function = try device.makeComputePipelineState(function: hash64Fn)
         self.hash32Function = try device.makeComputePipelineState(function: hash32Fn)
+        self.merkleFusedFunction = try device.makeComputePipelineState(function: merkleFusedFn)
+        self.merkleFusedFullFunction = try device.makeComputePipelineState(function: merkleFusedFullFn)
         self.tuning = TuningManager.shared.config(device: device)
     }
 
@@ -143,6 +151,42 @@ public class Blake3Engine {
         let tg = min(tuning.hashThreadgroupSize, Int(hash32Function.maxTotalThreadsPerThreadgroup))
         encoder.dispatchThreads(MTLSize(width: count, height: 1, depth: 1),
                                threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+    }
+
+    /// Encode fused Merkle subtree dispatch (root-only output).
+    /// Reads 32-byte leaves from leavesBuffer, writes one 32-byte root per subtree to rootsBuffer.
+    /// subtreeSize must be a power of 2, max 1024. Default 1024.
+    public func encodeMerkleFused(encoder: MTLComputeCommandEncoder,
+                                   leavesBuffer: MTLBuffer, leavesOffset: Int,
+                                   rootsBuffer: MTLBuffer, rootsOffset: Int,
+                                   numSubtrees: Int, subtreeSize: Int = 1024) {
+        encoder.setComputePipelineState(merkleFusedFunction)
+        encoder.setBuffer(leavesBuffer, offset: leavesOffset, index: 0)
+        encoder.setBuffer(rootsBuffer, offset: rootsOffset, index: 1)
+        var numLevels = UInt32(subtreeSize.trailingZeroBitCount)
+        encoder.setBytes(&numLevels, length: 4, index: 2)
+        let tgSize = min(subtreeSize / 2, 512)
+        encoder.dispatchThreadgroups(MTLSize(width: numSubtrees, height: 1, depth: 1),
+                                     threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
+    }
+
+    /// Encode fused Merkle subtree dispatch with full intermediate node output.
+    /// Writes ALL intermediate nodes at correct tree offsets (for proof path extraction).
+    /// levelOffsetsBuffer contains cumulative start indices: [n, n+n/2, n+n/2+n/4, ...]
+    public func encodeMerkleFusedFull(encoder: MTLComputeCommandEncoder,
+                                       leavesBuffer: MTLBuffer, leavesOffset: Int,
+                                       treeBuffer: MTLBuffer, treeOffset: Int,
+                                       levelOffsetsBuffer: MTLBuffer,
+                                       numSubtrees: Int, subtreeSize: Int = 1024) {
+        encoder.setComputePipelineState(merkleFusedFullFunction)
+        encoder.setBuffer(leavesBuffer, offset: leavesOffset, index: 0)
+        encoder.setBuffer(treeBuffer, offset: treeOffset, index: 1)
+        var numLevels = UInt32(subtreeSize.trailingZeroBitCount)
+        encoder.setBytes(&numLevels, length: 4, index: 2)
+        encoder.setBuffer(levelOffsetsBuffer, offset: 0, index: 3)
+        let tgSize = min(subtreeSize / 2, 512)
+        encoder.dispatchThreadgroups(MTLSize(width: numSubtrees, height: 1, depth: 1),
+                                     threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
     }
 
     /// Hash parent nodes for Merkle tree: input is pairs of 32-byte child hashes.

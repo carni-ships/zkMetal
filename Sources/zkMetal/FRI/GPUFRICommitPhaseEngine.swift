@@ -659,11 +659,32 @@ public final class GPUFRICommitPhaseEngine {
         return current
     }
 
-    /// Fold by 4: two successive folds with derived challenges.
+    /// Fold by 4: fused 2-round fold in a single GPU dispatch.
+    /// Uses the fused2 kernel to eliminate intermediate buffer and halve dispatches.
     private func foldByFour(evals: [Fr], logN: Int, challenge: Fr,
                             config: FRICommitPhaseConfig) throws -> [Fr] {
         precondition(logN >= 2, "Need logN >= 2 for fold-by-4")
-        return try foldMultiRound(evals: evals, logN: logN, challenge: challenge, numSubFolds: 2)
+        let n = evals.count
+        precondition(n == 1 << logN)
+        let stride = MemoryLayout<Fr>.stride
+
+        // Derive second challenge (same convention as foldMultiRound)
+        let challenge2 = frMul(challenge, challenge)
+
+        if n >= GPUFRICommitPhaseEngine.cpuFoldThreshold {
+            let evalsBuf = device.makeBuffer(
+                bytes: evals, length: n * stride,
+                options: .storageModeShared)!
+            let resultBuf = try foldEngine.foldBy4(evals: evalsBuf, logN: logN,
+                                                    challenge0: challenge, challenge1: challenge2)
+            let quarter = n / 4
+            let ptr = resultBuf.contents().bindMemory(to: Fr.self, capacity: quarter)
+            return Array(UnsafeBufferPointer(start: ptr, count: quarter))
+        }
+
+        // CPU fallback: chain two individual folds
+        let mid = cpuFoldOnce(evals: evals, logN: logN, challenge: challenge)
+        return cpuFoldOnce(evals: mid, logN: logN - 1, challenge: challenge2)
     }
 
     /// Fold by 8: three successive folds in a single GPU command buffer.

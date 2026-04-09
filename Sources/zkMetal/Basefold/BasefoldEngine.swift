@@ -28,17 +28,42 @@ public struct BasefoldProof {
     public let layers: [[Fr]]
     /// Query proofs for random verification
     public let queryProofs: [BasefoldQueryProof]
+    /// Number of fold-by-2 rounds consumed per committed level (1 = single, 2 = fused fold-by-4).
+    /// Empty means all levels are stride-1 (backward compat with old proofs).
+    public let levelStrides: [Int]
+
+    public init(roots: [Fr], finalValue: Fr, layers: [[Fr]],
+                queryProofs: [BasefoldQueryProof], levelStrides: [Int] = []) {
+        self.roots = roots
+        self.finalValue = finalValue
+        self.layers = layers
+        self.queryProofs = queryProofs
+        self.levelStrides = levelStrides
+    }
 }
 
 public struct BasefoldQueryProof {
     /// Query index in the original evaluation vector
     public let index: Int
-    /// (low, high) evaluation pairs at each folding level
+    /// (low, high) evaluation pairs at each folding level (stride-1 levels only;
+    /// for stride-2 levels this entry is (.zero, .zero) — use evaluationQuads instead).
     public let evaluationPairs: [(Fr, Fr)]
     /// Fold results at each level (for consistency checking)
     public let foldResults: [Fr]
     /// Merkle authentication paths at each level
     public let merklePaths: [[Fr]]
+    /// For stride-2 (fused fold-by-4) levels: (a, b, c, d) evaluation quad.
+    /// Empty for old-format proofs or stride-1-only proofs.
+    public let evaluationQuads: [(Fr, Fr, Fr, Fr)]
+
+    public init(index: Int, evaluationPairs: [(Fr, Fr)], foldResults: [Fr],
+                merklePaths: [[Fr]], evaluationQuads: [(Fr, Fr, Fr, Fr)] = []) {
+        self.index = index
+        self.evaluationPairs = evaluationPairs
+        self.foldResults = foldResults
+        self.merklePaths = merklePaths
+        self.evaluationQuads = evaluationQuads
+    }
 }
 
 // MARK: - Engine
@@ -155,8 +180,9 @@ public class BasefoldEngine {
     // MARK: - Open
 
     /// Open the committed polynomial at point (r_1, ..., r_n).
-    /// Performs n rounds of multilinear folding, producing Merkle commitments at each level.
-    /// Generates query proofs for random verification indices.
+    /// Uses fold-by-4 (fused 2-round fold) to halve the number of committed levels
+    /// and Merkle trees, reducing proof size and Merkle overhead by ~50%.
+    /// Falls back to single fold for the final round when numVars is odd.
     public func open(commitment: BasefoldCommitment, point: [Fr]) throws -> BasefoldProof {
         let evals = commitment.evaluations
         let n = evals.count
@@ -165,9 +191,23 @@ public class BasefoldEngine {
 
         let stride = MemoryLayout<Fr>.stride
 
-        // Phase 1: GPU fold all rounds, writing each intermediate layer directly into tree buffers.
-        // Each round's fold output becomes the leaves of that round's Merkle tree.
-        // Round i reads from tree[i-1] (or input) and writes to tree[i].
+        // Plan committed levels: pair consecutive rounds into fused fold-by-4.
+        // Each committed level consumes 1 or 2 point challenges.
+        // levelStrides[i] = 2 means fused (fold-by-4), 1 means single (fold-by-2).
+        var levelStrides: [Int] = []
+        var remaining = numVars
+        while remaining > 0 {
+            if remaining >= 2 {
+                levelStrides.append(2)
+                remaining -= 2
+            } else {
+                levelStrides.append(1)
+                remaining -= 1
+            }
+        }
+        let numLevels = levelStrides.count  // ceil(numVars / 2)
+
+        // Phase 0: Ensure buffer caches are valid
         if n != cachedTreeBufsN {
             cachedTreeBufsArr.removeAll()
             cachedTreeBufsN = n
@@ -185,21 +225,14 @@ public class BasefoldEngine {
             memcpy(inputBuf!.contents(), src.baseAddress!, n * stride)
         }
 
-        var layers: [[Fr]] = []
-        layers.reserveCapacity(numVars)
-        var roots: [Fr] = []
-        roots.reserveCapacity(numVars)
-        var treeBufPtrs: [MTLBuffer?] = []
-        var treeSizesArr: [Int] = []
-        var treeNodeCounts: [Int] = []
-        var tbIdx = 0
-
-        // Pre-allocate tree buffers for all rounds (fold output goes to leaves region)
+        // Pre-allocate tree buffers for committed levels (one per level, not per round)
         var roundTreeBufs: [MTLBuffer?] = []
-        roundTreeBufs.reserveCapacity(numVars)
+        roundTreeBufs.reserveCapacity(numLevels)
+        var tbIdx = 0
         var currentN = n
-        for round in 0..<numVars {
-            let layerN = currentN / 2
+        for level in 0..<numLevels {
+            let divisor = (levelStrides[level] == 2) ? 4 : 2
+            let layerN = currentN / divisor
             if layerN <= 1 {
                 roundTreeBufs.append(nil)
             } else {
@@ -221,8 +254,17 @@ public class BasefoldEngine {
             currentN = layerN
         }
 
-        // GPU fold: each round writes fold output to the tree buffer's leaf region.
-        // Round i+1 reads from round i's tree buffer.
+        // Ensure scratch buffer exists for small final layers
+        let maxHalf = n / 2
+        if foldBufSize < maxHalf {
+            guard let a = device.makeBuffer(length: maxHalf * stride, options: .storageModeShared) else {
+                throw MSMError.gpuError("Failed to create fold buffer")
+            }
+            foldBufA = a
+            foldBufSize = maxHalf
+        }
+
+        // Phase 1: GPU fold using fused-2 (fold-by-4) where possible.
         guard let foldCB = commandQueue.makeCommandBuffer() else {
             throw MSMError.noCommandBuffer
         }
@@ -230,39 +272,48 @@ public class BasefoldEngine {
 
         var currentInputBuf = inputBuf!
         currentN = n
+        var pointIdx = 0  // Index into the point array
 
-        for round in 0..<numVars {
-            let halfN = currentN / 2
-            let outputBuf: MTLBuffer
-            if let tb = roundTreeBufs[round] {
-                outputBuf = tb  // Write fold output directly to tree buffer leaves
+        for level in 0..<numLevels {
+            let s = levelStrides[level]
+            let outputBuf: MTLBuffer = roundTreeBufs[level] ?? foldBufA!
+
+            if s == 2 && currentN >= 4 {
+                // Fused fold-by-4: consume two challenges, reduce by 4x
+                let quarterN = currentN / 4
+                var alpha0 = point[pointIdx]
+                var alpha1 = point[pointIdx + 1]
+                var qnVal = UInt32(quarterN)
+                foldEnc.setComputePipelineState(foldFused2Function)
+                foldEnc.setBuffer(currentInputBuf, offset: 0, index: 0)
+                foldEnc.setBuffer(outputBuf, offset: 0, index: 1)
+                foldEnc.setBytes(&alpha0, length: stride, index: 2)
+                foldEnc.setBytes(&alpha1, length: stride, index: 3)
+                foldEnc.setBytes(&qnVal, length: 4, index: 4)
+                let tg = min(tuning.friThreadgroupSize, Int(foldFused2Function.maxTotalThreadsPerThreadgroup))
+                foldEnc.dispatchThreads(MTLSize(width: max(quarterN, 1), height: 1, depth: 1),
+                                       threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+                currentN = quarterN
+                pointIdx += 2
             } else {
-                // Very small layer (≤1 element): use foldBufA as scratch
-                let maxHalf = n / 2
-                if foldBufSize < maxHalf {
-                    guard let a = device.makeBuffer(length: maxHalf * stride, options: .storageModeShared) else {
-                        throw MSMError.gpuError("Failed to create fold buffer")
-                    }
-                    foldBufA = a
-                    foldBufSize = maxHalf
-                }
-                outputBuf = foldBufA!
+                // Single fold: consume one challenge, reduce by 2x
+                let halfN = currentN / 2
+                var alpha = point[pointIdx]
+                var hnVal = UInt32(halfN)
+                foldEnc.setComputePipelineState(foldFunction)
+                foldEnc.setBuffer(currentInputBuf, offset: 0, index: 0)
+                foldEnc.setBuffer(outputBuf, offset: 0, index: 1)
+                foldEnc.setBytes(&alpha, length: stride, index: 2)
+                foldEnc.setBytes(&hnVal, length: 4, index: 3)
+                let tg = min(tuning.friThreadgroupSize, Int(foldFunction.maxTotalThreadsPerThreadgroup))
+                foldEnc.dispatchThreads(MTLSize(width: max(halfN, 1), height: 1, depth: 1),
+                                       threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+                currentN = halfN
+                pointIdx += 1
             }
 
-            var alpha = point[round]
-            var hnVal = UInt32(halfN)
-            foldEnc.setComputePipelineState(foldFunction)
-            foldEnc.setBuffer(currentInputBuf, offset: 0, index: 0)
-            foldEnc.setBuffer(outputBuf, offset: 0, index: 1)
-            foldEnc.setBytes(&alpha, length: stride, index: 2)
-            foldEnc.setBytes(&hnVal, length: 4, index: 3)
-            let tg = min(tuning.friThreadgroupSize, Int(foldFunction.maxTotalThreadsPerThreadgroup))
-            foldEnc.dispatchThreads(MTLSize(width: max(halfN, 1), height: 1, depth: 1),
-                                   threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
-
             currentInputBuf = outputBuf
-            currentN = halfN
-            if round + 1 < numVars {
+            if level + 1 < numLevels {
                 foldEnc.memoryBarrier(scope: .buffers)
             }
         }
@@ -272,14 +323,23 @@ public class BasefoldEngine {
         if let foldErr = foldCB.error {
             throw MSMError.gpuError("Fold: \(foldErr.localizedDescription)")
         }
-        // Phase 2: Extract layers from tree buffers (zero-copy read) and set up for Merkle trees.
+
+        // Phase 2: Extract layers from tree buffers and set up Merkle trees.
+        var layers: [[Fr]] = []
+        layers.reserveCapacity(numLevels)
+        var roots: [Fr] = []
+        roots.reserveCapacity(numLevels)
+        var treeBufPtrs: [MTLBuffer?] = []
+        var treeSizesArr: [Int] = []
+        var treeNodeCounts: [Int] = []
+
         currentN = n
-        for round in 0..<numVars {
-            let layerN = currentN / 2
+        for level in 0..<numLevels {
+            let divisor = (levelStrides[level] == 2 && currentN >= 4) ? 4 : 2
+            let layerN = currentN / divisor
             if layerN <= 1 {
                 if layerN == 1 {
-                    // Read final value from the last output buffer
-                    let srcBuf = roundTreeBufs[round] ?? foldBufA!
+                    let srcBuf = roundTreeBufs[level] ?? foldBufA!
                     let ptr = srcBuf.contents().bindMemory(to: Fr.self, capacity: 1)
                     layers.append([ptr[0]])
                     roots.append(ptr[0])
@@ -292,7 +352,7 @@ public class BasefoldEngine {
                 treeNodeCounts.append(0)
             } else {
                 let treeSize = 2 * layerN - 1
-                let tb = roundTreeBufs[round]!
+                let tb = roundTreeBufs[level]!
                 let ptr = tb.contents().bindMemory(to: Fr.self, capacity: layerN)
                 layers.append(Array(UnsafeBufferPointer(start: ptr, count: layerN)))
                 treeBufPtrs.append(tb)
@@ -304,8 +364,6 @@ public class BasefoldEngine {
         }
 
         // Build all Merkle trees in a single command buffer.
-        // Trees use independent buffers so no cross-tree barriers are needed;
-        // encoding them into one CB eliminates per-tree dispatch overhead (~0.5ms each).
         var treeIdxs: [Int] = []
         for (idx, sz) in treeSizesArr.enumerated() {
             guard sz > 0 else { continue }
@@ -334,7 +392,17 @@ public class BasefoldEngine {
         // Final value
         let finalValue = layers.last![0]
 
-        // Phase 3: Generate query proofs with zero-copy Merkle path extraction.
+        // Phase 3: Generate query proofs with fold-by-4 aware extraction.
+        // We also need the original evals and each committed level's source data
+        // for extracting evaluation quads. Build a "source layers" array:
+        // sourceLayers[i] is the input to level i's fold kernel.
+        var sourceLayers: [[Fr]] = []
+        sourceLayers.reserveCapacity(numLevels)
+        sourceLayers.append(evals)  // Level 0 source is original evaluations
+        for level in 0..<numLevels - 1 {
+            sourceLayers.append(layers[level])  // Level i+1 source is level i output
+        }
+
         var rng: UInt64 = 0
         for r in roots {
             rng ^= frToUInt64(r)
@@ -346,14 +414,15 @@ public class BasefoldEngine {
         for _ in 0..<numQueries {
             rng = rng &* 6364136223846793005 &+ 1442695040888963407
             let queryIdx = Int(rng >> 32) % (n / 2)
-            let proof = generateQueryProofZeroCopy(
+            let proof = generateQueryProofFoldBy4(
                 index: queryIdx,
                 originalTree: commitment.tree,
-                originalEvals: evals,
+                sourceLayers: sourceLayers,
                 layers: layers,
                 treeBufPtrs: treeBufPtrs,
                 treeNodeCounts: treeNodeCounts,
                 treeSizes: treeSizesArr,
+                levelStrides: levelStrides,
                 numVars: numVars,
                 point: point
             )
@@ -364,7 +433,8 @@ public class BasefoldEngine {
             roots: roots,
             finalValue: finalValue,
             layers: layers,
-            queryProofs: queryProofs
+            queryProofs: queryProofs,
+            levelStrides: levelStrides
         )
     }
 
@@ -510,6 +580,103 @@ public class BasefoldEngine {
         return path
     }
 
+    /// Generate a query proof for fold-by-4 levels.
+    /// For stride-2 levels, extracts 4 evaluation values (a, b, c, d) from the source layer
+    /// and computes both fold steps. For stride-1 levels, extracts the usual pair.
+    private func generateQueryProofFoldBy4(
+        index: Int,
+        originalTree: [Fr],
+        sourceLayers: [[Fr]],
+        layers: [[Fr]],
+        treeBufPtrs: [MTLBuffer?],
+        treeNodeCounts: [Int],
+        treeSizes: [Int],
+        levelStrides: [Int],
+        numVars: Int,
+        point: [Fr]
+    ) -> BasefoldQueryProof {
+        var evalPairs: [(Fr, Fr)] = []
+        var evalQuads: [(Fr, Fr, Fr, Fr)] = []
+        var foldResults: [Fr] = []
+        var merklePaths: [[Fr]] = []
+        var idx = index
+        let numLevels = levelStrides.count
+        var pointIdx = 0
+
+        for level in 0..<numLevels {
+            let src = sourceLayers[level]
+            let srcN = src.count
+            let s = levelStrides[level]
+
+            if s == 2 && srcN >= 4 {
+                // Fused fold-by-4: extract 4 values from source
+                let quarterN = srcN / 4
+                let halfN = srcN / 2
+                let canonIdx = idx % quarterN
+                let a = src[canonIdx]
+                let b = src[canonIdx + quarterN]
+                let c = src[canonIdx + halfN]
+                let d = src[canonIdx + halfN + quarterN]
+                evalPairs.append((Fr.zero, Fr.zero))  // placeholder for stride-2
+                evalQuads.append((a, b, c, d))
+
+                // Merkle path for the committed output layer
+                if let treeBuf = treeBufPtrs[level], treeNodeCounts[level] > 0 {
+                    let treePtr = treeBuf.contents().bindMemory(to: Fr.self, capacity: treeNodeCounts[level])
+                    merklePaths.append(extractMerklePathFromPtr(tree: treePtr, treeSize: treeNodeCounts[level], leafCount: treeSizes[level], index: canonIdx))
+                } else {
+                    merklePaths.append([])
+                }
+
+                // Recompute fused fold: round1 with alpha0, round2 with alpha1
+                let alpha0 = point[pointIdx]
+                let alpha1 = point[pointIdx + 1]
+                let mid0 = frAdd(a, frMul(alpha0, frSub(c, a)))
+                let mid1 = frAdd(b, frMul(alpha0, frSub(d, b)))
+                let result = frAdd(mid0, frMul(alpha1, frSub(mid1, mid0)))
+                foldResults.append(result)
+
+                idx = canonIdx
+                pointIdx += 2
+            } else {
+                // Single fold: extract pair
+                let halfN = srcN / 2
+                if halfN == 0 { break }
+                let canonIdx = idx % halfN
+                let a = src[canonIdx]
+                let b = src[canonIdx + halfN]
+                evalPairs.append((a, b))
+                evalQuads.append((Fr.zero, Fr.zero, Fr.zero, Fr.zero))  // placeholder
+
+                // Merkle path
+                if level == 0 {
+                    // Level 0 source is original evals, tree is the commitment tree
+                    merklePaths.append(extractMerklePath(tree: originalTree, leafCount: srcN, index: canonIdx))
+                } else if let treeBuf = treeBufPtrs[level], treeNodeCounts[level] > 0 {
+                    let treePtr = treeBuf.contents().bindMemory(to: Fr.self, capacity: treeNodeCounts[level])
+                    merklePaths.append(extractMerklePathFromPtr(tree: treePtr, treeSize: treeNodeCounts[level], leafCount: treeSizes[level], index: canonIdx))
+                } else {
+                    merklePaths.append([])
+                }
+
+                let alpha = point[pointIdx]
+                let result = frAdd(a, frMul(alpha, frSub(b, a)))
+                foldResults.append(result)
+
+                idx = canonIdx
+                pointIdx += 1
+            }
+        }
+
+        return BasefoldQueryProof(
+            index: index,
+            evaluationPairs: evalPairs,
+            foldResults: foldResults,
+            merklePaths: merklePaths,
+            evaluationQuads: evalQuads
+        )
+    }
+
     /// Generate a query proof for a single index.
     private func generateQueryProof(
         index: Int,
@@ -565,6 +732,7 @@ public class BasefoldEngine {
 
     /// Verify a Basefold opening proof.
     /// Checks: (1) fold consistency at each level, (2) Merkle path validity, (3) final value.
+    /// Supports both old-format (all stride-1) and new fold-by-4 proofs.
     public func verify(root: Fr, point: [Fr], claimedValue: Fr, proof: BasefoldProof) -> Bool {
         // Check final value matches claimed evaluation
         let finalLimbs = frToInt(proof.finalValue)
@@ -573,31 +741,47 @@ public class BasefoldEngine {
             return false
         }
 
+        let strides = proof.levelStrides
+
         // Verify each query proof
         for query in proof.queryProofs {
-            for level in 0..<query.evaluationPairs.count {
-                let (a, b) = query.evaluationPairs[level]
-                let alpha = point[level]
+            let numLevels = query.foldResults.count
+            var pointIdx = 0
 
-                // Recompute fold result: a + alpha * (b - a)
-                let diff = frSub(b, a)
-                let rDiff = frMul(alpha, diff)
-                let expected = frAdd(a, rDiff)
+            for level in 0..<numLevels {
+                let s = (level < strides.count) ? strides[level] : 1
 
-                // Check fold result matches the stored fold result
-                if frToInt(expected) != frToInt(query.foldResults[level]) {
-                    return false
+                if s == 2 && level < query.evaluationQuads.count {
+                    // Fused fold-by-4: verify both fold steps from quad values
+                    let (a, b, c, d) = query.evaluationQuads[level]
+                    let alpha0 = point[pointIdx]
+                    let alpha1 = point[pointIdx + 1]
+
+                    // Round 1: fold (a,c) and (b,d) with alpha0
+                    let mid0 = frAdd(a, frMul(alpha0, frSub(c, a)))
+                    let mid1 = frAdd(b, frMul(alpha0, frSub(d, b)))
+                    // Round 2: fold (mid0, mid1) with alpha1
+                    let expected = frAdd(mid0, frMul(alpha1, frSub(mid1, mid0)))
+
+                    if frToInt(expected) != frToInt(query.foldResults[level]) {
+                        return false
+                    }
+                    pointIdx += 2
+                } else {
+                    // Single fold: verify from pair values
+                    let (a, b) = query.evaluationPairs[level]
+                    let alpha = point[pointIdx]
+                    let expected = frAdd(a, frMul(alpha, frSub(b, a)))
+
+                    if frToInt(expected) != frToInt(query.foldResults[level]) {
+                        return false
+                    }
+                    pointIdx += 1
                 }
 
-                // Check fold result against next level or final value
-                if level + 1 < query.evaluationPairs.count {
-                    // Fold result must appear somewhere in the next level's layer
-                    // (it's the value at index `idx` in the folded layer)
-                    // The next level reads from that layer, so consistency is
-                    // guaranteed by Merkle proof at next level
-                } else {
-                    // Last level: fold result should equal final value
-                    if frToInt(expected) != frToInt(proof.finalValue) {
+                // Last level: fold result should equal final value
+                if level == numLevels - 1 {
+                    if frToInt(query.foldResults[level]) != frToInt(proof.finalValue) {
                         return false
                     }
                 }

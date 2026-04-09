@@ -726,6 +726,9 @@ public class Blake3MerkleEngine {
     private let engine: Blake3Engine
     private var cachedTreeBuf: MTLBuffer?
     private var cachedTreeBufNodes: Int = 0
+    private var cachedLevelOffsetsBuf: MTLBuffer?
+    private var cachedRootBuf: MTLBuffer?
+    private var cachedRootBufSize: Int = 0
 
     public init() throws {
         self.engine = try Blake3Engine()
@@ -733,12 +736,15 @@ public class Blake3MerkleEngine {
 
     /// Build a Merkle tree from 32-byte leaf hashes using Blake3 parent compression.
     /// Returns flat buffer: treeSize * 32 bytes. Node i is at bytes [i*32..<(i+1)*32].
+    /// For n >= 1024: fused subtree kernel processes bottom 10 levels in shared memory
+    /// (writes intermediate nodes via global memory), then level-by-level for remaining levels.
     public func buildTree(_ leaves: [[UInt8]]) throws -> [UInt8] {
         let n = leaves.count
         precondition(n > 0 && (n & (n - 1)) == 0, "Leaf count must be power of 2")
         precondition(leaves.allSatisfy { $0.count == 32 }, "Leaves must be 32 bytes each")
 
         let treeSize = 2 * n - 1
+        let subtreeSize = Blake3Engine.merkleSubtreeSize  // 1024
 
         if treeSize > cachedTreeBufNodes {
             guard let buf = engine.device.makeBuffer(length: treeSize * 32, options: .storageModeShared) else {
@@ -763,26 +769,77 @@ public class Blake3MerkleEngine {
 
         let enc = cmdBuf.makeComputeCommandEncoder()!
 
-        // Level-by-level (fused subtrees tested but regressed — Blake3 parent compression
-        // is too lightweight for shared memory barrier overhead to pay off)
-        var levelStart = 0
-        var levelSize = n
+        let useFused = n >= subtreeSize && n <= 65536
 
-        while levelSize > 1 {
-            let parentCount = levelSize / 2
-            let inputOffset = levelStart * 32
-            let outputOffset = (levelStart + levelSize) * 32
+        if useFused {
+            // Phase 1: Fused subtrees for bottom 10 levels with full intermediate output.
+            let numSubtrees = n / subtreeSize
+            let numFusedLevels = 10  // log2(1024)
 
-            engine.encodeHashPairs(encoder: enc, buffer: treeBuf,
-                                   inputOffset: inputOffset,
-                                   outputOffset: outputOffset,
-                                   count: parentCount)
+            // Compute level offsets for the tree layout
+            var levelOffsets = [UInt32]()
+            levelOffsets.reserveCapacity(numFusedLevels)
+            var off = n
+            var width = n / 2
+            for _ in 0..<numFusedLevels {
+                levelOffsets.append(UInt32(off))
+                off += width
+                width /= 2
+            }
 
-            levelStart += levelSize
-            levelSize = parentCount
+            if cachedLevelOffsetsBuf == nil || cachedLevelOffsetsBuf!.length < levelOffsets.count * 4 {
+                cachedLevelOffsetsBuf = engine.device.makeBuffer(length: levelOffsets.count * 4, options: .storageModeShared)
+            }
+            let levelOffsetsBuf = cachedLevelOffsetsBuf!
+            levelOffsets.withUnsafeBytes { src in
+                memcpy(levelOffsetsBuf.contents(), src.baseAddress!, src.count)
+            }
 
-            if levelSize > 1 {
+            engine.encodeMerkleFusedFull(encoder: enc,
+                                          leavesBuffer: treeBuf, leavesOffset: 0,
+                                          treeBuffer: treeBuf, treeOffset: 0,
+                                          levelOffsetsBuffer: levelOffsetsBuf,
+                                          numSubtrees: numSubtrees)
+
+            // Phase 2: Level-by-level for remaining levels above the fused subtree roots
+            var levelStart = Int(levelOffsets[numFusedLevels - 1])
+            var levelSize = numSubtrees
+
+            while levelSize > 1 {
                 enc.memoryBarrier(scope: .buffers)
+                let parentCount = levelSize / 2
+                let inputOffset = levelStart * 32
+                let outputOffset = (levelStart + levelSize) * 32
+
+                engine.encodeHashPairs(encoder: enc, buffer: treeBuf,
+                                       inputOffset: inputOffset,
+                                       outputOffset: outputOffset,
+                                       count: parentCount)
+
+                levelStart += levelSize
+                levelSize = parentCount
+            }
+        } else {
+            // Small tree or very large: level-by-level
+            var levelStart = 0
+            var levelSize = n
+
+            while levelSize > 1 {
+                let parentCount = levelSize / 2
+                let inputOffset = levelStart * 32
+                let outputOffset = (levelStart + levelSize) * 32
+
+                engine.encodeHashPairs(encoder: enc, buffer: treeBuf,
+                                       inputOffset: inputOffset,
+                                       outputOffset: outputOffset,
+                                       count: parentCount)
+
+                levelStart += levelSize
+                levelSize = parentCount
+
+                if levelSize > 1 {
+                    enc.memoryBarrier(scope: .buffers)
+                }
             }
         }
         enc.endEncoding()
@@ -804,9 +861,85 @@ public class Blake3MerkleEngine {
     }
 
     /// Get the Merkle root from 32-byte leaf hashes.
+    /// Optimized: uses fused subtree kernel for bottom 10 levels (shared memory)
+    /// to eliminate dispatch overhead, then level-by-level for remaining levels.
     public func merkleRoot(_ leaves: [[UInt8]]) throws -> [UInt8] {
-        let tree = try buildTree(leaves)
-        let treeSize = tree.count / 32
-        return Blake3MerkleEngine.node(tree, at: treeSize - 1)
+        let n = leaves.count
+        precondition(n > 0 && (n & (n - 1)) == 0, "Leaf count must be power of 2")
+        precondition(leaves.allSatisfy { $0.count == 32 }, "Leaves must be 32 bytes each")
+
+        let subtreeSize = Blake3Engine.merkleSubtreeSize  // 1024
+
+        // For small trees, fall back to buildTree
+        if n < subtreeSize {
+            let tree = try buildTree(leaves)
+            let treeSize = tree.count / 32
+            return Blake3MerkleEngine.node(tree, at: treeSize - 1)
+        }
+
+        let numSubtrees = n / subtreeSize
+        // We need: input buffer (leaves), intermediate buffer (for subtree roots + upper levels)
+        let upperTreeSize = 2 * numSubtrees - 1
+        let totalBufSize = (n + upperTreeSize) * 32
+
+        if totalBufSize > cachedRootBufSize {
+            guard let buf = engine.device.makeBuffer(length: totalBufSize, options: .storageModeShared) else {
+                throw MSMError.gpuError("Failed to allocate Blake3 Merkle root buffer")
+            }
+            cachedRootBuf = buf
+            cachedRootBufSize = totalBufSize
+        }
+        let buf = cachedRootBuf!
+
+        // Copy leaves
+        let ptr = buf.contents().assumingMemoryBound(to: UInt8.self)
+        for i in 0..<n {
+            leaves[i].withUnsafeBytes { src in
+                memcpy(ptr + i * 32, src.baseAddress!, 32)
+            }
+        }
+
+        guard let cmdBuf = engine.commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
+        }
+
+        let enc = cmdBuf.makeComputeCommandEncoder()!
+
+        // Phase 1: Fused subtrees — 1024-leaf subtrees in shared memory
+        let rootsOffset = n * 32
+        engine.encodeMerkleFused(encoder: enc,
+                                  leavesBuffer: buf, leavesOffset: 0,
+                                  rootsBuffer: buf, rootsOffset: rootsOffset,
+                                  numSubtrees: numSubtrees)
+
+        // Phase 2: Level-by-level for upper tree
+        var levelStart = n
+        var levelSize = numSubtrees
+
+        while levelSize > 1 {
+            enc.memoryBarrier(scope: .buffers)
+            let parentCount = levelSize / 2
+            let inputOffset = levelStart * 32
+            let outputOffset = (levelStart + levelSize) * 32
+
+            engine.encodeHashPairs(encoder: enc, buffer: buf,
+                                   inputOffset: inputOffset,
+                                   outputOffset: outputOffset,
+                                   count: parentCount)
+
+            levelStart += levelSize
+            levelSize = parentCount
+        }
+        enc.endEncoding()
+
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+        if let error = cmdBuf.error {
+            throw MSMError.gpuError(error.localizedDescription)
+        }
+
+        // Only read the 32-byte root
+        let rootPtr = buf.contents().advanced(by: levelStart * 32).assumingMemoryBound(to: UInt8.self)
+        return Array(UnsafeBufferPointer(start: rootPtr, count: 32))
     }
 }

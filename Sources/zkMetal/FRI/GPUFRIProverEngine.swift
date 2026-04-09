@@ -177,12 +177,10 @@ public class GPUFRIProverEngine {
                                              challenge: challenge)
                 currentLogN -= 1
             } else {
-                // Fold factor 4: two successive folds
-                let mid = try foldOnce(evals: currentEvals, logN: currentLogN,
-                                        challenge: challenge)
+                // Fold factor 4: fused 2-round fold in a single GPU dispatch
                 let challenge2 = frMul(challenge, challenge) // squared challenge for second fold
-                currentEvals = try foldOnce(evals: mid, logN: currentLogN - 1,
-                                             challenge: challenge2)
+                currentEvals = try foldOnceBy4(evals: currentEvals, logN: currentLogN,
+                                               challenge0: challenge, challenge1: challenge2)
                 currentLogN -= 2
             }
 
@@ -339,6 +337,25 @@ public class GPUFRIProverEngine {
         let half = n / 2
         let ptr = resultBuf.contents().bindMemory(to: Fr.self, capacity: half)
         return Array(UnsafeBufferPointer(start: ptr, count: half))
+    }
+
+    /// Fold by 4 in a single fused GPU dispatch (two challenges, one kernel).
+    private func foldOnceBy4(evals: [Fr], logN: Int,
+                             challenge0: Fr, challenge1: Fr) throws -> [Fr] {
+        let n = evals.count
+        precondition(n == 1 << logN && logN >= 2)
+        let stride = MemoryLayout<Fr>.stride
+
+        let evalsBuf = foldEngine.device.makeBuffer(
+            bytes: evals, length: n * stride,
+            options: .storageModeShared)!
+
+        let resultBuf = try foldEngine.foldBy4(evals: evalsBuf, logN: logN,
+                                                challenge0: challenge0, challenge1: challenge1)
+
+        let quarter = n / 4
+        let ptr = resultBuf.contents().bindMemory(to: Fr.self, capacity: quarter)
+        return Array(UnsafeBufferPointer(start: ptr, count: quarter))
     }
 
     /// Derive a folding challenge from a Merkle root (Fiat-Shamir).

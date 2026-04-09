@@ -86,7 +86,8 @@ private func testTwoVarCommitOpen() {
         let expected = GPUBasefoldProverEngine.evaluateMultilinear(
             evaluations: evals, point: point)
         expect(frEqual(proof.finalValue, expected), "2-var: correct evaluation")
-        expect(proof.foldLayers.count == 2, "2-var: 2 fold layers")
+        // fold-by-4: 2 vars => 1 fused level (stride 2) = 1 committed level
+        expect(proof.foldLayers.count == 1, "2-var: 1 fold level (fold-by-4)")
     } catch {
         expect(false, "2-var commit/open: error \(error)")
     }
@@ -107,7 +108,8 @@ private func testThreeVarCommitOpen() {
         let expected = GPUBasefoldProverEngine.evaluateMultilinear(
             evaluations: evals, point: point)
         expect(frEqual(proof.finalValue, expected), "3-var: correct evaluation")
-        expect(proof.foldLayers.count == 3, "3-var: 3 fold layers")
+        // fold-by-4: 3 vars => 1 fused (stride 2) + 1 single (stride 1) = 2 committed levels
+        expect(proof.foldLayers.count == 2, "3-var: 2 fold levels (fold-by-4)")
         expect(proof.queries.count > 0, "3-var: has query proofs")
     } catch {
         expect(false, "3-var commit/open: error \(error)")
@@ -128,7 +130,8 @@ private func testFourVarCommitOpen() {
         let expected = GPUBasefoldProverEngine.evaluateMultilinear(
             evaluations: evals, point: point)
         expect(frEqual(proof.finalValue, expected), "4-var: correct evaluation")
-        expectEqual(proof.foldLayers.count, 4, "4-var: 4 fold layers")
+        // fold-by-4: 4 vars => 2 fused levels (each stride 2) = 2 committed levels
+        expectEqual(proof.foldLayers.count, 2, "4-var: 2 fold levels (fold-by-4)")
     } catch {
         expect(false, "4-var commit/open: error \(error)")
     }
@@ -544,7 +547,7 @@ private func testProofStats() {
         let proof = try engine.open(commitment: commitment, point: point)
 
         let stats = engine.proofStats(proof)
-        expectEqual(stats.numFoldLevels, 3, "proof stats: 3 fold levels")
+        expectEqual(stats.numFoldLevels, 2, "proof stats: 2 fold levels (fold-by-4)")
         expectEqual(stats.numQueries, 16, "proof stats: fast config has 16 queries")
         expect(stats.totalAuthPathSize > 0, "proof stats: non-zero auth path size")
     } catch {
@@ -627,12 +630,13 @@ private func testFoldConsistency() {
 
         let proof = try engine.open(commitment: commitment, point: point)
 
-        // Fold layers should have decreasing sizes: 4, 2, 1
-        expectEqual(proof.foldLayers.count, 3, "fold: 3 layers")
-        if proof.foldLayers.count == 3 {
-            expectEqual(proof.foldLayers[0].count, 4, "fold: layer 0 has 4 elements")
-            expectEqual(proof.foldLayers[1].count, 2, "fold: layer 1 has 2 elements")
-            expectEqual(proof.foldLayers[2].count, 1, "fold: layer 2 has 1 element")
+        // fold-by-4: 3 vars => 2 committed levels
+        // Level 0 (fused, stride 2): 8 -> 2 elements
+        // Level 1 (single, stride 1): 2 -> 1 element
+        expectEqual(proof.foldLayers.count, 2, "fold: 2 levels (fold-by-4)")
+        if proof.foldLayers.count == 2 {
+            expectEqual(proof.foldLayers[0].count, 2, "fold: layer 0 has 2 elements (8/4)")
+            expectEqual(proof.foldLayers[1].count, 1, "fold: layer 1 has 1 element")
         }
 
         // Final fold layer should contain the final value

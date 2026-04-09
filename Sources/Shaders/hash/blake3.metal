@@ -229,3 +229,68 @@ kernel void blake3_merkle_fused(
         for (uint i = 0; i < 8; i++) out32[i] = shared_data[i];
     }
 }
+
+// Fused Merkle tree with full intermediate node output.
+// Like blake3_merkle_fused but writes ALL intermediate nodes to the tree buffer
+// at correct global offsets (for proof path extraction).
+// buffer(0) = leaves (n * 32 bytes, pre-hashed)
+// buffer(1) = tree (full tree output, (2n-1) * 32 bytes — leaves already at [0, n))
+// buffer(2) = num_levels (log2 of subtree size)
+// buffer(3) = level_offsets (cumulative start index of each internal level in tree)
+kernel void blake3_merkle_fused_full(
+    device const uchar* leaves        [[buffer(0)]],
+    device uchar* tree                [[buffer(1)]],
+    constant uint& num_levels         [[buffer(2)]],
+    constant uint* level_offsets      [[buffer(3)]],
+    uint tid                          [[thread_index_in_threadgroup]],
+    uint tgid                         [[threadgroup_position_in_grid]],
+    uint tg_size                      [[threads_per_threadgroup]]
+) {
+    threadgroup uint shared_data[BLAKE3_SUBTREE_SIZE * 8];
+
+    uint subtree_size = 1u << num_levels;
+    uint leaf_base = tgid * subtree_size;
+    device const uint* leaves32 = (device const uint*)leaves;
+
+    // Load leaves into shared memory (generic stride loop for any subtree size)
+    for (uint i = tid; i < subtree_size; i += tg_size) {
+        uint src = (leaf_base + i) * 8;
+        uint dst = i * 8;
+        for (uint j = 0; j < 8; j++) shared_data[dst + j] = leaves32[src + j];
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Copy IV to thread registers
+    uint iv[8];
+    for (uint i = 0; i < 8; i++) iv[i] = BLAKE3_IV[i];
+
+    uint active = subtree_size;
+    uint subtree_stride = subtree_size / 2;  // nodes at level 0 within each subtree
+
+    for (uint level = 0; level < num_levels; level++) {
+        uint pairs = active >> 1;
+        if (tid < pairs) {
+            // Read left and right children into msg
+            uint msg[16];
+            uint left_base = tid * 2 * 8;
+            uint right_base = (tid * 2 + 1) * 8;
+            for (uint i = 0; i < 8; i++) msg[i] = shared_data[left_base + i];
+            for (uint i = 0; i < 8; i++) msg[i + 8] = shared_data[right_base + i];
+
+            uint state[16];
+            blake3_compress(iv, msg, 0, 0, 64, 4, state); // PARENT flag
+
+            // Write result to compact position in shared memory
+            uint out_base = tid * 8;
+            for (uint i = 0; i < 8; i++) shared_data[out_base + i] = state[i];
+
+            // Write intermediate node to global tree buffer
+            uint global_idx = level_offsets[level] + tgid * subtree_stride + tid;
+            device uint* out32 = (device uint*)(tree + global_idx * 32);
+            for (uint i = 0; i < 8; i++) out32[i] = state[i];
+        }
+        active = pairs;
+        subtree_stride >>= 1;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+}

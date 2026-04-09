@@ -78,9 +78,10 @@ kernel void fri_fold_fused2(
 
     // Round 2 (size n/2 → n/4):
     // folded[gid] = (f1_lo + f1_hi) + beta1 * tw2[gid] * (f1_lo - f1_hi)
-    // tw2[gid] = omega_{n/2}^{-gid} = omega_n^{-2*gid} = inv_twiddles[2*gid]
+    // tw2[gid] = omega_{n/2}^{-gid} = omega_n^{-2*gid} = fr_sqr(tw_lo)
+    // Computed from round 1 twiddle instead of strided global memory read.
     Fr b1 = beta1[0];
-    Fr tw2 = inv_twiddles[2 * gid];
+    Fr tw2 = fr_sqr(tw_lo);
 
     Fr sum_f = fr_add(f1_lo, f1_hi);
     Fr diff_f = fr_sub(f1_lo, f1_hi);
@@ -91,6 +92,15 @@ kernel void fri_fold_fused2(
 // Reads 16 elements, computes all 4 folds in registers, writes 1 element.
 // Reduces dispatch count by 4x compared to single-fold.
 // Twiddle relation: omega_{N/2^k}^{-j} = omega_N^{-j*2^k}
+//
+// Optimization: round 2-4 twiddles are computed as squares of round 1 twiddles
+// instead of read from global memory at strided (non-coalesced) positions.
+// Since omega_N^{-2*j} = (omega_N^{-j})^2, we have:
+//   tw_round2[k] = fr_sqr(tw_round1[k])
+//   tw_round3[k] = fr_sqr(tw_round2[k])
+//   tw_round4    = fr_sqr(tw_round3[0])
+// This eliminates 7 strided global memory reads (50-87.5% cache waste)
+// in exchange for 7 fr_sqr operations (cheaper than strided loads).
 kernel void fri_fold_fused4(
     device const Fr* evals          [[buffer(0)]],  // size n
     device Fr* folded               [[buffer(1)]],  // size n/16
@@ -109,55 +119,63 @@ kernel void fri_fold_fused4(
     }
 
     // Round 1 (n → n/2): fold 8 pairs at stride 8*sixteenth = n/2
-    // tw[i] = inv_twiddles[gid + i*sixteenth] for i = 0..7
+    // tw[k] = inv_twiddles[gid + k*sixteenth] = omega_N^{-(gid + k*N/16)}
+    // Save twiddles for reuse in subsequent rounds via squaring.
     Fr b0 = betas[0];
+    Fr tw1[8];
     for (uint k = 0; k < 8; k++) {
+        tw1[k] = inv_twiddles[gid + k * sixteenth];  // coalesced: adjacent threads read adjacent gid
         Fr a = d[k];
         Fr b = d[k + 8];
-        Fr tw = inv_twiddles[gid + k * sixteenth];
         Fr s = fr_add(a, b);
         Fr df = fr_sub(a, b);
-        d[k] = fr_add(s, fr_mul(fr_mul(b0, tw), df));
+        d[k] = fr_add(s, fr_mul(fr_mul(b0, tw1[k]), df));
     }
 
     // Round 2 (n/2 → n/4): fold 4 pairs
-    // fold2 position j uses omega_{n/2}^{-j} = omega_n^{-2j} = inv_twiddles[2j]
-    // After round1, d[k] represents fold1 at position gid + k*(n/16)
-    // twiddle for pair k: inv_twiddles[2*(gid + k*sixteenth)]
+    // tw_round2[k] = omega_N^{-2*(gid + k*N/16)} = fr_sqr(tw1[k])
+    // Computed from round 1 twiddles instead of strided global memory reads.
     Fr b1 = betas[1];
+    Fr tw2[4];
     for (uint k = 0; k < 4; k++) {
+        tw2[k] = fr_sqr(tw1[k]);
         Fr a = d[k];
         Fr b = d[k + 4];
-        Fr tw = inv_twiddles[2 * gid + k * sixteenth * 2];
         Fr s = fr_add(a, b);
         Fr df = fr_sub(a, b);
-        d[k] = fr_add(s, fr_mul(fr_mul(b1, tw), df));
+        d[k] = fr_add(s, fr_mul(fr_mul(b1, tw2[k]), df));
     }
 
     // Round 3 (n/4 → n/8): fold 2 pairs
-    // fold3 position j uses omega_{n/4}^{-j} = omega_n^{-4j} = inv_twiddles[4j]
-    // After round2, d[k] represents fold2 at position gid + k*(n/16)
-    // twiddle for pair k: inv_twiddles[4*(gid + k*sixteenth)]
+    // tw_round3[k] = omega_N^{-4*(gid + k*N/16)} = fr_sqr(tw2[k])
     Fr b2 = betas[2];
-    for (uint k = 0; k < 2; k++) {
-        Fr a = d[k];
-        Fr b = d[k + 2];
-        Fr tw = inv_twiddles[4 * gid + k * sixteenth * 4];
+    Fr tw3_0 = fr_sqr(tw2[0]);
+    Fr tw3_1 = fr_sqr(tw2[1]);
+    {
+        Fr a = d[0];
+        Fr b = d[0 + 2];
         Fr s = fr_add(a, b);
         Fr df = fr_sub(a, b);
-        d[k] = fr_add(s, fr_mul(fr_mul(b2, tw), df));
+        d[0] = fr_add(s, fr_mul(fr_mul(b2, tw3_0), df));
+    }
+    {
+        Fr a = d[1];
+        Fr b = d[1 + 2];
+        Fr s = fr_add(a, b);
+        Fr df = fr_sub(a, b);
+        d[1] = fr_add(s, fr_mul(fr_mul(b2, tw3_1), df));
     }
 
     // Round 4 (n/8 → n/16): fold 1 pair
-    // tw = omega_n^{-8j} = inv_twiddles[8 * gid]
+    // tw_round4 = omega_N^{-8*gid} = fr_sqr(tw3_0)
     Fr b3 = betas[3];
     {
+        Fr tw4 = fr_sqr(tw3_0);
         Fr a = d[0];
         Fr b = d[1];
-        Fr tw = inv_twiddles[8 * gid];
         Fr s = fr_add(a, b);
         Fr df = fr_sub(a, b);
-        folded[gid] = fr_add(s, fr_mul(fr_mul(b3, tw), df));
+        folded[gid] = fr_add(s, fr_mul(fr_mul(b3, tw4), df));
     }
 }
 
