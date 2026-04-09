@@ -57,6 +57,8 @@ public class MetalMSM {
     private var glvNeg2BufCached: MTLBuffer?
     private var glvCachedN: Int = 0
     public var windowBitsOverride: UInt32?
+    /// Minimum effectiveN to enable cooperative GPU/CPU MSM (default: 65536).
+    public var cooperativeThreshold: Int = 65536
     private let tuning: TuningConfig
 
     public static let cacheDir = FileManager.default.homeDirectoryForCurrentUser
@@ -782,7 +784,86 @@ public class MetalMSM {
 
         if profileMSM { let _t2 = CFAbsoluteTimeGetCurrent(); fputs(String(format: "  [profile] sort: %.2f ms\n", (_t2 - _tStart) * 1000), stderr) }
 
-        // Single command buffer: reduce + bucket_sum + combine
+        // Cooperative GPU/CPU MSM: offload the highest window to CPU concurrently.
+        let useCooperative = effectiveN >= cooperativeThreshold && nWindows >= 2
+        let gpuWindowCount = useCooperative ? nWindows - 1 : nWindows
+        let gpuSegments = nSegments * gpuWindowCount
+
+        var cpuWindowResult = pointIdentity()
+
+        if useCooperative {
+            let cpuWindowIdx = nWindows - 1
+            let cpuSortedBase = sortedIdxPtr + cpuWindowIdx * effectiveN
+            let cpuOffsetsBase = allOffsets + cpuWindowIdx * nBuckets
+            let cpuCountsBase = allCounts + cpuWindowIdx * nBuckets
+            let ptsPtr = pointsBuffer.contents().assumingMemoryBound(to: UInt64.self)
+            let nbLocal = Int32(nBuckets)
+
+            let cpuGroup = DispatchGroup()
+            cpuGroup.enter()
+            DispatchQueue.global(qos: .userInitiated).async {
+                var cpuResult = PointProjective(x: .one, y: .one, z: .zero)
+                withUnsafeMutableBytes(of: &cpuResult) { resBuf in
+                    bn254_cpu_window_reduce(
+                        ptsPtr,
+                        cpuSortedBase,
+                        cpuOffsetsBase,
+                        cpuCountsBase,
+                        nbLocal,
+                        resBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+                    )
+                }
+                cpuWindowResult = cpuResult
+                cpuGroup.leave()
+            }
+
+            guard let cb = commandQueue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
+            dispatchReduce(cb: cb, windowStart: 0, windowCount: gpuWindowCount)
+
+            do {
+                var nWinsBatch = UInt32(gpuWindowCount)
+                let enc = cb.makeComputeCommandEncoder()!
+                enc.setComputePipelineState(bucketSumDirectFunction)
+                enc.setBuffer(bucketsBuffer, offset: 0, index: 0)
+                enc.setBuffer(segmentResultsBuffer, offset: 0, index: 1)
+                enc.setBytes(&params, length: MemoryLayout<MsmParams>.stride, index: 2)
+                enc.setBytes(&nSegs, length: MemoryLayout<UInt32>.stride, index: 3)
+                enc.setBytes(&nWinsBatch, length: MemoryLayout<UInt32>.stride, index: 4)
+                enc.dispatchThreads(
+                    MTLSize(width: gpuSegments, height: 1, depth: 1),
+                    threadsPerThreadgroup: MTLSize(width: min(tuning.msmThreadgroupSize, gpuSegments), height: 1, depth: 1))
+                enc.memoryBarrier(scope: .buffers)
+
+                enc.setComputePipelineState(combineSegmentsFunction)
+                enc.setBuffer(segmentResultsBuffer, offset: 0, index: 0)
+                enc.setBuffer(windowResultsBuffer, offset: 0, index: 1)
+                enc.setBytes(&nSegs, length: MemoryLayout<UInt32>.stride, index: 2)
+                enc.dispatchThreads(
+                    MTLSize(width: gpuWindowCount, height: 1, depth: 1),
+                    threadsPerThreadgroup: MTLSize(width: min(tuning.msmThreadgroupSize, gpuWindowCount), height: 1, depth: 1))
+                enc.endEncoding()
+            }
+            cb.commit()
+            cb.waitUntilCompleted()
+
+            if let error = cb.error { throw MSMError.gpuError(error.localizedDescription) }
+            cpuGroup.wait()
+
+            if profileMSM { let _t3 = CFAbsoluteTimeGetCurrent(); fputs(String(format: "  [profile] cooperative GPU(%d)+CPU(1): %.2f ms\n", gpuWindowCount, (_t3 - _tStart) * 1000), stderr) }
+
+            let winResultsPtr = windowResultsBuffer.contents().bindMemory(to: PointProjective.self, capacity: gpuWindowCount)
+            var result = cpuWindowResult
+            for w in stride(from: gpuWindowCount - 1, through: 0, by: -1) {
+                for _ in 0..<windowBits { result = pointDouble(result) }
+                result = pointAdd(result, winResultsPtr[w])
+            }
+            if profileMSM { let _t4 = CFAbsoluteTimeGetCurrent(); fputs(String(format: "  [profile] total: %.2f ms (GPU:%d+CPU:1)\n", (_t4 - _tStart) * 1000, gpuWindowCount), stderr) }
+            if scalarOutMetalBuf == nil { flatScalarBuf?.deallocate() }
+            _ = scalarOutMetalBuf
+            return result
+        }
+
+        // All-GPU path (below cooperative threshold)
         guard let cb = commandQueue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
         dispatchReduce(cb: cb, windowStart: 0, windowCount: nWindows)
 
@@ -816,18 +897,10 @@ public class MetalMSM {
         if let error = cb.error { throw MSMError.gpuError(error.localizedDescription) }
 
         let winResultsPtr = windowResultsBuffer.contents().bindMemory(to: PointProjective.self, capacity: nWindows)
-        var windowResults = [PointProjective](repeating: pointIdentity(), count: nWindows)
-        for w in 0..<nWindows {
-            windowResults[w] = winResultsPtr[w]
-        }
-
-
-        var result = windowResults.last!
+        var result = winResultsPtr[nWindows - 1]
         for w in stride(from: nWindows - 2, through: 0, by: -1) {
-            for _ in 0..<windowBits {
-                result = pointDouble(result)
-            }
-            result = pointAdd(result, windowResults[w])
+            for _ in 0..<windowBits { result = pointDouble(result) }
+            result = pointAdd(result, winResultsPtr[w])
         }
         if profileMSM { let _t4 = CFAbsoluteTimeGetCurrent(); fputs(String(format: "  [profile] Horner combine (CPU): %.2f ms\n", (_t4 - _tStart) * 1000), stderr); fputs(String(format: "  [profile] nWindows=%d, windowBits=%d, effectiveN=%d, nBuckets=%d, nSegments=%d\n", nWindows, windowBits, effectiveN, nBuckets, nSegments), stderr) }
         if scalarOutMetalBuf == nil { flatScalarBuf?.deallocate() }

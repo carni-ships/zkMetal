@@ -1072,6 +1072,73 @@ void bn254_fold_generators(
 }
 
 // ============================================================
+// CPU single-window reduce for cooperative GPU/CPU MSM
+// ============================================================
+
+void bn254_cpu_window_reduce(
+    const uint64_t *points,
+    const uint32_t *sorted_indices,
+    const uint32_t *offsets,
+    const uint32_t *counts,
+    int n_buckets,
+    uint64_t *result)
+{
+    uint64_t *buckets = (uint64_t *)malloc((size_t)n_buckets * 96);
+    for (int b = 0; b < n_buckets; b++)
+        pt_set_id(buckets + b * 12);
+
+    static const uint64_t FP_ZERO_LOCAL[4] = {0, 0, 0, 0};
+
+    for (int b = 1; b < n_buckets; b++) {
+        uint32_t off = offsets[b];
+        uint32_t cnt = counts[b];
+        for (uint32_t j = 0; j < cnt; j++) {
+            uint32_t raw_idx = sorted_indices[off + j];
+            uint32_t pt_idx = raw_idx & 0x7FFFFFFF;
+            int negate = (raw_idx >> 31) & 1;
+            if (negate) {
+                uint64_t neg_aff[8];
+                memcpy(neg_aff, points + pt_idx * 8, 32);
+                fp_sub(FP_ZERO_LOCAL, points + pt_idx * 8 + 4, neg_aff + 4);
+                uint64_t tmp[12];
+                pt_add_mixed(buckets + b * 12, neg_aff, tmp);
+                memcpy(buckets + b * 12, tmp, 96);
+            } else {
+                uint64_t tmp[12];
+                pt_add_mixed(buckets + b * 12, points + pt_idx * 8, tmp);
+                memcpy(buckets + b * 12, tmp, 96);
+            }
+        }
+    }
+
+    int active = n_buckets - 1;
+    uint64_t *bucket_aff = (uint64_t *)malloc((size_t)active * 64);
+    batch_to_affine(buckets + 12, bucket_aff, active);
+
+    uint64_t running[12], window_sum[12];
+    pt_set_id(running);
+    pt_set_id(window_sum);
+
+    for (int j = active - 1; j >= 0; j--) {
+        if (!(bucket_aff[j*8] == 0 && bucket_aff[j*8+1] == 0 &&
+              bucket_aff[j*8+2] == 0 && bucket_aff[j*8+3] == 0 &&
+              bucket_aff[j*8+4] == 0 && bucket_aff[j*8+5] == 0 &&
+              bucket_aff[j*8+6] == 0 && bucket_aff[j*8+7] == 0)) {
+            uint64_t tmp[12];
+            pt_add_mixed(running, bucket_aff + j * 8, tmp);
+            memcpy(running, tmp, 96);
+        }
+        uint64_t tmp[12];
+        pt_add(window_sum, running, tmp);
+        memcpy(window_sum, tmp, 96);
+    }
+
+    memcpy(result, window_sum, 96);
+    free(buckets);
+    free(bucket_aff);
+}
+
+// ============================================================
 // Main entry point: Pippenger MSM
 // ============================================================
 
