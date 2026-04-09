@@ -255,6 +255,9 @@ BabyBear at 2^24: **7.3B elements/sec** (native 32-bit arithmetic). Goldilocks: 
 | Keccak-256 | 2^16 | 1.4ms | 783ms | **559x** |
 | Keccak-256 | 2^18 | 4.5ms | 3.0s | **667x** |
 | Keccak-256 | 2^20 | 13ms | -- | -- |
+| Keccak-256 4-ary | 2^16 | 0.86ms | -- | -- |
+| Keccak-256 4-ary | 2^18 | 2.3ms | -- | -- |
+| Keccak-256 4-ary | 2^20 | 7.7ms | -- | -- |
 | Blake3 | 2^12 | 0.72ms | 4ms | **6x** |
 | Blake3 | 2^14 | 0.92ms | 16ms | **17x** |
 | Blake3 | 2^16 | 1.3ms | 101ms | **78x** |
@@ -403,10 +406,10 @@ C CIOS Montgomery acceleration: pre-computed wiring topology, cached buffers, eq
 |--------|-----------|---------------|---------------|-----------------|------------|-----------|--------------|-------------|--------------|
 | 2^8 | 1.1ms | 9ms | 1.3ms | 1.4ms | 5.3ms | 4.9ms | 3.3ms | 0.8ms | 13ms |
 | 2^10 | 3.0ms | 35ms | 4.3ms | 4.3ms | 12ms | 10ms | -- | 22ms | 38ms |
-| 2^12 | 8.1ms | 14ms | 6.5ms | 10ms | 17ms | 17ms | 20ms | -- | 63ms |
-| 2^14 | 22ms | 36ms | 12ms | 31ms | 20ms | 20ms | 258ms | -- | 812ms |
-| 2^16 | 27ms | 176ms | 24ms | 92ms | 39ms | 39ms | 48ms | -- | -- |
-| 2^18 | 45ms | 205ms | 113ms | 339ms | 66ms | 65ms | -- | -- | -- |
+| 2^12 | 8.1ms | 23ms | 6.5ms | 10ms | 17ms | 17ms | 20ms | -- | 63ms |
+| 2^14 | 22ms | 29ms | 12ms | 31ms | 20ms | 20ms | 258ms | -- | 812ms |
+| 2^16 | 27ms | 55ms | 24ms | 92ms | 39ms | 39ms | 48ms | -- | -- |
+| 2^18 | 45ms | 119ms | 113ms | 339ms | 66ms | 65ms | -- | -- | -- |
 
 ### CPU Optimizations
 
@@ -515,10 +518,10 @@ Methodology: Compute-bound = total_ops / 3.6T flops (BN254 mul = ~64 32-bit muls
 | 2 | NTT BN254 2^22 | 26ms | ~2.9ms | Compute + strided BW (256-bit: 64 muls/elem) | ~9x |
 | 3 | Sumcheck 2^20 | 7.3ms | ~0.85ms | Bandwidth (2^20 x 32B per round) | ~9x |
 | 4 | FRI Fold 2^20 | 1.96ms | ~0.3ms | Bandwidth (2^20 x 32B read+write) | ~7x |
-| 5 | BLS12-377 MSM 2^18 | 218ms | ~35ms | Wider limbs (253-bit), less optimized window sizes | ~6x |
-| 6 | Keccak Merkle 2^20 | 13ms | ~2.2ms | Compute (24 rounds x 64-bit) + 20 levels | ~6x |
+| 5 | BLS12-377 MSM 2^18 | 119ms | ~35ms | Wider 12-limb Fq, GLV disabled (net loss for GPU) | ~3.4x |
+| 6 | Keccak Merkle 2^20 | 7.7ms (4-ary) | ~2.2ms | 4-ary halves levels, compute-limited | ~3.5x |
 | 7 | Blake3 Batch 2^20 | 3.5ms | ~0.6ms | Bandwidth (2^20 x 64B) | ~6x |
-| 8 | Basefold open 2^18 | 99ms | ~20ms | Iterative fold+commit (18 rounds x Merkle) | ~5x |
+| 8 | Basefold open 2^18 | 138ms | ~20ms | Iterative fold+commit (18 rounds x Merkle) | ~7x |
 | 9 | Poseidon2 batch 2^16 | 8.1ms | ~1.8ms | Compute (390 ops/elem, 22 sequential rounds limit parallelism) | ~4.5x |
 | 10 | secp256k1 MSM 2^18 | 113ms | ~30ms | No GLV, buffer caching + mixed-add unsafe | ~4x |
 | 11 | Binius FFT 2^16 (CPU) | 21ms | ~5ms | CPU only; XOR-add is free but table mul is serial | ~4x |
