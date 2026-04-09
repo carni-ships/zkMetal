@@ -278,25 +278,148 @@ public class GPUSumcheckEngine {
         rounds.reserveCapacity(numVars)
         challenges.reserveCapacity(numVars)
 
-        for _ in 0..<numVars {
-            // Step 1: compute round polynomial (s0, s1)
-            let (s0, s1) = try computeRoundPolyBN254(table: currentTable, logSize: currentLogSize)
+        for round in 0..<numVars {
+            let n_r = 1 << currentLogSize
+            let halfN = n_r / 2
+
+            // CPU fallback for small tables
+            if n_r < GPUSumcheckEngine.gpuThreshold {
+                // Finish remaining rounds on CPU using C kernels
+                for r2 in round..<numVars {
+                    let n2 = 1 << currentLogSize
+                    let half2 = n2 / 2
+                    let evalsPtr = currentTable.contents().bindMemory(to: Fr.self, capacity: n2)
+                    var s0 = Fr.zero
+                    var s1 = Fr.zero
+                    for i in 0..<half2 {
+                        s0 = frAdd(s0, evalsPtr[i])
+                        s1 = frAdd(s1, evalsPtr[i + half2])
+                    }
+                    rounds.append((s0, s1))
+                    transcript.absorb(s0)
+                    transcript.absorb(s1)
+                    let chal = transcript.squeeze()
+                    challenges.append(chal)
+
+                    if r2 < numVars - 1 {
+                        guard let outBuf = device.makeBuffer(length: half2 * stride, options: .storageModeShared) else {
+                            throw MSMError.gpuError("Failed to create CPU fold buffer")
+                        }
+                        let rawPtr = currentTable.contents().assumingMemoryBound(to: UInt64.self)
+                        let outPtr = outBuf.contents().assumingMemoryBound(to: UInt64.self)
+                        var c = chal
+                        withUnsafeBytes(of: &c) { chalBuf in
+                            bn254_fr_sumcheck_reduce(rawPtr, chalBuf.baseAddress!.assumingMemoryBound(to: UInt64.self), outPtr, Int32(half2))
+                        }
+                        currentTable = outBuf
+                        currentLogSize -= 1
+                    }
+                }
+                break
+            }
+
+            let tgSize = 256
+            let numGroups = max(1, (halfN + tgSize - 1) / tgSize)
+
+            // Ensure buffers
+            ensureEvalBuffers(byteCount: halfN * stride)
+            ensurePartialBuffer(byteCount: numGroups * 2 * stride)
+
+            guard let pBuf = partialBuf,
+                  let cmdBuf = commandQueue.makeCommandBuffer() else {
+                throw MSMError.noCommandBuffer
+            }
+            let enc = cmdBuf.makeComputeCommandEncoder()!
+
+            if round == 0 {
+                // Round 0: only compute round poly (no fold needed)
+                enc.setComputePipelineState(roundPolyBN254)
+                enc.setBuffer(currentTable, offset: 0, index: 0)
+                enc.setBuffer(pBuf, offset: 0, index: 1)
+                var halfNVal = UInt32(halfN)
+                enc.setBytes(&halfNVal, length: 4, index: 2)
+                enc.dispatchThreadgroups(MTLSize(width: numGroups, height: 1, depth: 1),
+                                        threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
+            } else {
+                // Rounds 1+: fold by previous challenge, then compute round poly
+                // Both in a SINGLE command buffer with memory barrier (saves 1 dispatch overhead)
+                let outputBuf = evalBufA!
+
+                // Dispatch 1: fold the table
+                enc.setComputePipelineState(reduceBN254)
+                enc.setBuffer(currentTable, offset: 0, index: 0)
+                enc.setBuffer(outputBuf, offset: 0, index: 1)
+                var chal = challenges[round - 1]
+                enc.setBytes(&chal, length: stride, index: 2)
+                var halfNVal = UInt32(halfN)
+                enc.setBytes(&halfNVal, length: 4, index: 3)
+                let reduceTG = min(256, Int(reduceBN254.maxTotalThreadsPerThreadgroup))
+                enc.dispatchThreads(MTLSize(width: halfN, height: 1, depth: 1),
+                                   threadsPerThreadgroup: MTLSize(width: reduceTG, height: 1, depth: 1))
+
+                // Memory barrier: fold must complete before round poly reads
+                enc.memoryBarrier(scope: .buffers)
+
+                // Dispatch 2: compute round poly on folded table
+                let foldedN = halfN  // folded table has halfN elements
+                let foldedHalf = foldedN / 2
+                if foldedHalf > 0 {
+                    let fNumGroups = max(1, (foldedHalf + tgSize - 1) / tgSize)
+                    enc.setComputePipelineState(roundPolyBN254)
+                    enc.setBuffer(outputBuf, offset: 0, index: 0)
+                    enc.setBuffer(pBuf, offset: 0, index: 1)
+                    var fHalf = UInt32(foldedHalf)
+                    enc.setBytes(&fHalf, length: 4, index: 2)
+                    enc.dispatchThreadgroups(MTLSize(width: fNumGroups, height: 1, depth: 1),
+                                            threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
+                }
+
+                currentTable = outputBuf
+                currentLogSize -= 1
+            }
+
+            enc.endEncoding()
+            cmdBuf.commit()
+            cmdBuf.waitUntilCompleted()
+            if let error = cmdBuf.error {
+                throw MSMError.gpuError(error.localizedDescription)
+            }
+
+            // Read back partial sums
+            let readHalf = (round == 0) ? halfN : (halfN / 2)
+            let readGroups = max(1, (readHalf + tgSize - 1) / tgSize)
+            let ptr = pBuf.contents().bindMemory(to: Fr.self, capacity: readGroups * 2)
+            var s0 = Fr.zero
+            var s1 = Fr.zero
+            for g in 0..<readGroups {
+                s0 = frAdd(s0, ptr[g * 2])
+                s1 = frAdd(s1, ptr[g * 2 + 1])
+            }
 
             rounds.append((s0, s1))
-
-            // Step 2: absorb into transcript and get challenge
             transcript.absorb(s0)
             transcript.absorb(s1)
             let challenge = transcript.squeeze()
             challenges.append(challenge)
-
-            // Step 3: fold the table
-            let newTable = try reduceBN254Table(table: currentTable, logSize: currentLogSize, challenge: challenge)
-            currentTable = newTable
-            currentLogSize -= 1
         }
 
-        // Final evaluation is the single remaining element
+        // Final fold by the last challenge to get the single remaining element
+        if challenges.count > 0 && currentLogSize > 0 {
+            let lastChal = challenges.last!
+            let n_f = 1 << currentLogSize
+            let half_f = n_f / 2
+            let evalsPtr = currentTable.contents().assumingMemoryBound(to: UInt64.self)
+            guard let finalBuf = device.makeBuffer(length: half_f * stride, options: .storageModeShared) else {
+                throw MSMError.gpuError("Failed to create final fold buffer")
+            }
+            let outPtr = finalBuf.contents().assumingMemoryBound(to: UInt64.self)
+            var c = lastChal
+            withUnsafeBytes(of: &c) { chalBuf in
+                bn254_fr_sumcheck_reduce(evalsPtr, chalBuf.baseAddress!.assumingMemoryBound(to: UInt64.self), outPtr, Int32(half_f))
+            }
+            currentTable = finalBuf
+        }
+
         let finalPtr = currentTable.contents().bindMemory(to: Fr.self, capacity: 1)
         let finalEval = finalPtr[0]
 
