@@ -159,7 +159,7 @@ public func bls12377Generator() -> Point377Affine {
     return Point377Affine(x: gx, y: gy)
 }
 
-// CPU Pippenger MSM for BLS12-377 G1 (small n fallback)
+// CPU Pippenger MSM for BLS12-377 G1 — uses GLV endomorphism for n > 16
 public func bls12377CpuMSM(points: [Point377Affine], scalars: [[UInt32]]) -> Point377Projective {
     let n = points.count
     guard n > 0, n == scalars.count else { return point377Identity() }
@@ -176,7 +176,7 @@ public func bls12377CpuMSM(points: [Point377Affine], scalars: [[UInt32]]) -> Poi
         }
         flatScalars.withUnsafeBufferPointer { scBuf in
             withUnsafeMutableBytes(of: &result) { resBuf in
-                bls12_377_g1_pippenger_msm(
+                bls12_377_g1_glv_pippenger_msm(
                     ptsPtr,
                     scBuf.baseAddress!,
                     Int32(n),

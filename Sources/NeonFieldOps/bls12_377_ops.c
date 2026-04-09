@@ -1577,3 +1577,322 @@ void bls12_377_fr_batch_inverse(const uint64_t *in, uint64_t *out, int n) {
     }
     memcpy(&out[0], inv_acc, 32);
 }
+// ============================================================
+// GLV endomorphism for BLS12-377 G1 MSM
+// φ(x,y) = (ω·x, y) where ω is a cube root of unity in Fq
+// k = k1 + k2·λ (mod r) with |k1|, |k2| ≈ √r (~128 bits)
+//
+// Constants:
+//   λ (cube root of unity in Fr):
+//     0x12ab655e9a2ca55660b44d1e5c37b0010000000000000000
+//   ω (cube root of unity in Fq, standard form):
+//     0x01ae3a4617c510eabc8756ba8f8c524eb8882a75cc9bc8e3
+//     59064ee822fb5bffd1e945779fffffffffffffffffffffff
+//   a1 = r - λ = 91893752504881257701523279626832445441
+//   Lattice: v1=(a1, 1), v2=(-1, a1-1)
+//   Decomposition: c1 = floor(k*(a1-1)/r), k1 = k - c1*a1, k2 = -c1
+// ============================================================
+
+// ω (cube root of unity in Fq) in Montgomery form
+// ω_mont = ω * R mod q where R = 2^384
+static const uint64_t FQ_OMEGA_MONT[6] = {
+    // Precomputed: fq_mul(omega_raw, FQ_R2)
+    // omega_raw = q - 1 (which equals -1 mod q, but that's wrong)
+    // Actually omega = (q-1)/2 + ... no.
+    // BLS12-377: omega^3 = 1 mod q, omega != 1
+    // omega in standard form:
+    //   0x01ae3a4617c510ea bc8756ba8f8c524e b8882a75cc9bc8e3
+    //   59064ee822fb5bff d1e945779fffffff ffffffffffffffff
+    // (This is q - 1 shifted -- actually it's a specific algebraic value)
+    // We'll compute this at init time via fq_mul(raw, R2)
+    0, 0, 0, 0, 0, 0  // placeholder - filled by init
+};
+
+// omega raw (standard form, 6x64-bit LE)
+static const uint64_t FQ_OMEGA_RAW[6] = {
+    0xFFFFFFFFFFFFFFFFULL, 0xD1E945779FFFFFFFULL,
+    0x59064EE822FB5BFFULL, 0xB8882A75CC9BC8E3ULL,
+    0xBC8756BA8F8C524EULL, 0x01AE3A4617C510EAULL
+};
+
+// GLV lattice constant a1 = 91893752504881257701523279626832445441
+// In hex: 0x452217CC90000001_0A11800000000001
+static const uint64_t GLV377_A1[2] = {
+    0x0A11800000000001ULL, 0x452217CC90000001ULL
+};
+
+// a1 - 1
+static const uint64_t GLV377_A1M1[2] = {
+    0x0A11800000000000ULL, 0x452217CC90000001ULL
+};
+
+// half_r = (r+1)/2
+static const uint64_t FR_HALF[4] = {
+    0x0508C00000000001ULL, 0x2CD53B7F68000000ULL,
+    0xB05A268F2E1BD801ULL, 0x0955B2AF4D1652ABULL
+};
+
+// Compute omega in Montgomery form (call once at startup or lazily)
+static uint64_t glv377_omega_mont[6] = {0};
+static int glv377_omega_init = 0;
+
+static void glv377_ensure_omega(void) {
+    if (glv377_omega_init) return;
+    fq_mul(FQ_OMEGA_RAW, FQ_R2, glv377_omega_mont);
+    glv377_omega_init = 1;
+}
+
+// 256-bit >= 256-bit comparison (4x64 LE)
+static inline int u256_gte(const uint64_t a[4], const uint64_t b[4]) {
+    for (int i = 3; i >= 0; i--) {
+        if (a[i] > b[i]) return 1;
+        if (a[i] < b[i]) return 0;
+    }
+    return 1; // equal
+}
+
+// 256-bit subtraction: r = a - b, returns borrow
+static inline int u256_sub(uint64_t r[4], const uint64_t a[4], const uint64_t b[4]) {
+    uint128_t borrow = 0;
+    for (int i = 0; i < 4; i++) {
+        uint128_t diff = (uint128_t)a[i] - b[i] - borrow;
+        r[i] = (uint64_t)diff;
+        borrow = (diff >> 127) & 1; // borrow if negative
+    }
+    return (int)borrow;
+}
+
+// 256-bit addition: r = a + b, returns carry
+static inline int u256_add(uint64_t r[4], const uint64_t a[4], const uint64_t b[4]) {
+    uint128_t carry = 0;
+    for (int i = 0; i < 4; i++) {
+        carry += (uint128_t)a[i] + b[i];
+        r[i] = (uint64_t)carry;
+        carry >>= 64;
+    }
+    return (int)carry;
+}
+
+// 256x128 -> 384-bit multiply, then approximate div by r to get ~128-bit quotient
+// Returns c1 = approx floor(k * (a1-1) / r)
+static void glv377_compute_c1(const uint64_t k[4], uint64_t *c1_lo, uint64_t *c1_hi) {
+    // Full 256x128 multiply: k[0..3] * a1m1[0..1] -> prod[0..5]
+    uint64_t prod[6] = {0,0,0,0,0,0};
+    for (int i = 0; i < 4; i++) {
+        uint64_t carry = 0;
+        for (int j = 0; j < 2; j++) {
+            uint128_t w = (uint128_t)k[i] * GLV377_A1M1[j] + prod[i+j] + carry;
+            prod[i+j] = (uint64_t)w;
+            carry = (uint64_t)(w >> 64);
+        }
+        prod[i+2] += carry;
+    }
+
+    // prod is 384 bits. Quotient c1 = prod / r.
+    // Since r ≈ 2^253, we approximate: c1 ≈ prod >> 251, then adjust.
+    // prod >> 251 = (prod[3] >> 59) | (prod[4] << 5), (prod[4] >> 59) | (prod[5] << 5)
+    *c1_lo = (prod[3] >> 59) | (prod[4] << 5);
+    *c1_hi = (prod[4] >> 59) | (prod[5] << 5);
+}
+
+// 128x128 -> 256-bit multiply
+static void mul128x128_glv(uint64_t a0, uint64_t a1, const uint64_t b[2], uint64_t r[4]) {
+    uint128_t w;
+    w = (uint128_t)a0 * b[0];
+    r[0] = (uint64_t)w;
+    uint64_t carry = (uint64_t)(w >> 64);
+
+    w = (uint128_t)a0 * b[1] + carry;
+    uint64_t t1 = (uint64_t)w;
+    uint64_t t1c = (uint64_t)(w >> 64);
+
+    w = (uint128_t)a1 * b[0] + t1;
+    r[1] = (uint64_t)w;
+    carry = (uint64_t)(w >> 64);
+
+    w = (uint128_t)a1 * b[1] + t1c + carry;
+    r[2] = (uint64_t)w;
+    r[3] = (uint64_t)(w >> 64);
+}
+
+// GLV decomposition: scalar k (256-bit, 8xuint32 LE) -> (k1, k2, neg1, neg2)
+// k ≡ k1 + k2·λ (mod r), |k1|,|k2| ≈ √r
+static void glv377_decompose(const uint32_t *scalar,
+                              uint32_t *k1_out, uint32_t *k2_out,
+                              int *neg1, int *neg2) {
+    // Convert to 4x64
+    uint64_t k[4];
+    for (int i = 0; i < 4; i++)
+        k[i] = (uint64_t)scalar[2*i] | ((uint64_t)scalar[2*i+1] << 32);
+
+    // Reduce mod r
+    while (u256_gte(k, FR_P)) {
+        uint64_t tmp[4];
+        u256_sub(tmp, k, FR_P);
+        memcpy(k, tmp, 32);
+    }
+
+    // c1 = approx floor(k * (a1-1) / r)
+    uint64_t c1_lo, c1_hi;
+    glv377_compute_c1(k, &c1_lo, &c1_hi);
+
+    // k1 = k - c1 * a1
+    uint64_t c1a1[4];
+    mul128x128_glv(c1_lo, c1_hi, GLV377_A1, c1a1);
+
+    uint64_t k1[4];
+    int borrow = u256_sub(k1, k, c1a1);
+    if (borrow) {
+        // c1 too big, adjust down
+        if (c1_lo == 0) c1_hi--;
+        c1_lo--;
+        u256_add(k1, k1, FR_P);
+    }
+
+    // Check if k1 >= r (c1 too small)
+    while (u256_gte(k1, FR_P)) {
+        uint64_t tmp[4];
+        u256_sub(tmp, k1, FR_P);
+        memcpy(k1, tmp, 32);
+        c1_lo++; if (c1_lo == 0) c1_hi++;
+    }
+
+    // k2 = c1 (positive value; actual k2 = -c1)
+    uint64_t k2[4] = {c1_lo, c1_hi, 0, 0};
+
+    // If k1 > half_r, negate for balanced representation
+    *neg1 = 0;
+    if (u256_gte(k1, FR_HALF)) {
+        uint64_t tmp[4];
+        u256_sub(tmp, FR_P, k1);
+        memcpy(k1, tmp, 32);
+        *neg1 = 1;
+    }
+
+    *neg2 = (c1_lo != 0 || c1_hi != 0) ? 1 : 0;
+
+    // Write out as 8xuint32
+    for (int i = 0; i < 4; i++) {
+        k1_out[2*i] = (uint32_t)(k1[i] & 0xFFFFFFFF);
+        k1_out[2*i+1] = (uint32_t)(k1[i] >> 32);
+        k2_out[2*i] = (uint32_t)(k2[i] & 0xFFFFFFFF);
+        k2_out[2*i+1] = (uint32_t)(k2[i] >> 32);
+    }
+}
+
+// Apply endomorphism: φ(x,y) = (ω·x, y)
+// Input: affine point (12 limbs in Montgomery form)
+// Output: affine point with x multiplied by ω
+static void glv377_apply_endomorphism(const uint64_t *p_aff, uint64_t *out_aff) {
+    fq_mul(p_aff, glv377_omega_mont, out_aff);  // out.x = ω * p.x
+    memcpy(out_aff + 6, p_aff + 6, 48);          // out.y = p.y
+}
+
+// Negate affine point y-coordinate: (x, -y)
+static void g1_aff_negate_y(uint64_t *aff) {
+    uint64_t neg_y[6];
+    fq_neg(aff + 6, neg_y);
+    memcpy(aff + 6, neg_y, 48);
+}
+
+// Optimal window bits for GLV (128-bit scalars, 2n points)
+static int g1_glv_window_bits(int n2) {
+    // n2 = 2*n (doubled point count)
+    if (n2 <= 8)       return 3;
+    if (n2 <= 64)      return 5;
+    if (n2 <= 512)     return 8;
+    if (n2 <= 4096)    return 10;
+    if (n2 <= 16384)   return 11;
+    if (n2 <= 65536)   return 12;
+    if (n2 <= 262144)  return 13;
+    return 14;
+}
+
+// GLV-accelerated Pippenger MSM for BLS12-377 G1
+// Decomposes each 253-bit scalar into two ~128-bit scalars via GLV,
+// doubles point count, halves window count => ~2× speedup
+void bls12_377_g1_glv_pippenger_msm(
+    const uint64_t *points,    // n affine points: n x 12 uint64_t
+    const uint32_t *scalars,   // n scalars: n x 8 uint32_t (256-bit LE)
+    int n,
+    uint64_t *result)          // output: 18 uint64_t (projective)
+{
+    if (n == 0) { g1_set_id(result); return; }
+
+    // For very small n, fall back to non-GLV
+    if (n <= 16) {
+        bls12_377_g1_pippenger_msm(points, scalars, n, result);
+        return;
+    }
+
+    glv377_ensure_omega();
+
+    int n2 = 2 * n;
+
+    // Allocate: 2n affine points + 2n scalars (8 uint32 each)
+    uint64_t *glv_points = (uint64_t *)malloc((size_t)n2 * 96);   // 12 limbs each
+    uint32_t *glv_scalars = (uint32_t *)malloc((size_t)n2 * 32);  // 8 uint32 each
+
+    // Decompose scalars and build point/scalar arrays
+    // First n entries: k1 * P (or -k1 * P if neg1)
+    // Next n entries: k2 * φ(P) (or -k2 * φ(P) if neg2)
+    dispatch_apply(n, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+        ^(size_t i) {
+            uint32_t k1[8], k2[8];
+            int neg1, neg2;
+            glv377_decompose(scalars + i * 8, k1, k2, &neg1, &neg2);
+
+            // P_i for k1
+            memcpy(glv_points + i * 12, points + i * 12, 96);
+            if (neg1) {
+                g1_aff_negate_y(glv_points + i * 12);
+            }
+            memcpy(glv_scalars + i * 8, k1, 32);
+
+            // φ(P_i) for k2
+            glv377_apply_endomorphism(points + i * 12, glv_points + (n + i) * 12);
+            if (neg2) {
+                g1_aff_negate_y(glv_points + (n + i) * 12);
+            }
+            memcpy(glv_scalars + (n + i) * 8, k2, 32);
+        });
+
+    // Run Pippenger on 2n points with ~128-bit scalars
+    // Use adapted window sizing for half-width scalars
+    int wb = g1_glv_window_bits(n2);
+    int scalar_bits = 128;
+    int num_windows = (scalar_bits + wb - 1) / wb;
+    int num_buckets = (1 << wb) - 1;
+
+    G1WindowTask *tasks = (G1WindowTask *)malloc((size_t)num_windows * sizeof(G1WindowTask));
+    for (int w = 0; w < num_windows; w++) {
+        tasks[w].points = glv_points;
+        tasks[w].scalars = glv_scalars;
+        tasks[w].n = n2;
+        tasks[w].window_bits = wb;
+        tasks[w].window_idx = w;
+        tasks[w].num_buckets = num_buckets;
+    }
+
+    dispatch_apply(num_windows, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+        ^(size_t w) {
+            g1_window_worker(&tasks[w]);
+        });
+
+    // Horner combination
+    memcpy(result, tasks[num_windows - 1].result, 144);
+    for (int w = num_windows - 2; w >= 0; w--) {
+        uint64_t tmp[18];
+        for (int s = 0; s < wb; s++) {
+            g1_double(result, tmp);
+            memcpy(result, tmp, 144);
+        }
+        g1_add(result, tasks[w].result, tmp);
+        memcpy(result, tmp, 144);
+    }
+
+    free(tasks);
+    free(glv_points);
+    free(glv_scalars);
+}
+

@@ -45,6 +45,11 @@ void bn254_fr_intt(uint64_t *data, int logN);
 void bn254_pippenger_msm(const uint64_t *points, const uint32_t *scalars,
                           int n, uint64_t *result);
 
+/// CPU single-window bucket reduce for cooperative GPU/CPU MSM.
+void bn254_cpu_window_reduce(const uint64_t *points, const uint32_t *sorted_indices,
+                              const uint32_t *offsets, const uint32_t *counts,
+                              int n_buckets, uint64_t *result);
+
 /// Batch fold generators: result[i] = scalarMul(GL[i], xInv) + scalarMul(GR[i], x)
 /// Multi-threaded double-and-add for IPA generator folding.
 /// @param GL       halfLen projective points (12 uint64_t each: x[4], y[4], z[4]).
@@ -1071,6 +1076,8 @@ void bls12_377_g1_scalar_mul(const uint64_t p[18], const uint64_t scalar[6], uin
 void bls12_377_g1_to_affine(const uint64_t p[18], uint64_t aff[12]);
 void bls12_377_g1_pippenger_msm(const uint64_t *points, const uint32_t *scalars,
                                  int n, uint64_t *result);
+void bls12_377_g1_glv_pippenger_msm(const uint64_t *points, const uint32_t *scalars,
+                                     int n, uint64_t *result);
 
 // ============================================================
 // BGMW fixed-base scalar multiplication

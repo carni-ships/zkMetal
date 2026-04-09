@@ -48,7 +48,10 @@ public class BLS12377MSM {
     private var glvNeg2BufCached: MTLBuffer?
     private var glvCachedN: Int = 0
     public var windowBitsOverride: UInt32?
-    // GLV disabled by default: 12-limb Fq point ops dominate, doubling points hurts more than halving scalars helps
+    // GLV endomorphism: halves scalar width (253→128 bits) at cost of 2× points
+    // For BLS12-377's 12-limb (384-bit) Fq, point additions are ~2× costlier than BN254,
+    // so doubling points outweighs halving windows. Disabled by default for GPU path.
+    // CPU Pippenger still uses GLV (in the C implementation).
     public var useGLV = false
     private let tuning: TuningConfig
 
@@ -334,18 +337,32 @@ public class BLS12377MSM {
         let effectiveN = glvN > 0 ? 2 * glvN : n
 
         // Window sizing tuned for 12-limb Fq377.
-        // Note: windowBits=14 triggers catastrophic GPU regression — avoid it.
+        // IMPORTANT: w=12 and w=14 trigger catastrophic GPU regression on M3 Pro — avoid them.
+        // w=13 is also pathological at some sizes. Safe choices: w=8,10,11,15.
         var windowBits: UInt32
-        if effectiveN <= 256 {
-            windowBits = 8
-        } else if effectiveN <= 4096 {
-            windowBits = 10
-        } else if effectiveN <= 16384 {
-            windowBits = 11
-        } else if effectiveN <= 65536 {
-            windowBits = 13
+        if glvN > 0 {
+            // GLV path: 128-bit scalars, 2× points. Fewer windows needed.
+            if effectiveN <= 512 {
+                windowBits = 8
+            } else if effectiveN <= 8192 {
+                windowBits = 11
+            } else if effectiveN <= 65536 {
+                windowBits = 13
+            } else {
+                windowBits = 15
+            }
         } else {
-            windowBits = 15
+            // Non-GLV path: 253-bit scalars. Need w=15 for large sizes to keep
+            // nWindows=17 manageable. Smaller sizes use w=11 (safe).
+            if effectiveN <= 256 {
+                windowBits = 8
+            } else if effectiveN <= 2048 {
+                windowBits = 10
+            } else if effectiveN <= 32768 {
+                windowBits = 11
+            } else {
+                windowBits = 15
+            }
         }
         if let wbOverride = windowBitsOverride {
             windowBits = wbOverride
