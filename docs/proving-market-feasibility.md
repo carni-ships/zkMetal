@@ -31,15 +31,15 @@ Real-time local proving feasibility ranked by likelihood of being a competitive 
 | NTT over Pasta Fp/Fq | Missing — NTT exists for BN254/BLS12-377/Goldilocks/BabyBear/Stark252, not Pasta |
 | Kimchi custom gates (range check, foreign field, endo, xor, rot) | Not yet — Plonk gate infra exists but Kimchi-specific gates need implementing |
 
-## Competitive Advantage vs MetalSpoon
+## MetalSpoon Integration Gaps
 
-MetalSpoon (the nearest Metal ZK competitor) has GPU MSM/NTT/hash primitives but is missing four key full-pipeline capabilities that zkMetal has:
+MetalSpoon is our SP1 prover repo that consumes zkMetal primitives. It currently has GPU MSM/NTT/hash but is missing four pipeline-level capabilities that need to be ported from zkMetal:
 
 | Capability | zkMetal | MetalSpoon | Why It Matters |
 |---|---|---|---|
-| **GPU constraint evaluation (IR interpreter)** | Yes | No | Runs arbitrary gate expressions on GPU. Without this, constraint evaluation is CPU-bottlenecked — typically 20-40% of prove time. Most Metal ZK projects only accelerate primitives, not the constraint system itself. |
-| **GPU permutation trace finalization** | Yes | No | Grand product accumulation on GPU. Permutation argument is O(n) field muls over the full trace — keeping it on GPU avoids a major CPU bottleneck. |
-| **GPU PCS interpolation/reduction** | Yes | No | Polynomial commitment operations stay on GPU, avoiding GPU->CPU->GPU round-trips that kill throughput. Critical for KZG/IPA opening proofs. |
-| **Smart CPU/GPU dispatch with swap pressure detection** | Yes | No | Adaptive threshold routing (e.g., small ops to CPU, large to GPU) with memory pressure detection. Prevents GPU thrashing on memory-constrained devices like M3 Pro (18GB unified). |
+| **GPU constraint evaluation (IR interpreter)** | Yes | Not yet | Runs arbitrary gate expressions on GPU. Without this, constraint evaluation is CPU-bottlenecked — typically 20-40% of prove time. |
+| **GPU permutation trace finalization** | Yes | Not yet | Grand product accumulation on GPU. Permutation argument is O(n) field muls over the full trace. |
+| **GPU PCS interpolation/reduction** | Yes | Not yet | Polynomial commitment operations stay on GPU, avoiding GPU->CPU->GPU round-trips that kill throughput. |
+| **Smart CPU/GPU dispatch with swap pressure detection** | Yes | Not yet | Adaptive threshold routing (e.g., small ops to CPU, large to GPU) with memory pressure detection. |
 
-**Strategic implication:** Our Kimchi/Mina support won't just have fast Pasta primitives — we'll have the full GPU proving pipeline. MetalSpoon can accelerate individual MSM/NTT calls but can't run a complete prover end-to-end on GPU. This is the difference between "GPU-accelerated library" and "GPU-native prover."
+**Next step:** Port these four capabilities from zkMetal into MetalSpoon to complete the SP1 GPU-native proving pipeline.
