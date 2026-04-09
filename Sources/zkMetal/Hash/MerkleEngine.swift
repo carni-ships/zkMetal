@@ -575,6 +575,150 @@ public class KeccakMerkleEngine {
     }
 }
 
+// MARK: - Keccak 4-ary Merkle Tree
+
+/// GPU-accelerated 4-ary Merkle tree using Keccak-256.
+/// Each internal node hashes 4 children (128 bytes) instead of 2 (64 bytes).
+/// This halves the tree depth: log4(n) = log2(n)/2 levels, halving GPU dispatches.
+///
+/// Tree layout (flat array, 0-indexed):
+///   nodes[0..<n]       = leaves (32 bytes each)
+///   Level k (k=0 is leaves): nodes at offsets computed from 4-ary fan-in
+///   Root is the final single node.
+///
+/// Node count for n leaves (power of 4):
+///   n + n/4 + n/16 + ... + 1 = n * (4/3) + rounding = (4*n - 1) / 3
+///
+/// For n that is a power of 2 but not power of 4 (e.g. n=2^odd):
+///   The first level uses binary hashing (pairs), subsequent levels use 4-ary.
+///   This handles all power-of-2 leaf counts.
+public class Keccak4aryMerkleEngine {
+    public static let version = "keccak4ary-merkle-v1"
+    private let engine: Keccak256Engine
+    private var cachedTreeBuf: MTLBuffer?
+    private var cachedTreeBufSize: Int = 0
+
+    public init() throws {
+        self.engine = try Keccak256Engine()
+    }
+
+    /// Compute the total number of nodes in a 4-ary Merkle tree.
+    /// For n leaves (power of 2), returns the total node count including leaves.
+    private static func treeNodeCount(_ n: Int) -> Int {
+        var total = n
+        var levelSize = n
+        while levelSize > 1 {
+            if levelSize >= 4 {
+                levelSize /= 4
+            } else {
+                // levelSize == 2: binary pair at top
+                levelSize /= 2
+            }
+            total += levelSize
+        }
+        return total
+    }
+
+    /// Build a 4-ary Merkle tree from 32-byte leaf hashes using Keccak-256.
+    /// Leaves count must be a power of 2 (>= 4 for pure 4-ary, == 2 uses one binary level).
+    /// Returns flat byte buffer with all nodes. Root is at the end.
+    ///
+    /// Layout: nodes are stored level by level (leaves first, then each subsequent level).
+    public func buildTree(_ leaves: [[UInt8]]) throws -> [UInt8] {
+        let n = leaves.count
+        precondition(n > 0 && (n & (n - 1)) == 0, "Leaf count must be power of 2")
+        precondition(leaves.allSatisfy { $0.count == 32 }, "Leaves must be 32 bytes each")
+
+        let treeSize = Keccak4aryMerkleEngine.treeNodeCount(n)
+        let bufSize = treeSize * 32
+
+        if bufSize > cachedTreeBufSize {
+            guard let buf = engine.device.makeBuffer(length: bufSize, options: .storageModeShared) else {
+                throw MSMError.gpuError("Failed to allocate 4-ary Merkle buffer")
+            }
+            cachedTreeBuf = buf
+            cachedTreeBufSize = bufSize
+        }
+        let treeBuf = cachedTreeBuf!
+
+        // Copy leaves to GPU buffer
+        let ptr = treeBuf.contents().assumingMemoryBound(to: UInt8.self)
+        for i in 0..<n {
+            leaves[i].withUnsafeBytes { src in
+                memcpy(ptr + i * 32, src.baseAddress!, 32)
+            }
+        }
+
+        guard let cmdBuf = engine.commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
+        }
+
+        let enc = cmdBuf.makeComputeCommandEncoder()!
+
+        var levelStart = 0
+        var levelSize = n
+
+        while levelSize > 1 {
+            let outputOffset = (levelStart + levelSize) * 32
+
+            if levelSize >= 4 {
+                // 4-ary: hash groups of 4 children into 1 parent
+                let parentCount = levelSize / 4
+                let inputOffset = levelStart * 32
+                engine.encodeHash128(encoder: enc, buffer: treeBuf,
+                                      inputOffset: inputOffset,
+                                      outputOffset: outputOffset,
+                                      count: parentCount)
+                levelStart += levelSize
+                levelSize = parentCount
+            } else {
+                // levelSize == 2: binary hash (fallback for non-power-of-4)
+                let parentCount = levelSize / 2
+                let inputOffset = levelStart * 32
+                engine.encodeHash64(encoder: enc, buffer: treeBuf,
+                                     inputOffset: inputOffset,
+                                     outputOffset: outputOffset,
+                                     count: parentCount)
+                levelStart += levelSize
+                levelSize = parentCount
+            }
+
+            if levelSize > 1 {
+                enc.memoryBarrier(scope: .buffers)
+            }
+        }
+        enc.endEncoding()
+
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+        if let error = cmdBuf.error {
+            throw MSMError.gpuError(error.localizedDescription)
+        }
+
+        let readPtr = treeBuf.contents().assumingMemoryBound(to: UInt8.self)
+        return Array(UnsafeBufferPointer(start: readPtr, count: treeSize * 32))
+    }
+
+    /// Get the Merkle root from 32-byte leaf hashes using 4-ary tree.
+    public func merkleRoot(_ leaves: [[UInt8]]) throws -> [UInt8] {
+        let tree = try buildTree(leaves)
+        let treeSize = tree.count / 32
+        let start = (treeSize - 1) * 32
+        return Array(tree[start..<start + 32])
+    }
+
+    /// Access a specific node from a flat tree buffer.
+    public static func node(_ tree: [UInt8], at index: Int) -> [UInt8] {
+        let start = index * 32
+        return Array(tree[start..<start + 32])
+    }
+
+    /// Compute the root node index in the flat tree layout.
+    public static func rootIndex(leafCount n: Int) -> Int {
+        return treeNodeCount(n) - 1
+    }
+}
+
 // MARK: - Blake3 Merkle Tree
 
 public class Blake3MerkleEngine {

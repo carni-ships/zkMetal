@@ -408,6 +408,42 @@ kernel void keccak256_merkle_fused_full(
     }
 }
 
+// Keccak-256 hash of a 128-byte input (four 32-byte children for 4-ary Merkle)
+// rate = 1088 bits = 136 bytes for Keccak-256
+// 128 bytes < 136 bytes rate, so single absorb block + pad + squeeze
+kernel void keccak256_hash_128(
+    device const uchar* input      [[buffer(0)]],
+    device uchar* output           [[buffer(1)]],
+    constant uint& count           [[buffer(2)]],
+    uint gid                       [[thread_position_in_grid]]
+) {
+    if (gid >= count) return;
+
+    // Initialize interleaved state to zero
+    uint2 state[25];
+    for (uint i = 0; i < 25; i++) state[i] = uint2(0, 0);
+
+    // Absorb 128 bytes of input (16 lanes of 8 bytes each)
+    device const ulong* in64 = (device const ulong*)(input + gid * 128);
+    for (uint i = 0; i < 16; i++) {
+        state[i] = to_interleaved(in64[i]);
+    }
+
+    // Keccak padding: 0x01 at byte 128 (lane 16, byte 0), 0x80 at byte 135 (lane 16, byte 7)
+    // Lane 16 gets both: 0x01 at byte 0 and 0x80 at byte 7 = 0x80000000_00000001
+    // to_interleaved(0x8000000000000001) = uint2(0x00000001, 0x80000000)
+    state[16] ^= uint2(0x00000001u, 0x80000000u);
+
+    // Permute
+    keccak_f1600_il(state);
+
+    // Squeeze 32 bytes (4 lanes) — de-interleave
+    device ulong* out64 = (device ulong*)(output + gid * 32);
+    for (uint i = 0; i < 4; i++) {
+        out64[i] = from_interleaved(state[i]);
+    }
+}
+
 // Keccak-256 hash of a 32-byte input (single field element or leaf)
 kernel void keccak256_hash_32(
     device const uchar* input      [[buffer(0)]],

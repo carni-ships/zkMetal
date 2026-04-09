@@ -207,6 +207,83 @@ public func runMerkleBench() {
         print("  [FAIL] Keccak Merkle: \(error)")
     }
 
+    // Keccak 4-ary Merkle
+    do {
+        let engine4 = try Keccak4aryMerkleEngine()
+        let engine2 = try KeccakMerkleEngine()
+
+        print("")
+        print("  --- Keccak 4-ary vs Binary Merkle Comparison ---")
+
+        for logN in [10, 12, 14, 16, 18, 20] {
+            let n = 1 << logN
+            var leaves = [[UInt8]]()
+            for i in 0..<n {
+                var leaf = [UInt8](repeating: 0, count: 32)
+                let val = UInt64(i)
+                for b in 0..<8 { leaf[b] = UInt8((val >> (b * 8)) & 0xFF) }
+                leaves.append(leaf)
+            }
+
+            // Warmup both
+            let _ = try engine2.merkleRoot(leaves)
+            let _ = try engine4.merkleRoot(leaves)
+
+            // Binary (2-ary)
+            var times2 = [Double]()
+            for _ in 0..<5 {
+                let t0 = CFAbsoluteTimeGetCurrent()
+                let _ = try engine2.merkleRoot(leaves)
+                times2.append((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+            }
+            times2.sort()
+            let median2 = times2[2]
+
+            // 4-ary
+            var times4 = [Double]()
+            for _ in 0..<5 {
+                let t0 = CFAbsoluteTimeGetCurrent()
+                let _ = try engine4.merkleRoot(leaves)
+                times4.append((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+            }
+            times4.sort()
+            let median4 = times4[2]
+
+            let speedup = median2 / median4
+            let levels2 = logN  // log2(n) levels for binary
+            let levels4: Int
+            if n == 2 { levels4 = 1 }
+            else {
+                var l = 0
+                var s = n
+                while s > 1 {
+                    if s >= 4 { s /= 4 } else { s /= 2 }
+                    l += 1
+                }
+                levels4 = l
+            }
+            print(String(format: "  Keccak 4-ary 2^%-2d = %6d: binary %7.2f ms (%d levels) | 4-ary %7.2f ms (%d levels) | %.2fx",
+                        logN, n, median2, levels2, median4, levels4, speedup))
+        }
+
+        // Correctness spot-check: 4-ary root is valid (differs from binary)
+        let testLeaves = (0..<256).map { i -> [UInt8] in
+            var leaf = [UInt8](repeating: 0, count: 32)
+            leaf[0] = UInt8(i & 0xFF)
+            return leaf
+        }
+        let r2 = try engine2.merkleRoot(testLeaves)
+        let r4 = try engine4.merkleRoot(testLeaves)
+        if r2 != r4 {
+            print("  [pass] 4-ary root differs from binary root (expected)")
+        } else {
+            print("  [FAIL] 4-ary root unexpectedly equals binary root!")
+        }
+
+    } catch {
+        print("  [FAIL] Keccak 4-ary Merkle: \(error)")
+    }
+
     // Blake3 Merkle
     do {
         let engine = try Blake3MerkleEngine()

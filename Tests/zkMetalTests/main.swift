@@ -110,6 +110,7 @@ let allTests: [(String, () -> Void)] = [
     ("groth16gpuwitness", runGroth16GPUWitnessTests),
     ("pcscomparison", runPCSComparisonTests),
     ("gpumerkletree", runGPUMerkleTreeTests),
+    ("keccak4arymerkle", runKeccak4aryMerkleTests),
     ("gpuhornereval", runGPUHornerEvalTests),
     ("batchecdsa", runBatchECDSATests),
     ("gpufrifold", runGPUFRIFoldTests),

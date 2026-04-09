@@ -7,6 +7,7 @@ public class Keccak256Engine {
     public let device: MTLDevice
     public let commandQueue: MTLCommandQueue
     let hash64Function: MTLComputePipelineState   // hash 64-byte inputs
+    let hash128Function: MTLComputePipelineState  // hash 128-byte inputs (4-ary Merkle)
     let hash32Function: MTLComputePipelineState   // hash 32-byte inputs
     let hashM31Function: MTLComputePipelineState  // hash 4-byte M31 inputs
     let merkleFusedFunction: MTLComputePipelineState  // fused 1024-leaf subtree
@@ -32,6 +33,7 @@ public class Keccak256Engine {
 
         let library = try Keccak256Engine.compileShaders(device: device)
         guard let hash64Fn = library.makeFunction(name: "keccak256_hash_64"),
+              let hash128Fn = library.makeFunction(name: "keccak256_hash_128"),
               let hash32Fn = library.makeFunction(name: "keccak256_hash_32"),
               let hashM31Fn = library.makeFunction(name: "keccak256_hash_m31"),
               let merkleFusedFn = library.makeFunction(name: "keccak256_merkle_fused"),
@@ -39,6 +41,7 @@ public class Keccak256Engine {
             throw MSMError.missingKernel
         }
         self.hash64Function = try device.makeComputePipelineState(function: hash64Fn)
+        self.hash128Function = try device.makeComputePipelineState(function: hash128Fn)
         self.hash32Function = try device.makeComputePipelineState(function: hash32Fn)
         self.hashM31Function = try device.makeComputePipelineState(function: hashM31Fn)
         self.merkleFusedFunction = try device.makeComputePipelineState(function: merkleFusedFn)
@@ -190,6 +193,22 @@ public class Keccak256Engine {
         var n = UInt32(count)
         encoder.setBytes(&n, length: 4, index: 2)
         let tg = min(tuning.hashThreadgroupSize, Int(hashM31Function.maxTotalThreadsPerThreadgroup))
+        encoder.dispatchThreads(MTLSize(width: count, height: 1, depth: 1),
+                               threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+    }
+
+    /// Encode hash128 dispatch into an existing compute encoder (for 4-ary Merkle).
+    /// Each node: 128 bytes input (four 32-byte children) → 32 bytes output.
+    /// Buffer layout: input at inputOffset (count*128 bytes), output at outputOffset (count*32 bytes).
+    public func encodeHash128(encoder: MTLComputeCommandEncoder,
+                               buffer: MTLBuffer, inputOffset: Int,
+                               outputOffset: Int, count: Int) {
+        encoder.setComputePipelineState(hash128Function)
+        encoder.setBuffer(buffer, offset: inputOffset, index: 0)
+        encoder.setBuffer(buffer, offset: outputOffset, index: 1)
+        var n = UInt32(count)
+        encoder.setBytes(&n, length: 4, index: 2)
+        let tg = min(tuning.hashThreadgroupSize, Int(hash128Function.maxTotalThreadsPerThreadgroup))
         encoder.dispatchThreads(MTLSize(width: count, height: 1, depth: 1),
                                threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
     }

@@ -137,3 +137,150 @@ func runGPUMerkleTreeTests() {
         expect(false, "GPUMerkleTreeEngine error: \(error)")
     }
 }
+
+func runKeccak4aryMerkleTests() {
+    suite("Keccak4aryMerkleEngine")
+
+    do {
+        let engine4 = try Keccak4aryMerkleEngine()
+        let engine2 = try KeccakMerkleEngine()
+
+        // Helper: CPU Keccak hash of 4 children (128 bytes)
+        func keccak4ary(_ a: [UInt8], _ b: [UInt8], _ c: [UInt8], _ d: [UInt8]) -> [UInt8] {
+            return keccak256(a + b + c + d)
+        }
+
+        // Test 1: 4 leaves — single 4-ary hash
+        var leaves4 = [[UInt8]]()
+        for i in 0..<4 {
+            var leaf = [UInt8](repeating: 0, count: 32)
+            leaf[0] = UInt8(i + 1)
+            leaves4.append(leaf)
+        }
+        let tree4 = try engine4.buildTree(leaves4)
+        let root4 = try engine4.merkleRoot(leaves4)
+        let expectedRoot4 = keccak4ary(leaves4[0], leaves4[1], leaves4[2], leaves4[3])
+        let treeNodes4 = tree4.count / 32
+        expectEqual(treeNodes4, 5, "4 leaves: 5 total nodes (4 leaves + 1 root)")
+        let gpuRoot4 = Keccak4aryMerkleEngine.node(tree4, at: treeNodes4 - 1)
+        expect(gpuRoot4 == expectedRoot4, "4-leaf 4-ary root matches CPU keccak256(4 children)")
+        expect(root4 == expectedRoot4, "4-leaf merkleRoot matches CPU")
+
+        // Test 2: 16 leaves — 2 levels of 4-ary
+        var leaves16 = [[UInt8]]()
+        for i in 0..<16 {
+            var leaf = [UInt8](repeating: 0, count: 32)
+            leaf[0] = UInt8(i)
+            leaves16.append(leaf)
+        }
+        let tree16 = try engine4.buildTree(leaves16)
+        let treeNodes16 = tree16.count / 32
+        // 16 leaves + 4 internal + 1 root = 21
+        expectEqual(treeNodes16, 21, "16 leaves: 21 total nodes")
+
+        // CPU reference for 16 leaves, 4-ary
+        var level1 = [[UInt8]]()
+        for i in stride(from: 0, to: 16, by: 4) {
+            level1.append(keccak4ary(leaves16[i], leaves16[i+1], leaves16[i+2], leaves16[i+3]))
+        }
+        let cpuRoot16 = keccak4ary(level1[0], level1[1], level1[2], level1[3])
+        let gpuRoot16 = Keccak4aryMerkleEngine.node(tree16, at: treeNodes16 - 1)
+        expect(gpuRoot16 == cpuRoot16, "16-leaf 4-ary root matches CPU")
+
+        // Test 3: 2 leaves — binary fallback
+        var leaves2 = [[UInt8]]()
+        for i in 0..<2 {
+            var leaf = [UInt8](repeating: 0, count: 32)
+            leaf[0] = UInt8(i + 10)
+            leaves2.append(leaf)
+        }
+        let tree2 = try engine4.buildTree(leaves2)
+        let treeNodes2 = tree2.count / 32
+        expectEqual(treeNodes2, 3, "2 leaves: 3 total nodes")
+        let gpuRoot2 = Keccak4aryMerkleEngine.node(tree2, at: 2)
+        let cpuRoot2 = keccak256(leaves2[0] + leaves2[1])
+        expect(gpuRoot2 == cpuRoot2, "2-leaf falls back to binary, root matches CPU")
+
+        // Test 4: 8 leaves — first level is 4-ary (8->2), second is binary (2->1)
+        var leaves8 = [[UInt8]]()
+        for i in 0..<8 {
+            var leaf = [UInt8](repeating: 0, count: 32)
+            leaf[0] = UInt8(i + 20)
+            leaves8.append(leaf)
+        }
+        let tree8 = try engine4.buildTree(leaves8)
+        let treeNodes8 = tree8.count / 32
+        // 8 + 2 + 1 = 11
+        expectEqual(treeNodes8, 11, "8 leaves: 11 total nodes")
+        let h01 = keccak4ary(leaves8[0], leaves8[1], leaves8[2], leaves8[3])
+        let h23 = keccak4ary(leaves8[4], leaves8[5], leaves8[6], leaves8[7])
+        let cpuRoot8 = keccak256(h01 + h23)
+        let gpuRoot8 = Keccak4aryMerkleEngine.node(tree8, at: treeNodes8 - 1)
+        expect(gpuRoot8 == cpuRoot8, "8-leaf 4-ary root matches CPU (mixed 4-ary + binary)")
+
+        // Test 5: 256 leaves — larger tree
+        var leaves256 = [[UInt8]]()
+        for i in 0..<256 {
+            var leaf = [UInt8](repeating: 0, count: 32)
+            let v = UInt32(i)
+            for b in 0..<4 { leaf[b] = UInt8((v >> (b * 8)) & 0xFF) }
+            leaves256.append(leaf)
+        }
+        let root256 = try engine4.merkleRoot(leaves256)
+
+        // CPU reference: 4-ary tree
+        var cpuLevel = leaves256
+        while cpuLevel.count > 1 {
+            if cpuLevel.count >= 4 {
+                var next = [[UInt8]]()
+                next.reserveCapacity(cpuLevel.count / 4)
+                for i in stride(from: 0, to: cpuLevel.count, by: 4) {
+                    next.append(keccak4ary(cpuLevel[i], cpuLevel[i+1], cpuLevel[i+2], cpuLevel[i+3]))
+                }
+                cpuLevel = next
+            } else {
+                // cpuLevel.count == 2
+                cpuLevel = [keccak256(cpuLevel[0] + cpuLevel[1])]
+            }
+        }
+        expect(root256 == cpuLevel[0], "256-leaf 4-ary root matches CPU")
+
+        // Test 6: 1024 leaves
+        var leaves1024 = [[UInt8]]()
+        for i in 0..<1024 {
+            var leaf = [UInt8](repeating: 0, count: 32)
+            let v = UInt32(i)
+            for b in 0..<4 { leaf[b] = UInt8((v >> (b * 8)) & 0xFF) }
+            leaves1024.append(leaf)
+        }
+        let root1024 = try engine4.merkleRoot(leaves1024)
+
+        // CPU reference for 1024 leaves
+        cpuLevel = leaves1024
+        while cpuLevel.count > 1 {
+            if cpuLevel.count >= 4 {
+                var next = [[UInt8]]()
+                next.reserveCapacity(cpuLevel.count / 4)
+                for i in stride(from: 0, to: cpuLevel.count, by: 4) {
+                    next.append(keccak4ary(cpuLevel[i], cpuLevel[i+1], cpuLevel[i+2], cpuLevel[i+3]))
+                }
+                cpuLevel = next
+            } else {
+                cpuLevel = [keccak256(cpuLevel[0] + cpuLevel[1])]
+            }
+        }
+        expect(root1024 == cpuLevel[0], "1024-leaf 4-ary root matches CPU")
+
+        // Test 7: Determinism
+        let root1024b = try engine4.merkleRoot(leaves1024)
+        expect(root1024 == root1024b, "deterministic: same leaves -> same root")
+
+        // Test 8: 4-ary root differs from binary root (they are different tree structures)
+        let binRoot = try engine2.merkleRoot(leaves16)
+        let aryRoot = try engine4.merkleRoot(leaves16)
+        expect(binRoot != aryRoot, "4-ary root differs from binary root (different structure)")
+
+    } catch {
+        expect(false, "Keccak4aryMerkleEngine error: \(error)")
+    }
+}
