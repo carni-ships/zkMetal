@@ -29,6 +29,7 @@ public class GPUSumcheckEngine {
     private let reduceBN254: MTLComputePipelineState
     private let roundPolyBN254: MTLComputePipelineState
     private let fusedBN254: MTLComputePipelineState
+    private let finalReduceBN254: MTLComputePipelineState
 
     // BabyBear pipelines
     private let reduceBabyBear: MTLComputePipelineState
@@ -44,6 +45,8 @@ public class GPUSumcheckEngine {
     private var evalBufCapacity: Int = 0  // in bytes
     private var partialBuf: MTLBuffer?
     private var partialBufCapacity: Int = 0  // in bytes
+    private var finalReduceBuf: MTLBuffer?  // 2 Fr outputs from GPU final reduce
+    private var finalReduceBufCapacity: Int = 0
     private var lastReduceCmdBuf: MTLCommandBuffer?  // deferred wait for pipelined fold
 
     // CPU fallback threshold: below this element count, use C kernels on CPU.
@@ -67,6 +70,7 @@ public class GPUSumcheckEngine {
         guard let rBN = library.makeFunction(name: "sumcheck_reduce_bn254"),
               let rpBN = library.makeFunction(name: "sumcheck_round_poly_bn254"),
               let fBN = library.makeFunction(name: "sumcheck_fused_round_reduce_bn254"),
+              let frBN = library.makeFunction(name: "sumcheck_final_reduce_bn254"),
               let rBB = library.makeFunction(name: "sumcheck_reduce_babybear"),
               let rpBB = library.makeFunction(name: "sumcheck_round_poly_babybear"),
               let rGL = library.makeFunction(name: "sumcheck_reduce_goldilocks"),
@@ -77,6 +81,7 @@ public class GPUSumcheckEngine {
         self.reduceBN254 = try device.makeComputePipelineState(function: rBN)
         self.roundPolyBN254 = try device.makeComputePipelineState(function: rpBN)
         self.fusedBN254 = try device.makeComputePipelineState(function: fBN)
+        self.finalReduceBN254 = try device.makeComputePipelineState(function: frBN)
         self.reduceBabyBear = try device.makeComputePipelineState(function: rBB)
         self.roundPolyBabyBear = try device.makeComputePipelineState(function: rpBB)
         self.reduceGoldilocks = try device.makeComputePipelineState(function: rGL)
@@ -154,6 +159,12 @@ public class GPUSumcheckEngine {
         partialBufCapacity = byteCount
     }
 
+    private func ensureFinalReduceBuffer(byteCount: Int) {
+        if finalReduceBufCapacity >= byteCount { return }
+        finalReduceBuf = device.makeBuffer(length: byteCount, options: .storageModeShared)
+        finalReduceBufCapacity = byteCount
+    }
+
     // MARK: - BN254 Prove Round (GPU)
 
     /// Prove one sumcheck round on BN254 Fr multilinear evaluations stored in an MTLBuffer.
@@ -175,9 +186,11 @@ public class GPUSumcheckEngine {
         ensureEvalBuffers(byteCount: outBytes)
         let partialBytes = numGroups * 2 * stride
         ensurePartialBuffer(byteCount: partialBytes)
+        ensureFinalReduceBuffer(byteCount: 2 * stride)
 
         guard let outputBuf = evalBufA,
               let pBuf = partialBuf,
+              let frBuf = finalReduceBuf,
               let cmdBuf = commandQueue.makeCommandBuffer() else {
             throw MSMError.noCommandBuffer
         }
@@ -196,20 +209,29 @@ public class GPUSumcheckEngine {
                                 threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
         enc.endEncoding()
 
+        // GPU final reduction of partial sums (replaces CPU loop)
+        let frEnc = cmdBuf.makeComputeCommandEncoder()!
+        frEnc.setComputePipelineState(finalReduceBN254)
+        frEnc.setBuffer(pBuf, offset: 0, index: 0)
+        frEnc.setBuffer(frBuf, offset: 0, index: 1)
+        var numGroupsVal = UInt32(numGroups)
+        frEnc.setBytes(&numGroupsVal, length: 4, index: 2)
+        // Use 256 threads, single threadgroup (numGroups <= 4096 for 2^20)
+        let frTgSize = min(tgSize, numGroups)
+        frEnc.dispatchThreadgroups(MTLSize(width: 1, height: 1, depth: 1),
+                                   threadsPerThreadgroup: MTLSize(width: frTgSize, height: 1, depth: 1))
+        frEnc.endEncoding()
+
         cmdBuf.commit()
         cmdBuf.waitUntilCompleted()
         if let error = cmdBuf.error {
             throw MSMError.gpuError(error.localizedDescription)
         }
 
-        // CPU-side final reduction of partial sums
-        let ptr = pBuf.contents().bindMemory(to: Fr.self, capacity: numGroups * 2)
-        var s0 = Fr.zero
-        var s1 = Fr.zero
-        for g in 0..<numGroups {
-            s0 = frAdd(s0, ptr[g * 2])
-            s1 = frAdd(s1, ptr[g * 2 + 1])
-        }
+        // Read s0, s1 from GPU output buffer
+        let frPtr = frBuf.contents().bindMemory(to: Fr.self, capacity: 2)
+        let s0 = frPtr[0]
+        let s1 = frPtr[1]
 
         return (s0: s0, s1: s1, newTable: outputBuf)
     }
@@ -462,19 +484,32 @@ public class GPUSumcheckEngine {
                                 threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
         enc.endEncoding()
 
+        // GPU final reduction of partial sums (replaces CPU loop)
+        ensureFinalReduceBuffer(byteCount: 2 * stride)
+        guard let frBuf = finalReduceBuf else {
+            throw MSMError.noCommandBuffer
+        }
+        let frEnc = cmdBuf.makeComputeCommandEncoder()!
+        frEnc.setComputePipelineState(finalReduceBN254)
+        frEnc.setBuffer(pBuf, offset: 0, index: 0)
+        frEnc.setBuffer(frBuf, offset: 0, index: 1)
+        var numGroupsVal = UInt32(numGroups)
+        frEnc.setBytes(&numGroupsVal, length: 4, index: 2)
+        let frTgSize = min(tgSize, numGroups)
+        frEnc.dispatchThreadgroups(MTLSize(width: 1, height: 1, depth: 1),
+                                   threadsPerThreadgroup: MTLSize(width: frTgSize, height: 1, depth: 1))
+        frEnc.endEncoding()
+
         cmdBuf.commit()
         cmdBuf.waitUntilCompleted()
         if let error = cmdBuf.error {
             throw MSMError.gpuError(error.localizedDescription)
         }
 
-        let ptr = pBuf.contents().bindMemory(to: Fr.self, capacity: numGroups * 2)
-        var s0 = Fr.zero
-        var s1 = Fr.zero
-        for g in 0..<numGroups {
-            s0 = frAdd(s0, ptr[g * 2])
-            s1 = frAdd(s1, ptr[g * 2 + 1])
-        }
+        // Read s0, s1 from GPU output buffer
+        let frPtr = frBuf.contents().bindMemory(to: Fr.self, capacity: 2)
+        let s0 = frPtr[0]
+        let s1 = frPtr[1]
 
         return (s0, s1)
     }

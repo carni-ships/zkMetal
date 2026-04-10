@@ -412,3 +412,46 @@ kernel void sumcheck_round_poly_goldilocks(
         }
     }
 }
+
+// ============================================================================
+// GPU-side final reduction of partial sums: reduces numGroups * 2 entries
+// (s0 at even indices, s1 at odd indices) to 2 final values (s0_final, s1_final).
+// ============================================================================
+
+kernel void sumcheck_final_reduce_bn254(
+    device const Fr* partial_sums   [[buffer(0)]],    // 2 * num_groups entries
+    device Fr* output               [[buffer(1)]],    // 2 entries: s0_final, s1_final
+    constant uint& num_groups        [[buffer(2)]],
+    uint tid                         [[thread_index_in_threadgroup]],
+    uint tg_size                     [[threads_per_threadgroup]]
+) {
+    threadgroup Fr shared_s0[256];
+    threadgroup Fr shared_s1[256];
+
+    Fr local_s0 = fr_zero();
+    Fr local_s1 = fr_zero();
+
+    // Each thread accumulates over strided range
+    for (uint g = tid; g < num_groups; g += tg_size) {
+        local_s0 = fr_add(local_s0, partial_sums[g * 2]);
+        local_s1 = fr_add(local_s1, partial_sums[g * 2 + 1]);
+    }
+
+    shared_s0[tid] = local_s0;
+    shared_s1[tid] = local_s1;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Tree reduction
+    for (uint s = tg_size >> 1; s > 0; s >>= 1) {
+        if (tid < s) {
+            shared_s0[tid] = fr_add(shared_s0[tid], shared_s0[tid + s]);
+            shared_s1[tid] = fr_add(shared_s1[tid], shared_s1[tid + s]);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    if (tid == 0) {
+        output[0] = shared_s0[0];
+        output[1] = shared_s1[0];
+    }
+}
