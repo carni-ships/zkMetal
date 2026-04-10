@@ -212,10 +212,22 @@ public class GPUCosetLDEEngine {
             throw MSMError.gpuError(error.localizedDescription)
         }
 
-        // Step 4: Forward NTT of size M
-        let ptr = outputBuf.contents().bindMemory(to: Fr.self, capacity: m)
-        let shifted = Array(UnsafeBufferPointer(start: ptr, count: m))
-        return try engine.ntt(shifted)
+        // Step 4: Forward NTT of size M using encodeNTT to avoid GPU→CPU→GPU round-trip
+        let nttBuf = device.makeBuffer(length: m * MemoryLayout<Fr>.stride, options: .storageModeShared)!
+        // Copy shifted data to nttBuf (GPU→GPU memcpy via blit)
+        guard let cmdBuf = commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
+        }
+        let blit = cmdBuf.makeBlitCommandEncoder()!
+        blit.copy(from: outputBuf, sourceOffset: 0, to: nttBuf, destinationOffset: 0, size: m * MemoryLayout<Fr>.stride)
+        blit.endEncoding()
+        // Encode NTT in same command buffer (no extra GPU→CPU→GPU copy)
+        engine.encodeNTT(data: nttBuf, logN: logM, cmdBuf: cmdBuf)
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+        if let error = cmdBuf.error { throw MSMError.gpuError(error.localizedDescription) }
+        let ptr = nttBuf.contents().bindMemory(to: Fr.self, capacity: m)
+        return Array(UnsafeBufferPointer(start: ptr, count: m))
     }
 
     // MARK: - BabyBear Coset LDE
@@ -352,13 +364,27 @@ public class GPUCosetLDEEngine {
             throw MSMError.gpuError(error.localizedDescription)
         }
 
-        // Step 4: Forward NTT each column
+        // Step 4: Forward NTT each column using encodeNTT (GPU-only, no CPU round-trip)
         var results = [[Fr]]()
         results.reserveCapacity(numCols)
-        let outPtr = packedOutputBuf.contents().bindMemory(to: Fr.self, capacity: m * numCols)
+        let stride = m * MemoryLayout<Fr>.stride
         for c in 0..<numCols {
-            let colSlice = Array(UnsafeBufferPointer(start: outPtr + c * m, count: m))
-            results.append(try engine.ntt(colSlice))
+            let offset = c * stride
+            // Copy column data to nttBuf via blit (GPU→GPU memcpy)
+            let nttBuf = device.makeBuffer(length: m * MemoryLayout<Fr>.stride, options: .storageModeShared)!
+            guard let cmdBuf = commandQueue.makeCommandBuffer() else {
+                throw MSMError.noCommandBuffer
+            }
+            let blit = cmdBuf.makeBlitCommandEncoder()!
+            blit.copy(from: packedOutputBuf, sourceOffset: offset, to: nttBuf, destinationOffset: 0, size: stride)
+            blit.endEncoding()
+            engine.encodeNTT(data: nttBuf, logN: logM, cmdBuf: cmdBuf)
+            cmdBuf.commit()
+            cmdBuf.waitUntilCompleted()
+            if let error = cmdBuf.error { throw MSMError.gpuError(error.localizedDescription) }
+            let outPtr = nttBuf.contents().bindMemory(to: Fr.self, capacity: m)
+            let colSlice = Array(UnsafeBufferPointer(start: outPtr, count: m))
+            results.append(colSlice)
         }
         return results
     }
