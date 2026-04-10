@@ -22,6 +22,8 @@ public class FusedNTTConstraintEngine {
     private let fusedFibPipeline: MTLComputePipelineState
     // Post-NTT Fibonacci constraint pipeline (phase 2 for large sizes)
     private let postNTTFibPipeline: MTLComputePipelineState
+    // Constraint eval + FRI fold pipeline (constraint + 1st fold in one dispatch)
+    private var _constraintFoldFirstPipeline: MTLComputePipelineState?
 
     private let tuning: TuningConfig
 
@@ -292,7 +294,34 @@ public class FusedNTTConstraintEngine {
         return pipeline
     }
 
-    // MARK: - Separate (baseline) execution
+    private func getConstraintFoldFirstPipeline() throws -> MTLComputePipelineState {
+        if let p = _constraintFoldFirstPipeline { return p }
+
+        let shaderDir = findShaderDir()
+        let rawFr = try String(contentsOfFile: shaderDir + "/fields/bn254_fr.metal", encoding: .utf8)
+        let frSource = rawFr
+            .replacingOccurrences(of: "#ifndef BN254_FR_METAL", with: "")
+            .replacingOccurrences(of: "#define BN254_FR_METAL", with: "")
+            .replacingOccurrences(of: "#endif // BN254_FR_METAL", with: "")
+
+        let fusedSrc = try String(contentsOfFile: shaderDir + "/constraint/fused_ntt_constraint.metal", encoding: .utf8)
+        let fusedClean = fusedSrc.split(separator: "\n")
+            .filter { !$0.contains("#include") }
+            .joined(separator: "\n")
+
+        let combined = frSource + "\n" + fusedClean
+        let options = MTLCompileOptions()
+        options.fastMathEnabled = true
+        let lib = try device.makeLibrary(source: combined, options: options)
+        guard let fn = lib.makeFunction(name: "bn254_fib_constraint_fold_first") else {
+            throw MSMError.missingKernel
+        }
+        let pipeline = try device.makeComputePipelineState(function: fn)
+        _constraintFoldFirstPipeline = pipeline
+        return pipeline
+    }
+
+    // MARK: - Constraint eval + FRI fold (fused)
 
     /// Baseline: NTT then constraint eval as two separate dispatches (with host round-trip).
     /// For benchmarking comparison against the fused approach.
@@ -356,6 +385,196 @@ public class FusedNTTConstraintEngine {
 
         let ptr = quotientBuf.contents().bindMemory(to: Fr.self, capacity: n)
         return Array(UnsafeBufferPointer(start: ptr, count: n))
+    }
+
+    // MARK: - Constraint eval + FRI fold (fused single dispatch)
+
+    /// Constraint evaluation + first FRI fold in a single GPU dispatch.
+    /// Pipeline: NTT×2 (blocking) → interleave (CPU) → constraint+fold (1 dispatch).
+    ///
+    /// The fusion benefit comes from combining constraint eval and FRI fold into
+    /// one kernel, eliminating the intermediate quotient buffer write + read.
+    ///
+    /// Inputs: raw trace columns A, B (natural order).
+    /// Outputs: n/2 folded values after constraint eval + one FRI fold round.
+    public func evaluateFibConstraintFoldFirst(
+        traceA: [Fr],
+        traceB: [Fr],
+        alpha: Fr = Fr.one,
+        logN: Int
+    ) throws -> [Fr] {
+        let n = 1 << logN
+        let halfN = n >> 1
+        precondition(traceA.count == n && traceB.count == n)
+
+        let stride = MemoryLayout<Fr>.stride
+
+        // Allocate buffers
+        guard let nttBufA = device.makeBuffer(length: n * stride, options: .storageModeShared),
+              let nttBufB = device.makeBuffer(length: n * stride, options: .storageModeShared),
+              let traceBuf = device.makeBuffer(length: n * 2 * stride, options: .storageModeShared),
+              let foldedBuf = device.makeBuffer(length: halfN * stride, options: .storageModeShared) else {
+            throw MSMError.gpuError("Failed to allocate buffers")
+        }
+
+        // Copy and NTT column A
+        let ptrA = nttBufA.contents().bindMemory(to: Fr.self, capacity: n)
+        for i in 0..<n { ptrA[i] = traceA[i] }
+        try nttEngine.ntt(data: nttBufA, logN: logN)
+
+        // Copy and NTT column B
+        let ptrB = nttBufB.contents().bindMemory(to: Fr.self, capacity: n)
+        for i in 0..<n { ptrB[i] = traceB[i] }
+        try nttEngine.ntt(data: nttBufB, logN: logN)
+
+        // Interleave NTT'd columns into row-major format
+        let tracePtr = traceBuf.contents().bindMemory(to: Fr.self, capacity: n * 2)
+        for i in 0..<n {
+            tracePtr[i * 2 + 0] = ptrA[i]
+            tracePtr[i * 2 + 1] = ptrB[i]
+        }
+
+        // Domain inverses and constraint inputs
+        let domainInvBuf = try makeDomainInvBuffer(n: n)
+        let vanishingInvBuf = getVanishingInvBuffer(n: n)
+        let alphaFold = frFromInt(314159)
+        let alphaPowers = [Fr.one, alpha, Fr.zero, Fr.zero]
+
+        // Constraint eval + FRI fold in ONE dispatch
+        guard let cmdBuf = commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
+        }
+
+        let pipeline = try getConstraintFoldFirstPipeline()
+
+        let enc = cmdBuf.makeComputeCommandEncoder()!
+        enc.setComputePipelineState(pipeline)
+        enc.setBuffer(traceBuf, offset: 0, index: 0)
+        enc.setBuffer(foldedBuf, offset: 0, index: 1)
+        enc.setBuffer(domainInvBuf, offset: 0, index: 2)
+        enc.setBuffer(vanishingInvBuf, offset: 0, index: 3)
+        var numColsVal: UInt32 = 2
+        var numRowsVal: UInt32 = UInt32(n)
+        enc.setBytes(&numColsVal, length: 4, index: 4)
+        enc.setBytes(&numRowsVal, length: 4, index: 5)
+        enc.setBuffer(getAlphaBuffer(alphaPowers), offset: 0, index: 6)
+        var alphaFoldVal = alphaFold
+        enc.setBytes(&alphaFoldVal, length: stride, index: 7)
+
+        let tg = min(256, Int(pipeline.maxTotalThreadsPerThreadgroup))
+        enc.dispatchThreads(MTLSize(width: halfN, height: 1, depth: 1),
+                           threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+        enc.endEncoding()
+
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+
+        if let error = cmdBuf.error {
+            throw MSMError.gpuError("Constraint fold GPU error: \(error.localizedDescription)")
+        }
+
+        let ptr = foldedBuf.contents().bindMemory(to: Fr.self, capacity: halfN)
+        return Array(UnsafeBufferPointer(start: ptr, count: halfN))
+    }
+
+    /// Same as evaluateFibConstraintFoldFirst but takes pre-NTT'd columns.
+    /// Useful for benchmarking constraint+fold fusion separately from NTT cost.
+    public func evaluateFibConstraintFoldFirstFromNTT(
+        nttA: [Fr],
+        nttB: [Fr],
+        alpha: Fr = Fr.one,
+        logN: Int
+    ) throws -> [Fr] {
+        let n = 1 << logN
+        let halfN = n >> 1
+        precondition(nttA.count == n && nttB.count == n)
+
+        let stride = MemoryLayout<Fr>.stride
+
+        guard let traceBuf = device.makeBuffer(length: n * 2 * stride, options: .storageModeShared),
+              let foldedBuf = device.makeBuffer(length: halfN * stride, options: .storageModeShared) else {
+            throw MSMError.gpuError("Failed to allocate buffers")
+        }
+
+        // Interleave NTT'd columns into row-major format
+        let tracePtr = traceBuf.contents().bindMemory(to: Fr.self, capacity: n * 2)
+        for i in 0..<n {
+            tracePtr[i * 2 + 0] = nttA[i]
+            tracePtr[i * 2 + 1] = nttB[i]
+        }
+
+        let domainInvBuf = try makeDomainInvBuffer(n: n)
+        let vanishingInvBuf = getVanishingInvBuffer(n: n)
+        let alphaFold = frFromInt(314159)
+        let alphaPowers = [Fr.one, alpha, Fr.zero, Fr.zero]
+
+        guard let cmdBuf = commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
+        }
+
+        let pipeline = try getConstraintFoldFirstPipeline()
+
+        let enc = cmdBuf.makeComputeCommandEncoder()!
+        enc.setComputePipelineState(pipeline)
+        enc.setBuffer(traceBuf, offset: 0, index: 0)
+        enc.setBuffer(foldedBuf, offset: 0, index: 1)
+        enc.setBuffer(domainInvBuf, offset: 0, index: 2)
+        enc.setBuffer(vanishingInvBuf, offset: 0, index: 3)
+        var numColsVal: UInt32 = 2
+        var numRowsVal: UInt32 = UInt32(n)
+        enc.setBytes(&numColsVal, length: 4, index: 4)
+        enc.setBytes(&numRowsVal, length: 4, index: 5)
+        enc.setBuffer(getAlphaBuffer(alphaPowers), offset: 0, index: 6)
+        var alphaFoldVal = alphaFold
+        enc.setBytes(&alphaFoldVal, length: stride, index: 7)
+
+        let tg = min(256, Int(pipeline.maxTotalThreadsPerThreadgroup))
+        enc.dispatchThreads(MTLSize(width: halfN, height: 1, depth: 1),
+                           threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+        enc.endEncoding()
+
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+
+        if let error = cmdBuf.error {
+            throw MSMError.gpuError("Constraint fold GPU error: \(error.localizedDescription)")
+        }
+
+        let ptr = foldedBuf.contents().bindMemory(to: Fr.self, capacity: halfN)
+        return Array(UnsafeBufferPointer(start: ptr, count: halfN))
+    }
+
+    /// CPU-side NTT for pre-computing NTT'd trace (used in benchmarks).
+    public func nttCPU(_ data: [Fr], logN: Int) throws -> [Fr] {
+        guard let buf = device.makeBuffer(length: data.count * MemoryLayout<Fr>.stride, options: .storageModeShared) else {
+            throw MSMError.gpuError("Failed to allocate NTT buffer")
+        }
+        let ptr = buf.contents().bindMemory(to: Fr.self, capacity: data.count)
+        for i in 0..<data.count { ptr[i] = data[i] }
+        try nttEngine.ntt(data: buf, logN: logN)
+        return Array(UnsafeBufferPointer(start: ptr, count: data.count))
+    }
+
+    /// Domain inverses for FRI fold-by-2: precomputed 1/(2 * omega^i) for i in [0, n/2).
+    private func makeDomainInvBuffer(n: Int) throws -> MTLBuffer {
+        let halfN = n >> 1
+        var domainInv = [Fr](repeating: Fr.zero, count: halfN)
+
+        // Standard FRI fold: folded[i] = (q[i] + q[i+half]) + alpha * (q[i] - q[i+half]) * inv_domain[i]
+        // where inv_domain[i] = 1 / (2 * omega^i) for standard fold
+        for i in 0..<halfN {
+            // omega^i = g^i where g is primitive n-th root of unity
+            let logN = Int(log2(Double(n)))
+            let omega = frPow(frRootOfUnity(logN: logN), UInt64(i))
+            let twoOmega = frMul(frFromInt(2), omega)
+            domainInv[i] = frInverse(twoOmega)
+        }
+
+        let stride = MemoryLayout<Fr>.stride
+        guard let buf = device.makeBuffer(bytes: domainInv, length: halfN * stride, options: .storageModeShared) else {
+            throw MSMError.gpuError("Failed to allocate domain inv buffer")
+        }
+        return buf
     }
 
     // MARK: - General Constraint System (fully fused in shared memory)

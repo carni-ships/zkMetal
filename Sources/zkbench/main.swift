@@ -221,6 +221,8 @@ if cmd == "calibrate" {
     runFusedConstraintBench()
 } else if cmd == "fused-general" || cmd == "fg" {
     runFusedGeneralConstraintBench()
+} else if cmd == "bn254-fold" || cmd == "bn254constraintfold" {
+    runBN254ConstraintFoldBench()
 } else if cmd == "fused-circle" || cmd == "fc" {
     runFusedCircleConstraintBench()
 } else if cmd == "circle" || cmd == "m31" {
