@@ -475,11 +475,9 @@ public class BLS12381MSM {
             enc.setBytes(&nSegs, length: MemoryLayout<UInt32>.stride, index: 3)
             enc.setBytes(&nWinsBatch, length: MemoryLayout<UInt32>.stride, index: 4)
             let totalSegments = nSegments * nWindows
-            let tgSize = min(tuning.msmThreadgroupSize, Int(bucketSumCooperativeFunction.maxTotalThreadsPerThreadgroup))
-            let numThreadgroups = (totalSegments + tgSize - 1) / tgSize
-            enc.dispatchThreadgroups(
-                MTLSize(width: numThreadgroups, height: 1, depth: 1),
-                threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
+            enc.dispatchThreads(
+                MTLSize(width: totalSegments, height: 1, depth: 1),
+                threadsPerThreadgroup: MTLSize(width: min(tuning.msmThreadgroupSize, totalSegments), height: 1, depth: 1))
             enc.memoryBarrier(scope: .buffers)
 
             enc.setComputePipelineState(combineSegmentsFunction)

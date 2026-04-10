@@ -437,3 +437,118 @@ public func runBLS12381Test() {
                     cyclUnitaryOk && cyclSqrMatch
     print("\n  Overall: \(allFields ? "ALL PASS" : "SOME FAILED")")
 }
+
+// MARK: - BLS12-381 MSM Benchmark
+
+public func runBLS12381MSMBench() {
+    print("\n=== BLS12-381 MSM Benchmark ===")
+
+    do {
+        let engine = try BLS12381MSM()
+
+        // Generate points: G, 2G, 3G, ...
+        let gen = bls12381G1Generator()
+        let gProj = g1_381FromAffine(gen)
+
+        let logSizes = [8, 10, 12, 14, 16, 17, 18]
+        let sizes = logSizes.map { 1 << $0 }
+        let maxN = sizes.last!
+
+        print("Generating \(maxN) distinct BLS12-381 G1 points...")
+        let genT0 = CFAbsoluteTimeGetCurrent()
+        var projPoints = [G1Projective381]()
+        projPoints.reserveCapacity(maxN)
+        var acc = gProj
+        for _ in 0..<maxN {
+            projPoints.append(acc)
+            acc = g1_381Add(acc, gProj)
+        }
+        let allPoints = batchG1_381ToAffine(projPoints)
+        projPoints = []
+        let genTime = (CFAbsoluteTimeGetCurrent() - genT0) * 1000
+        print("  Point generation: \(String(format: "%.1f", genTime))ms")
+
+        // Verify a few points are on-curve
+        let engine381 = BLS12381Engine()
+        for idx in [0, 1, maxN - 1] {
+            let p = allPoints[idx]
+            let onCurve = engine381.g1IsOnCurve(p)
+            if !onCurve {
+                print("  [FAIL] Point \(idx) not on curve!")
+                return
+            }
+        }
+        print("  Sample on-curve checks: [pass]")
+
+        // Generate random scalars (Fr381 is 255-bit, stored as 8×32-bit)
+        var rng: UInt64 = 0xDEAD_BEEF_CAFE_BABE
+        var allScalars = [[UInt32]]()
+        allScalars.reserveCapacity(maxN)
+        for _ in 0..<maxN {
+            var limbs = [UInt32](repeating: 0, count: 8)
+            for j in 0..<8 {
+                rng = rng &* 6364136223846793005 &+ 1442695040888963407
+                limbs[j] = UInt32(truncatingIfNeeded: rng >> 32)
+            }
+            allScalars.append(limbs)
+        }
+
+        // Correctness check: small MSM (8 points) against CPU reference
+        let smallN = 8
+        let smallPts = Array(allPoints.prefix(smallN))
+        let smallScalars = allScalars.prefix(smallN).map { BLS12381MSM.reduceModR($0) }
+
+        // CPU reference: simple double-and-add with low bits only
+        var cpuResult = g1_381Identity()
+        for i in 0..<smallN {
+            let s = smallScalars[i]
+            let sInt = Int(s[0]) | (Int(s[1]) << 32)
+            let term = g1_381MulInt(g1_381FromAffine(smallPts[i]), sInt & 0xFFFF)
+            cpuResult = g1_381Add(cpuResult, term)
+        }
+
+        // GPU result
+        let lowScalars = smallScalars.map { s -> [UInt32] in
+            [s[0] & 0xFFFF, 0, 0, 0, 0, 0, 0, 0]
+        }
+        let gpuResult = try engine.msm(points: smallPts, scalars: lowScalars)
+
+        if let cpuAff = g1_381ToAffine(cpuResult), let gpuAff = g1_381ToAffine(gpuResult) {
+            let cpuX = fp381ToInt(cpuAff.x)
+            let gpuX = fp381ToInt(gpuAff.x)
+            let cpuY = fp381ToInt(cpuAff.y)
+            let gpuY = fp381ToInt(gpuAff.y)
+            let match = cpuX == gpuX && cpuY == gpuY
+            print("  MSM correctness (8 pts, low scalars): \(match ? "[pass]" : "[FAIL]")")
+        } else {
+            let cpuId = g1_381IsIdentity(cpuResult)
+            let gpuId = g1_381IsIdentity(gpuResult)
+            print("  MSM correctness: cpu_identity=\(cpuId) gpu_identity=\(gpuId) \(cpuId == gpuId ? "[pass]" : "[FAIL]")")
+        }
+
+        // Performance benchmark
+        print("\n--- BLS12-381 MSM Performance ---")
+        for (idx, n) in sizes.enumerated() {
+            let points = Array(allPoints.prefix(n))
+            let scalars = Array(allScalars.prefix(n))
+
+            // Warmup
+            let _ = try engine.msm(points: points, scalars: scalars)
+
+            let runs = 5
+            var times = [Double]()
+            for _ in 0..<runs {
+                let start = CFAbsoluteTimeGetCurrent()
+                let _ = try engine.msm(points: points, scalars: scalars)
+                let elapsed = (CFAbsoluteTimeGetCurrent() - start) * 1000
+                times.append(elapsed)
+            }
+            times.sort()
+            let median = times[runs / 2]
+            print(String(format: "  MSM 2^%-2d = %7d pts: %7.1f ms", logSizes[idx], n, median))
+        }
+
+    } catch {
+        print("  [FAIL] BLS12-381 MSM error: \(error)")
+    }
+}
