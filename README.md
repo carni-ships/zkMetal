@@ -167,17 +167,18 @@ All benchmarks on Apple M3 Pro (6P+6E cores). Run `swift run -c release zkbench 
 
 ### MSM (BN254 G1)
 
-| Points | Vanilla CPU | Swift Pippenger | C Pippenger | GPU (Metal) |
-|--------|-------------|----------------|-------------|-------------|
-| 2^8 | 450ms | 16ms | **1.3ms** | 0.9ms |
-| 2^10 | 1.8s | 45ms | **2.9ms** | 2.6ms |
-| 2^12 | 7.3s | 129ms | **8.1ms** | 14ms |
-| 2^14 | 35s | 429ms | 29ms | **22ms** |
-| 2^16 | -- | -- | 68ms | **31ms** |
-| 2^18 | -- | -- | 240ms | **53ms** |
-| 2^20 | -- | -- | 856ms | **137ms** |
+| Points | C Pippenger CPU | GPU (Metal) |
+|--------|-----------------|-------------|
+| 2^8 | 350ms | 0.8ms |
+| 2^10 | 1.4s | 2.5ms |
+| 2^12 | 5.6s | 21.0ms |
+| 2^14 | 23.4s | 33.6ms |
+| 2^16 | -- | 46.3ms |
+| 2^17 | -- | 54.8ms |
+| 2^18 | -- | 72.7ms |
+| 2^20 | -- | 175.3ms |
 
-C Pippenger uses multi-threaded bucket accumulation with `__uint128_t` CIOS Montgomery (8 pthreads). At n<=2048, C Pippenger is automatically used instead of GPU. GPU wins at n>=2^14.
+C Pippenger uses multi-threaded bucket accumulation with `__uint128_t` CIOS Montgomery (8 pthreads). GPU wins at n>=2^8.
 
 **Comparison to other implementations (BN254 MSM):**
 
@@ -205,26 +206,28 @@ C Pippenger uses multi-threaded bucket accumulation with `__uint128_t` CIOS Mont
 
 BabyBear at 2^24: **7.3B elements/sec** (native 32-bit arithmetic). Goldilocks: **5.4B elements/sec**.
 
-**BN254 Fr GPU vs CPU:**
+**BN254 NTT (GPU):**
 
-| Size | Vanilla CPU | Opt C | C vs Vanilla | GPU (Metal) | GPU vs Vanilla |
-|------|-------------|-------|--------------|-------------|----------------|
-| 2^14 | 97ms | 2.6ms | **37x** | 0.57ms | **169x** |
-| 2^16 | 507ms | 12ms | **42x** | 0.69ms | **738x** |
-| 2^18 | 2.2s | 55ms | **40x** | 2.9ms | **746x** |
-| 2^20 | 13.0s | 246ms | **53x** | 10.8ms | **1206x** |
+| Size | GPU | CPU | Speedup |
+|------|-----|-----|---------|
+| 2^14 | 0.71ms | 5.8ms | 8x |
+| 2^16 | 0.85ms | 26.6ms | 31x |
+| 2^18 | 1.72ms | 119.8ms | 70x |
+| 2^20 | 6.06ms | 528ms | 87x |
+| 2^22 | 26.0ms | 2262ms | 87x |
+| 2^24 | 110.9ms | 9861ms | 89x |
 
 **Comparison to ICICLE-Metal v3.8 NTT (measured locally, M3 Pro):**
 
-| Size | zkMetal BN254&#185; | ICICLE BN254&#185; | zkMetal BabyBear&#185; | ICICLE BabyBear&#185; |
+| Size | zkMetal BN254 | ICICLE BN254 | zkMetal BabyBear | ICICLE BabyBear |
 |------|------------|-------------|----------------|----------------|
-| 2^16 | **0.69ms** | 89ms | **0.26ms** | 86ms |
-| 2^18 | **2.9ms** | 108ms | **0.54ms** | 92ms |
-| 2^20 | **10.8ms** | 194ms | **0.79ms** | 108ms |
-| 2^22 | **28ms** | 915ms | **3.0ms** | 181ms |
-| 2^24 | **113ms** | 3,892ms | **2.3ms** | 709ms |
+| 2^16 | **0.85ms** | 89ms | **0.28ms** | 86ms |
+| 2^18 | **1.72ms** | 108ms | **0.26ms** | 92ms |
+| 2^20 | **6.06ms** | 194ms | **0.66ms** | 108ms |
+| 2^22 | **26.1ms** | 915ms | **2.67ms** | 181ms |
+| 2^24 | **110.9ms** | 3,892ms | **1.33ms** | 709ms |
 
-&#185; ICICLE-Metal has ~85ms per-call overhead. zkMetal is **18-33x faster** on BN254 and **60-330x faster** on BabyBear.
+ICICLE-Metal has ~85ms per-call kernel compilation overhead. zkMetal is **18-33x faster** on BN254 and **60-330x faster** on BabyBear.
 
 ### Hashing
 
@@ -518,10 +521,10 @@ Methodology: Compute-bound = total_ops / 3.6T flops (BN254 mul = ~64 32-bit muls
 
 | Rank | Primitive | Current | Theoretical Floor | Bottleneck | Headroom |
 |------|-----------|---------|-------------------|------------|----------|
-| 1 | MSM BN254 2^18 | 54ms | ~5ms | Random-access BW (scatter bucket accumulation) | ~11x |
-| 2 | NTT BN254 2^22 | 26ms | ~2.9ms | Compute + strided BW (256-bit: 64 muls/elem) | ~9x |
-| 3 | Sumcheck 2^20 | 4.9ms | ~0.85ms | Bandwidth (2^20 x 32B per round), fused CB | ~6x |
-| 4 | FRI Fold 2^20 | 1.96ms | ~0.3ms | Bandwidth (fold-by-4 + twiddle squaring) | ~7x |
+| 1 | MSM BN254 2^18 | 73ms | ~5ms | Random-access BW (scatter bucket accumulation) | ~11x |
+| 2 | NTT BN254 2^22 | 26ms | ~3ms | Compute + strided BW (256-bit: 64 muls/elem) | ~9x |
+| 3 | Sumcheck 2^20 | 4.7ms | ~1ms | Bandwidth (2^20 x 32B per round), fused CB | ~5x |
+| 4 | FRI Fold 2^20 | 2.1ms | ~0.3ms | Bandwidth (fold-by-2), 21 layers | ~7x |
 | 5 | BLS12-377 MSM 2^18 | 119ms | ~35ms | Wider 12-limb Fq, GLV disabled (net loss for GPU) | ~3.4x |
 | 6 | Keccak Merkle 2^20 | 7.7ms (4-ary) | ~2.2ms | 4-ary halves levels, compute-limited | ~3.5x |
 | 7 | Blake3 Batch 2^20 | 1.0ms | ~0.6ms | Bandwidth (2^20 x 64B), uint4 vectorized loads + cycle permute | ~1.7x |

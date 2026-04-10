@@ -57,8 +57,8 @@ public class MetalMSM {
     private var glvNeg2BufCached: MTLBuffer?
     private var glvCachedN: Int = 0
     public var windowBitsOverride: UInt32?
-    /// Minimum effectiveN to enable cooperative GPU/CPU MSM (default: 65536).
-    public var cooperativeThreshold: Int = 65536
+    /// Minimum effectiveN to enable cooperative GPU/CPU MSM (default: Int.max = all-GPU).
+    public var cooperativeThreshold: Int = Int.max
     private let tuning: TuningConfig
 
     public static let cacheDir = FileManager.default.homeDirectoryForCurrentUser
