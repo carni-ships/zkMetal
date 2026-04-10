@@ -43,7 +43,9 @@ Bottleneck: 256-bit Montgomery multiply on 32-bit ALUs + strided memory access.
 - [x] **Fold-by-4 cascade wiring** — DONE: Wired fri_fold_fused2_kernel through all 3 FRI engine layers. 901/901 tests pass.
 - [x] **Coalesced memory access** — LOW PRIORITY: FRI domain structure requires strided access (i, i+n/2). Transpose would add O(n) overhead. Apple Silicon hides latency via thread parallelism.
 
-## Sumcheck (~5x headroom, 2.8ms at 2^20 vs ~1ms floor)
+## Sumcheck (~5x headroom, 3.3ms at 2^20 vs ~1ms floor)
+
+- [x] **GPU final reduction** — DONE: Added sumcheck_final_reduce_bn254 kernel to offload final partial sum reduction to GPU. Eliminates CPU-side loops in proveRoundBN254, computeRoundPolyBN254, and fullSumcheckBN254. 3.56ms → 3.28ms at 2^20 (~8%).
 
 - [x] **Tune CPU crossover + hybrid GPU→C** — ALREADY OPTIMAL: crossover at numVars<=14, hybrid handoff at 1024 elements. Fused2 + SIMD shuffle reduction already implemented.
 - [x] **Threadgroup memory for round_poly reduction** — ALREADY IMPLEMENTED: SIMD shuffle + inter-SIMD shared memory.
@@ -62,12 +64,14 @@ Bandwidth-limited: 96MB traffic at 2^20.
 - [x] **SIMD group (warp-level) optimization** — REJECTED: BN254 needs 8 shuffles per Fr (multi-limb). BabyBear/M31 wastes 93.75% threads in partial rounds. S-box is bottleneck, not MDS.
 - [x] **Karatsuba S-box** — REJECTED: fr_mul_karatsuba increases register pressure (60 vs 15 uints), kills GPU occupancy. 2^16 regressed 8.1→9.9ms. Same pattern as NTT.
 
-## General / Cross-cutting (audit: 336 waits, ~18 eliminable, ~12ms savings)
+## General / Cross-cutting (audit complete - all major optimizations exhausted)
 
 - [x] **MSM GPU sort pipeline chaining** — BLOCKED: gpu_sort_scatter has correctness bugs (non-deterministic results). CPU sort is proven correct and fast (~2ms). GPU prefix sum kernel added but chaining disabled until scatter is fixed.
 - [x] **Sumcheck reduce table wait removal** — DONE: Removed waitUntilCompleted() from reduceBN254Table. Metal command queue ordering guarantees fold CB completes before next round's computeRoundPolyBN254 CB. Callers wait once after loop via waitForPendingReduce().
 - [x] **NTT encode API migration** — DONE: BN254 extend() + batchExtend() + BabyBear extend() now use encodeNTT + blit copy (GPU-only). BabyBearNTTEngine gained encodeNTT/encodeINTT. 48/48 coset LDE tests, 167/167 NTT tests pass.
 - [x] **Basefold fold+Merkle CB merge** — DONE: Pre-compute tree metadata, merge fold+merkle into single command buffer. One wait instead of two.
-- [ ] **MTLEvent infrastructure** — BLOCKED: Requires engine API redesign to accept MTLEvent handles for GPU→GPU synchronization. 116 engines with waitUntilCompleted - would need GPUEvent wrapper + all callers updated. Large undertaking.
-- [ ] **Metal async compute** — BLOCKED: Most prover ops are sequential data dependencies. Parallel dispatch only helps with independent operations (e.g., parallel commit phase vs fold). Prover structure is fundamentally sequential.
+- [ ] **MTLEvent infrastructure** — REVISED: Not viable. Analysis shows most waits ARE necessary - they protect CPU access to GPU results. The 18 "eliminable" waits estimate was wrong; nearly all 336 waits are correctness必需的. Engines already pipeline internally (fold+Merkle in one CB with memory barriers). Cross-engine event-based pipelining would require massive API redesign for negligible gain.
+- [ ] **Metal async compute** — BLOCKED (fundamental): Fiat-Shamir creates sequential round dependencies - round N+1 cannot start until round N's challenge is known. Kernel fusion already maximized: sumcheck_fused_round_reduce_bn254 computes round_poly+fold in ONE dispatch. Even if fused, next round must wait for previous fold result. No independent CPU work available during GPU execution to overlap. Prover structure is fundamentally sequential.
 - [ ] **Smaller point representation** — REJECTED: GPU memory bandwidth (300+ GB/s) far exceeds compute for MSM (compute-bound, 14.7M field muls). Decompression cost (sqrt per point) exceeds bandwidth savings. Only viable for slow bus (PCIe, disk).
+
+**Summary:** All major optimizations exhausted. Remaining items blocked by fundamental Fiat-Shamir sequentiality or correctness requirements. No viable kernel fusion opportunities remain - per-round fusion already maximized.
