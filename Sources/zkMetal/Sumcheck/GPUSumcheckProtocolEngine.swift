@@ -620,6 +620,7 @@ public final class GPUSumcheckProtocolEngine {
             currentLogSize -= 1
         }
 
+        try engine.waitForPendingReduce()
         let finalPtr = currentTable.contents().bindMemory(to: Fr.self, capacity: 1)
         let finalEval = finalPtr[0]
 

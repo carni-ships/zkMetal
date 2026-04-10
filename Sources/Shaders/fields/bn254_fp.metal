@@ -247,4 +247,156 @@ Fp fp_double(Fp a) {
     return r;
 }
 
+// --- Karatsuba Montgomery Multiplication ---
+// Splits 8-limb operands into two 4-limb halves: 3 half-multiplications
+// (4x4 = 16 mul32 each) = 48 mul32 for product, vs 64 for schoolbook.
+// Then 72 mul32 for Montgomery reduction. Total: 120 vs 136 (CIOS). -12% mul ops.
+Fp fp_mul_karatsuba(Fp a, Fp b) {
+    uint t[17];
+    for (int i = 0; i < 17; i++) t[i] = 0;
+
+    // z0 = a_lo * b_lo (limbs 0-3 x 0-3) -> t[0..7]
+    for (int i = 0; i < 4; i++) {
+        ulong carry = 0;
+        for (int j = 0; j < 4; j++) {
+            carry += ulong(t[i + j]) + ulong(a.v[i]) * ulong(b.v[j]);
+            t[i + j] = uint(carry & 0xFFFFFFFF);
+            carry >>= 32;
+        }
+        t[i + 4] += uint(carry);
+    }
+
+    // z2 = a_hi * b_hi (limbs 4-7 x 4-7) -> t[8..15]
+    for (int i = 0; i < 4; i++) {
+        ulong carry = 0;
+        for (int j = 0; j < 4; j++) {
+            carry += ulong(t[8 + i + j]) + ulong(a.v[4 + i]) * ulong(b.v[4 + j]);
+            t[8 + i + j] = uint(carry & 0xFFFFFFFF);
+            carry >>= 32;
+        }
+        t[12 + i] += uint(carry);
+    }
+
+    // Save z0, z2 for subtraction
+    uint z0[8], z2[8];
+    for (int i = 0; i < 8; i++) { z0[i] = t[i]; z2[i] = t[i + 8]; }
+
+    // s_a = a_lo + a_hi, s_b = b_lo + b_hi (4 limbs + carry bit)
+    uint sa[4], sb[4];
+    uint ca = 0, cb = 0;
+    {
+        ulong c = 0;
+        for (int i = 0; i < 4; i++) {
+            c += ulong(a.v[i]) + ulong(a.v[4 + i]);
+            sa[i] = uint(c & 0xFFFFFFFF);
+            c >>= 32;
+        }
+        ca = uint(c);
+    }
+    {
+        ulong c = 0;
+        for (int i = 0; i < 4; i++) {
+            c += ulong(b.v[i]) + ulong(b.v[4 + i]);
+            sb[i] = uint(c & 0xFFFFFFFF);
+            c >>= 32;
+        }
+        cb = uint(c);
+    }
+
+    // z1_core = sa * sb (4x4 schoolbook)
+    uint z1[9];
+    for (int i = 0; i < 9; i++) z1[i] = 0;
+    for (int i = 0; i < 4; i++) {
+        ulong carry = 0;
+        for (int j = 0; j < 4; j++) {
+            carry += ulong(z1[i + j]) + ulong(sa[i]) * ulong(sb[j]);
+            z1[i + j] = uint(carry & 0xFFFFFFFF);
+            carry >>= 32;
+        }
+        z1[i + 4] += uint(carry);
+    }
+
+    // Carry corrections (no extra muls, just adds)
+    if (ca) {
+        ulong carry = 0;
+        for (int i = 0; i < 4; i++) {
+            carry += ulong(z1[4 + i]) + ulong(sb[i]);
+            z1[4 + i] = uint(carry & 0xFFFFFFFF);
+            carry >>= 32;
+        }
+        z1[8] += uint(carry);
+    }
+    if (cb) {
+        ulong carry = 0;
+        for (int i = 0; i < 4; i++) {
+            carry += ulong(z1[4 + i]) + ulong(sa[i]);
+            z1[4 + i] = uint(carry & 0xFFFFFFFF);
+            carry >>= 32;
+        }
+        z1[8] += uint(carry);
+    }
+    if (ca && cb) { z1[8] += 1; }
+
+    // z1 = z1 - z0 - z2
+    {
+        long borrow = 0;
+        for (int i = 0; i < 8; i++) {
+            borrow += long(z1[i]) - long(z0[i]);
+            z1[i] = uint(borrow & 0xFFFFFFFF);
+            borrow >>= 32;
+        }
+        z1[8] = uint(long(z1[8]) + borrow);
+    }
+    {
+        long borrow = 0;
+        for (int i = 0; i < 8; i++) {
+            borrow += long(z1[i]) - long(z2[i]);
+            z1[i] = uint(borrow & 0xFFFFFFFF);
+            borrow >>= 32;
+        }
+        z1[8] = uint(long(z1[8]) + borrow);
+    }
+
+    // Add z1 into t at position 4
+    {
+        ulong carry = 0;
+        for (int i = 0; i < 9; i++) {
+            carry += ulong(t[4 + i]) + ulong(z1[i]);
+            t[4 + i] = uint(carry & 0xFFFFFFFF);
+            carry >>= 32;
+        }
+        for (int i = 13; i < 16 && carry; i++) {
+            carry += ulong(t[i]);
+            t[i] = uint(carry & 0xFFFFFFFF);
+            carry >>= 32;
+        }
+    }
+
+    // Montgomery reduction (same as fp_sqr)
+    for (int i = 0; i < 8; i++) {
+        uint m = t[i] * INV;
+        ulong c = ulong(t[i]) + ulong(m) * ulong(P[0]);
+        c >>= 32;
+        for (int j = 1; j < 8; j++) {
+            c += ulong(t[i + j]) + ulong(m) * ulong(P[j]);
+            t[i + j] = uint(c & 0xFFFFFFFF);
+            c >>= 32;
+        }
+        for (int j = i + 8; j < 16; j++) {
+            c += ulong(t[j]);
+            t[j] = uint(c & 0xFFFFFFFF);
+            c >>= 32;
+            if (c == 0) break;
+        }
+    }
+
+    Fp r;
+    for (int i = 0; i < 8; i++) r.v[i] = t[i + 8];
+    if (fp_gte(r, fp_modulus())) {
+        uint borrow;
+        r = fp_sub_raw(r, fp_modulus(), borrow);
+    }
+    return r;
+}
+
 #endif // BN254_FP_METAL

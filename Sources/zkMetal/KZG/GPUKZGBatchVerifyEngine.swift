@@ -482,7 +482,7 @@ public final class GPUKZGBatchVerifyEngine {
     ///   e(LHS_combined, [1]_2) == e(RHS_combined, [s]_2)
     ///
     /// Where:
-    ///   LHS_combined = sum_i r^i * (C_i - [y_i]*G - z_i * pi_i)
+    ///   LHS_combined = sum_i r^i * (C_i - [y_i]*G + [z_i] * pi_i)
     ///   RHS_combined = sum_i r^i * pi_i
     ///
     /// This reduces N pairing checks to exactly 2 pairings.
@@ -511,13 +511,13 @@ public final class GPUKZGBatchVerifyEngine {
 
         let g1 = pointFromAffine(srs[0])
 
-        // LHS_combined = sum_i r^i * (C_i - [y_i]*G - z_i * pi_i)
+        // LHS_combined = sum_i r^i * (C_i - [y_i]*G + [z_i] * pi_i)
         var lhsCombined = pointIdentity()
         for i in 0..<n {
             let yG = cPointScalarMul(g1, claims[i].value)
             let zPi = cPointScalarMul(claims[i].proof, claims[i].point)
             var term = pointAdd(claims[i].commitment, pointNeg(yG))
-            term = pointAdd(term, pointNeg(zPi))
+            term = pointAdd(term, zPi)
             lhsCombined = pointAdd(lhsCombined, cPointScalarMul(term, rPowers[i]))
         }
 
@@ -533,7 +533,7 @@ public final class GPUKZGBatchVerifyEngine {
         let rhsAff = batchToAffine([rhsCombined])[0]
         let negRhsAff = PointAffine(x: rhsAff.x, y: fpNeg(rhsAff.y))
 
-        return bn254PairingCheck([(lhsAff, g2Gen), (negRhsAff, g2Tau)])
+        return cBN254PairingCheck([(lhsAff, g2Gen), (negRhsAff, g2Tau)])
     }
 
     // MARK: - Incremental Batch Verification

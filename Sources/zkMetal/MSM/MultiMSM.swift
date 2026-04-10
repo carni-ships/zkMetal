@@ -35,8 +35,8 @@ public func multiMSM(
         return [try engine.msm(points: points, scalars: scalarSets[0])]
     }
 
-    // For small n, CPU Pippenger is faster per MSM
-    if n <= 2048 {
+    // For small n, CPU Pippenger is faster per MSM (crossover ~2^13)
+    if n <= 8192 {
         return scalarSets.map { scalars in
             cPippengerMSM(points: points, scalars: scalars)
         }

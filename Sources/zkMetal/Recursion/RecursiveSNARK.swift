@@ -410,6 +410,10 @@ public class RecursiveSNARKProver {
             publicInputs: outerPublicInputs, witness: outerWitness
         )
 
+        // Debug: verify immediately after proving
+        let selfCheck = Groth16Verifier().verify(proof: outerProof, vk: outerVK, publicInputs: outerPublicInputs)
+        if !selfCheck { fputs("  [recursive-prover-debug] SELF-CHECK FAILED: proof doesn't verify immediately after proving!\n", stderr) }
+
         return RecursiveSNARKProof(
             outerProof: outerProof,
             innerProof: innerProof,
@@ -471,6 +475,10 @@ public class RecursiveSNARKVerifier {
         )
         let outerPublicInputs = Array(z[1...(outerR1CS.numPublic)])
 
+        // Verify R1CS satisfiability first (debug)
+        let rSat = outerR1CS.isSatisfied(z: z)
+        if !rSat { fputs("  [recursive-debug] R1CS NOT satisfied by reconstructed z\n", stderr) }
+
         let outerVerifier = Groth16Verifier()
         let outerValid = outerVerifier.verify(
             proof: recursiveProof.outerProof,
@@ -478,6 +486,7 @@ public class RecursiveSNARKVerifier {
             publicInputs: outerPublicInputs
         )
 
+        if !outerValid { fputs("  [recursive-debug] outer Groth16 verification FAILED\n", stderr) }
         guard outerValid else { return false }
 
         // Phase 2: Verify inner proof's pairing equation (deferred from circuit)
@@ -486,6 +495,7 @@ public class RecursiveSNARKVerifier {
             vk: recursiveProof.innerVK,
             publicInputs: recursiveProof.propagatedPublicInputs
         )
+        if !innerValid { fputs("  [recursive-debug] inner proof re-verification FAILED\n", stderr) }
 
         return innerValid
     }

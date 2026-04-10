@@ -24,6 +24,8 @@ private class LazyEngines {
     static let shared = LazyEngines()
 
     private var _msm: MetalMSM?
+    private var _pallasMsm: PallasMSM?
+    private var _vestaMsm: VestaMSM?
     private var _ntt: NTTEngine?
     private var _poseidon2: Poseidon2Engine?
     private var _keccak: Keccak256Engine?
@@ -46,6 +48,24 @@ private class LazyEngines {
         if let e = _msm { return e }
         let e = try MetalMSM()
         _msm = e
+        return e
+    }
+
+    func pallasMsm() throws -> PallasMSM {
+        lock.lock()
+        defer { lock.unlock() }
+        if let e = _pallasMsm { return e }
+        let e = try PallasMSM()
+        _pallasMsm = e
+        return e
+    }
+
+    func vestaMsm() throws -> VestaMSM {
+        lock.lock()
+        defer { lock.unlock() }
+        if let e = _vestaMsm { return e }
+        let e = try VestaMSM()
+        _vestaMsm = e
         return e
     }
 
@@ -106,6 +126,46 @@ public func zkmetal_msm_engine_create(_ out: UnsafeMutablePointer<UnsafeMutableR
 public func zkmetal_msm_engine_destroy(_ engine: UnsafeMutableRawPointer?) {
     guard let engine = engine else { return }
     Unmanaged<MetalMSM>.fromOpaque(engine).release()
+}
+
+@_cdecl("zkmetal_pallas_msm_engine_create")
+public func zkmetal_pallas_msm_engine_create(_ out: UnsafeMutablePointer<UnsafeMutableRawPointer?>) -> Int32 {
+    do {
+        let engine = try PallasMSM()
+        let retained = Unmanaged.passRetained(engine).toOpaque()
+        out.pointee = retained
+        return ZKMETAL_SUCCESS
+    } catch MSMError.noGPU {
+        return ZKMETAL_ERR_NO_GPU
+    } catch {
+        return ZKMETAL_ERR_GPU_ERROR
+    }
+}
+
+@_cdecl("zkmetal_pallas_msm_engine_destroy")
+public func zkmetal_pallas_msm_engine_destroy(_ engine: UnsafeMutableRawPointer?) {
+    guard let engine = engine else { return }
+    Unmanaged<PallasMSM>.fromOpaque(engine).release()
+}
+
+@_cdecl("zkmetal_vesta_msm_engine_create")
+public func zkmetal_vesta_msm_engine_create(_ out: UnsafeMutablePointer<UnsafeMutableRawPointer?>) -> Int32 {
+    do {
+        let engine = try VestaMSM()
+        let retained = Unmanaged.passRetained(engine).toOpaque()
+        out.pointee = retained
+        return ZKMETAL_SUCCESS
+    } catch MSMError.noGPU {
+        return ZKMETAL_ERR_NO_GPU
+    } catch {
+        return ZKMETAL_ERR_GPU_ERROR
+    }
+}
+
+@_cdecl("zkmetal_vesta_msm_engine_destroy")
+public func zkmetal_vesta_msm_engine_destroy(_ engine: UnsafeMutableRawPointer?) {
+    guard let engine = engine else { return }
+    Unmanaged<VestaMSM>.fromOpaque(engine).release()
 }
 
 @_cdecl("zkmetal_ntt_engine_create")
@@ -261,6 +321,164 @@ private func _msm_impl(
     let scalarLimbs = 8
 
     var points = [PointAffine](repeating: PointAffine(x: Fp(v: (0,0,0,0,0,0,0,0)), y: Fp(v: (0,0,0,0,0,0,0,0))), count: n)
+    _ = points.withUnsafeMutableBytes { dst in
+        memcpy(dst.baseAddress!, pointsPtr, n * pointSize)
+    }
+
+    var scalars = [[UInt32]](repeating: [UInt32](repeating: 0, count: scalarLimbs), count: n)
+    scalarsPtr.withMemoryRebound(to: UInt32.self, capacity: n * scalarLimbs) { scalarSrc in
+        for i in 0..<n {
+            for j in 0..<scalarLimbs {
+                scalars[i][j] = scalarSrc[i * scalarLimbs + j]
+            }
+        }
+    }
+
+    do {
+        let result = try msm.msm(points: points, scalars: scalars)
+        _ = withUnsafeBytes(of: result.x) { src in memcpy(resultX, src.baseAddress!, 32) }
+        _ = withUnsafeBytes(of: result.y) { src in memcpy(resultY, src.baseAddress!, 32) }
+        _ = withUnsafeBytes(of: result.z) { src in memcpy(resultZ, src.baseAddress!, 32) }
+        return ZKMETAL_SUCCESS
+    } catch MSMError.invalidInput {
+        return ZKMETAL_ERR_INVALID_INPUT
+    } catch {
+        return ZKMETAL_ERR_GPU_ERROR
+    }
+}
+
+// MARK: - Pallas MSM (engine-based)
+
+@_cdecl("zkmetal_pallas_msm")
+public func zkmetal_pallas_msm(
+    _ engine: UnsafeMutableRawPointer,
+    _ pointsPtr: UnsafePointer<UInt8>,
+    _ scalarsPtr: UnsafePointer<UInt8>,
+    _ nPoints: UInt32,
+    _ resultX: UnsafeMutablePointer<UInt8>,
+    _ resultY: UnsafeMutablePointer<UInt8>,
+    _ resultZ: UnsafeMutablePointer<UInt8>
+) -> Int32 {
+    let msm = Unmanaged<PallasMSM>.fromOpaque(engine).takeUnretainedValue()
+    return _pallas_msm_impl(msm, pointsPtr, scalarsPtr, nPoints, resultX, resultY, resultZ)
+}
+
+// MARK: - Pallas MSM (convenience — lazy singleton)
+
+@_cdecl("zkmetal_pallas_msm_auto")
+public func zkmetal_pallas_msm_auto(
+    _ pointsPtr: UnsafePointer<UInt8>,
+    _ scalarsPtr: UnsafePointer<UInt8>,
+    _ nPoints: UInt32,
+    _ resultX: UnsafeMutablePointer<UInt8>,
+    _ resultY: UnsafeMutablePointer<UInt8>,
+    _ resultZ: UnsafeMutablePointer<UInt8>
+) -> Int32 {
+    do {
+        let msm = try LazyEngines.shared.pallasMsm()
+        return _pallas_msm_impl(msm, pointsPtr, scalarsPtr, nPoints, resultX, resultY, resultZ)
+    } catch MSMError.noGPU {
+        return ZKMETAL_ERR_NO_GPU
+    } catch {
+        return ZKMETAL_ERR_GPU_ERROR
+    }
+}
+
+private func _pallas_msm_impl(
+    _ msm: PallasMSM,
+    _ pointsPtr: UnsafePointer<UInt8>,
+    _ scalarsPtr: UnsafePointer<UInt8>,
+    _ nPoints: UInt32,
+    _ resultX: UnsafeMutablePointer<UInt8>,
+    _ resultY: UnsafeMutablePointer<UInt8>,
+    _ resultZ: UnsafeMutablePointer<UInt8>
+) -> Int32 {
+    let n = Int(nPoints)
+    if n == 0 { return ZKMETAL_ERR_INVALID_INPUT }
+
+    let pointSize = MemoryLayout<PallasPointAffine>.stride
+    let scalarLimbs = 8
+
+    var points = [PallasPointAffine](repeating: PallasPointAffine(x: PallasFp(v: (0,0,0,0,0,0,0,0)), y: PallasFp(v: (0,0,0,0,0,0,0,0))), count: n)
+    _ = points.withUnsafeMutableBytes { dst in
+        memcpy(dst.baseAddress!, pointsPtr, n * pointSize)
+    }
+
+    var scalars = [[UInt32]](repeating: [UInt32](repeating: 0, count: scalarLimbs), count: n)
+    scalarsPtr.withMemoryRebound(to: UInt32.self, capacity: n * scalarLimbs) { scalarSrc in
+        for i in 0..<n {
+            for j in 0..<scalarLimbs {
+                scalars[i][j] = scalarSrc[i * scalarLimbs + j]
+            }
+        }
+    }
+
+    do {
+        let result = try msm.msm(points: points, scalars: scalars)
+        _ = withUnsafeBytes(of: result.x) { src in memcpy(resultX, src.baseAddress!, 32) }
+        _ = withUnsafeBytes(of: result.y) { src in memcpy(resultY, src.baseAddress!, 32) }
+        _ = withUnsafeBytes(of: result.z) { src in memcpy(resultZ, src.baseAddress!, 32) }
+        return ZKMETAL_SUCCESS
+    } catch MSMError.invalidInput {
+        return ZKMETAL_ERR_INVALID_INPUT
+    } catch {
+        return ZKMETAL_ERR_GPU_ERROR
+    }
+}
+
+// MARK: - Vesta MSM (engine-based)
+
+@_cdecl("zkmetal_vesta_msm")
+public func zkmetal_vesta_msm(
+    _ engine: UnsafeMutableRawPointer,
+    _ pointsPtr: UnsafePointer<UInt8>,
+    _ scalarsPtr: UnsafePointer<UInt8>,
+    _ nPoints: UInt32,
+    _ resultX: UnsafeMutablePointer<UInt8>,
+    _ resultY: UnsafeMutablePointer<UInt8>,
+    _ resultZ: UnsafeMutablePointer<UInt8>
+) -> Int32 {
+    let msm = Unmanaged<VestaMSM>.fromOpaque(engine).takeUnretainedValue()
+    return _vesta_msm_impl(msm, pointsPtr, scalarsPtr, nPoints, resultX, resultY, resultZ)
+}
+
+// MARK: - Vesta MSM (convenience — lazy singleton)
+
+@_cdecl("zkmetal_vesta_msm_auto")
+public func zkmetal_vesta_msm_auto(
+    _ pointsPtr: UnsafePointer<UInt8>,
+    _ scalarsPtr: UnsafePointer<UInt8>,
+    _ nPoints: UInt32,
+    _ resultX: UnsafeMutablePointer<UInt8>,
+    _ resultY: UnsafeMutablePointer<UInt8>,
+    _ resultZ: UnsafeMutablePointer<UInt8>
+) -> Int32 {
+    do {
+        let msm = try LazyEngines.shared.vestaMsm()
+        return _vesta_msm_impl(msm, pointsPtr, scalarsPtr, nPoints, resultX, resultY, resultZ)
+    } catch MSMError.noGPU {
+        return ZKMETAL_ERR_NO_GPU
+    } catch {
+        return ZKMETAL_ERR_GPU_ERROR
+    }
+}
+
+private func _vesta_msm_impl(
+    _ msm: VestaMSM,
+    _ pointsPtr: UnsafePointer<UInt8>,
+    _ scalarsPtr: UnsafePointer<UInt8>,
+    _ nPoints: UInt32,
+    _ resultX: UnsafeMutablePointer<UInt8>,
+    _ resultY: UnsafeMutablePointer<UInt8>,
+    _ resultZ: UnsafeMutablePointer<UInt8>
+) -> Int32 {
+    let n = Int(nPoints)
+    if n == 0 { return ZKMETAL_ERR_INVALID_INPUT }
+
+    let pointSize = MemoryLayout<VestaPointAffine>.stride
+    let scalarLimbs = 8
+
+    var points = [VestaPointAffine](repeating: VestaPointAffine(x: VestaFp(v: (0,0,0,0,0,0,0,0)), y: VestaFp(v: (0,0,0,0,0,0,0,0))), count: n)
     _ = points.withUnsafeMutableBytes { dst in
         memcpy(dst.baseAddress!, pointsPtr, n * pointSize)
     }

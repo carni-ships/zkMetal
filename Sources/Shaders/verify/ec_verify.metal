@@ -59,7 +59,7 @@ kernel void batch_ec_oncurve_check(
 
     // x^3 = x * x * x
     Fp x2 = fp_sqr(x);
-    Fp x3 = fp_mul(x2, x);
+    Fp x3 = fp_mul_karatsuba(x2, x);
 
     // x^3 + b (b=3 for BN254, in Montgomery form)
     Fp b = fp_three_mont();

@@ -44,19 +44,19 @@ G2Fp2 g2fp2_double(G2Fp2 a) {
 // (a0+a1*u)(b0+b1*u) = (a0*b0 - a1*b1) + (a0*b1 + a1*b0)*u
 // Karatsuba: c1 = (a0+a1)(b0+b1) - a0*b0 - a1*b1
 G2Fp2 g2fp2_mul(G2Fp2 a, G2Fp2 b) {
-    Fp t0 = fp_mul(a.c0, b.c0);
-    Fp t1 = fp_mul(a.c1, b.c1);
+    Fp t0 = fp_mul_karatsuba(a.c0, b.c0);
+    Fp t1 = fp_mul_karatsuba(a.c1, b.c1);
     G2Fp2 r;
     r.c0 = fp_sub(t0, t1);
-    r.c1 = fp_sub(fp_mul(fp_add(a.c0, a.c1), fp_add(b.c0, b.c1)), fp_add(t0, t1));
+    r.c1 = fp_sub(fp_mul_karatsuba(fp_add(a.c0, a.c1), fp_add(b.c0, b.c1)), fp_add(t0, t1));
     return r;
 }
 
 // (a0+a1*u)^2 = (a0+a1)(a0-a1) + 2*a0*a1*u
 G2Fp2 g2fp2_sqr(G2Fp2 a) {
-    Fp t0 = fp_mul(a.c0, a.c1);
+    Fp t0 = fp_mul_karatsuba(a.c0, a.c1);
     G2Fp2 r;
-    r.c0 = fp_mul(fp_add(a.c0, a.c1), fp_sub(a.c0, a.c1));
+    r.c0 = fp_mul_karatsuba(fp_add(a.c0, a.c1), fp_sub(a.c0, a.c1));
     r.c1 = fp_double(t0);
     return r;
 }

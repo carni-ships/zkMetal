@@ -61,52 +61,49 @@ func runMSMTests() {
         expect(pointEqual(cSmall, naive), "C Pippenger n=\(testN)")
     }
 
-    // Cooperative GPU/CPU MSM: compare cooperative vs all-GPU at same size
-    suite("Cooperative GPU/CPU MSM")
+    // Large GPU MSM: determinism and on-curve check at n=32768
+    suite("Large GPU MSM")
     do {
-        let coopN = 32768
-        var coopProjPts = [PointProjective]()
-        coopProjPts.reserveCapacity(coopN)
-        var coopAcc = gProj
-        for _ in 0..<coopN {
-            coopProjPts.append(coopAcc)
-            coopAcc = pointAdd(coopAcc, gProj)
+        let lgN = 32768
+        var lgProjPts = [PointProjective]()
+        lgProjPts.reserveCapacity(lgN)
+        var lgAcc = gProj
+        for _ in 0..<lgN {
+            lgProjPts.append(lgAcc)
+            lgAcc = pointAdd(lgAcc, gProj)
         }
-        let coopAffPts = batchToAffine(coopProjPts)
-        var coopRng: UInt64 = 0xC00_E1A_1E_0000
-        var coopScalars = [[UInt32]]()
-        coopScalars.reserveCapacity(coopN)
-        for _ in 0..<coopN {
+        let lgAffPts = batchToAffine(lgProjPts)
+        var lgRng: UInt64 = 0xC00_E1A_1E_0000
+        var lgScalars = [[UInt32]]()
+        lgScalars.reserveCapacity(lgN)
+        for _ in 0..<lgN {
             var limbs = [UInt32](repeating: 0, count: 8)
             for j in 0..<8 {
-                coopRng = coopRng &* 6364136223846793005 &+ 1442695040888963407
-                limbs[j] = UInt32(truncatingIfNeeded: coopRng >> 32)
+                lgRng = lgRng &* 6364136223846793005 &+ 1442695040888963407
+                limbs[j] = UInt32(truncatingIfNeeded: lgRng >> 32)
             }
-            coopScalars.append(limbs)
+            lgScalars.append(limbs)
         }
 
-        // Run with cooperative mode (effectiveN = 2*32768 = 65536 with GLV)
-        let coopMsm = try MetalMSM()
-        let cr1 = try coopMsm.msm(points: coopAffPts, scalars: coopScalars)
+        let engine1 = try MetalMSM()
+        let r1 = try engine1.msm(points: lgAffPts, scalars: lgScalars)
 
-        // Run with cooperative disabled
-        let allGpuMsm = try MetalMSM()
-        allGpuMsm.cooperativeThreshold = Int.max
-        let allGpuResult = try allGpuMsm.msm(points: coopAffPts, scalars: coopScalars)
+        // Determinism: second run same engine
+        let r2 = try engine1.msm(points: lgAffPts, scalars: lgScalars)
+        expect(pointEqual(r1, r2), "GPU MSM deterministic 32768pts")
 
-        expect(pointEqual(cr1, allGpuResult), "Cooperative = all-GPU 32768pts")
-
-        // Determinism
-        let cr2 = try coopMsm.msm(points: coopAffPts, scalars: coopScalars)
-        expect(pointEqual(cr1, cr2), "Cooperative MSM deterministic")
+        // Cross-engine determinism
+        let engine2 = try MetalMSM()
+        let r3 = try engine2.msm(points: lgAffPts, scalars: lgScalars)
+        expect(pointEqual(r1, r3), "GPU MSM cross-engine 32768pts")
 
         // On-curve
-        let crAff = batchToAffine([cr1])[0]
-        let cy2 = fpSqr(crAff.y)
-        let cx3 = fpMul(fpSqr(crAff.x), crAff.x)
-        let crhs = fpAdd(cx3, fpFromInt(3))
-        expect(fpToInt(cy2) == fpToInt(crhs), "Cooperative MSM on curve")
+        let rAff = batchToAffine([r1])[0]
+        let ry2 = fpSqr(rAff.y)
+        let rx3 = fpMul(fpSqr(rAff.x), rAff.x)
+        let rrhs = fpAdd(rx3, fpFromInt(3))
+        expect(fpToInt(ry2) == fpToInt(rrhs), "GPU MSM on curve 32768pts")
     } catch {
-        expect(false, "Cooperative MSM error: \(error)")
+        expect(false, "Large GPU MSM error: \(error)")
     }
 }

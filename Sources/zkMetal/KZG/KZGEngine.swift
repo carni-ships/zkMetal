@@ -136,7 +136,7 @@ public class KZGEngine {
         }
         let pts = srsPrefix(n)
         // For small sizes (CPU Pippenger path), use flat limbs to avoid [[UInt32]] allocation
-        if n <= 2048 {
+        if n <= 8192 {
             let flatLimbs = batchFrToFlatLimbs(coeffs)
             return cPippengerMSMFlat(points: pts, flatScalars: flatLimbs)
         }
@@ -166,7 +166,7 @@ public class KZGEngine {
         let pts = srsPrefix(n)
 
         // For small sizes, use CPU path (flat limbs)
-        if n <= 2048 {
+        if n <= 8192 {
             return polynomials.map { coeffs in
                 let flatLimbs = batchFrToFlatLimbs(coeffs)
                 return cPippengerMSMFlat(points: pts, flatScalars: flatLimbs)

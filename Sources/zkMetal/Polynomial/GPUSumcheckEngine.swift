@@ -44,6 +44,7 @@ public class GPUSumcheckEngine {
     private var evalBufCapacity: Int = 0  // in bytes
     private var partialBuf: MTLBuffer?
     private var partialBufCapacity: Int = 0  // in bytes
+    private var lastReduceCmdBuf: MTLCommandBuffer?  // deferred wait for pipelined fold
 
     // CPU fallback threshold: below this element count, use C kernels on CPU.
     // At 4096 elements (128KB for BN254 Fr), data fits in L1/L2 cache and
@@ -524,12 +525,23 @@ public class GPUSumcheckEngine {
         enc.endEncoding()
 
         cmdBuf.commit()
-        cmdBuf.waitUntilCompleted()
-        if let error = cmdBuf.error {
-            throw MSMError.gpuError(error.localizedDescription)
-        }
+        // Don't wait — Metal command queue ordering guarantees this CB completes
+        // before any subsequently committed CB on the same queue. The next
+        // computeRoundPolyBN254 wait implicitly synchronizes the fold.
+        lastReduceCmdBuf = cmdBuf
 
         return outputBuf
+    }
+
+    /// Wait for the last pipelined reduce operation to complete.
+    /// Call before CPU access to the fold output buffer.
+    public func waitForPendingReduce() throws {
+        guard let cb = lastReduceCmdBuf else { return }
+        cb.waitUntilCompleted()
+        if let error = cb.error {
+            throw MSMError.gpuError(error.localizedDescription)
+        }
+        lastReduceCmdBuf = nil
     }
 
     // MARK: - BabyBear Operations

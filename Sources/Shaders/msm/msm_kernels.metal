@@ -110,26 +110,35 @@ kernel void msm_reduce_cooperative(
     uint offset = bucket_offsets[flat_idx];
 
     // Each thread accumulates points at stride 32
+    // First point: convert to projective (handles identity init)
     PointProjective acc = point_identity();
-    for (uint i = lid; i < count; i += 32) {
-        uint raw_idx = sorted_indices[base + offset + i];
-        PointAffine pt = points[raw_idx & 0x7FFFFFFFu];
-        if (raw_idx & 0x80000000u) pt.y = fp_neg(pt.y);
-        if (point_is_identity(acc)) {
-            acc = point_from_affine(pt);
-        } else {
-            acc = point_add_mixed(acc, pt);
+    bool acc_valid = false;
+    if (lid < count) {
+        uint raw_idx0 = sorted_indices[base + offset + lid];
+        PointAffine pt0 = points[raw_idx0 & 0x7FFFFFFFu];
+        if (raw_idx0 & 0x80000000u) pt0.y = fp_neg(pt0.y);
+        acc = point_from_affine(pt0);
+        acc_valid = true;
+        // Remaining points: unsafe mixed add (no identity/doubling checks)
+        for (uint i = lid + 32; i < count; i += 32) {
+            uint raw_idx = sorted_indices[base + offset + i];
+            PointAffine pt = points[raw_idx & 0x7FFFFFFFu];
+            if (raw_idx & 0x80000000u) pt.y = fp_neg(pt.y);
+            acc = point_add_mixed_unsafe(acc, pt);
         }
     }
 
     // SIMD tree reduction (5 levels for 32 lanes)
+    // Identity checks use bool flag instead of fp_is_zero per level
     for (uint off = 16; off > 0; off >>= 1) {
         PointProjective other = simd_shuffle_down_point(acc, off);
+        bool other_valid = (simd_shuffle_down(uint(acc_valid), off) != 0);
         if (lid < off) {
-            if (point_is_identity(acc)) {
+            if (!acc_valid) {
                 acc = other;
-            } else if (!point_is_identity(other)) {
-                acc = point_add(acc, other);
+                acc_valid = other_valid;
+            } else if (other_valid) {
+                acc = point_add_unsafe(acc, other);
             }
         }
     }
@@ -263,6 +272,26 @@ kernel void msm_horner_combine(
         }
     }
     final_result[0] = result;
+}
+
+// GPU prefix sum per window: exclusive scan of bucket counts → offsets + positions.
+// One thread per window. Sequential scan of nBuckets elements (fast for nBuckets ≤ 64K).
+kernel void gpu_prefix_sum_per_window(
+    device const uint* counts            [[buffer(0)]],   // histogram [nWindows × nBuckets]
+    device uint* offsets                 [[buffer(1)]],   // output: bucket offsets
+    device uint* positions               [[buffer(2)]],   // output: scatter positions (mutable copy of offsets)
+    constant uint& n_buckets             [[buffer(3)]],
+    constant uint& n_windows             [[buffer(4)]],
+    uint gid                             [[thread_position_in_grid]]
+) {
+    if (gid >= n_windows) return;
+    uint wOff = gid * n_buckets;
+    uint running = 0;
+    for (uint i = 0; i < n_buckets; i++) {
+        offsets[wOff + i] = running;
+        positions[wOff + i] = running;
+        running += counts[wOff + i];
+    }
 }
 
 // Signed-digit scalar recoding: extract window digits with carry propagation

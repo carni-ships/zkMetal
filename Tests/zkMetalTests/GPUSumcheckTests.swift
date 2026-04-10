@@ -119,6 +119,7 @@ public func runGPUSumcheckTests() {
             }
 
             let gpuOutBuf = try engine.reduceBN254Table(table: tableBuf, logSize: logSize, challenge: challenge)
+            try engine.waitForPendingReduce()
             let halfN = evals.count / 2
             let gpuPtr = gpuOutBuf.contents().bindMemory(to: Fr.self, capacity: halfN)
 

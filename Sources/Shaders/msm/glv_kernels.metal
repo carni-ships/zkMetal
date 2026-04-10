@@ -284,7 +284,7 @@ kernel void glv_endomorphism(
     beta.v[6] = 0x26594943u; beta.v[7] = 0x2c3b3f0du;
 
     PointAffine endo;
-    endo.x = fp_mul(beta, p.x);
+    endo.x = fp_mul_karatsuba(beta, p.x);
 
     if (neg2_flags[gid]) {
         uint borrow;

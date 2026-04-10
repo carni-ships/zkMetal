@@ -182,6 +182,8 @@ public class GPUSumcheckProverEngine {
             currentLogSize -= 1
         }
 
+        // Wait for the last pipelined fold before CPU access
+        try engine.waitForPendingReduce()
         // Final evaluation is the single remaining element
         let finalPtr = currentTable.contents().bindMemory(to: Fr.self, capacity: 1)
         let finalEval = finalPtr[0]

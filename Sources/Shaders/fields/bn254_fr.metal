@@ -286,4 +286,83 @@ Fr fr_inv(Fr a) {
     return fr_pow(a, exp);
 }
 
+// --- Karatsuba Montgomery Multiplication ---
+// See fp_mul_karatsuba for detailed explanation.
+Fr fr_mul_karatsuba(Fr a, Fr b) {
+    uint t[17];
+    for (int i = 0; i < 17; i++) t[i] = 0;
+
+    for (int i = 0; i < 4; i++) {
+        ulong carry = 0;
+        for (int j = 0; j < 4; j++) {
+            carry += ulong(t[i + j]) + ulong(a.v[i]) * ulong(b.v[j]);
+            t[i + j] = uint(carry & 0xFFFFFFFF);
+            carry >>= 32;
+        }
+        t[i + 4] += uint(carry);
+    }
+    for (int i = 0; i < 4; i++) {
+        ulong carry = 0;
+        for (int j = 0; j < 4; j++) {
+            carry += ulong(t[8 + i + j]) + ulong(a.v[4 + i]) * ulong(b.v[4 + j]);
+            t[8 + i + j] = uint(carry & 0xFFFFFFFF);
+            carry >>= 32;
+        }
+        t[12 + i] += uint(carry);
+    }
+
+    uint z0[8], z2[8];
+    for (int i = 0; i < 8; i++) { z0[i] = t[i]; z2[i] = t[i + 8]; }
+
+    uint sa[4], sb[4];
+    uint ca = 0, cb = 0;
+    { ulong c = 0; for (int i = 0; i < 4; i++) { c += ulong(a.v[i]) + ulong(a.v[4 + i]); sa[i] = uint(c & 0xFFFFFFFF); c >>= 32; } ca = uint(c); }
+    { ulong c = 0; for (int i = 0; i < 4; i++) { c += ulong(b.v[i]) + ulong(b.v[4 + i]); sb[i] = uint(c & 0xFFFFFFFF); c >>= 32; } cb = uint(c); }
+
+    uint z1[9];
+    for (int i = 0; i < 9; i++) z1[i] = 0;
+    for (int i = 0; i < 4; i++) {
+        ulong carry = 0;
+        for (int j = 0; j < 4; j++) {
+            carry += ulong(z1[i + j]) + ulong(sa[i]) * ulong(sb[j]);
+            z1[i + j] = uint(carry & 0xFFFFFFFF);
+            carry >>= 32;
+        }
+        z1[i + 4] += uint(carry);
+    }
+    if (ca) { ulong carry = 0; for (int i = 0; i < 4; i++) { carry += ulong(z1[4 + i]) + ulong(sb[i]); z1[4 + i] = uint(carry & 0xFFFFFFFF); carry >>= 32; } z1[8] += uint(carry); }
+    if (cb) { ulong carry = 0; for (int i = 0; i < 4; i++) { carry += ulong(z1[4 + i]) + ulong(sa[i]); z1[4 + i] = uint(carry & 0xFFFFFFFF); carry >>= 32; } z1[8] += uint(carry); }
+    if (ca && cb) { z1[8] += 1; }
+
+    { long borrow = 0; for (int i = 0; i < 8; i++) { borrow += long(z1[i]) - long(z0[i]); z1[i] = uint(borrow & 0xFFFFFFFF); borrow >>= 32; } z1[8] = uint(long(z1[8]) + borrow); }
+    { long borrow = 0; for (int i = 0; i < 8; i++) { borrow += long(z1[i]) - long(z2[i]); z1[i] = uint(borrow & 0xFFFFFFFF); borrow >>= 32; } z1[8] = uint(long(z1[8]) + borrow); }
+
+    { ulong carry = 0; for (int i = 0; i < 9; i++) { carry += ulong(t[4 + i]) + ulong(z1[i]); t[4 + i] = uint(carry & 0xFFFFFFFF); carry >>= 32; } for (int i = 13; i < 16 && carry; i++) { carry += ulong(t[i]); t[i] = uint(carry & 0xFFFFFFFF); carry >>= 32; } }
+
+    for (int i = 0; i < 8; i++) {
+        uint m = t[i] * FR_INV;
+        ulong c = ulong(t[i]) + ulong(m) * ulong(FR_P[0]);
+        c >>= 32;
+        for (int j = 1; j < 8; j++) {
+            c += ulong(t[i + j]) + ulong(m) * ulong(FR_P[j]);
+            t[i + j] = uint(c & 0xFFFFFFFF);
+            c >>= 32;
+        }
+        for (int j = i + 8; j < 16; j++) {
+            c += ulong(t[j]);
+            t[j] = uint(c & 0xFFFFFFFF);
+            c >>= 32;
+            if (c == 0) break;
+        }
+    }
+
+    Fr r;
+    for (int i = 0; i < 8; i++) r.v[i] = t[i + 8];
+    if (fr_gte(r, fr_modulus())) {
+        uint borrow;
+        r = fr_sub_raw(r, fr_modulus(), borrow);
+    }
+    return r;
+}
+
 #endif // BN254_FR_METAL

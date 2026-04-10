@@ -264,11 +264,37 @@ public class BasefoldEngine {
             foldBufSize = maxHalf
         }
 
-        // Phase 1: GPU fold using fused-2 (fold-by-4) where possible.
-        guard let foldCB = commandQueue.makeCommandBuffer() else {
+        // Pre-compute tree metadata (doesn't depend on fold results)
+        var treeBufPtrs: [MTLBuffer?] = []
+        var treeSizesArr: [Int] = []
+        var treeNodeCounts: [Int] = []
+        var preN = n
+        for level in 0..<numLevels {
+            let divisor = (levelStrides[level] == 2 && preN >= 4) ? 4 : 2
+            let layerN = preN / divisor
+            if layerN <= 1 {
+                treeBufPtrs.append(nil)
+                treeSizesArr.append(0)
+                treeNodeCounts.append(0)
+            } else {
+                treeBufPtrs.append(roundTreeBufs[level]!)
+                treeSizesArr.append(layerN)
+                treeNodeCounts.append(2 * layerN - 1)
+            }
+            preN = layerN
+        }
+        var treeIdxs: [Int] = []
+        for (idx, sz) in treeSizesArr.enumerated() {
+            if sz > 0 { treeIdxs.append(idx) }
+        }
+
+        // Single command buffer for fold + Merkle (eliminates intermediate CPU wait)
+        guard let cb = commandQueue.makeCommandBuffer() else {
             throw MSMError.noCommandBuffer
         }
-        let foldEnc = foldCB.makeComputeCommandEncoder()!
+
+        // Phase 1: GPU fold using fused-2 (fold-by-4) where possible.
+        let foldEnc = cb.makeComputeCommandEncoder()!
 
         var currentInputBuf = inputBuf!
         currentN = n
@@ -279,7 +305,6 @@ public class BasefoldEngine {
             let outputBuf: MTLBuffer = roundTreeBufs[level] ?? foldBufA!
 
             if s == 2 && currentN >= 4 {
-                // Fused fold-by-4: consume two challenges, reduce by 4x
                 let quarterN = currentN / 4
                 var alpha0 = point[pointIdx]
                 var alpha1 = point[pointIdx + 1]
@@ -296,7 +321,6 @@ public class BasefoldEngine {
                 currentN = quarterN
                 pointIdx += 2
             } else {
-                // Single fold: consume one challenge, reduce by 2x
                 let halfN = currentN / 2
                 var alpha = point[pointIdx]
                 var hnVal = UInt32(halfN)
@@ -318,20 +342,26 @@ public class BasefoldEngine {
             }
         }
         foldEnc.endEncoding()
-        foldCB.commit()
-        foldCB.waitUntilCompleted()
-        if let foldErr = foldCB.error {
-            throw MSMError.gpuError("Fold: \(foldErr.localizedDescription)")
+
+        // Phase 2: Merkle trees (same command buffer — fold results flow directly)
+        if !treeIdxs.isEmpty {
+            let merkleEnc = cb.makeComputeCommandEncoder()!
+            for idx in treeIdxs {
+                merkleEngine.encodeMerkleRoot(encoder: merkleEnc, treeBuf: treeBufPtrs[idx]!, treeOffset: 0, n: treeSizesArr[idx])
+                merkleEnc.memoryBarrier(scope: .buffers)
+            }
+            merkleEnc.endEncoding()
         }
 
-        // Phase 2: Extract layers from tree buffers and set up Merkle trees.
+        cb.commit()
+        cb.waitUntilCompleted()
+        if let err = cb.error { throw MSMError.gpuError("Fold+Merkle: \(err.localizedDescription)") }
+
+        // Phase 3: Extract layers and roots from GPU buffers (CPU-side)
         var layers: [[Fr]] = []
         layers.reserveCapacity(numLevels)
         var roots: [Fr] = []
         roots.reserveCapacity(numLevels)
-        var treeBufPtrs: [MTLBuffer?] = []
-        var treeSizesArr: [Int] = []
-        var treeNodeCounts: [Int] = []
 
         currentN = n
         for level in 0..<numLevels {
@@ -347,46 +377,15 @@ public class BasefoldEngine {
                     layers.append([])
                     roots.append(Fr.zero)
                 }
-                treeBufPtrs.append(nil)
-                treeSizesArr.append(0)
-                treeNodeCounts.append(0)
             } else {
-                let treeSize = 2 * layerN - 1
                 let tb = roundTreeBufs[level]!
                 let ptr = tb.contents().bindMemory(to: Fr.self, capacity: layerN)
                 layers.append(Array(UnsafeBufferPointer(start: ptr, count: layerN)))
-                treeBufPtrs.append(tb)
-                treeSizesArr.append(layerN)
-                treeNodeCounts.append(treeSize)
-                roots.append(Fr.zero)
+                let tsz = treeNodeCounts[level]
+                let rootPtr = tb.contents().bindMemory(to: Fr.self, capacity: tsz)
+                roots.append(rootPtr[tsz - 1])
             }
             currentN = layerN
-        }
-
-        // Build all Merkle trees in a single command buffer.
-        var treeIdxs: [Int] = []
-        for (idx, sz) in treeSizesArr.enumerated() {
-            guard sz > 0 else { continue }
-            treeIdxs.append(idx)
-        }
-
-        if !treeIdxs.isEmpty {
-            guard let merkleCB = commandQueue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
-            let merkleEnc = merkleCB.makeComputeCommandEncoder()!
-            for idx in treeIdxs {
-                merkleEngine.encodeMerkleRoot(encoder: merkleEnc, treeBuf: treeBufPtrs[idx]!, treeOffset: 0, n: treeSizesArr[idx])
-                merkleEnc.memoryBarrier(scope: .buffers)
-            }
-            merkleEnc.endEncoding()
-            merkleCB.commit()
-            merkleCB.waitUntilCompleted()
-            if let err = merkleCB.error { throw MSMError.gpuError("Merkle: \(err.localizedDescription)") }
-        }
-
-        for idx in treeIdxs {
-            let tsz = treeNodeCounts[idx]
-            let ptr = treeBufPtrs[idx]!.contents().bindMemory(to: Fr.self, capacity: tsz)
-            roots[idx] = ptr[tsz - 1]
         }
 
         // Final value

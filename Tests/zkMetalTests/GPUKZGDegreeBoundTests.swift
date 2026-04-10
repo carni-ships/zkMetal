@@ -263,7 +263,7 @@ private func testShiftEmptyPolynomial(engine: GPUKZGDegreeBoundEngine) {
 private func testPolynomialDegree(engine: GPUKZGDegreeBoundEngine) {
     // Zero polynomial
     let zeroPoly: [Fr] = [Fr.zero, Fr.zero, Fr.zero]
-    expectEqual(engine.polynomialDegree(zeroPoly), 0, "Zero polynomial has degree 0 (first zero)")
+    expectEqual(engine.polynomialDegree(zeroPoly), -1, "Zero polynomial has degree -1 (all zero coefficients stripped)")
 
     // Actually check the logic: the zero poly returns 0 because the first coeff is "non-zero" via frToInt
     // The engine strips trailing zeros and returns -1 for empty. Let's check:

@@ -1577,4 +1577,46 @@ void bn254_fr_batch_mul_scalar(const uint64_t *a, const uint64_t *scalar,
 /// Uses Montgomery's trick with single modular inverse.
 void bn254_fr_batch_inverse_safe(const uint64_t *a, int n, uint64_t *out);
 
+// ============================================================
+// Poseidon hash for Pasta curves (Mina Kimchi variant)
+// 55 full rounds, x^7 S-box, full MDS, width=3, rate=2
+// ============================================================
+
+void pallas_poseidon_permutation_cpu(const uint64_t state[12], uint64_t result[12]);
+void pallas_poseidon_hash_cpu(const uint64_t a[4], const uint64_t b[4], uint64_t out[4]);
+void pallas_poseidon_hash_many_cpu(const uint64_t *inputs, int n, uint64_t *output);
+void pallas_poseidon_hash_batch_cpu(const uint64_t *input, int count, uint64_t *output);
+void vesta_poseidon_permutation_cpu(const uint64_t state[12], uint64_t result[12]);
+void vesta_poseidon_hash_cpu(const uint64_t a[4], const uint64_t b[4], uint64_t out[4]);
+void vesta_poseidon_hash_many_cpu(const uint64_t *inputs, int n, uint64_t *output);
+void vesta_poseidon_hash_batch_cpu(const uint64_t *input, int count, uint64_t *output);
+
+// ============================================================
+// Pasta NTT (Number Theoretic Transform)
+// ============================================================
+
+void pallas_fr_ntt(uint64_t *data, int logN);
+void pallas_fr_intt(uint64_t *data, int logN);
+void vesta_fr_ntt(uint64_t *data, int logN);
+void vesta_fr_intt(uint64_t *data, int logN);
+
+// ============================================================
+// Pasta polynomial operations
+// ============================================================
+
+void pallas_fr_horner_eval(const uint64_t *coeffs, int n, const uint64_t z[4], uint64_t result[4]);
+void pallas_fr_synthetic_div(const uint64_t *coeffs, const uint64_t z[4], int n, uint64_t *quotient);
+void pallas_fr_eval_and_div(const uint64_t *coeffs, int n, const uint64_t z[4], uint64_t eval_out[4], uint64_t *quotient);
+void pallas_fr_batch_mul_scalar(uint64_t *data, const uint64_t scalar[4], int n);
+void pallas_fr_batch_add(const uint64_t *a, const uint64_t *b, uint64_t *result, int n);
+void pallas_fr_batch_sub(const uint64_t *a, const uint64_t *b, uint64_t *result, int n);
+void pallas_fr_inner_product(const uint64_t *a, const uint64_t *b, int n, uint64_t result[4]);
+void vesta_fr_horner_eval(const uint64_t *coeffs, int n, const uint64_t z[4], uint64_t result[4]);
+void vesta_fr_synthetic_div(const uint64_t *coeffs, const uint64_t z[4], int n, uint64_t *quotient);
+void vesta_fr_eval_and_div(const uint64_t *coeffs, int n, const uint64_t z[4], uint64_t eval_out[4], uint64_t *quotient);
+void vesta_fr_batch_mul_scalar(uint64_t *data, const uint64_t scalar[4], int n);
+void vesta_fr_batch_add(const uint64_t *a, const uint64_t *b, uint64_t *result, int n);
+void vesta_fr_batch_sub(const uint64_t *a, const uint64_t *b, uint64_t *result, int n);
+void vesta_fr_inner_product(const uint64_t *a, const uint64_t *b, int n, uint64_t result[4]);
+
 #endif // NEON_FIELD_OPS_H

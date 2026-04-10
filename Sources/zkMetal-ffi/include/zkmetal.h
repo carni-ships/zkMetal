@@ -38,6 +38,8 @@ typedef int32_t ZkMetalStatus;
 // ============================================================================
 
 typedef void* ZkMetalMSMEngine;
+typedef void* ZkMetalPallasMSMEngine;
+typedef void* ZkMetalVestaMSMEngine;
 typedef void* ZkMetalNTTEngine;
 typedef void* ZkMetalPoseidon2Engine;
 typedef void* ZkMetalKeccakEngine;
@@ -54,6 +56,18 @@ ZkMetalStatus zkmetal_msm_engine_create(ZkMetalMSMEngine* out);
 
 /// Destroy an MSM engine, releasing GPU resources.
 void zkmetal_msm_engine_destroy(ZkMetalMSMEngine engine);
+
+/// Create a Pallas MSM engine (Pasta curve cycle — Mina/Kimchi).
+ZkMetalStatus zkmetal_pallas_msm_engine_create(ZkMetalPallasMSMEngine* out);
+
+/// Destroy a Pallas MSM engine.
+void zkmetal_pallas_msm_engine_destroy(ZkMetalPallasMSMEngine engine);
+
+/// Create a Vesta MSM engine (Pasta curve cycle — Mina/Kimchi).
+ZkMetalStatus zkmetal_vesta_msm_engine_create(ZkMetalVestaMSMEngine* out);
+
+/// Destroy a Vesta MSM engine.
+void zkmetal_vesta_msm_engine_destroy(ZkMetalVestaMSMEngine engine);
 
 /// Create a BN254 NTT engine.
 ZkMetalStatus zkmetal_ntt_engine_create(ZkMetalNTTEngine* out);
@@ -110,6 +124,64 @@ ZkMetalStatus zkmetal_bn254_msm(
 
 /// Convenience MSM using a lazy singleton engine (no engine handle needed).
 ZkMetalStatus zkmetal_bn254_msm_auto(
+    const uint8_t* points,
+    const uint8_t* scalars,
+    uint32_t n_points,
+    uint8_t* result_x,
+    uint8_t* result_y,
+    uint8_t* result_z
+);
+
+// ============================================================================
+// MSM — Multi-Scalar Multiplication (Pallas)
+// ============================================================================
+// Pallas: y^2 = x^3 + 5 over Fp where
+//   p = 0x40000000000000000000000000000000224698fc094cf91b992d30ed00000001
+// Field elements: 32 bytes (8x u32 limbs, little-endian Montgomery form).
+// Affine points: 64 bytes (x: 32B, y: 32B). Scalars: 32 bytes (standard form).
+// Results: projective (X, Y, Z), 32 bytes each, Montgomery form.
+
+/// Pallas MSM (engine-based).
+ZkMetalStatus zkmetal_pallas_msm(
+    ZkMetalPallasMSMEngine engine,
+    const uint8_t* points,
+    const uint8_t* scalars,
+    uint32_t n_points,
+    uint8_t* result_x,
+    uint8_t* result_y,
+    uint8_t* result_z
+);
+
+/// Pallas MSM (convenience — lazy singleton).
+ZkMetalStatus zkmetal_pallas_msm_auto(
+    const uint8_t* points,
+    const uint8_t* scalars,
+    uint32_t n_points,
+    uint8_t* result_x,
+    uint8_t* result_y,
+    uint8_t* result_z
+);
+
+// ============================================================================
+// MSM — Multi-Scalar Multiplication (Vesta)
+// ============================================================================
+// Vesta: y^2 = x^3 + 5 over Fq where
+//   q = 0x40000000000000000000000000000000224698fc0994a8dd8c46eb2100000001
+// Same layout conventions as Pallas.
+
+/// Vesta MSM (engine-based).
+ZkMetalStatus zkmetal_vesta_msm(
+    ZkMetalVestaMSMEngine engine,
+    const uint8_t* points,
+    const uint8_t* scalars,
+    uint32_t n_points,
+    uint8_t* result_x,
+    uint8_t* result_y,
+    uint8_t* result_z
+);
+
+/// Vesta MSM (convenience — lazy singleton).
+ZkMetalStatus zkmetal_vesta_msm_auto(
     const uint8_t* points,
     const uint8_t* scalars,
     uint32_t n_points,
