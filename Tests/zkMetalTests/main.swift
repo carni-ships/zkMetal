@@ -241,6 +241,9 @@ let allTests: [(String, () -> Void)] = [
     ("gpuproofbatchaggregation", runGPUProofBatchAggregationTests),
     ("biniusm3", runBiniusM3Tests),
     ("groestlhash", runGroestlHashTests),
+    ("pastaposeidon", runPastaPoseidonTests),
+    ("pastantt", runPastaNTTTests),
+    ("pastapoly", runPastaPolyTests),
 ]
 
 // Parse CLI arguments for test filtering

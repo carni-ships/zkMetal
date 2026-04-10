@@ -49,6 +49,7 @@ GPU-accelerated zero-knowledge proof library for Apple Silicon. Metal compute sh
 | Primitive | Platform | Description |
 |-----------|----------|-------------|
 | **Poseidon2** | GPU | Algebraic hash — BN254 (t=3), M31 (t=16), BabyBear (width-16, SP1 config). Duplex sponge mode |
+| **Pasta Poseidon** | GPU | Mina Kimchi variant — Pallas/Vesta Fp, 55 full rounds, x^7 S-box, full MDS, width-3. ~2.7M hash/s |
 | **Keccak-256** | GPU/CPU | SHA-3 hash with NEON acceleration, fused Merkle subtree |
 | **Blake3** | GPU/CPU | BLAKE3 hash with NEON acceleration, batch + Merkle trees |
 | **SHA-256** | GPU | Batch hash + fused Merkle subtree |
@@ -232,6 +233,9 @@ BabyBear at 2^24: **7.3B elements/sec** (native 32-bit arithmetic). Goldilocks: 
 | Poseidon2 | 2^12 | 523ms | 19ms (C CIOS) | 2.3ms | **8x** |
 | Poseidon2 | 2^14 | 2.0s | 75ms (C CIOS) | 2.3ms | **33x** |
 | Poseidon2 | 2^16 | 8.0s | 302ms (C CIOS) | 8.5ms | **36x** |
+| Pasta Poseidon | 2^16 | 16.1s | 1.1s (C CIOS) | 24ms | **45x** |
+| Pasta Poseidon | 2^18 | -- | 4.2s (C CIOS) | 97ms | **43x** |
+| Pasta Poseidon | 2^20 | -- | 16.8s (C CIOS) | 389ms | **43x** |
 | Keccak-256 | 2^14 | 100ms | 23ms (parallel) | 0.20ms | **500x** |
 | Keccak-256 | 2^16 | 387ms | 89ms (parallel) | 0.45ms | **860x** |
 | Keccak-256 | 2^18 | 1.6s | 360ms (parallel) | 1.4ms | **1143x** |
