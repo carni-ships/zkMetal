@@ -1,7 +1,11 @@
 // Fused NTT + Constraint Evaluation Metal kernels
 // Small-NTT path: NTT in shared memory + constraint eval in one kernel (no device memory round-trip)
-// Supports up to 1024 elements per column (logN <= 10) in the fully fused path.
+// Supports up to 512 elements per column (logN <= 9) in the fully fused path.
 // For larger sizes, use the two-phase approach (separate NTT + constraint eval in one command buffer).
+//
+// NOTE: BN254 Fr is 32 bytes/element (8x32 Montgomery). Threadgroup memory max is 32KB.
+// With shared_a[1024] + shared_b[1024] = 64KB > 32KB limit, so we cap at n <= 512.
+// This halves the butterfly parallelism per pass but keeps the barrier structure clean.
 
 #include "../fields/bn254_fr.metal"
 
@@ -40,8 +44,10 @@ kernel void fused_ntt_fib_constraint(
     uint base = tgid * block_size;
 
     // Shared memory for two columns
-    threadgroup Fr shared_a[1024];
-    threadgroup Fr shared_b[1024];
+    // NOTE: BN254 Fr = 32 bytes/element. shared_a[1024] + shared_b[1024] = 64KB > 32KB limit.
+    // Reduced to [512] to fit within threadgroup memory limit. Max n = 512.
+    threadgroup Fr shared_a[512];
+    threadgroup Fr shared_b[512];
 
     // Step 1: Load with bit-reversal
     uint local_logN = log_n;  // for small sizes, all stages are local

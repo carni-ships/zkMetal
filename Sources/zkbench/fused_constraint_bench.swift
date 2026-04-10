@@ -58,7 +58,7 @@ func runFusedConstraintBench() {
 
             // Benchmark: Fully fused kernel (small sizes only)
             var fusedKernelMedian: Double? = nil
-            if logN <= 10 {
+            if logN <= 9 {
                 var fusedKernelTimes = [Double]()
                 for _ in 0..<runs {
                     let t0 = CFAbsoluteTimeGetCurrent()
@@ -97,7 +97,7 @@ func runFusedConstraintBench() {
 
         fputs("\nNote: 'separate' = 3 dispatches (NTT_a, NTT_b, constraint eval)\n", stderr)
         fputs("      'fused' = 1 command buffer (NTTs + barrier + eval)\n", stderr)
-        fputs("      'kernel' = fully fused Metal kernel (NTT in shared mem + eval, logN<=10 only)\n", stderr)
+        fputs("      'kernel' = fully fused Metal kernel (NTT in shared mem + eval, logN<=9 only; BN254 Fr 32B/elem fits 32KB TG limit)\n", stderr)
 
     } catch {
         fputs("Error: \(error)\n", stderr)

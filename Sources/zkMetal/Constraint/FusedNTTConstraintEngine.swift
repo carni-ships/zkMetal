@@ -3,7 +3,8 @@
 // both into a single Metal command buffer with memory barriers.
 //
 // Two approaches:
-// 1. Small sizes (logN <= 10): Fully fused kernel — NTT in shared memory + constraint eval
+// 1. Small sizes (logN <= 9): Fully fused kernel — NTT in shared memory + constraint eval
+//    (logN <= 9 because BN254 Fr is 32B/elem; shared_a[512]+shared_b[512] = 32KB fits in 32KB TG limit)
 // 2. Large sizes: Single command buffer — encode NTT dispatches, barrier, constraint eval dispatch
 
 import Foundation
@@ -84,7 +85,7 @@ public class FusedNTTConstraintEngine {
 
     // MARK: - Fused Fibonacci Constraint Evaluation
 
-    /// Fused NTT + Fibonacci constraint quotient evaluation (small sizes, logN <= 10).
+    /// Fused NTT + Fibonacci constraint quotient evaluation (small sizes, logN <= 9).
     /// Takes raw trace columns [a, b], returns quotient polynomial evaluations.
     public func evaluateFibQuotientFused(
         traceA: [Fr],
@@ -94,7 +95,7 @@ public class FusedNTTConstraintEngine {
     ) throws -> [Fr] {
         let n = 1 << logN
         precondition(traceA.count == n && traceB.count == n, "Trace size must be 2^logN")
-        precondition(logN <= 10, "Fused kernel supports logN <= 10")
+        precondition(logN <= 9, "Fused kernel supports logN <= 9 (BN254 Fr 32B/elem needs shared mem limit)")
 
         let stride = MemoryLayout<Fr>.stride
 
