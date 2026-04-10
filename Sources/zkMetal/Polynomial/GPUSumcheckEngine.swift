@@ -402,22 +402,35 @@ public class GPUSumcheckEngine {
             }
 
             enc.endEncoding()
+
+            // GPU final reduction of partial sums
+            let readHalf = (round == 0) ? halfN : (halfN / 2)
+            let readGroups = max(1, (readHalf + tgSize - 1) / tgSize)
+            ensureFinalReduceBuffer(byteCount: 2 * stride)
+            guard let frBuf = finalReduceBuf else {
+                throw MSMError.noCommandBuffer
+            }
+            let frEnc = cmdBuf.makeComputeCommandEncoder()!
+            frEnc.setComputePipelineState(finalReduceBN254)
+            frEnc.setBuffer(pBuf, offset: 0, index: 0)
+            frEnc.setBuffer(frBuf, offset: 0, index: 1)
+            var numGroupsVal = UInt32(readGroups)
+            frEnc.setBytes(&numGroupsVal, length: 4, index: 2)
+            let frTgSize = min(tgSize, readGroups)
+            frEnc.dispatchThreadgroups(MTLSize(width: 1, height: 1, depth: 1),
+                                     threadsPerThreadgroup: MTLSize(width: frTgSize, height: 1, depth: 1))
+            frEnc.endEncoding()
+
             cmdBuf.commit()
             cmdBuf.waitUntilCompleted()
             if let error = cmdBuf.error {
                 throw MSMError.gpuError(error.localizedDescription)
             }
 
-            // Read back partial sums
-            let readHalf = (round == 0) ? halfN : (halfN / 2)
-            let readGroups = max(1, (readHalf + tgSize - 1) / tgSize)
-            let ptr = pBuf.contents().bindMemory(to: Fr.self, capacity: readGroups * 2)
-            var s0 = Fr.zero
-            var s1 = Fr.zero
-            for g in 0..<readGroups {
-                s0 = frAdd(s0, ptr[g * 2])
-                s1 = frAdd(s1, ptr[g * 2 + 1])
-            }
+            // Read s0, s1 from GPU output buffer
+            let frPtr = frBuf.contents().bindMemory(to: Fr.self, capacity: 2)
+            let s0 = frPtr[0]
+            let s1 = frPtr[1]
 
             rounds.append((s0, s1))
             transcript.absorb(s0)
