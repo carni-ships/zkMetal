@@ -526,9 +526,9 @@ Methodology: Compute-bound = total_ops / 3.6T flops (BN254 mul = ~64 32-bit muls
 | 3 | Sumcheck 2^20 | 4.7ms | ~1ms | Bandwidth (2^20 x 32B per round), fused CB | ~5x |
 | 4 | FRI Fold 2^20 | 2.1ms | ~0.3ms | Bandwidth (fold-by-2), 21 layers | ~7x |
 | 5 | BLS12-377 MSM 2^18 | 119ms | ~35ms | Wider 12-limb Fq, GLV disabled (net loss for GPU) | ~3.4x |
-| 6 | Keccak Merkle 2^20 | 7.7ms (4-ary) | ~2.2ms | 4-ary halves levels, compute-limited | ~3.5x |
+| 6 | Keccak Merkle 2^20 | 4.7ms (4-ary) | ~2.2ms | 4-ary halves levels, compute-limited | ~3.5x |
 | 7 | Blake3 Batch 2^20 | 1.0ms | ~0.6ms | Bandwidth (2^20 x 64B), uint4 vectorized loads + cycle permute | ~1.7x |
-| 8 | Basefold open 2^18 | 61ms | ~20ms | Fold-by-4 + pipelined Merkle (9 rounds vs 18) | ~3x |
+| 8 | Basefold open 2^18 | 99ms | ~20ms | Fold-by-4 + pipelined Merkle (9 rounds vs 18) | ~3x |
 | 9 | Poseidon2 batch 2^16 | 8.1ms | ~1.8ms | Compute (390 ops/elem, 22 sequential rounds limit parallelism) | ~4.5x |
 | 10 | secp256k1 MSM 2^18 | 113ms | ~30ms | No GLV, buffer caching + mixed-add unsafe | ~4x |
 | 11 | Binius FFT 2^16 (CPU) | 21ms | ~5ms | CPU only; XOR-add is free but table mul is serial | ~4x |

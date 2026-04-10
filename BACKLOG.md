@@ -20,7 +20,7 @@ GPU bucket reduce (35ms) + bucket sum (32ms) = 67ms GPU, 5ms sort, 2ms GLV+endo.
 - [x] **Karatsuba in NTT butterflies** — REJECTED: Increases register pressure (60 vs 15 uints), kills GPU occupancy. NTT 2^22 regressed 26→30ms. NTT is memory-bandwidth-bound, not compute-bound.
 - [x] **Point locality sorting** — MARGINAL: ~1-3ms within noise. Apple Silicon hides latency via thread parallelism. Confirmed compute-bound.
 
-## NTT BN254 (~9x headroom, 26ms at 2^22 vs ~2.9ms floor)
+## NTT BN254 (~9x headroom, 26ms at 2^22 vs ~3ms floor)
 
 Bottleneck: 256-bit Montgomery multiply on 32-bit ALUs + strided memory access.
 
@@ -29,7 +29,7 @@ Bottleneck: 256-bit Montgomery multiply on 32-bit ALUs + strided memory access.
 - [x] **RNS decomposition** — REJECTED: NTT is memory-bandwidth-bound, not compute-bound. RNS saves 3.6x ALU but memory traffic is identical (0.97x).
 - [x] **Strided access optimization** — REJECTED: Transpose-first tested, no gain. Unified memory handles strides with ~1.5x penalty; 2 extra transpose passes cancel benefit.
 
-## Basefold open (~7x headroom, 138ms at 2^18 vs ~20ms floor)
+## Basefold open (~7x headroom, 61ms at 2^18 vs ~20ms floor)
 
 18 iterative fold+commit rounds. Merkle tree per round.
 
@@ -38,18 +38,18 @@ Bottleneck: 256-bit Montgomery multiply on 32-bit ALUs + strided memory access.
 - [x] **Streaming Merkle** — SUPERSEDED: Fold+Merkle now in single command buffer. Streaming would add complexity for 5-10% gain on non-bottleneck sizes.
 - [x] **Fold-by-4** — DONE: Rounds drop from n to ceil(n/2), halving Merkle count. Backward-compatible proof format with levelStrides. 143/143 tests pass.
 
-## FRI Fold (~7x headroom, 1.96ms at 2^20 vs ~0.3ms floor)
+## FRI Fold (~7x headroom, 2.9ms at 2^20 vs ~0.3ms floor)
 
 - [x] **Fold-by-4 cascade wiring** — DONE: Wired fri_fold_fused2_kernel through all 3 FRI engine layers. 901/901 tests pass.
 - [x] **Coalesced memory access** — LOW PRIORITY: FRI domain structure requires strided access (i, i+n/2). Transpose would add O(n) overhead. Apple Silicon hides latency via thread parallelism.
 
-## Sumcheck (~6x headroom, 4.9ms at 2^20 vs ~0.85ms floor)
+## Sumcheck (~5x headroom, 2.8ms at 2^20 vs ~1ms floor)
 
 - [x] **Tune CPU crossover + hybrid GPU→C** — ALREADY OPTIMAL: crossover at numVars<=14, hybrid handoff at 1024 elements. Fused2 + SIMD shuffle reduction already implemented.
 - [x] **Threadgroup memory for round_poly reduction** — ALREADY IMPLEMENTED: SIMD shuffle + inter-SIMD shared memory.
 - [x] **Multi-round batching** — ALREADY IMPLEMENTED: fused2_strided (2 rounds/dispatch), fusedMultiround (up to 8 rounds in threadgroup mem).
 
-## Blake3 Batch (~6x headroom, 3.5ms at 2^20 vs ~0.6ms floor)
+## Blake3 Batch (~1.7x headroom, 3.2ms at 2^20 vs ~0.6ms floor)
 
 Bandwidth-limited: 96MB traffic at 2^20.
 
@@ -57,7 +57,7 @@ Bandwidth-limited: 96MB traffic at 2^20.
 - [x] **Fused Merkle tree** — NOT WORTH IT: Blake3MerkleEngine already partially fused (bottom 10 levels in shared memory). Leaf hashing is separate for flexibility. ~0.5ms gain on a non-bottleneck.
 - [x] **Coalesced memory access** — NOT WORTH IT: Would require data layout changes for marginal gain on non-bottleneck.
 
-## Poseidon2 (~4.5x headroom, 8.1ms at 2^16 vs ~1.8ms floor)
+## Poseidon2 (~4.5x headroom, 7.4ms at 2^16 vs ~1.8ms floor)
 
 - [x] **SIMD group (warp-level) optimization** — REJECTED: BN254 needs 8 shuffles per Fr (multi-limb). BabyBear/M31 wastes 93.75% threads in partial rounds. S-box is bottleneck, not MDS.
 - [x] **Karatsuba S-box** — REJECTED: fr_mul_karatsuba increases register pressure (60 vs 15 uints), kills GPU occupancy. 2^16 regressed 8.1→9.9ms. Same pattern as NTT.
