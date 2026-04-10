@@ -212,7 +212,7 @@ public class BabyBearNTTEngine {
     public func ntt(data: MTLBuffer, logN: Int) throws {
         let globalStages = logN - effectiveMaxFusedLogN
         if globalStages >= fourStepMinGlobalStages {
-            try nttFourStep(data: data, logN: logN)
+            try _nttFourStep(data: data, logN: logN, createCmdBuf: true)
             return
         }
 
@@ -224,6 +224,30 @@ public class BabyBearNTTEngine {
             throw MSMError.noCommandBuffer
         }
 
+        try _encodeNTTStandard(data: data, logN: logN, n: n, nInt: nInt, twiddles: twiddles, cmdBuf: cmdBuf)
+
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+        if let error = cmdBuf.error {
+            throw MSMError.gpuError(error.localizedDescription)
+        }
+    }
+
+    /// Encode forward NTT into an existing command buffer (standard + four-step path).
+    public func encodeNTT(data: MTLBuffer, logN: Int, cmdBuf: MTLCommandBuffer) {
+        let globalStages = logN - effectiveMaxFusedLogN
+        if globalStages >= fourStepMinGlobalStages {
+            _nttFourStep(data: data, logN: logN, createCmdBuf: false)
+            return
+        }
+        let n = UInt32(1 << logN)
+        let nInt = Int(n)
+        let twiddles = getTwiddles(logN: logN)
+        _encodeNTTStandard(data: data, logN: logN, n: n, nInt: nInt, twiddles: twiddles, cmdBuf: cmdBuf)
+    }
+
+    private func _encodeNTTStandard(data: MTLBuffer, logN: Int, n: UInt32, nInt: Int,
+                                   twiddles: MTLBuffer, cmdBuf: MTLCommandBuffer) {
         var nVal = n
         var logNVal = UInt32(logN)
 
@@ -235,7 +259,6 @@ public class BabyBearNTTEngine {
         let enc = cmdBuf.makeComputeCommandEncoder()!
 
         if hasFused {
-            // Fused bitrev + DIT stages (data → scratch)
             enc.setComputePipelineState(butterflyFusedBitrevFunction)
             enc.setBuffer(data, offset: 0, index: 0)
             enc.setBuffer(scratch!, offset: 0, index: 1)
@@ -249,7 +272,6 @@ public class BabyBearNTTEngine {
             enc.dispatchThreadgroups(MTLSize(width: numGroups, height: 1, depth: 1),
                                    threadsPerThreadgroup: MTLSize(width: tgThreads, height: 1, depth: 1))
         } else {
-            // Fallback: separate bitrev
             enc.setComputePipelineState(bitrevInplaceFunction)
             enc.setBuffer(data, offset: 0, index: 0)
             enc.setBytes(&nVal, length: 4, index: 1)
@@ -299,12 +321,6 @@ public class BabyBearNTTEngine {
             blit.copy(from: scratch!, sourceOffset: 0, to: data, destinationOffset: 0, size: nInt * MemoryLayout<Bb>.stride)
             blit.endEncoding()
         }
-
-        cmdBuf.commit()
-        cmdBuf.waitUntilCompleted()
-        if let error = cmdBuf.error {
-            throw MSMError.gpuError(error.localizedDescription)
-        }
     }
 
     // MARK: - Inverse NTT
@@ -312,7 +328,7 @@ public class BabyBearNTTEngine {
     public func intt(data: MTLBuffer, logN: Int) throws {
         let globalStages = logN - effectiveMaxFusedLogN
         if globalStages >= fourStepMinGlobalStagesInv {
-            try inttFourStep(data: data, logN: logN)
+            try _inttFourStep(data: data, logN: logN, createCmdBuf: true)
             return
         }
 
@@ -324,6 +340,31 @@ public class BabyBearNTTEngine {
             throw MSMError.noCommandBuffer
         }
 
+        try _encodeINTTStandard(data: data, logN: logN, n: n, invTwiddles: invTwiddles, invN: invN, cmdBuf: cmdBuf)
+
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+        if let error = cmdBuf.error {
+            throw MSMError.gpuError(error.localizedDescription)
+        }
+    }
+
+    /// Encode inverse NTT into an existing command buffer (standard + four-step path).
+    public func encodeINTT(data: MTLBuffer, logN: Int, cmdBuf: MTLCommandBuffer) {
+        let globalStages = logN - effectiveMaxFusedLogN
+        if globalStages >= fourStepMinGlobalStagesInv {
+            _inttFourStep(data: data, logN: logN, createCmdBuf: false)
+            return
+        }
+        let n = UInt32(1 << logN)
+        let invTwiddles = getInvTwiddles(logN: logN)
+        let invN = getInvN(logN: logN)
+        _encodeINTTStandard(data: data, logN: logN, n: n, invTwiddles: invTwiddles, invN: invN, cmdBuf: cmdBuf)
+    }
+
+    private func _encodeINTTStandard(data: MTLBuffer, logN: Int, n: UInt32,
+                                    invTwiddles: MTLBuffer, invN: MTLBuffer,
+                                    cmdBuf: MTLCommandBuffer) {
         var nVal = n
         let fusedStages = min(logN, effectiveMaxFusedLogN)
 
@@ -335,7 +376,6 @@ public class BabyBearNTTEngine {
         if numGlobalStages > 0 {
             var s: UInt32 = 0
 
-            // Radix-4 for pairs of stages (DIF: from highest stage down)
             while s + 1 < numGlobalStages {
                 if s > 0 { enc.memoryBarrier(scope: .buffers) }
                 let stage = UInt32(logN) - 1 - s
@@ -352,7 +392,6 @@ public class BabyBearNTTEngine {
                 s += 2
             }
 
-            // Odd remaining stage
             if s < numGlobalStages {
                 if s > 0 { enc.memoryBarrier(scope: .buffers) }
                 let stage = UInt32(logN) - 1 - s
@@ -387,7 +426,7 @@ public class BabyBearNTTEngine {
                                    threadsPerThreadgroup: MTLSize(width: tgThreads, height: 1, depth: 1))
         }
 
-        // Step 3: Fused bit-reversal + scale by 1/n (saves one full memory pass)
+        // Step 3: Fused bit-reversal + scale by 1/n
         enc.memoryBarrier(scope: .buffers)
         var logNVal = UInt32(logN)
         enc.setComputePipelineState(bitrevScaleFunction)
@@ -399,17 +438,11 @@ public class BabyBearNTTEngine {
         enc.dispatchThreads(MTLSize(width: Int(n), height: 1, depth: 1),
                              threadsPerThreadgroup: MTLSize(width: tgBR, height: 1, depth: 1))
         enc.endEncoding()
-
-        cmdBuf.commit()
-        cmdBuf.waitUntilCompleted()
-        if let error = cmdBuf.error {
-            throw MSMError.gpuError(error.localizedDescription)
-        }
     }
 
     // MARK: - Four-step FFT
 
-    private func nttFourStep(data: MTLBuffer, logN: Int) throws {
+    private func _nttFourStep(data: MTLBuffer, logN: Int, createCmdBuf: Bool) {
         let n = UInt32(1 << logN)
         let twiddles = getTwiddles(logN: logN)
         let logN1 = (logN + 1) / 2
@@ -417,13 +450,21 @@ public class BabyBearNTTEngine {
         let n1 = UInt32(1 << logN1)
         let n2 = UInt32(1 << logN2)
 
-        guard let cmdBuf = commandQueue.makeCommandBuffer() else {
-            throw MSMError.noCommandBuffer
+        var cmdBuf: MTLCommandBuffer? = nil
+        if createCmdBuf {
+            guard let cb = commandQueue.makeCommandBuffer() else {
+                fatalError("Failed to create command buffer")
+            }
+            cmdBuf = cb
+        }
+
+        guard let cb = cmdBuf else {
+            fatalError("No command buffer available")
         }
 
         var nVal = n; var n1Val = n1; var n2Val = n2
 
-        let enc = cmdBuf.makeComputeCommandEncoder()!
+        let enc = cb.makeComputeCommandEncoder()!
 
         // Step 1: Column FFTs
         enc.setComputePipelineState(columnFusedFunction)
@@ -458,14 +499,16 @@ public class BabyBearNTTEngine {
                             threadsPerThreadgroup: MTLSize(width: tg4, height: 1, depth: 1))
         enc.endEncoding()
 
-        cmdBuf.commit()
-        cmdBuf.waitUntilCompleted()
-        if let error = cmdBuf.error {
-            throw MSMError.gpuError(error.localizedDescription)
+        if createCmdBuf {
+            cb.commit()
+            cb.waitUntilCompleted()
+            if let error = cb.error {
+                fatalError("GPU error in nttFourStep: \(error.localizedDescription)")
+            }
         }
     }
 
-    private func inttFourStep(data: MTLBuffer, logN: Int) throws {
+    private func _inttFourStep(data: MTLBuffer, logN: Int, createCmdBuf: Bool) {
         let n = UInt32(1 << logN)
         let invTwiddles = getInvTwiddles(logN: logN)
         let invN = getInvN(logN: logN)
@@ -474,13 +517,21 @@ public class BabyBearNTTEngine {
         let n1 = UInt32(1 << logN1)
         let n2 = UInt32(1 << logN2)
 
-        guard let cmdBuf = commandQueue.makeCommandBuffer() else {
-            throw MSMError.noCommandBuffer
+        var cmdBuf: MTLCommandBuffer? = nil
+        if createCmdBuf {
+            guard let cb = commandQueue.makeCommandBuffer() else {
+                fatalError("Failed to create command buffer")
+            }
+            cmdBuf = cb
+        }
+
+        guard let cb = cmdBuf else {
+            fatalError("No command buffer available")
         }
 
         var nVal = n; var n1Val = n1; var n2Val = n2
 
-        let enc = cmdBuf.makeComputeCommandEncoder()!
+        let enc = cb.makeComputeCommandEncoder()!
 
         // Step 1: Transpose
         enc.setComputePipelineState(transposeFunction)
@@ -516,10 +567,12 @@ public class BabyBearNTTEngine {
                                  threadsPerThreadgroup: MTLSize(width: Int(n1)/2, height: 1, depth: 1))
         enc.endEncoding()
 
-        cmdBuf.commit()
-        cmdBuf.waitUntilCompleted()
-        if let error = cmdBuf.error {
-            throw MSMError.gpuError(error.localizedDescription)
+        if createCmdBuf {
+            cb.commit()
+            cb.waitUntilCompleted()
+            if let error = cb.error {
+                fatalError("GPU error in inttFourStep: \(error.localizedDescription)")
+            }
         }
     }
 

@@ -290,10 +290,20 @@ public class GPUCosetLDEEngine {
             throw MSMError.gpuError(error.localizedDescription)
         }
 
-        // Step 4: Forward NTT of size M
-        let ptr = outputBuf.contents().bindMemory(to: Bb.self, capacity: m)
-        let shifted = Array(UnsafeBufferPointer(start: ptr, count: m))
-        return try engine.ntt(shifted)
+        // Step 4: Forward NTT of size M using encodeNTT to avoid GPU→CPU→GPU round-trip
+        let nttBuf = device.makeBuffer(length: m * MemoryLayout<Bb>.stride, options: .storageModeShared)!
+        guard let cmdBuf = commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
+        }
+        let blit = cmdBuf.makeBlitCommandEncoder()!
+        blit.copy(from: outputBuf, sourceOffset: 0, to: nttBuf, destinationOffset: 0, size: m * MemoryLayout<Bb>.stride)
+        blit.endEncoding()
+        engine.encodeNTT(data: nttBuf, logN: logM, cmdBuf: cmdBuf)
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+        if let error = cmdBuf.error { throw MSMError.gpuError(error.localizedDescription) }
+        let ptr = nttBuf.contents().bindMemory(to: Bb.self, capacity: m)
+        return Array(UnsafeBufferPointer(start: ptr, count: m))
     }
 
     // MARK: - Batch LDE (multiple columns, single fused dispatch)
