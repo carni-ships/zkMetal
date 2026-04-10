@@ -66,7 +66,7 @@ Bandwidth-limited: 96MB traffic at 2^20.
 
 - [x] **MSM GPU sort pipeline chaining** — BLOCKED: gpu_sort_scatter has correctness bugs (non-deterministic results). CPU sort is proven correct and fast (~2ms). GPU prefix sum kernel added but chaining disabled until scatter is fixed.
 - [x] **Sumcheck reduce table wait removal** — DONE: Removed waitUntilCompleted() from reduceBN254Table. Metal command queue ordering guarantees fold CB completes before next round's computeRoundPolyBN254 CB. Callers wait once after loop via waitForPendingReduce().
-- [x] **NTT encode API migration** — PARTIAL: BN254 extend() + batchExtend() now use encodeNTT + blit copy (GPU-only). BabyBear extend() left unchanged — BabyBearNTTEngine lacks encodeNTT. GPUCosetLDEEngine 48/48 tests pass.
+- [x] **NTT encode API migration** — DONE: BN254 extend() + batchExtend() + BabyBear extend() now use encodeNTT + blit copy (GPU-only). BabyBearNTTEngine gained encodeNTT/encodeINTT. 48/48 coset LDE tests, 167/167 NTT tests pass.
 - [x] **Basefold fold+Merkle CB merge** — DONE: Pre-compute tree metadata, merge fold+merkle into single command buffer. One wait instead of two.
 - [ ] **MTLEvent infrastructure** — BLOCKED: Requires engine API redesign to accept MTLEvent handles for GPU→GPU synchronization. 116 engines with waitUntilCompleted - would need GPUEvent wrapper + all callers updated. Large undertaking.
 - [ ] **Metal async compute** — BLOCKED: Most prover ops are sequential data dependencies. Parallel dispatch only helps with independent operations (e.g., parallel commit phase vs fold). Prover structure is fundamentally sequential.
