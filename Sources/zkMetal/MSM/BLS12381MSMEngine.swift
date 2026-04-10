@@ -14,6 +14,7 @@ public class BLS12381MSM {
     private let reduceSortedFunction: MTLComputePipelineState
     private let reduceCooperativeFunction: MTLComputePipelineState
     private let bucketSumDirectFunction: MTLComputePipelineState
+    private let bucketSumCooperativeFunction: MTLComputePipelineState
     private let combineSegmentsFunction: MTLComputePipelineState
     private let hornerCombineFunction: MTLComputePipelineState
     private let signedDigitFunction: MTLComputePipelineState
@@ -95,6 +96,10 @@ public class BLS12381MSM {
         self.reduceSortedFunction = try device.makeComputePipelineState(function: reduceSortedFn)
         self.reduceCooperativeFunction = try device.makeComputePipelineState(function: reduceCoopFn)
         self.bucketSumDirectFunction = try device.makeComputePipelineState(function: sumDirectFn)
+        guard let bucketSumCoopFn = library.makeFunction(name: "msm381_bucket_sum_cooperative") else {
+            throw MSMError.missingKernel
+        }
+        self.bucketSumCooperativeFunction = try device.makeComputePipelineState(function: bucketSumCoopFn)
         self.combineSegmentsFunction = try device.makeComputePipelineState(function: combineFn)
         self.hornerCombineFunction = try device.makeComputePipelineState(function: hornerFn)
         self.signedDigitFunction = try device.makeComputePipelineState(function: signedDigitFn)
@@ -463,16 +468,18 @@ public class BLS12381MSM {
         do {
             var nWinsBatch = UInt32(nWindows)
             let enc = cb.makeComputeCommandEncoder()!
-            enc.setComputePipelineState(bucketSumDirectFunction)
+            enc.setComputePipelineState(bucketSumCooperativeFunction)
             enc.setBuffer(bucketsBuffer, offset: 0, index: 0)
             enc.setBuffer(segmentResultsBuffer, offset: 0, index: 1)
             enc.setBytes(&params, length: MemoryLayout<Msm381Params>.stride, index: 2)
             enc.setBytes(&nSegs, length: MemoryLayout<UInt32>.stride, index: 3)
             enc.setBytes(&nWinsBatch, length: MemoryLayout<UInt32>.stride, index: 4)
             let totalSegments = nSegments * nWindows
-            enc.dispatchThreads(
-                MTLSize(width: totalSegments, height: 1, depth: 1),
-                threadsPerThreadgroup: MTLSize(width: min(tuning.msmThreadgroupSize, totalSegments), height: 1, depth: 1))
+            let tgSize = min(tuning.msmThreadgroupSize, Int(bucketSumCooperativeFunction.maxTotalThreadsPerThreadgroup))
+            let numThreadgroups = (totalSegments + tgSize - 1) / tgSize
+            enc.dispatchThreadgroups(
+                MTLSize(width: numThreadgroups, height: 1, depth: 1),
+                threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
             enc.memoryBarrier(scope: .buffers)
 
             enc.setComputePipelineState(combineSegmentsFunction)

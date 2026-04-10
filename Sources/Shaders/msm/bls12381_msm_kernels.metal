@@ -199,6 +199,127 @@ kernel void msm381_bucket_sum_direct(
     segment_results[tid] = sum;
 }
 
+// Phase 2: SIMD tree-reduced bucket sum per segment
+// Replaces sequential point additions with SIMD shuffle tree reduction.
+// Each thread processes multiple buckets sequentially, then SIMD shuffle combines across threads.
+kernel void msm381_bucket_sum_cooperative(
+    device const Point381Projective* buckets   [[buffer(0)]],
+    device Point381Projective* segment_results [[buffer(1)]],
+    constant Msm381Params& params              [[buffer(2)]],
+    constant uint& n_segments                  [[buffer(3)]],
+    constant uint& n_windows                   [[buffer(4)]],
+    uint tid                                   [[thread_position_in_grid]],
+    uint tgid                                  [[threadgroup_position_in_grid]],
+    uint lid                                   [[thread_index_in_threadgroup]],
+    uint tg_size                               [[threads_per_threadgroup]]
+) {
+    uint total = n_segments * n_windows;
+    if (tid >= total) return;
+
+    uint window_idx = tid / n_segments;
+    uint seg_idx = tid % n_segments;
+
+    uint n_buckets = params.n_buckets;
+    uint seg_size = (n_buckets + n_segments - 1) / n_segments;
+    uint bucket_base = window_idx * n_buckets;
+
+    int hi_s = int(n_buckets) - int(seg_idx * seg_size);
+    int lo_raw_s = int((seg_idx + 1) * seg_size);
+    int lo_s = (lo_raw_s >= int(n_buckets)) ? 1 : (int(n_buckets) - lo_raw_s);
+    if (lo_s < 1) lo_s = 1;
+
+    uint hi = uint(hi_s);
+    uint lo = uint(lo_s);
+    uint count = (hi > lo) ? (hi - lo) : 0;
+
+    Point381Projective acc_running = point381_identity();
+    Point381Projective acc_sum = point381_identity();
+
+    // Phase 1: Sequential accumulation with identity-check optimization
+    for (uint c = lid; c < count; c += tg_size) {
+        uint bucket_idx = hi - 1 - c;
+        Point381Projective bucket = buckets[bucket_base + bucket_idx];
+
+        if (!point381_is_identity(bucket)) {
+            if (point381_is_identity(acc_running)) {
+                acc_running = bucket;
+            } else {
+                acc_running = point381_add(acc_running, bucket);
+            }
+        }
+
+        if (!point381_is_identity(acc_running)) {
+            if (point381_is_identity(acc_sum)) {
+                acc_sum = acc_running;
+            } else {
+                acc_sum = point381_add(acc_sum, acc_running);
+            }
+        }
+    }
+
+    // Phase 2: SIMD shuffle tree reduction
+    // Use two threadgroup arrays: one for running, one for sum
+    threadgroup Point381Projective shared_running[256];
+    threadgroup Point381Projective shared_sum[256];
+
+    shared_running[lid] = acc_running;
+    shared_sum[lid] = acc_sum;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint off = tg_size >> 1; off > 0; off >>= 1) {
+        if (lid < off) {
+            Point381Projective a = shared_running[lid];
+            Point381Projective b = shared_running[lid + off];
+            if (point381_is_identity(a)) {
+                shared_running[lid] = b;
+            } else if (!point381_is_identity(b)) {
+                shared_running[lid] = point381_add(a, b);
+            } else {
+                shared_running[lid] = a;
+            }
+
+            Point381Projective c = shared_sum[lid];
+            Point381Projective d = shared_sum[lid + off];
+            if (point381_is_identity(c)) {
+                shared_sum[lid] = d;
+            } else if (!point381_is_identity(d)) {
+                shared_sum[lid] = point381_add(c, d);
+            } else {
+                shared_sum[lid] = c;
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    // Phase 3: Weighted bucket contribution
+    if (lid == 0) {
+        uint weight = lo - 1;
+        Point381Projective final_sum = shared_sum[0];
+        if (weight > 0 && !point381_is_identity(shared_running[0])) {
+            Point381Projective weighted = point381_identity();
+            Point381Projective base = shared_running[0];
+            uint k = weight;
+            while (k > 0) {
+                if (k & 1u) {
+                    if (point381_is_identity(weighted)) {
+                        weighted = base;
+                    } else {
+                        weighted = point381_add(weighted, base);
+                    }
+                }
+                base = point381_double(base);
+                k >>= 1;
+            }
+            if (point381_is_identity(final_sum)) {
+                final_sum = weighted;
+            } else {
+                final_sum = point381_add(final_sum, weighted);
+            }
+        }
+        segment_results[tid] = final_sum;
+    }
+}
+
 // Phase 3: Serial reduction of segment results per window
 kernel void msm381_combine_segments(
     device const Point381Projective* segment_results [[buffer(0)]],
