@@ -171,3 +171,75 @@ func estimateProofSize(_ proof: CircleSTARKProof) -> Int {
     }
     return size
 }
+
+// MARK: - Fused STARK Round Kernel Benchmark
+
+/// Benchmark the fused constraint eval + FRI fold kernels.
+/// This measures the performance improvement from fusing the constraint evaluation
+/// with the first FRI fold in a single GPU dispatch.
+///
+/// Fused kernels:
+/// - circle_fib_constraint_fold_first: constraint eval + 1st FRI fold, outputs n/2
+/// - circle_fib_constraint_fold_2r: constraint eval + 2 FRI folds, outputs n/4
+public func runCircleSTARKFusedRoundBench() {
+    fputs("\n--- Circle STARK Fused Round Kernel Benchmark ---\n", stderr)
+    fputs("Measures: constraint eval + FRI fold (separate vs fused)\n\n", stderr)
+
+    for logN in [8, 10, 12, 14, 16] {
+        do {
+            let air = FibonacciAIR(logTraceLength: logN)
+            let prover = CircleSTARKProver(logBlowup: 2, numQueries: 16)
+
+            // Warmup
+            let _ = try prover.generateTraceGPU(air: air)
+
+            let metrics = try prover.benchmarkFusedConstraintFold(air: air)
+
+            if metrics.fusedAvailable {
+                let speedup = metrics.speedup ?? 1.0
+                let fold2rStr = metrics.fold2rMs.map { String(format: " (2r: %.1fms)", $0) } ?? ""
+                fputs(String(format: "  2^%-2d: separate cst+fold %6.1fms | " +
+                            "fused %6.1fms | %.2fx speedup%@\n",
+                            logN, metrics.constraintMs + metrics.foldMs,
+                            metrics.fusedMs ?? 0, speedup, fold2rStr), stderr)
+            } else {
+                fputs(String(format: "  2^%-2d: fused kernel unavailable (XPC compilation issue)\n", logN), stderr)
+            }
+        } catch {
+            fputs("  2^\(logN): ERROR - \(error)\n", stderr)
+        }
+    }
+
+    fputs("\n  Legend:\n", stderr)
+    fputs("    separate: constraint eval + FRI fold in TWO GPU dispatches\n", stderr)
+    fputs("    fused:    constraint eval + FRI fold in ONE GPU dispatch\n", stderr)
+    fputs("    2r:       constraint eval + 2 FRI folds in ONE dispatch (outputs n/4)\n\n", stderr)
+
+    // Full prover comparison
+    fputs("  Full prover comparison (prove vs proveFused):\n", stderr)
+    for logN in [8, 10, 12] {
+        do {
+            let air = FibonacciAIR(logTraceLength: logN)
+
+            // Standard prover
+            let proverSep = CircleSTARKProver(logBlowup: 2, numQueries: 16)
+            let _ = try proverSep.prove(air: air)  // warmup
+            let t0 = CFAbsoluteTimeGetCurrent()
+            let _ = try proverSep.prove(air: air)
+            let sepMs = (CFAbsoluteTimeGetCurrent() - t0) * 1000
+
+            // Fused prover
+            let proverFused = CircleSTARKProver(logBlowup: 2, numQueries: 16)
+            let _ = try proverFused.proveFused(air: air)  // warmup
+            let t1 = CFAbsoluteTimeGetCurrent()
+            let _ = try proverFused.proveFused(air: air)
+            let fusedMs = (CFAbsoluteTimeGetCurrent() - t1) * 1000
+
+            let speedup = sepMs / fusedMs
+            fputs(String(format: "    2^%-2d: standard %6.1fms | fused %6.1fms | %.2fx\n",
+                        logN, sepMs, fusedMs, speedup), stderr)
+        } catch {
+            fputs("    2^\(logN): ERROR - \(error)\n", stderr)
+        }
+    }
+}

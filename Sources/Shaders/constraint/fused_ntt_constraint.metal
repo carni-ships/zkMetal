@@ -157,3 +157,142 @@ kernel void eval_constraints_fib_post_ntt(
     // Divide by vanishing polynomial
     quotient[row] = fr_mul(acc, vanishing_inv[row]);
 }
+
+// --- BN254 Fused constraint eval + FRI fold kernels ---
+// Combines eval_constraints_fib_post_ntt with fri_fold_kernel (or fri_fold_fused2_kernel)
+// in a single GPU dispatch. Eliminates intermediate buffer write and kernel dispatch overhead.
+//
+// Fused formula (for each thread gid in [0, n/2)):
+//   1. Read trace at positions i and i+half_n
+//   2. Compute constraint quotients q[i], q[i+half_n] (same as eval_constraints_fib_post_ntt)
+//   3. Apply FRI fold: result[i] = (q[i] + q[i+half_n]) + alpha * (q[i] - q[i+half_n]) * domain_inv[i]
+
+// Fused constraint eval + first FRI fold (n -> n/2)
+kernel void bn254_fib_constraint_fold_first(
+    device const Fr* trace             [[buffer(0)]],     // NTT'd trace (row-major, 2 cols)
+    device Fr* folded_out            [[buffer(1)]],     // output: n/2 folded values
+    device const Fr* domain_inv     [[buffer(2)]],    // 1/domain[i] for fold
+    device const Fr* vanishing_inv    [[buffer(3)]],    // 1/Z_H(x) for constraint eval
+    constant uint& num_cols          [[buffer(4)]],     // = 2
+    constant uint& num_rows          [[buffer(5)]],    // domain size n
+    device const Fr* alpha_powers   [[buffer(6)]],    // [alpha^0, alpha^1, alpha^2, alpha^3]
+    constant Fr* alpha_fold          [[buffer(7)]],    // FRI fold challenge
+    uint gid                         [[thread_position_in_grid]]
+) {
+    uint half_n = num_rows >> 1;
+    if (gid >= half_n) return;
+
+    uint i = gid;
+    uint j = gid + half_n;
+
+    // Load current and next-row for position i
+    Fr a_i = trace[i * num_cols + 0];
+    Fr b_i = trace[i * num_cols + 1];
+    uint next_i = (i + 1 < num_rows) ? i + 1 : 0;
+    Fr a_next_i = trace[next_i * num_cols + 0];
+    Fr b_next_i = trace[next_i * num_cols + 1];
+
+    // Fibonacci constraints at i
+    Fr c0_i = fr_sub(a_next_i, b_i);
+    Fr c1_i = fr_sub(b_next_i, fr_add(a_i, b_i));
+    Fr acc_i = fr_add(fr_mul(alpha_powers[0], c0_i), fr_mul(alpha_powers[1], c1_i));
+    Fr q_i = fr_mul(acc_i, vanishing_inv[i]);
+
+    // Load current and next-row for position j (i + half_n)
+    Fr a_j = trace[j * num_cols + 0];
+    Fr b_j = trace[j * num_cols + 1];
+    uint next_j = (j + 1 < num_rows) ? j + 1 : 0;
+    Fr a_next_j = trace[next_j * num_cols + 0];
+    Fr b_next_j = trace[next_j * num_cols + 1];
+
+    // Fibonacci constraints at j
+    Fr c0_j = fr_sub(a_next_j, b_j);
+    Fr c1_j = fr_sub(b_next_j, fr_add(a_j, b_j));
+    Fr acc_j = fr_add(fr_mul(alpha_powers[0], c0_j), fr_mul(alpha_powers[1], c1_j));
+    Fr q_j = fr_mul(acc_j, vanishing_inv[j]);
+
+    // FRI fold: result[i] = (q_i + q_j) + alpha * (q_i - q_j) * domain_inv[i]
+    Fr sum = fr_add(q_i, q_j);
+    Fr diff = fr_sub(q_i, q_j);
+    Fr diff_term = fr_mul(fr_mul(alpha_fold[0], diff), domain_inv[i]);
+    folded_out[gid] = fr_add(sum, diff_term);
+}
+
+// Fused constraint eval + 2-round FRI fold (n -> n/4)
+// Combines constraint eval with two consecutive FRI fold rounds in one dispatch.
+// Reads 4 elements per thread position, computes 2 folds, writes n/4.
+kernel void bn254_fib_constraint_fold_2r(
+    device const Fr* trace             [[buffer(0)]],     // NTT'd trace (row-major, 2 cols)
+    device Fr* folded_out            [[buffer(1)]],     // output: n/4 folded values
+    device const Fr* domain_inv       [[buffer(2)]],    // round-1 domain inverses (size n/2)
+    device const Fr* domain_inv2      [[buffer(3)]],    // round-2 domain inverses (size n/4)
+    device const Fr* vanishing_inv    [[buffer(4)]],    // 1/Z_H(x)
+    constant uint& num_cols          [[buffer(5)]],
+    constant uint& num_rows          [[buffer(6)]],     // original domain size n
+    device const Fr* alpha_powers     [[buffer(7)]],    // [alpha^0, alpha^1, alpha^2, alpha^3]
+    constant Fr* alpha0               [[buffer(8)]],    // FRI challenge round 1
+    constant Fr* alpha1               [[buffer(9)]],    // FRI challenge round 2
+    uint gid                         [[thread_position_in_grid]]
+) {
+    uint quarter = num_rows >> 2;
+    if (gid >= quarter) return;
+
+    uint half_n = num_rows >> 1;
+    uint i = gid;
+    uint j = gid + quarter;
+    uint k = gid + half_n;
+    uint l = gid + half_n + quarter;
+
+    // Helper to compute constraint quotient at position pos
+    // Inlined to avoid function call overhead (Metal doesn't support closures)
+    // Load trace[pos] and trace[pos+1 mod num_rows]
+    Fr a0 = trace[i * num_cols + 0];
+    Fr b0 = trace[i * num_cols + 1];
+    uint next_i = (i + 1 < num_rows) ? i + 1 : 0;
+    Fr a0n = trace[next_i * num_cols + 0];
+    Fr b0n = trace[next_i * num_cols + 1];
+    Fr c0_0 = fr_sub(a0n, b0);
+    Fr c1_0 = fr_sub(b0n, fr_add(a0, b0));
+    Fr q0 = fr_mul(fr_add(fr_mul(alpha_powers[0], c0_0), fr_mul(alpha_powers[1], c1_0)), vanishing_inv[i]);
+
+    Fr a1 = trace[j * num_cols + 0];
+    Fr b1 = trace[j * num_cols + 1];
+    uint next_j = (j + 1 < num_rows) ? j + 1 : 0;
+    Fr a1n = trace[next_j * num_cols + 0];
+    Fr b1n = trace[next_j * num_cols + 1];
+    Fr c0_1 = fr_sub(a1n, b1);
+    Fr c1_1 = fr_sub(b1n, fr_add(a1, b1));
+    Fr q1 = fr_mul(fr_add(fr_mul(alpha_powers[0], c0_1), fr_mul(alpha_powers[1], c1_1)), vanishing_inv[j]);
+
+    Fr a2 = trace[k * num_cols + 0];
+    Fr b2 = trace[k * num_cols + 1];
+    uint next_k = (k + 1 < num_rows) ? k + 1 : 0;
+    Fr a2n = trace[next_k * num_cols + 0];
+    Fr b2n = trace[next_k * num_cols + 1];
+    Fr c0_2 = fr_sub(a2n, b2);
+    Fr c1_2 = fr_sub(b2n, fr_add(a2, b2));
+    Fr q2 = fr_mul(fr_add(fr_mul(alpha_powers[0], c0_2), fr_mul(alpha_powers[1], c1_2)), vanishing_inv[k]);
+
+    Fr a3 = trace[l * num_cols + 0];
+    Fr b3 = trace[l * num_cols + 1];
+    uint next_l = (l + 1 < num_rows) ? l + 1 : 0;
+    Fr a3n = trace[next_l * num_cols + 0];
+    Fr b3n = trace[next_l * num_cols + 1];
+    Fr c0_3 = fr_sub(a3n, b3);
+    Fr c1_3 = fr_sub(b3n, fr_add(a3, b3));
+    Fr q3 = fr_mul(fr_add(fr_mul(alpha_powers[0], c0_3), fr_mul(alpha_powers[1], c1_3)), vanishing_inv[l]);
+
+    // Round 1: fold pairs (q0,q2) and (q1,q3) with alpha0
+    Fr sum02 = fr_add(q0, q2);
+    Fr diff02 = fr_sub(q0, q2);
+    Fr f1_lo = fr_add(sum02, fr_mul(fr_mul(alpha0[0], diff02), domain_inv[gid]));
+
+    Fr sum13 = fr_add(q1, q3);
+    Fr diff13 = fr_sub(q1, q3);
+    Fr f1_hi = fr_add(sum13, fr_mul(fr_mul(alpha0[0], diff13), domain_inv[gid + quarter]));
+
+    // Round 2: fold (f1_lo, f1_hi) with alpha1 and domain_inv2
+    Fr sum_f = fr_add(f1_lo, f1_hi);
+    Fr diff_f = fr_sub(f1_lo, f1_hi);
+    folded_out[gid] = fr_add(sum_f, fr_mul(fr_mul(alpha1[0], diff_f), domain_inv2[gid]));
+}

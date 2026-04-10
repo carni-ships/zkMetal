@@ -169,11 +169,11 @@ if cmd == "calibrate" {
     runBLS12377GLVTest()
 } else if cmd == "stark252" || cmd == "starknet" {
     runStark252Bench()
-} else if cmd == "bls381" || cmd == "bls12381" {
+} else if cmd == "bls381msm" {
+    runBLS12381MSMBench()
+} else if cmd == "bls12381" {
     runBLS12381Test()
 } else if cmd == "sha256" || cmd == "sha" {
-    runSHA256Bench()
-} else if cmd == "blake3" || cmd == "b3" {
     runBlake3Bench()
 } else if cmd == "secp256k1" || cmd == "secp" {
     runSecp256k1Test()
@@ -227,6 +227,8 @@ if cmd == "calibrate" {
     runCircleBench()
 } else if cmd == "circle-stark" || cmd == "cstark" {
     runCircleSTARKBench()
+} else if cmd == "circle-stark-fused" || cmd == "cstark-fused" {
+    runCircleSTARKFusedRoundBench()
 } else if cmd == "circle-fri" || cmd == "cfri" {
     runCircleFRIBench()
 } else if cmd == "transcript" || cmd == "ts" {

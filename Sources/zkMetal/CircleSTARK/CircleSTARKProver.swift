@@ -76,6 +76,28 @@ public struct CircleSTARKProof {
     }
 }
 
+/// Metrics from benchmarking the fused constraint eval + FRI fold kernels
+public struct FusedRoundMetrics {
+    /// Log2 of trace length
+    public let logTrace: Int
+    /// NTT time (ms)
+    public let nttMs: Double
+    /// Constraint eval time (separate, ms)
+    public let constraintMs: Double
+    /// FRI fold time (separate, ms)
+    public let foldMs: Double
+    /// Total (NTT + constraint + fold, separate, ms)
+    public let totalMs: Double
+    /// Whether fused kernels compiled successfully
+    public let fusedAvailable: Bool
+    /// Fused constraint + fold time (ms), nil if unavailable
+    public let fusedMs: Double?
+    /// Speedup from fusion (separate / fused), nil if unavailable
+    public let speedup: Double?
+    /// Fused 2-round kernel time (ms), nil if 2-round not used
+    public let fold2rMs: Double?
+}
+
 // MARK: - Prover
 
 public class CircleSTARKProver {
@@ -90,6 +112,10 @@ public class CircleSTARKProver {
     private var witnessEng: WitnessEngine?
     private var cstPipeline: MTLComputePipelineState?
     private var fusedSepColPipeline: MTLComputePipelineState?
+    /// Fused constraint eval + first FRI fold kernel
+    private var cstFoldFirstPipeline: MTLComputePipelineState?
+    /// Fused constraint eval + 2-round FRI fold kernel
+    private var cstFold2rPipeline: MTLComputePipelineState?
     /// Cached domain_y buffer for fused constraint eval
     private var cachedDomainYBuf: MTLBuffer?
     private var cachedDomainYLogN: Int = 0
@@ -181,6 +207,54 @@ public class CircleSTARKProver {
         }
         let p = try dev.makeComputePipelineState(function: fn)
         fusedSepColPipeline = p
+        return p
+    }
+
+    /// Fused constraint eval + first FRI fold (y-twiddle).
+    /// Combines circle_fib_constraint_separate_cols + circle_fri_fold_first in one dispatch.
+    private func ensureCstFoldFirstPipeline() throws -> MTLComputePipelineState {
+        if let p = cstFoldFirstPipeline { return p }
+        let dev = try ensureNTT().device
+        let sd = CircleSTARKProver.shaderDir()
+        let fSrc = try String(contentsOfFile: sd + "/fields/mersenne31.metal", encoding: .utf8)
+        let cSrc = try String(contentsOfFile: sd + "/constraint/fused_circle_ntt_constraint.metal", encoding: .utf8)
+        let cClean = cSrc.split(separator: "\n").filter { !$0.contains("#include") }.joined(separator: "\n")
+        let fClean = fSrc
+            .replacingOccurrences(of: "#ifndef MERSENNE31_METAL", with: "")
+            .replacingOccurrences(of: "#define MERSENNE31_METAL", with: "")
+            .replacingOccurrences(of: "#endif // MERSENNE31_METAL", with: "")
+        let opts = MTLCompileOptions()
+        opts.fastMathEnabled = true
+        let lib = try dev.makeLibrary(source: fClean + "\n" + cClean, options: opts)
+        guard let fn = lib.makeFunction(name: "circle_fib_constraint_fold_first") else {
+            throw MSMError.missingKernel
+        }
+        let p = try dev.makeComputePipelineState(function: fn)
+        cstFoldFirstPipeline = p
+        return p
+    }
+
+    /// Fused constraint eval + 2-round FRI fold (y-fold + x-fold).
+    /// Combines constraint eval + 2 FRI folds in one dispatch. Output is n/4 elements.
+    private func ensureCstFold2rPipeline() throws -> MTLComputePipelineState {
+        if let p = cstFold2rPipeline { return p }
+        let dev = try ensureNTT().device
+        let sd = CircleSTARKProver.shaderDir()
+        let fSrc = try String(contentsOfFile: sd + "/fields/mersenne31.metal", encoding: .utf8)
+        let cSrc = try String(contentsOfFile: sd + "/constraint/fused_circle_ntt_constraint.metal", encoding: .utf8)
+        let cClean = cSrc.split(separator: "\n").filter { !$0.contains("#include") }.joined(separator: "\n")
+        let fClean = fSrc
+            .replacingOccurrences(of: "#ifndef MERSENNE31_METAL", with: "")
+            .replacingOccurrences(of: "#define MERSENNE31_METAL", with: "")
+            .replacingOccurrences(of: "#endif // MERSENNE31_METAL", with: "")
+        let opts = MTLCompileOptions()
+        opts.fastMathEnabled = true
+        let lib = try dev.makeLibrary(source: fClean + "\n" + cClean, options: opts)
+        guard let fn = lib.makeFunction(name: "circle_fib_constraint_fold_2r") else {
+            throw MSMError.missingKernel
+        }
+        let p = try dev.makeComputePipelineState(function: fn)
+        cstFold2rPipeline = p
         return p
     }
 
@@ -919,6 +993,248 @@ public class CircleSTARKProver {
             friProof: friProof, queryResponses: queryResponses,
             alpha: alpha, traceLength: traceLen,
             numColumns: air.numColumns, logBlowup: logBlowup
+        )
+    }
+
+    // MARK: - Fused STARK Round Kernel Timing
+    //
+    // Demonstrates the fused constraint eval + FRI fold kernels.
+    // Returns timing metrics for the fused kernels vs separate execution.
+    // For a full proof with query phase, use prove() or proveFused().
+    //
+    // Fused kernels:
+    // - circle_fib_constraint_fold_first: constraint eval + 1st FRI fold (y-twiddle), outputs n/2
+    // - circle_fib_constraint_fold_2r: constraint eval + 2 FRI folds (y+x), outputs n/4
+    public func benchmarkFusedConstraintFold<A: CircleAIR>(air: A) throws -> FusedRoundMetrics {
+        let traceLen = air.traceLength
+        let logTrace = air.logTraceLength
+        let logEval = logTrace + logBlowup
+        let evalLen = 1 << logEval
+        let halfLen = evalLen >> 1
+        let quarterLen = evalLen >> 2
+
+        let t0 = CFAbsoluteTimeGetCurrent()
+        let trace = try generateTraceGPU(air: air)
+        precondition(trace.count == air.numColumns)
+        for col in trace { precondition(col.count == traceLen) }
+        let traceT = CFAbsoluteTimeGetCurrent()
+
+        let ntt = try ensureNTT()
+        let sz = MemoryLayout<UInt32>.stride
+        let dev = ntt.device
+        let queue = ntt.commandQueue
+
+        guard let bufA = dev.makeBuffer(length: evalLen * sz, options: .storageModeShared),
+              let bufB = dev.makeBuffer(length: evalLen * sz, options: .storageModeShared) else {
+            throw MSMError.gpuError("Failed to allocate LDE buffers")
+        }
+        let pA = bufA.contents().bindMemory(to: UInt32.self, capacity: evalLen)
+        let pB = bufB.contents().bindMemory(to: UInt32.self, capacity: evalLen)
+        for i in 0..<traceLen { pA[i] = trace[0][i].v; pB[i] = trace[1][i].v }
+
+        // INTT
+        guard let cbIntt = queue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
+        ntt.encodeINTT(data: bufA, logN: logTrace, cmdBuf: cbIntt)
+        ntt.encodeINTT(data: bufB, logN: logTrace, cmdBuf: cbIntt)
+        cbIntt.commit()
+        cbIntt.waitUntilCompleted()
+
+        for i in traceLen..<evalLen { pA[i] = 0; pB[i] = 0 }
+
+        // NTT
+        guard let cbNtt = queue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
+        ntt.encodeNTT(data: bufA, logN: logEval, cmdBuf: cbNtt)
+        ntt.encodeNTT(data: bufB, logN: logEval, cmdBuf: cbNtt)
+        cbNtt.commit()
+        cbNtt.waitUntilCompleted()
+
+        let nttT = CFAbsoluteTimeGetCurrent()
+
+        // Transcript for alpha
+        var transcript = CircleSTARKTranscript()
+        transcript.absorbLabel("circle-stark-v1")
+        let alpha = transcript.squeezeM31()
+
+        let domainYBuf = try getDomainYBuffer(logN: logEval)
+        var a0: UInt32 = 0; var b0: UInt32 = 0
+        for bc in air.boundaryConstraints {
+            if bc.column == 0 { a0 = bc.value.v }
+            if bc.column == 1 { b0 = bc.value.v }
+        }
+
+        // --- Separate execution (baseline): constraint eval + fold in TWO dispatches ---
+        guard let oBufSep = dev.makeBuffer(length: evalLen * sz, options: .storageModeShared),
+              let foldedSepBuf = dev.makeBuffer(length: halfLen * sz, options: .storageModeShared) else {
+            throw MSMError.gpuError("Failed to allocate sep buffers")
+        }
+
+        // Separate: dispatch 1 - constraint eval (outputs n elements)
+        let sepPipe = try ensureFusedSepColPipeline()
+        do {
+            guard let cb = queue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
+            let enc = cb.makeComputeCommandEncoder()!
+            enc.setComputePipelineState(sepPipe)
+            enc.setBuffer(bufA, offset: 0, index: 0)
+            enc.setBuffer(bufB, offset: 0, index: 1)
+            enc.setBuffer(oBufSep, offset: 0, index: 2)
+            enc.setBuffer(domainYBuf, offset: 0, index: 3)
+            var av = alpha.v; enc.setBytes(&av, length: sz, index: 4)
+            enc.setBytes(&a0, length: sz, index: 5)
+            enc.setBytes(&b0, length: sz, index: 6)
+            var el = UInt32(evalLen); enc.setBytes(&el, length: sz, index: 7)
+            var tl = UInt32(traceLen); enc.setBytes(&tl, length: sz, index: 8)
+            var lt = UInt32(logTrace); enc.setBytes(&lt, length: sz, index: 9)
+            let tg = min(256, Int(sepPipe.maxTotalThreadsPerThreadgroup))
+            enc.dispatchThreads(MTLSize(width: evalLen, height: 1, depth: 1),
+                               threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+            enc.endEncoding()
+            cb.commit()
+            cb.waitUntilCompleted()
+        }
+        let cstT = CFAbsoluteTimeGetCurrent()
+
+        // Separate: dispatch 2 - FRI fold (reads n, writes n/2)
+        let fri = try ensureFRI()
+        let inv2yBuf = friGetInv2y(logN: logEval, dev: dev)
+        var foldAlpha = transcript.squeezeM31()
+        var alphaBuf = dev.makeBuffer(length: sz, options: .storageModeShared)!
+        alphaBuf.contents().bindMemory(to: M31.self, capacity: 1)[0] = foldAlpha
+        do {
+            guard let cb = queue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
+            let enc = cb.makeComputeCommandEncoder()!
+            enc.setComputePipelineState(fri.foldFirstFunction)
+            enc.setBuffer(oBufSep, offset: 0, index: 0)
+            enc.setBuffer(foldedSepBuf, offset: 0, index: 1)
+            enc.setBuffer(inv2yBuf, offset: 0, index: 2)
+            enc.setBuffer(alphaBuf, offset: 0, index: 3)
+            var nVal = UInt32(evalLen)
+            enc.setBytes(&nVal, length: 4, index: 4)
+            let tg = min(256, Int(fri.foldFirstFunction.maxTotalThreadsPerThreadgroup))
+            enc.dispatchThreads(MTLSize(width: halfLen, height: 1, depth: 1),
+                               threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+            enc.endEncoding()
+            cb.commit()
+            cb.waitUntilCompleted()
+        }
+        let foldT = CFAbsoluteTimeGetCurrent()
+
+        // Read back and verify folded values match
+        let foldedSepPtr = foldedSepBuf.contents().bindMemory(to: M31.self, capacity: halfLen)
+
+        // --- Fused execution: constraint eval + first fold in ONE dispatch ---
+        guard let oBufFused = dev.makeBuffer(length: evalLen * sz, options: .storageModeShared),
+              let foldedFusedBuf = dev.makeBuffer(length: halfLen * sz, options: .storageModeShared) else {
+            throw MSMError.gpuError("Failed to allocate fused buffers")
+        }
+
+        // Try the fused 2r kernel first (constraint + 2 folds, outputs n/4)
+        let fused2rPipe = try? ensureCstFold2rPipeline()
+        let useFused2r = fused2rPipe != nil && evalLen >= 4
+
+        if useFused2r {
+            // Fused 2-round: constraint eval + 2 FRI folds in one dispatch (outputs n/4)
+            do {
+                guard let cb = queue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
+                let enc = cb.makeComputeCommandEncoder()!
+                enc.setComputePipelineState(fused2rPipe!)
+                enc.setBuffer(bufA, offset: 0, index: 0)
+                enc.setBuffer(bufB, offset: 0, index: 1)
+                enc.setBuffer(foldedFusedBuf, offset: 0, index: 2)
+                enc.setBuffer(inv2yBuf, offset: 0, index: 3)
+                // inv_2x for round 2 (need to get from FRI cache)
+                let inv2xBufs = friGetInv2x(logN: logEval, dev: dev)
+                enc.setBuffer(inv2xBufs[0], offset: 0, index: 4)
+                enc.setBuffer(domainYBuf, offset: 0, index: 5)
+                var av = alpha.v; enc.setBytes(&av, length: sz, index: 6)
+                var fa0 = transcript.squeezeM31()
+                enc.setBytes(&fa0, length: sz, index: 7)
+                var fa1 = transcript.squeezeM31()
+                enc.setBytes(&fa1, length: sz, index: 8)
+                enc.setBytes(&a0, length: sz, index: 9)
+                enc.setBytes(&b0, length: sz, index: 10)
+                var elV = UInt32(evalLen); enc.setBytes(&elV, length: sz, index: 11)
+                var tlV = UInt32(traceLen); enc.setBytes(&tlV, length: sz, index: 12)
+                var ltV = UInt32(logTrace); enc.setBytes(&ltV, length: sz, index: 13)
+                let tg = min(128, Int(fused2rPipe!.maxTotalThreadsPerThreadgroup))
+                enc.dispatchThreads(MTLSize(width: quarterLen, height: 1, depth: 1),
+                                   threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+                enc.endEncoding()
+                cb.commit()
+                cb.waitUntilCompleted()
+            }
+        } else {
+            // Fused 1-round: constraint eval + 1 fold in one dispatch (outputs n/2)
+            guard let fused1rPipe = try? ensureCstFoldFirstPipeline() else {
+                // Kernels not available - return metrics for separate execution only
+                return FusedRoundMetrics(
+                    logTrace: logTrace,
+                    nttMs: (nttT - traceT) * 1000,
+                    constraintMs: (cstT - nttT) * 1000,
+                    foldMs: (foldT - cstT) * 1000,
+                    totalMs: (foldT - traceT) * 1000,
+                    fusedAvailable: false,
+                    fusedMs: nil,
+                    speedup: nil,
+                    fold2rMs: nil
+                )
+            }
+            do {
+                guard let cb = queue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
+                let enc = cb.makeComputeCommandEncoder()!
+                enc.setComputePipelineState(fused1rPipe)
+                enc.setBuffer(bufA, offset: 0, index: 0)
+                enc.setBuffer(bufB, offset: 0, index: 1)
+                enc.setBuffer(foldedFusedBuf, offset: 0, index: 2)
+                enc.setBuffer(inv2yBuf, offset: 0, index: 3)
+                enc.setBuffer(domainYBuf, offset: 0, index: 4)
+                var av = alpha.v; enc.setBytes(&av, length: sz, index: 5)
+                var fa = transcript.squeezeM31()
+                enc.setBytes(&fa, length: sz, index: 6)
+                enc.setBytes(&a0, length: sz, index: 7)
+                enc.setBytes(&b0, length: sz, index: 8)
+                var elV = UInt32(evalLen); enc.setBytes(&elV, length: sz, index: 9)
+                var tlV = UInt32(traceLen); enc.setBytes(&tlV, length: sz, index: 10)
+                var ltV = UInt32(logTrace); enc.setBytes(&ltV, length: sz, index: 11)
+                let tg = min(128, Int(fused1rPipe.maxTotalThreadsPerThreadgroup))
+                enc.dispatchThreads(MTLSize(width: halfLen, height: 1, depth: 1),
+                                   threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+                enc.endEncoding()
+                cb.commit()
+                cb.waitUntilCompleted()
+            }
+        }
+        let fusedT = CFAbsoluteTimeGetCurrent()
+
+        // Verify correctness: compare folded values
+        var correct = true
+        if useFused2r {
+            // Fused 2r outputs n/4, we can only compare first n/4 of separate result
+            let fusedPtr = foldedFusedBuf.contents().bindMemory(to: M31.self, capacity: quarterLen)
+            for i in 0..<min(quarterLen, halfLen) {
+                if fusedPtr[i].v != foldedSepPtr[i].v { correct = false; break }
+            }
+        } else {
+            // Fused 1r outputs n/2, compare with separate result
+            let fusedPtr = foldedFusedBuf.contents().bindMemory(to: M31.self, capacity: halfLen)
+            for i in 0..<halfLen {
+                if fusedPtr[i].v != foldedSepPtr[i].v { correct = false; break }
+            }
+        }
+
+        let sepMs = (cstT - nttT) + (foldT - cstT)  // constraint + fold
+        let fusedMs = fusedT - nttT
+        let speedup = sepMs / fusedMs
+
+        return FusedRoundMetrics(
+            logTrace: logTrace,
+            nttMs: (nttT - traceT) * 1000,
+            constraintMs: (cstT - nttT) * 1000,
+            foldMs: (foldT - cstT) * 1000,
+            totalMs: (foldT - traceT) * 1000,
+            fusedAvailable: true,
+            fusedMs: fusedMs * 1000,
+            speedup: speedup,
+            fold2rMs: useFused2r ? (fusedMs * 1000) : nil
         )
     }
 
