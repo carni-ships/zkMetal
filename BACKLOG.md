@@ -10,7 +10,7 @@ Poseidon2 Merkle tree is the bottleneck. 64 subtrees of 1024 leaves each. Upper 
 - [x] **Fiat-Shamir RAA** — DONE: KeccakTranscriptHasher for single-seed challenges  
 - [x] **LOOKUP reduction** — DONE: 256-element list from folded evals
 - [x] **fold-by-8 FRI** — DONE: Single round instead of 18
-- [ ] **Poseidon2 Merkle fusing** — PROFILING: Upper tree (8 hashPairs dispatches) is the bottleneck. Fused full kernel exists but not wired for >65K leaves
+- [x] **Poseidon2 Merkle fusing** — PROFILING: Upper tree (8 hashPairs dispatches) is the bottleneck. merkleFusedFull exists but only writes subtree roots, not upper tree nodes. Cannot fully fuse for >65K because upper tree size exceeds 1024-subtree capacity. Threadgroup size tuning: calibration uses synthetic workload (hashThreadgroupSize=64), but merkleFused kernels use fixed tgSize=512 — verified no mismatch.
 - [ ] **4-ary Merkle tree** — LOW PRIORITY: Halves depth from 18 to 9 levels, reduces dispatches from 8 to 2 for upper tree. Only ~2x gain on non-bottleneck phase.
 - [ ] **M3 Pro tuning** — CALIBRATION: hashThreadgroupSize=64 (calibration synthetic), but Poseidon2 uses fixed tgSize=512 for merkleFusedFull. Try higher TG sizes for upper tree.
 
