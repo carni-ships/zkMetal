@@ -584,3 +584,90 @@ kernel void fri_coset_unshift(
     if (gid >= n) return;
     evals[gid] = fr_mul(evals[gid], inv_shift_powers[gid]);
 }
+
+// ========================================================================
+// Blaze Interleaved Encoding Kernels
+// ========================================================================
+
+// Interleaved encoding: combine m polynomials into one codeword
+// Input: m polynomials of length n, stored as [f1[0], f1[1], ..., f1[n-1], f2[0], ...]
+// Output: interleaved codeword [f1[0], f2[0], ..., fm[0], f1[1], f2[1], ..., fm[1], ...]
+// Each thread processes one element of the output codeword
+// Uses constant buffer for scalars to ensure proper alignment
+kernel void blaze_interleaved_encode(
+    device const Fr* polynomials     [[buffer(0)]],  // m * n field elements
+    device Fr* codeword             [[buffer(1)]],  // n * m field elements output
+    device const uint* params       [[buffer(2)]],  // [n, m] at offsets 0, 4
+    uint gid                        [[thread_position_in_grid]]
+) {
+    uint n = params[0];
+    uint m = params[1];
+    uint total = n * m;
+    if (gid >= total) return;
+
+    // gid = i * m + j where i = domain index, j = poly index
+    uint i = gid / m;
+    uint j = gid % m;
+
+    // Input: polynomials[j][i] is at offset j * n + i
+    uint inputIdx = j * n + i;
+    codeword[gid] = polynomials[inputIdx];
+}
+
+// Interleaved decoding: extract one polynomial from codeword
+kernel void blaze_interleaved_decode(
+    device const Fr* codeword        [[buffer(0)]],  // n * m field elements
+    device Fr* polynomial           [[buffer(1)]],  // n field elements output
+    device const uint* params       [[buffer(2)]],  // [n, m, polyIndex]
+    uint gid                        [[thread_position_in_grid]]
+) {
+    uint n = params[0];
+    uint m = params[1];
+    uint polyIndex = params[2];
+    if (gid >= n) return;
+
+    // codeword[i * m + polyIndex] = polynomial[i]
+    uint codewordIdx = gid * m + polyIndex;
+    polynomial[gid] = codeword[codewordIdx];
+}
+
+// Batch interleaved encoding with multiple threadgroups processing different domains
+// Each threadgroup handles one polynomial pair
+kernel void blaze_interleaved_encode_batch(
+    device const Fr* polynomials     [[buffer(0)]],  // m * n field elements
+    device Fr* codeword             [[buffer(1)]],  // n * m field elements output
+    device const uint* polyOffsets  [[buffer(2)]],  // offsets for each polynomial
+    device const uint* params       [[buffer(3)]],  // [n, m]
+    uint gid                        [[thread_position_in_grid]]
+) {
+    uint n = params[0];
+    uint m = params[1];
+    uint total = n * m;
+    if (gid >= total) return;
+
+    uint i = gid / m;  // domain index
+    uint j = gid % m;  // polynomial index
+
+    uint inputIdx = polyOffsets[j] + i;
+    codeword[gid] = polynomials[inputIdx];
+}
+
+// In-place transpose for interleaved access pattern
+// Transforms [f1[0..n-1], f2[0..n-1], ...] to [f1[0], f2[0], ..., fm[0], f1[1], ...]
+kernel void blaze_transpose_interleaved(
+    device const Fr* input          [[buffer(0)]],
+    device Fr* output              [[buffer(1)]],
+    device const uint* params      [[buffer(2)]],  // [n, m]
+    uint gid                        [[thread_position_in_grid]]
+) {
+    uint n = params[0];
+    uint m = params[1];
+    uint total = n * m;
+    if (gid >= total) return;
+
+    //gid = i * m + j where i=row (domain idx), j=col (poly idx)
+    //After transpose: output[j * n + i] = input[i * m + j]
+    uint i = gid / m;
+    uint j = gid % m;
+    output[j * n + i] = input[gid];
+}

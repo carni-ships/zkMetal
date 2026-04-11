@@ -70,6 +70,7 @@ public enum Versions {
     public static let basefold       = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let circleFRI      = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let univariateSumcheck = PrimitiveVersion(version: "1.1.0", updated: "2026-04-04")
+    public static let blaze         = PrimitiveVersion(version: "1.0.0", updated: "2026-04-10")  // Interleaved RAA codes
 
     // --- BLS12-381 ---
     public static let bls12381       = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")

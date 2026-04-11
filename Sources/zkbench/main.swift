@@ -259,6 +259,8 @@ if cmd == "calibrate" {
     runPastaMSMBench()
 } else if cmd == "binius" || cmd == "binary" || cmd == "bt" {
     runBiniusBench()
+} else if cmd == "blaze" {
+    runBlazeBench()
 } else if cmd == "fold" || cmd == "nova" || cmd == "hypernova" {
     runFoldingBench()
 } else if cmd == "accum" || cmd == "accumulate" || cmd == "accumulation" {

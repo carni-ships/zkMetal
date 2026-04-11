@@ -2,6 +2,18 @@
 
 Sorted by headroom (most room for improvement first). Items marked with status.
 
+## Blaze SNARK (~3x headroom, 490ms merkle at 2^18 vs ~150ms floor)
+
+Poseidon2 Merkle tree is the bottleneck. 64 subtrees of 1024 leaves each. Upper tree levels (8 dispatches) dominate time.
+
+- [x] **Interleaved encoding** — DONE: GPU kernel for m-polynomial encode/decode
+- [x] **Fiat-Shamir RAA** — DONE: KeccakTranscriptHasher for single-seed challenges  
+- [x] **LOOKUP reduction** — DONE: 256-element list from folded evals
+- [x] **fold-by-8 FRI** — DONE: Single round instead of 18
+- [ ] **Poseidon2 Merkle fusing** — PROFILING: Upper tree (8 hashPairs dispatches) is the bottleneck. Fused full kernel exists but not wired for >65K leaves
+- [ ] **4-ary Merkle tree** — LOW PRIORITY: Halves depth from 18 to 9 levels, reduces dispatches from 8 to 2 for upper tree. Only ~2x gain on non-bottleneck phase.
+- [ ] **M3 Pro tuning** — CALIBRATION: hashThreadgroupSize=64 (calibration synthetic), but Poseidon2 uses fixed tgSize=512 for merkleFusedFull. Try higher TG sizes for upper tree.
+
 ## MSM BN254 (~1.4x headroom, ~72ms at 2^18 vs ~50ms floor)
 
 GPU bucket reduce (35ms) + bucket sum (32ms) = 67ms GPU, 5ms sort, 2ms GLV+endo.
