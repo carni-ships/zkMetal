@@ -32,14 +32,15 @@ using namespace metal;
 // Primary: 256x256 LUT passed as device pointer. Lookup = O(1).
 // Fallback: shift-XOR (USE_LUT=0 compiles out the LUT parameter).
 #ifdef USE_LUT
-device uint8_t* gf28_lut [[buffer(0)]];
-
-inline uint8_t gf28_mul(uint8_t a, uint8_t b) {
-    return gf28_lut[a * 256 + b];
+// LUT is passed as kernel parameter (lut [[buffer(0)]]) and forwarded to gf28_mul.
+// Note: we cannot use a program-scope global with [[buffer]] when also passing
+// a buffer parameter at the same index - this causes Metal runtime binding conflicts.
+inline uint8_t gf28_mul(device uint8_t* lut, uint8_t a, uint8_t b) {
+    return lut[a * 256 + b];
 }
 #else
 // Shift-XOR fallback (for debugging when LUT is unavailable)
-inline uint8_t gf28_mul(uint8_t a, uint8_t b) {
+inline uint8_t gf28_mul(device uint8_t* lut, uint8_t a, uint8_t b) {
     uint16_t p = 0;
     p ^= ((uint16_t)(a & 1)  ) * ((uint16_t)(b)       );
     p ^= ((uint16_t)(a & 2)  ) * ((uint16_t)(b << 1) );
@@ -84,8 +85,6 @@ kernel void additive_fft_gf8_forward(
     constant uint32_t& k              [[buffer(4)]],
     uint gid                          [[thread_position_in_grid]]
 ) {
-    // gf28_mul uses lut directly via the global
-    (void)lut; // suppress unused warning
 #else
 kernel void additive_fft_gf8_forward(
     device uint8_t* data              [[buffer(1)]],
@@ -119,7 +118,7 @@ kernel void additive_fft_gf8_forward(
         uint8_t lo_val = data[j];            // lo value from memory
 
         // Twist: lo ^= s * hi
-        uint8_t twisted = lo_val ^ gf28_mul(s, hi_val);
+        uint8_t twisted = lo_val ^ gf28_mul(lut, s, hi_val);
         // Propagate: hi ^= lo
         uint8_t propagated = lo_val ^ hi_val;
 
@@ -144,7 +143,6 @@ kernel void additive_fft_gf8_inverse(
     constant uint32_t& k              [[buffer(4)]],
     uint gid                          [[thread_position_in_grid]]
 ) {
-    (void)lut;
 #else
 kernel void additive_fft_gf8_inverse(
     device uint8_t* data              [[buffer(1)]],
@@ -183,7 +181,7 @@ kernel void additive_fft_gf8_inverse(
         //   hi ^= lo  (same as forward: hi_new = hi_old ^ lo)
         //   lo ^= s * hi  (untwist: lo_new = lo_old ^ s * hi_new)
         uint8_t unpropagated = hi_val ^ lo_val;
-        uint8_t untwisted = lo_val ^ gf28_mul(s, unpropagated);
+        uint8_t untwisted = lo_val ^ gf28_mul(lut, s, unpropagated);
 
         data[j] = untwisted;
         val = unpropagated;
@@ -206,7 +204,6 @@ kernel void additive_fft_gf8_forward_batch(
     constant uint32_t& batch           [[buffer(5)]],
     uint gid                          [[thread_position_in_grid]]
 ) {
-    (void)lut;
 #else
 kernel void additive_fft_gf8_forward_batch(
     device uint8_t* data              [[buffer(1)]],
@@ -240,7 +237,7 @@ kernel void additive_fft_gf8_forward_batch(
         uint8_t hi_val = val;
         uint8_t lo_val = data[arr_offset + j];
 
-        uint8_t twisted = lo_val ^ gf28_mul(s, hi_val);
+        uint8_t twisted = lo_val ^ gf28_mul(lut, s, hi_val);
         uint8_t propagated = lo_val ^ hi_val;
 
         data[arr_offset + j] = twisted;
@@ -262,7 +259,6 @@ kernel void gf28_pointwise_mul(
     constant uint32_t& n              [[buffer(4)]],
     uint gid                          [[thread_position_in_grid]]
 ) {
-    (void)lut;
 #else
 kernel void gf28_pointwise_mul(
     device uint8_t* a                 [[buffer(1)]],
@@ -273,7 +269,7 @@ kernel void gf28_pointwise_mul(
 ) {
 #endif
     if (gid >= n) return;
-    out[gid] = gf28_mul(a[gid], b[gid]);
+    out[gid] = gf28_mul(lut, a[gid], b[gid]);
 }
 
 // Fused: forward additive FFT then pointwise multiply, in one dispatch.
@@ -289,7 +285,6 @@ kernel void additive_fft_gf8_forward_then_pointwise_mul(
     device uint8_t* b                 [[buffer(5)]],
     uint gid                          [[thread_position_in_grid]]
 ) {
-    (void)lut;
 #else
 kernel void additive_fft_gf8_forward_then_pointwise_mul(
     device uint8_t* a                 [[buffer(1)]],
@@ -314,7 +309,7 @@ kernel void additive_fft_gf8_forward_then_pointwise_mul(
         uint8_t s = basis[depth];
         uint8_t hi_val = val;
         uint8_t lo_val = a[j];
-        uint8_t twisted = lo_val ^ gf28_mul(s, hi_val);
+        uint8_t twisted = lo_val ^ gf28_mul(lut, s, hi_val);
         uint8_t propagated = lo_val ^ hi_val;
         a[j] = twisted;
         val = propagated;
@@ -322,5 +317,5 @@ kernel void additive_fft_gf8_forward_then_pointwise_mul(
     a[gid] = val;
 
     // Stage 2: Pointwise multiply with b (result stored back in a)
-    a[gid] = gf28_mul(a[gid], b[gid]);
+    a[gid] = gf28_mul(lut, a[gid], b[gid]);
 }
