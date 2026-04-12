@@ -28,11 +28,19 @@
 #include <metal_stdlib>
 using namespace metal;
 
-// GF(2^8) multiplication with reduction by 0x11B
-// Returns a * b in GF(2^8)
+// GF(2^8) multiplication with reduction by 0x11B.
+// Primary: 256x256 LUT passed as device pointer. Lookup = O(1).
+// Fallback: shift-XOR (USE_LUT=0 compiles out the LUT parameter).
+#ifdef USE_LUT
+device uint8_t* gf28_lut [[buffer(0)]];
+
+inline uint8_t gf28_mul(uint8_t a, uint8_t b) {
+    return gf28_lut[a * 256 + b];
+}
+#else
+// Shift-XOR fallback (for debugging when LUT is unavailable)
 inline uint8_t gf28_mul(uint8_t a, uint8_t b) {
     uint16_t p = 0;
-    // 8 shift-XOR iterations (carryless multiply)
     p ^= ((uint16_t)(a & 1)  ) * ((uint16_t)(b)       );
     p ^= ((uint16_t)(a & 2)  ) * ((uint16_t)(b << 1) );
     p ^= ((uint16_t)(a & 4)  ) * ((uint16_t)(b << 2) );
@@ -41,24 +49,18 @@ inline uint8_t gf28_mul(uint8_t a, uint8_t b) {
     p ^= ((uint16_t)(a & 32) ) * ((uint16_t)(b << 5) );
     p ^= ((uint16_t)(a & 64) ) * ((uint16_t)(b << 6) );
     p ^= ((uint16_t)(a & 128)) * ((uint16_t)(b << 7) );
-    // Reduce by x^8 + x^4 + x^3 + x + 1 (0x11B).
-    // For each bit i >= 8 that is set in p, we have x^i ≡ x^(i-8) * (x^8)
-    // ≡ x^(i-8) * (x^4 + x^3 + x + 1) ≡ (0x11B) << (i-8).
-    // h = p >> 8 holds bits 8..14 of the carry-less product.
-    // For each bit i set in h, XOR with 0x11B << i.
     uint16_t h = p >> 8;
-    // Handle bits 0..7 of h: each corresponds to product term x^(8+i)
-    if (h & 0x01) p ^= 0x11B << 0;   // bit 8:  x^8  ≡ 0x11B
-    if (h & 0x02) p ^= 0x11B << 1;   // bit 9:  x^9  ≡ 0x236
-    if (h & 0x04) p ^= 0x11B << 2;   // bit 10: x^10 ≡ 0x46C
-    if (h & 0x08) p ^= 0x11B << 3;   // bit 11: x^11 ≡ 0x8D8
-    if (h & 0x10) p ^= 0x11B << 4;   // bit 12: x^12 ≡ 0x11B0
-    if (h & 0x20) p ^= 0x11B << 5;   // bit 13: x^13 ≡ 0x2360
-    if (h & 0x40) p ^= 0x11B << 6;   // bit 14: x^14 ≡ 0x46C0
-    if (h & 0x80) p ^= 0x11B << 7;   // bit 15: x^15 ≡ 0x8D80
-    // After these XORs, all bits >= 8 are eliminated (mod x^8 + … + 1)
+    if (h & 0x01) p ^= 0x11B << 0;
+    if (h & 0x02) p ^= 0x11B << 1;
+    if (h & 0x04) p ^= 0x11B << 2;
+    if (h & 0x08) p ^= 0x11B << 3;
+    if (h & 0x10) p ^= 0x11B << 4;
+    if (h & 0x20) p ^= 0x11B << 5;
+    if (h & 0x40) p ^= 0x11B << 6;
+    if (h & 0x80) p ^= 0x11B << 7;
     return (uint8_t)(p & 0xFF);
 }
+#endif
 
 // Precomputed reduction table: for each possible high-byte value (0..255),
 // gives the GF(2^8) reduction of (high_byte << 8).
@@ -68,15 +70,31 @@ inline uint8_t gf28_mul(uint8_t a, uint8_t b) {
 // Forward additive FFT over GF(2^8).
 // Fused: processes all k = log₂(n) levels in one dispatch.
 // Each thread processes one element at position gid.
-// basis[0..k-1]: GF(2^8) basis elements (one per FFT level).
-// data[gid]: input element, modified in registers, final value written back.
+// buffer(0): 256x256 GF(2^8) LUT (device pointer)
+// buffer(1): data[gid]: input element, modified in registers, final value written back.
+// buffer(2): basis[0..k-1]: GF(2^8) basis elements (one per FFT level).
+// buffer(3): n (total elements, power of 2)
+// buffer(4): k (log₂(n))
+#ifdef USE_LUT
 kernel void additive_fft_gf8_forward(
-    device uint8_t* data              [[buffer(0)]],
-    constant uint8_t* basis           [[buffer(1)]],   // k basis elements
-    constant uint32_t& n               [[buffer(2)]],   // total elements (power of 2)
-    constant uint32_t& k              [[buffer(3)]],   // log₂(n)
+    device uint8_t* lut               [[buffer(0)]],
+    device uint8_t* data              [[buffer(1)]],
+    constant uint8_t* basis           [[buffer(2)]],
+    constant uint32_t& n               [[buffer(3)]],
+    constant uint32_t& k              [[buffer(4)]],
     uint gid                          [[thread_position_in_grid]]
 ) {
+    // gf28_mul uses lut directly via the global
+    (void)lut; // suppress unused warning
+#else
+kernel void additive_fft_gf8_forward(
+    device uint8_t* data              [[buffer(1)]],
+    constant uint8_t* basis           [[buffer(2)]],
+    constant uint32_t& n               [[buffer(3)]],
+    constant uint32_t& k              [[buffer(4)]],
+    uint gid                          [[thread_position_in_grid]]
+) {
+#endif
     if (gid >= n) return;
 
     uint8_t val = data[gid];
@@ -116,13 +134,26 @@ kernel void additive_fft_gf8_forward(
 // Inverse additive FFT over GF(2^8).
 // Fused: processes all k levels in one dispatch.
 // DIT: small stride first (reverse of forward).
+// buffer(0): LUT, buffer(1): data, buffer(2): basis, buffer(3): n, buffer(4): k
+#ifdef USE_LUT
 kernel void additive_fft_gf8_inverse(
-    device uint8_t* data              [[buffer(0)]],
-    constant uint8_t* basis           [[buffer(1)]],   // k basis elements (same order)
-    constant uint32_t& n               [[buffer(2)]],
-    constant uint32_t& k              [[buffer(3)]],
+    device uint8_t* lut               [[buffer(0)]],
+    device uint8_t* data              [[buffer(1)]],
+    constant uint8_t* basis           [[buffer(2)]],
+    constant uint32_t& n               [[buffer(3)]],
+    constant uint32_t& k              [[buffer(4)]],
     uint gid                          [[thread_position_in_grid]]
 ) {
+    (void)lut;
+#else
+kernel void additive_fft_gf8_inverse(
+    device uint8_t* data              [[buffer(1)]],
+    constant uint8_t* basis           [[buffer(2)]],
+    constant uint32_t& n               [[buffer(3)]],
+    constant uint32_t& k              [[buffer(4)]],
+    uint gid                          [[thread_position_in_grid]]
+) {
+#endif
     if (gid >= n) return;
 
     uint8_t val = data[gid];
@@ -164,14 +195,28 @@ kernel void additive_fft_gf8_inverse(
 // Batch forward additive FFT for multiple independent arrays.
 // Each thread processes one element from one array.
 // Useful when you have multiple polynomials of the same degree to transform.
+// buffer(0): LUT, buffer(1): data (flat: batch * n), buffer(2): basis, buffer(3): n, buffer(4): k, buffer(5): batch
+#ifdef USE_LUT
 kernel void additive_fft_gf8_forward_batch(
-    device uint8_t* data              [[buffer(0)]],  // flat: batch * n elements
-    constant uint8_t* basis           [[buffer(1)]],
-    constant uint32_t& n               [[buffer(2)]],
-    constant uint32_t& k              [[buffer(3)]],
-    constant uint32_t& batch           [[buffer(4)]],   // number of arrays
+    device uint8_t* lut               [[buffer(0)]],
+    device uint8_t* data              [[buffer(1)]],
+    constant uint8_t* basis           [[buffer(2)]],
+    constant uint32_t& n               [[buffer(3)]],
+    constant uint32_t& k              [[buffer(4)]],
+    constant uint32_t& batch           [[buffer(5)]],
     uint gid                          [[thread_position_in_grid]]
 ) {
+    (void)lut;
+#else
+kernel void additive_fft_gf8_forward_batch(
+    device uint8_t* data              [[buffer(1)]],
+    constant uint8_t* basis           [[buffer(2)]],
+    constant uint32_t& n               [[buffer(3)]],
+    constant uint32_t& k              [[buffer(4)]],
+    constant uint32_t& batch           [[buffer(5)]],
+    uint gid                          [[thread_position_in_grid]]
+) {
+#endif
     uint total = n * batch;
     if (gid >= total) return;
 
@@ -207,13 +252,75 @@ kernel void additive_fft_gf8_forward_batch(
 
 // GF(2^8) pointwise multiply for polynomial multiplication via additive FFT.
 // Applies to arrays of n GF(2^8) elements (pointwise product: out[i] = a[i] * b[i]).
+// buffer(0): LUT, buffer(1): a, buffer(2): b, buffer(3): out, buffer(4): n
+#ifdef USE_LUT
 kernel void gf28_pointwise_mul(
-    device uint8_t* a                 [[buffer(0)]],
-    device uint8_t* b                 [[buffer(1)]],
-    device uint8_t* out               [[buffer(2)]],
-    constant uint32_t& n              [[buffer(3)]],
+    device uint8_t* lut               [[buffer(0)]],
+    device uint8_t* a                 [[buffer(1)]],
+    device uint8_t* b                 [[buffer(2)]],
+    device uint8_t* out               [[buffer(3)]],
+    constant uint32_t& n              [[buffer(4)]],
     uint gid                          [[thread_position_in_grid]]
 ) {
+    (void)lut;
+#else
+kernel void gf28_pointwise_mul(
+    device uint8_t* a                 [[buffer(1)]],
+    device uint8_t* b                 [[buffer(2)]],
+    device uint8_t* out               [[buffer(3)]],
+    constant uint32_t& n              [[buffer(4)]],
+    uint gid                          [[thread_position_in_grid]]
+) {
+#endif
     if (gid >= n) return;
     out[gid] = gf28_mul(a[gid], b[gid]);
+}
+
+// Fused: forward additive FFT then pointwise multiply, in one dispatch.
+// Avoids an intermediate global memory round-trip between the two stages.
+// buffer(0): LUT, buffer(1): a (in/out), buffer(2): basis, buffer(3): n, buffer(4): k, buffer(5): b (second polynomial)
+#ifdef USE_LUT
+kernel void additive_fft_gf8_forward_then_pointwise_mul(
+    device uint8_t* lut               [[buffer(0)]],
+    device uint8_t* a                 [[buffer(1)]],
+    constant uint8_t* basis           [[buffer(2)]],
+    constant uint32_t& n               [[buffer(3)]],
+    constant uint32_t& k              [[buffer(4)]],
+    device uint8_t* b                 [[buffer(5)]],
+    uint gid                          [[thread_position_in_grid]]
+) {
+    (void)lut;
+#else
+kernel void additive_fft_gf8_forward_then_pointwise_mul(
+    device uint8_t* a                 [[buffer(1)]],
+    constant uint8_t* basis           [[buffer(2)]],
+    constant uint32_t& n               [[buffer(3)]],
+    constant uint32_t& k              [[buffer(4)]],
+    device uint8_t* b                 [[buffer(5)]],
+    uint gid                          [[thread_position_in_grid]]
+) {
+#endif
+    if (gid >= n) return;
+
+    // Stage 1: Forward additive FFT on a (in-place)
+    uint8_t val = a[gid];
+    for (uint depth = 0; depth < k; depth++) {
+        uint block_size = n >> depth;
+        uint halfSize = block_size >> 1;
+        uint local_idx = gid % block_size;
+        if (local_idx < halfSize) continue;
+        uint i = gid;
+        uint j = gid - halfSize;
+        uint8_t s = basis[depth];
+        uint8_t hi_val = val;
+        uint8_t lo_val = a[j];
+        uint8_t twisted = lo_val ^ gf28_mul(s, hi_val);
+        uint8_t propagated = lo_val ^ hi_val;
+        a[j] = twisted;
+        val = propagated;
+    }
+    a[gid] = val;
+
+    // Stage 2: Pointwise multiply with b (result stored back in a)
+    a[gid] = gf28_mul(a[gid], b[gid]);
 }

@@ -23,10 +23,14 @@ public class GPUAdditiveFFTEngine {
     let inverseFn: MTLComputePipelineState?
     let forwardBatchFn: MTLComputePipelineState?
     let pointwiseMulFn: MTLComputePipelineState?
+    let fusedForwardThenMulFn: MTLComputePipelineState?
 
     /// Cached data buffer to avoid per-call allocation.
     private var cachedDataBuf: MTLBuffer?
     private var cachedDataBufElements: Int = 0
+
+    /// 256x256 GF(2^8) multiplication LUT (64KB), populated at init.
+    var lutBuffer: MTLBuffer?
 
     private let tuning: TuningConfig
 
@@ -45,28 +49,59 @@ public class GPUAdditiveFFTEngine {
         self.commandQueue = queue
         self.tuning = TuningManager.shared.config(device: device)
 
-        // Try to compile Metal shaders; if this fails, GPU path is unavailable
-        if let library = try? GPUAdditiveFFTEngine.compileShaders(device: device) {
+        // Populate the 256x256 GF(2^8) multiplication LUT at init time.
+        self.lutBuffer = GPUAdditiveFFTEngine.createLUTBuffer(device: device)
+
+        // Try to compile Metal shaders with USE_LUT=1; if this fails, GPU path is unavailable
+        if let library = try? GPUAdditiveFFTEngine.compileShaders(device: device, defines: ["USE_LUT"]) {
             self.forwardFn = try? device.makeComputePipelineState(function: library.makeFunction(name: "additive_fft_gf8_forward")!)
             self.inverseFn = try? device.makeComputePipelineState(function: library.makeFunction(name: "additive_fft_gf8_inverse")!)
             self.forwardBatchFn = try? device.makeComputePipelineState(function: library.makeFunction(name: "additive_fft_gf8_forward_batch")!)
             self.pointwiseMulFn = try? device.makeComputePipelineState(function: library.makeFunction(name: "gf28_pointwise_mul")!)
+            self.fusedForwardThenMulFn = try? device.makeComputePipelineState(function: library.makeFunction(name: "additive_fft_gf8_forward_then_pointwise_mul")!)
         } else {
             self.forwardFn = nil
             self.inverseFn = nil
             self.forwardBatchFn = nil
             self.pointwiseMulFn = nil
+            self.fusedForwardThenMulFn = nil
         }
     }
 
     // MARK: - Shader Compilation
 
-    private static func compileShaders(device: MTLDevice) throws -> MTLLibrary {
+    private static func compileShaders(device: MTLDevice, defines: [String] = []) throws -> MTLLibrary {
         let shaderDir = findShaderDir()
         let source = try String(contentsOfFile: shaderDir + "/additive/additive_fft_gf8.metal", encoding: .utf8)
         let options = MTLCompileOptions()
         options.fastMathEnabled = true
+        // Add preprocessor macros (e.g. "USE_LUT=1")
+        if !defines.isEmpty {
+            let macros = defines.joined(separator: ",")
+            // MTLCompileOptions doesn't have direct macro support, but we can prefix the source
+            let prefixedSource = defines.map { "#define \($0)\n" }.joined() + source
+            return try device.makeLibrary(source: prefixedSource, options: options)
+        }
         return try device.makeLibrary(source: source, options: options)
+    }
+
+    // MARK: - LUT Population
+
+    /// Creates and populates the 256x256 GF(2^8) multiplication LUT (64KB).
+    private static func createLUTBuffer(device: MTLDevice) -> MTLBuffer? {
+        guard let buf = device.makeBuffer(length: 65536, options: .storageModeShared) else {
+            return nil
+        }
+        var lut = [UInt8](repeating: 0, count: 65536)
+        for a: UInt8 in 0...255 {
+            for b: UInt8 in 0...255 {
+                lut[Int(a) * 256 + Int(b)] = GPUAdditiveFFTEngine.gf28MulCPU(a, b)
+            }
+        }
+        lut.withUnsafeBytes { src in
+            memcpy(buf.contents(), src.baseAddress!, 65536)
+        }
+        return buf
     }
 
     // MARK: - Buffer Management
@@ -132,10 +167,11 @@ public class GPUAdditiveFFTEngine {
 
         let enc = cmdBuf.makeComputeCommandEncoder()!
         enc.setComputePipelineState(fn)
-        enc.setBuffer(dataBuf, offset: 0, index: 0)
-        enc.setBuffer(basisBuf, offset: 0, index: 1)
-        enc.setBytes(&nVal, length: 4, index: 2)
-        enc.setBytes(&kVal, length: 4, index: 3)
+        enc.setBuffer(lutBuffer, offset: 0, index: 0)
+        enc.setBuffer(dataBuf, offset: 0, index: 1)
+        enc.setBuffer(basisBuf, offset: 0, index: 2)
+        enc.setBytes(&nVal, length: 4, index: 3)
+        enc.setBytes(&kVal, length: 4, index: 4)
         let tg = min(tuning.nttThreadgroupSize, Int(fn.maxTotalThreadsPerThreadgroup))
         enc.dispatchThreads(MTLSize(width: n, height: 1, depth: 1),
                            threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
@@ -167,10 +203,11 @@ public class GPUAdditiveFFTEngine {
 
         let enc = cmdBuf.makeComputeCommandEncoder()!
         enc.setComputePipelineState(fn)
-        enc.setBuffer(dataBuffer, offset: 0, index: 0)
-        enc.setBuffer(basisBuffer, offset: 0, index: 1)
-        enc.setBytes(&nVal, length: 4, index: 2)
-        enc.setBytes(&kVal, length: 4, index: 3)
+        enc.setBuffer(lutBuffer, offset: 0, index: 0)
+        enc.setBuffer(dataBuffer, offset: 0, index: 1)
+        enc.setBuffer(basisBuffer, offset: 0, index: 2)
+        enc.setBytes(&nVal, length: 4, index: 3)
+        enc.setBytes(&kVal, length: 4, index: 4)
         let tg = min(tuning.nttThreadgroupSize, Int(fn.maxTotalThreadsPerThreadgroup))
         enc.dispatchThreads(MTLSize(width: n, height: 1, depth: 1),
                            threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
@@ -217,10 +254,11 @@ public class GPUAdditiveFFTEngine {
 
         let enc = cmdBuf.makeComputeCommandEncoder()!
         enc.setComputePipelineState(fn)
-        enc.setBuffer(dataBuf, offset: 0, index: 0)
-        enc.setBuffer(basisBuf, offset: 0, index: 1)
-        enc.setBytes(&nVal, length: 4, index: 2)
-        enc.setBytes(&kVal, length: 4, index: 3)
+        enc.setBuffer(lutBuffer, offset: 0, index: 0)
+        enc.setBuffer(dataBuf, offset: 0, index: 1)
+        enc.setBuffer(basisBuf, offset: 0, index: 2)
+        enc.setBytes(&nVal, length: 4, index: 3)
+        enc.setBytes(&kVal, length: 4, index: 4)
         let tg = min(tuning.nttThreadgroupSize, Int(fn.maxTotalThreadsPerThreadgroup))
         enc.dispatchThreads(MTLSize(width: n, height: 1, depth: 1),
                            threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
@@ -252,10 +290,11 @@ public class GPUAdditiveFFTEngine {
 
         let enc = cmdBuf.makeComputeCommandEncoder()!
         enc.setComputePipelineState(fn)
-        enc.setBuffer(dataBuffer, offset: 0, index: 0)
-        enc.setBuffer(basisBuffer, offset: 0, index: 1)
-        enc.setBytes(&nVal, length: 4, index: 2)
-        enc.setBytes(&kVal, length: 4, index: 3)
+        enc.setBuffer(lutBuffer, offset: 0, index: 0)
+        enc.setBuffer(dataBuffer, offset: 0, index: 1)
+        enc.setBuffer(basisBuffer, offset: 0, index: 2)
+        enc.setBytes(&nVal, length: 4, index: 3)
+        enc.setBytes(&kVal, length: 4, index: 4)
         let tg = min(tuning.nttThreadgroupSize, Int(fn.maxTotalThreadsPerThreadgroup))
         enc.dispatchThreads(MTLSize(width: n, height: 1, depth: 1),
                            threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
@@ -309,11 +348,12 @@ public class GPUAdditiveFFTEngine {
 
         let enc = cmdBuf.makeComputeCommandEncoder()!
         enc.setComputePipelineState(fn)
-        enc.setBuffer(dataBuf, offset: 0, index: 0)
-        enc.setBuffer(basisBuf, offset: 0, index: 1)
-        enc.setBytes(&nVal, length: 4, index: 2)
-        enc.setBytes(&kVal, length: 4, index: 3)
-        enc.setBytes(&batchVal, length: 4, index: 4)
+        enc.setBuffer(lutBuffer, offset: 0, index: 0)
+        enc.setBuffer(dataBuf, offset: 0, index: 1)
+        enc.setBuffer(basisBuf, offset: 0, index: 2)
+        enc.setBytes(&nVal, length: 4, index: 3)
+        enc.setBytes(&kVal, length: 4, index: 4)
+        enc.setBytes(&batchVal, length: 4, index: 5)
         let tg = min(tuning.nttThreadgroupSize, Int(fn.maxTotalThreadsPerThreadgroup))
         enc.dispatchThreads(MTLSize(width: total, height: 1, depth: 1),
                            threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
@@ -352,10 +392,11 @@ public class GPUAdditiveFFTEngine {
         var nVal = UInt32(n)
         let enc = cmdBuf.makeComputeCommandEncoder()!
         enc.setComputePipelineState(fn)
-        enc.setBuffer(aBuf, offset: 0, index: 0)
-        enc.setBuffer(bBuf, offset: 0, index: 1)
-        enc.setBuffer(outBuf, offset: 0, index: 2)
-        enc.setBytes(&nVal, length: 4, index: 3)
+        enc.setBuffer(lutBuffer, offset: 0, index: 0)
+        enc.setBuffer(aBuf, offset: 0, index: 1)
+        enc.setBuffer(bBuf, offset: 0, index: 2)
+        enc.setBuffer(outBuf, offset: 0, index: 3)
+        enc.setBytes(&nVal, length: 4, index: 4)
         let tg = min(tuning.nttThreadgroupSize, Int(fn.maxTotalThreadsPerThreadgroup))
         enc.dispatchThreads(MTLSize(width: n, height: 1, depth: 1),
                            threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
@@ -470,5 +511,65 @@ public class GPUAdditiveFFTEngine {
 
         // Inverse FFT to get coefficients
         return try inverse(data: product, n: n, k: k, basis: basis)
+    }
+
+    /// Fused polynomial multiply: forward FFT + pointwise multiply in a single dispatch.
+    /// Avoids an intermediate global memory round-trip between the two stages.
+    /// - Parameters:
+    ///   - a: first polynomial coefficients
+    ///   - b: second polynomial coefficients
+    ///   - n: transform size (power of 2, must be >= max(a.count, b.count) * 2)
+    ///   - k: log₂(n)
+    ///   - basis: k GF(2^8) basis elements
+    /// - Returns: product polynomial of degree < n
+    public func multiplyFused(_ a: [UInt8], _ b: [UInt8], n: Int, k: Int, basis: [UInt8]) throws -> [UInt8] {
+        precondition(a.count + b.count - 1 <= n, "Product degree exceeds transform size")
+        precondition(n == (1 << k), "n must be 2^k")
+
+        var aData = a + [UInt8](repeating: 0, count: n - a.count)
+        var bData = b + [UInt8](repeating: 0, count: n - b.count)
+
+        guard let fn = fusedForwardThenMulFn else {
+            // Fallback to separate kernels
+            return try multiply(aData, bData, n: n, k: k, basis: basis)
+        }
+
+        let aBuf = getOrCreateDataBuffer(elementCount: n)
+        aData.withUnsafeBytes { src in memcpy(aBuf.contents(), src.baseAddress!, n) }
+        let bBuf = createUInt8Buffer(bData)!
+
+        guard let basisBuf = createUInt8Buffer(basis) else {
+            throw MSMError.gpuError("Failed to allocate basis buffer")
+        }
+
+        guard let cmdBuf = commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
+        }
+
+        var nVal = UInt32(n)
+        var kVal = UInt32(k)
+
+        let enc = cmdBuf.makeComputeCommandEncoder()!
+        enc.setComputePipelineState(fn)
+        enc.setBuffer(lutBuffer, offset: 0, index: 0)
+        enc.setBuffer(aBuf, offset: 0, index: 1)
+        enc.setBuffer(basisBuf, offset: 0, index: 2)
+        enc.setBytes(&nVal, length: 4, index: 3)
+        enc.setBytes(&kVal, length: 4, index: 4)
+        enc.setBuffer(bBuf, offset: 0, index: 5)
+        let tg = min(tuning.nttThreadgroupSize, Int(fn.maxTotalThreadsPerThreadgroup))
+        enc.dispatchThreads(MTLSize(width: n, height: 1, depth: 1),
+                           threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+        enc.endEncoding()
+
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+        if let error = cmdBuf.error {
+            throw MSMError.gpuError(error.localizedDescription)
+        }
+
+        // Now inverse FFT on aBuf in-place
+        let invResult = try inverse(data: Array(UnsafeBufferPointer(start: aBuf.contents().bindMemory(to: UInt8.self, capacity: n), count: n)), n: n, k: k, basis: basis)
+        return invResult
     }
 }
