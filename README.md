@@ -329,7 +329,7 @@ Fused Cantor/Lin-Chung-Han additive FFT — all k butterfly levels in single Met
 | 2^16 | 65,536 | 5.75ms | 11.4 M elem/s |
 | 2^18 | 262,144 | 8.89ms | 29.5 M elem/s |
 | 2^20 | 1,048,576 | 9.24ms | 113.5 M elem/s |
-| 2^22 | 4,194,304 | 13.00ms | 322.7 M elem/s |
+| 2^22 | 4,194,304 | 10.98ms | 381.9 M elem/s |
 
 Throughput increases with size as fixed kernel dispatch overhead is amortized. Single dispatch avoids k separate kernel launches and memory round-trips.
 
@@ -494,7 +494,7 @@ C CIOS Montgomery acceleration: pre-computed wiring topology, cached buffers, eq
 | Lasso 2^18 | 29ms prove, 26ms verify | C-accelerated: prove **17x** (481→29ms), verify **62x** (1.6s→26ms) |
 | LogUp 2^12 | 15ms prove, 16ms verify | Optimal for small-medium tables |
 | cq 2^16 | 8ms prove, 2ms verify | O(N log N) independent of table size |
-| Binius GF(2^8) GPU FFT 2^22 | 13ms | Fused additive FFT over GF(2^8) (1M elem/s), full tower in progress |
+| Binius GF(2^8) GPU FFT 2^22 | 10.98ms (381.9 M elem/s) | Fused additive FFT over GF(2^8) with 256×256 LUT multiply, full tower in progress |
 | BLS12-381 | Sign 26ms, Verify 82ms, **Pairing 1.0ms** | Projective G2 Miller loop + sparse line mul + dedicated fp_sqr: **78×** (78→1.0ms) |
 | BN254 GPU Pairing (n=16) | 34ms (vs 5.6ms C = **0.16x**) | GPU is 6x slower than CPU — projective Miller loop is memory-bound on GPU |
 | BN254 C Pairing (n=1) | **0.5ms** (15× vs Swift) | CIOS __uint128_t + Granger-Scott cyc_sqr + sparse line + projective G2 |
@@ -534,19 +534,19 @@ Methodology: Compute-bound = total_ops / 3.6T flops (BN254 mul = ~64 32-bit muls
 
 | Rank | Primitive | Current | Theoretical Floor | Bottleneck | Headroom |
 |------|-----------|---------|-------------------|------------|----------|
-| 1 | MSM BN254 2^18 | 73ms | ~5ms | Random-access BW (scatter bucket accumulation) | ~11x |
-| 2 | NTT BN254 2^22 | 26ms | ~3ms | Compute + strided BW (256-bit: 64 muls/elem) | ~9x |
-| 3 | Sumcheck 2^20 | 4.7ms | ~1ms | Bandwidth (2^20 x 32B per round), fused CB | ~5x |
-| 4 | FRI Fold 2^20 | 2.1ms | ~0.3ms | Bandwidth (fold-by-2), 21 layers | ~7x |
-| 5 | GPU Additive FFT 2^22 | 13ms | ~0.5ms | GF(2^8) multiply via bit-shift (8 ops/byte); k=22 serial multiplies per elem limits parallelism | ~26x |
-| 6 | BLS12-377 MSM 2^18 | ~119ms (GPU) | ~35ms | 12x32-bit Fq377 on 32-bit SIMD: 144 mul32/mul + Montgomery reduction. 11 muls per point add ≈ 1584 mul32/pt add. Karatsuba would need more temp registers → register spills. GPU is ~3.4x above floor (119ms vs 35ms). | ~3.4x |
-| 7 | Keccak Merkle 2^20 | 4.7ms (4-ary) | ~2.2ms | 4-ary halves levels, compute-limited | ~3.5x |
-| 8 | Blake3 Batch 2^20 | 1.0ms | ~0.6ms | Bandwidth (2^20 x 64B), uint4 vectorized loads + cycle permute | ~1.7x |
-| 9 | Basefold open 2^18 | 99ms | ~20ms | Fold-by-4 + pipelined Merkle (9 rounds vs 18) | ~3x |
-| 10 | Poseidon2 batch 2^16 | 8.1ms | ~1.8ms | Compute (390 ops/elem, 22 sequential rounds limit parallelism) | ~4.5x |
-| 11 | secp256k1 MSM 2^18 | 766ms (GPU) / 247ms (CPU) | ~30ms | GPU: 4x64-bit Montgomery CIOS (64-bit emulated via 32-bit carry chains on M3 GPU); CPU: native uint64. GLV makes GPU 3x worse (2517ms). GPU is 3x slower than CPU. | ~26x (GPU) / ~8x (CPU) |
-| 12 | Constraint IR 2^16 | 5.3ms | ~1.5ms | Compute (20 constraints x 65K rows, pipeline compile overhead) | ~3.5x |
-| 13 | Witness Gen BN254 2^18 | 3.0ms | ~0.9ms | Memory bandwidth (10 cols x 262K x 32B = 84MB) | ~3.3x |
+| 1 | GPU Additive FFT 2^22 | 10.98ms | ~0.5ms | LUT lookup replaces shift-XOR multiply; k=22 serial butterfly levels still limit parallelism | ~22x |
+| 2 | secp256k1 MSM 2^18 (GPU) | 766ms | ~30ms | 4x64-bit Montgomery CIOS (64-bit emulated via 32-bit carry chains on M3 GPU); GLV makes GPU 3x slower than CPU | ~26x |
+| 3 | secp256k1 MSM 2^18 (CPU) | 247ms | ~30ms | Native uint64 CIOS; GLV helps on CPU (247ms vs 2517ms GPU) | ~8x |
+| 4 | MSM BN254 2^18 | 73ms | ~5ms | Random-access BW (scatter bucket accumulation) | ~11x |
+| 5 | NTT BN254 2^22 | 26ms | ~3ms | Compute + strided BW (256-bit: 64 muls/elem) | ~9x |
+| 6 | FRI Fold 2^20 | 2.1ms | ~0.3ms | Bandwidth (fold-by-2), 21 layers | ~7x |
+| 7 | Sumcheck 2^20 | 4.7ms | ~1ms | Bandwidth (2^20 x 32B per round), fused CB | ~5x |
+| 8 | Poseidon2 batch 2^16 | 8.1ms | ~1.8ms | Compute (390 ops/elem, 22 sequential rounds limit parallelism) | ~4.5x |
+| 9 | BLS12-377 MSM 2^18 | ~119ms (GPU) | ~35ms | 12x32-bit Fq377 on 32-bit SIMD: 144 mul32/mul + Montgomery reduction. 11 muls per point add ≈ 1584 mul32/pt add. Karatsuba would need more temp registers → register spills | ~3.4x |
+| 10 | Keccak Merkle 2^20 | 4.7ms (4-ary) | ~2.2ms | 4-ary halves levels, compute-limited | ~3.5x |
+| 11 | Constraint IR 2^16 | 5.3ms | ~1.5ms | Compute (20 constraints x 65K rows, pipeline compile overhead) | ~3.5x |
+| 12 | Witness Gen BN254 2^18 | 3.0ms | ~0.9ms | Memory bandwidth (10 cols x 262K x 32B = 84MB) | ~3.3x |
+| 13 | Basefold open 2^18 | 99ms | ~20ms | Fold-by-4 + pipelined Merkle (9 rounds vs 18) | ~3x |
 | 14 | Plonk prove 1024 | 50ms | ~15ms | C CIOS + Keccak transcript + batched poly ops | ~3x |
 | 15 | ECDSA batch 64 (CPU) | 1.7ms | ~0.5ms | C CIOS Fr + fused batch prepare | ~3x |
 | 16 | Keccak Batch 2^18 | 1.4ms | ~0.5ms | Compute (24 rounds Keccak-f per hash) | ~3x |
@@ -556,17 +556,18 @@ Methodology: Compute-bound = total_ops / 3.6T flops (BN254 mul = ~64 32-bit muls
 | 20 | Incremental Merkle batch 256 | 13ms | ~6ms | Path updates (log(N) hashes per leaf) | ~2.2x |
 | 21 | Radix Sort 2^20 | 2.1ms | ~1ms | Vectorized histogram + flat clearing | ~2x |
 | 22 | Verkle proof 256 (CPU) | 3.8ms | ~2ms | IPA dominated (C scalar mul) | ~1.9x |
-| 23 | Circle STARK prove 2^14 | 17ms | ~10ms | Profile: FRI 11ms dominates (Merkle 9ms) | ~1.7x |
-| 24 | NTT Goldilocks 2^24 | 3.0ms | ~1.8ms | Compute ~= BW (64-bit) | ~1.7x |
-| 25 | Lasso prove 2^18 | 29ms | ~20ms | Near floor — C-accelerated + fused GPU | ~1.5x |
-| 26 | Groth16 prove 256 | 14ms | ~10ms | MSM dominated (cached affine + CPU NTT) | ~1.4x |
-| 27 | KZG commit 2^10 | 0.7ms | ~0.5ms | C Horner + fused eval/div, cached affine SRS | ~1.4x |
-| 28 | Lattice Kyber NTT 10K | 5.6M NTTs/s | ~8M NTTs/s | Compute (256-pt NTT, 32-bit) | ~1.4x |
-| 29 | GKR 2^10 d=4 | 6.4ms | ~5ms | C CIOS + pre-computed wiring topology (near floor) | ~1.3x |
-| 30 | HyperNova per-fold | 0.09ms | ~0.07ms | Near floor: C CIOS + Keccak + pre-computed affine | ~1.3x |
-| 31 | Circle NTT 2^20 | 4.0ms | ~3ms | Compute ~= BW (32-bit elements, single-word) | ~1.3x |
-| 32 | IPA prove n=256 | 13ms | ~10ms | C scalar mul + GPU batch fold | ~1.3x |
-| 33 | NTT BabyBear 2^24 | 2.0ms | ~1.7ms | Bandwidth (2^24 x 4B) | ~1.2x |
+| 23 | Blake3 Batch 2^20 | 1.0ms | ~0.6ms | Bandwidth (2^20 x 64B), uint4 vectorized loads + cycle permute | ~1.7x |
+| 24 | Circle STARK prove 2^14 | 17ms | ~10ms | Profile: FRI 11ms dominates (Merkle 9ms) | ~1.7x |
+| 25 | NTT Goldilocks 2^24 | 3.0ms | ~1.8ms | Compute ~= BW (64-bit) | ~1.7x |
+| 26 | Lasso prove 2^18 | 29ms | ~20ms | Near floor — C-accelerated + fused GPU | ~1.5x |
+| 27 | Groth16 prove 256 | 14ms | ~10ms | MSM dominated (cached affine + CPU NTT) | ~1.4x |
+| 28 | KZG commit 2^10 | 0.7ms | ~0.5ms | C Horner + fused eval/div, cached affine SRS | ~1.4x |
+| 29 | Lattice Kyber NTT 10K | 5.6M NTTs/s | ~8M NTTs/s | Compute (256-pt NTT, 32-bit) | ~1.4x |
+| 30 | GKR 2^10 d=4 | 6.4ms | ~5ms | C CIOS + pre-computed wiring topology (near floor) | ~1.3x |
+| 31 | HyperNova per-fold | 0.09ms | ~0.07ms | Near floor: C CIOS + Keccak + pre-computed affine | ~1.3x |
+| 32 | Circle NTT 2^20 | 4.0ms | ~3ms | Compute ~= BW (32-bit elements, single-word) | ~1.3x |
+| 33 | IPA prove n=256 | 13ms | ~10ms | C scalar mul + GPU batch fold | ~1.3x |
+| 34 | NTT BabyBear 2^24 | 2.0ms | ~1.7ms | Bandwidth (2^24 x 4B) | ~1.2x |
 
 BabyBear/Goldilocks NTT and IPA are near-optimal (within 1-2x of hardware limits).
 
