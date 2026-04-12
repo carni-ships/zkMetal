@@ -525,7 +525,7 @@ Methodology: Compute-bound = total_ops / 3.6T flops (BN254 mul = ~64 32-bit muls
 | 2 | NTT BN254 2^22 | 26ms | ~3ms | Compute + strided BW (256-bit: 64 muls/elem) | ~9x |
 | 3 | Sumcheck 2^20 | 4.7ms | ~1ms | Bandwidth (2^20 x 32B per round), fused CB | ~5x |
 | 4 | FRI Fold 2^20 | 2.1ms | ~0.3ms | Bandwidth (fold-by-2), 21 layers | ~7x |
-| 5 | BLS12-377 MSM 2^18 | 119ms | ~35ms | Wider 12-limb Fq, GLV disabled (net loss for GPU) | ~3.4x |
+| 5 | BLS12-377 MSM 2^18 | ~9000ms (GPU) | ~35ms | 12x32-bit Fq377 CIOS: 144 mul32/mul + 12 mul32/reduce step. 11 muls per point add ≈ 1584 mul32/pt add. Fq377 sqr causes register spilling (25 uint temp). Karatsuba (6+6 split) would need more temps → worse. GPU is ~9s vs theoretical ~35ms. | ~257x |
 | 6 | Keccak Merkle 2^20 | 4.7ms (4-ary) | ~2.2ms | 4-ary halves levels, compute-limited | ~3.5x |
 | 7 | Blake3 Batch 2^20 | 1.0ms | ~0.6ms | Bandwidth (2^20 x 64B), uint4 vectorized loads + cycle permute | ~1.7x |
 | 8 | Basefold open 2^18 | 99ms | ~20ms | Fold-by-4 + pipelined Merkle (9 rounds vs 18) | ~3x |
