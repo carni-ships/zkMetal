@@ -413,10 +413,10 @@ C CIOS Montgomery acceleration: pre-computed wiring topology, cached buffers, eq
 |--------|-----------|---------------|---------------|-----------------|------------|-----------|--------------|-------------|--------------|
 | 2^8 | 1.1ms | 9ms | 1.3ms | 1.4ms | 5.3ms | 4.9ms | 3.3ms | 0.8ms | 13ms |
 | 2^10 | 3.0ms | 35ms | 4.3ms | 4.3ms | 12ms | 10ms | -- | 22ms | 38ms |
-| 2^12 | 8.1ms | 23ms | 6.5ms | 10ms | 17ms | 17ms | 20ms | -- | 63ms |
-| 2^14 | 22ms | 29ms | 12ms | 31ms | 20ms | 20ms | 258ms | -- | 812ms |
-| 2^16 | 27ms | 55ms | 24ms | 92ms | 39ms | 39ms | 48ms | -- | -- |
-| 2^18 | 45ms | 119ms | 113ms | 339ms | 66ms | 65ms | -- | -- | -- |
+| 2^12 | 8.1ms | 23ms | 50ms | 7.7ms | 17ms | 17ms | 20ms | -- | 63ms |
+| 2^14 | 22ms | 29ms | 93ms | 24ms | 20ms | 20ms | 258ms | -- | 812ms |
+| 2^16 | 27ms | 55ms | 242ms | 75ms | 39ms | 39ms | 48ms | -- | -- |
+| 2^18 | 45ms | 119ms | 783ms | 259ms | 66ms | 65ms | -- | -- | -- |
 
 ### CPU Optimizations
 
@@ -530,7 +530,7 @@ Methodology: Compute-bound = total_ops / 3.6T flops (BN254 mul = ~64 32-bit muls
 | 7 | Blake3 Batch 2^20 | 1.0ms | ~0.6ms | Bandwidth (2^20 x 64B), uint4 vectorized loads + cycle permute | ~1.7x |
 | 8 | Basefold open 2^18 | 99ms | ~20ms | Fold-by-4 + pipelined Merkle (9 rounds vs 18) | ~3x |
 | 9 | Poseidon2 batch 2^16 | 8.1ms | ~1.8ms | Compute (390 ops/elem, 22 sequential rounds limit parallelism) | ~4.5x |
-| 10 | secp256k1 MSM 2^18 | 113ms | ~30ms | No GLV, buffer caching + mixed-add unsafe | ~4x |
+| 10 | secp256k1 MSM 2^18 | 766ms (GPU) / 247ms (CPU) | ~30ms | GPU: 4x64-bit Montgomery CIOS (64-bit emulated via 32-bit carry chains on M3 GPU); CPU: native uint64. GLV makes GPU 3x worse (2517ms). GPU is 3x slower than CPU. | ~26x (GPU) / ~8x (CPU) |
 | 11 | Binius FFT 2^16 (CPU) | 21ms | ~5ms | CPU only; XOR-add is free but table mul is serial | ~4x |
 | 12 | Constraint IR 2^16 | 5.3ms | ~1.5ms | Compute (20 constraints x 65K rows, pipeline compile overhead) | ~3.5x |
 | 13 | Witness Gen BN254 2^18 | 3.0ms | ~0.9ms | Memory bandwidth (10 cols x 262K x 32B = 84MB) | ~3.3x |
