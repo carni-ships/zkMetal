@@ -13,6 +13,7 @@ public func runGPUAdditiveFFTTests() {
         print("  [ERROR] Failed to create GPUAdditiveFFTEngine: \(error)")
         return
     }
+    print("  [OK] Engine created successfully")
 
     // Test 2: GPU forward at various sizes (sanity check - runs without error)
     for k in [4, 8, 16] {
@@ -49,8 +50,9 @@ public func runGPUAdditiveFFTTests() {
             bData[i] = UInt8(truncatingIfNeeded: rng)
         }
 
-        guard let result = try? engine.pointwiseMultiply(a: aData, b: bData, n: n) else { return }
-        expect(result.count == n, "Pointwise multiply produces n elements")
+        if let result = try? engine.pointwiseMultiply(a: aData, b: bData, n: n) {
+            expect(result.count == n, "Pointwise multiply produces n elements")
+        }
     }
 
     // Test 4: Batch forward runs without error
@@ -74,8 +76,9 @@ public func runGPUAdditiveFFTTests() {
             elem = elem &* elem
         }
 
-        guard let batchResult = try? engine.forwardBatch(data: original, n: n, k: k, batch: batch, basis: basis) else { return }
-        expect(batchResult.count == total, "Batch forward produces total elements")
+        if let batchResult = try? engine.forwardBatch(data: original, n: n, k: k, batch: batch, basis: basis) {
+            expect(batchResult.count == total, "Batch forward produces total elements")
+        }
     }
 
     // Test 5: Polynomial multiply via FFT
@@ -100,8 +103,9 @@ public func runGPUAdditiveFFTTests() {
             elem = elem &* elem
         }
 
-        guard let result = try? engine.multiply(aData, bData, n: n, k: k, basis: basis) else { return }
-        expect(result.count == n, "Multiply produces correct size 2^\(k)")
+        if let result = try? engine.multiply(aData, bData, n: n, k: k, basis: basis) {
+            expect(result.count == n, "Multiply produces correct size 2^\(k)")
+        }
     }
 
     // Test 6: Performance benchmark at various sizes
@@ -129,5 +133,22 @@ public func runGPUAdditiveFFTTests() {
         let throughput = Double(n) / (t1 - t0) / 1e6
         print(String(format: "  GF(2^8) GPU 2^%d (%d elements): %.2fms (%.1f M elem/s)", k, n, (t1 - t0) * 1000, throughput))
         expect(true, "GPU forward 2^\(k) completed")
+
+        // Compare with SIMD shuffle version
+        if let shuffleFn = engine.forwardShuffleFn {
+            let t0s = CFAbsoluteTimeGetCurrent()
+            guard let fwdShuffle = try? engine.forwardShuffle(data: original, n: n, k: k, basis: basis) else { continue }
+            let t1s = CFAbsoluteTimeGetCurrent()
+            _ = fwdShuffle
+
+            // Verify correctness: shuffle result should match regular result
+            if fwd != fwdShuffle {
+                print("  [FAIL] forwardShuffle result mismatch at 2^\(k)!")
+            }
+
+            let throughputShuffle = Double(n) / (t1s - t0s) / 1e6
+            let speedup = (t1 - t0) / (t1s - t0s)
+            print(String(format: "  GF(2^8) GPU SHUFFLE 2^%d: %.2fms (%.1f M elem/s) [%.2fx]", k, n, (t1s - t0s) * 1000, throughputShuffle, speedup))
+        }
     }
 }

@@ -326,10 +326,10 @@ Fused Cantor/Lin-Chung-Han additive FFT — all k butterfly levels in single Met
 
 | Size | Elements | Time | Throughput |
 |------|----------|------|------------|
-| 2^16 | 65,536 | 5.75ms | 11.4 M elem/s |
-| 2^18 | 262,144 | 8.89ms | 29.5 M elem/s |
-| 2^20 | 1,048,576 | 9.24ms | 113.5 M elem/s |
-| 2^22 | 4,194,304 | 10.98ms | 381.9 M elem/s |
+| 2^16 | 65,536 | ~8ms | ~8 M elem/s |
+| 2^18 | 262,144 | ~9ms | ~30 M elem/s |
+| 2^20 | 1,048,576 | ~11ms | ~95 M elem/s |
+| 2^22 | 4,194,304 | ~10-12ms | ~340-380 M elem/s |
 
 Throughput increases with size as fixed kernel dispatch overhead is amortized. Single dispatch avoids k separate kernel launches and memory round-trips.
 
