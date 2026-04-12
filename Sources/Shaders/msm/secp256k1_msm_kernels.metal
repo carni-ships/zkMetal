@@ -68,7 +68,70 @@ inline SecpPointProjective simd_shuffle_down_secp_point(SecpPointProjective p, u
     return r;
 }
 
-// Phase 1b: Cooperative reduce — one SIMD group (32 threads) per bucket
+// Phase 1b: Warp-per-bucket — one warp (32 threads) per bucket.
+// Designed for n_buckets <= 1024 where total warps (n_buckets * n_windows / 32)
+// is small enough to avoid excessive threadgroup scheduling overhead.
+// Each thread handles count/32 elements strided, then tree-reduces via shuffle.
+kernel void secp_msm_reduce_warp_per_bucket(
+    device const SecpPointAffine* points    [[buffer(0)]],
+    device SecpPointProjective* buckets     [[buffer(1)]],
+    device const uint* bucket_offsets       [[buffer(2)]],
+    device const uint* bucket_counts        [[buffer(3)]],
+    constant SecpMsmParams& params          [[buffer(4)]],
+    constant uint& n_windows               [[buffer(5)]],
+    device const uint* sorted_indices       [[buffer(6)]],
+    device const uint* count_sorted_map     [[buffer(7)]],
+    uint tgid                              [[threadgroup_position_in_grid]],
+    uint lid                               [[thread_index_in_threadgroup]]
+) {
+    uint total_buckets = params.n_buckets * n_windows;
+    // Each warp (threadgroup) processes one bucket
+    if (tgid >= total_buckets) return;
+
+    uint orig_pos = count_sorted_map[tgid];
+    uint orig_bucket = orig_pos & 0xFFFFu;
+    uint orig_window = orig_pos >> 16u;
+    uint flat_idx = orig_window * params.n_buckets + orig_bucket;
+
+    if (orig_bucket == 0 || bucket_counts[flat_idx] == 0) {
+        if (lid == 0) buckets[flat_idx] = secp_point_identity();
+        return;
+    }
+
+    uint count = bucket_counts[flat_idx];
+    uint base = orig_window * params.n_points;
+    uint offset = bucket_offsets[flat_idx];
+
+    // Phase A: each thread loads its portion strided
+    SecpPointProjective acc = secp_point_identity();
+    for (uint i = lid; i < count; i += 32) {
+        uint raw_idx = sorted_indices[base + offset + i];
+        SecpPointAffine pt = points[raw_idx & 0x7FFFFFFFu];
+        if (raw_idx & 0x80000000u) pt.y = secp_neg(pt.y);
+        if (secp_point_is_identity(acc)) {
+            acc = secp_point_from_affine(pt);
+        } else {
+            acc = secp_point_add_mixed_unsafe(acc, pt);
+        }
+    }
+
+    // Phase B: tree-reduce via simd_shuffle_xor (32->16->8->4->2->1)
+    // simd_shuffle_xor lane i gets value from lane i^off
+    for (uint off = 16; off > 0; off >>= 1) {
+        SecpPointProjective other = simd_shuffle_down_secp_point(acc, off);
+        if (lid < off) {
+            if (secp_point_is_identity(acc)) {
+                acc = other;
+            } else if (!secp_point_is_identity(other)) {
+                acc = secp_point_add_unsafe(acc, other);
+            }
+        }
+    }
+
+    if (lid == 0) buckets[flat_idx] = acc;
+}
+
+// Phase 1c: Cooperative reduce — one SIMD group (32 threads) per bucket
 kernel void secp_msm_reduce_cooperative(
     device const SecpPointAffine* points    [[buffer(0)]],
     device SecpPointProjective* buckets     [[buffer(1)]],

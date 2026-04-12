@@ -28,6 +28,68 @@ kernel void basefold_fold(
     output[gid] = fr_add(a, r_diff);
 }
 
+// Fused 4-round basefold fold: reduce 2^n to 2^(n-4) in one dispatch
+// Reads 16 elements (for n=16): pairs are (0,8),(1,9),(2,10),(3,11),(4,12),(5,13),(6,14),(7,15)
+// After 4 rounds: 16 -> 8 -> 4 -> 2 -> 1 elements
+kernel void basefold_fold_fused4(
+    device const Fr* evals          [[buffer(0)]],
+    device Fr* output               [[buffer(1)]],  // size n/16
+    constant Fr& alpha0             [[buffer(2)]],
+    constant Fr& alpha1             [[buffer(3)]],
+    constant Fr& alpha2             [[buffer(4)]],
+    constant Fr& alpha3             [[buffer(5)]],
+    constant uint& sixteenth_n      [[buffer(6)]],  // n / 16
+    uint gid                        [[thread_position_in_grid]]
+) {
+    if (gid >= sixteenth_n) return;
+
+    uint n = sixteenth_n * 16;
+    uint half_n = n >> 1;
+    uint quarter_n = n >> 2;
+    uint eighth_n = n >> 3;
+
+    // Read 16 elements: low 8 (indices 0..7) and high 8 (indices 8..15)
+    Fr e0  = evals[gid];
+    Fr e1  = evals[gid + eighth_n];
+    Fr e2  = evals[gid + quarter_n];
+    Fr e3  = evals[gid + quarter_n + eighth_n];
+    Fr e4  = evals[gid + half_n];
+    Fr e5  = evals[gid + half_n + eighth_n];
+    Fr e6  = evals[gid + half_n + quarter_n];
+    Fr e7  = evals[gid + half_n + quarter_n + eighth_n];
+    Fr e8  = evals[gid + 8 * sixteenth_n];
+    Fr e9  = evals[gid + 8 * sixteenth_n + eighth_n];
+    Fr e10 = evals[gid + 8 * sixteenth_n + quarter_n];
+    Fr e11 = evals[gid + 8 * sixteenth_n + quarter_n + eighth_n];
+    Fr e12 = evals[gid + 8 * sixteenth_n + half_n];
+    Fr e13 = evals[gid + 8 * sixteenth_n + half_n + eighth_n];
+    Fr e14 = evals[gid + 8 * sixteenth_n + half_n + quarter_n];
+    Fr e15 = evals[gid + 8 * sixteenth_n + half_n + quarter_n + eighth_n];
+
+    // Round 1: 16 -> 8 (stride = 8)
+    Fr m0  = fr_add(e0,  fr_mul(alpha0, fr_sub(e8,  e0)));
+    Fr m1  = fr_add(e1,  fr_mul(alpha0, fr_sub(e9,  e1)));
+    Fr m2  = fr_add(e2,  fr_mul(alpha0, fr_sub(e10, e2)));
+    Fr m3  = fr_add(e3,  fr_mul(alpha0, fr_sub(e11, e3)));
+    Fr m4  = fr_add(e4,  fr_mul(alpha0, fr_sub(e12, e4)));
+    Fr m5  = fr_add(e5,  fr_mul(alpha0, fr_sub(e13, e5)));
+    Fr m6  = fr_add(e6,  fr_mul(alpha0, fr_sub(e14, e6)));
+    Fr m7  = fr_add(e7,  fr_mul(alpha0, fr_sub(e15, e7)));
+
+    // Round 2: 8 -> 4 (stride = 4)
+    Fr r0 = fr_add(m0, fr_mul(alpha1, fr_sub(m4, m0)));
+    Fr r1 = fr_add(m1, fr_mul(alpha1, fr_sub(m5, m1)));
+    Fr r2 = fr_add(m2, fr_mul(alpha1, fr_sub(m6, m2)));
+    Fr r3 = fr_add(m3, fr_mul(alpha1, fr_sub(m7, m3)));
+
+    // Round 3: 4 -> 2 (stride = 2)
+    Fr s0 = fr_add(r0, fr_mul(alpha2, fr_sub(r2, r0)));
+    Fr s1 = fr_add(r1, fr_mul(alpha2, fr_sub(r3, r1)));
+
+    // Round 4: 2 -> 1 (stride = 1)
+    output[gid] = fr_add(s0, fr_mul(alpha3, fr_sub(s1, s0)));
+}
+
 // Fused 2-round basefold fold: reduce 2^n to 2^(n-2) in one dispatch
 // Round 1: fold with alpha0 (n -> n/2)
 // Round 2: fold with alpha1 (n/2 -> n/4)

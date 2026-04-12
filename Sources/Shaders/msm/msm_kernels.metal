@@ -338,18 +338,24 @@ kernel void gpu_sort_scatter(
 // GPU counting sort: build count-sorted map
 // One threadgroup per window. Sorts buckets by descending count for SIMD coherence.
 // Uses simple insertion into position counters (same as CPU version).
+//
+// NOTE: count-of-counts array (scratch) must be sized by n_points, not n_buckets,
+// because in skewed distributions a single bucket can have count > n_buckets.
 kernel void gpu_build_csm(
     device const uint* counts          [[buffer(0)]],   // histogram [nWindows × nBuckets]
     device uint* csm                   [[buffer(1)]],   // output: count-sorted map [nWindows × nBuckets]
     device uint* offsets               [[buffer(2)]],   // bucket offsets (from prefix sum)
+    device uint* scratch               [[buffer(5)]],   // scratch for count-of-counts [nWindows × nPoints]
     constant uint& n_buckets           [[buffer(3)]],
     constant uint& n_windows           [[buffer(4)]],
+    constant uint& n_points            [[buffer(6)]],
     uint gid                           [[thread_position_in_grid]]
 ) {
     // Each thread handles one window
     if (gid >= n_windows) return;
     uint w = gid;
     uint wOff = w * n_buckets;
+    uint sOff = w * n_points;  // scratch offset
 
     // Find max count
     uint max_count = 0;
@@ -358,40 +364,33 @@ kernel void gpu_build_csm(
         if (c > max_count) max_count = c;
     }
 
-    // Build CSM: reuse offsets buffer as scratch for position tracking
-    // We use a local approach: scan from highest count down
-    // Temporarily store count-of-counts in csm buffer, then build positions
-    // Clear csm as scratch for count-of-counts
-    for (uint i = 0; i <= max_count && i < n_buckets; i++) {
-        csm[wOff + i] = 0;
+    // Build count-of-counts: how many buckets have each count value
+    // Use scratch array sized by n_points (count values can exceed n_buckets)
+    for (uint i = 0; i <= max_count; i++) {
+        scratch[sOff + i] = 0;
     }
     for (uint i = 0; i < n_buckets; i++) {
         uint c = counts[wOff + i];
-        csm[wOff + c]++;
+        scratch[sOff + c]++;
     }
-    // Prefix sum (descending) to get positions
-    // Store positions in offsets buffer temporarily
+    // Prefix sum (descending) to get starting position for each count group
     uint running = 0;
     for (uint c = max_count; ; c--) {
-        uint cnt = csm[wOff + c];
-        csm[wOff + c] = running;  // reuse as position
+        uint cnt = scratch[sOff + c];
+        scratch[sOff + c] = running;  // reuse scratch as position
         running += cnt;
         if (c == 0) break;
     }
-    // Now csm[wOff + count] = start position for buckets with that count
-    // Re-scan buckets and place them
-    // We need a second pass, but csm is being used as positions.
-    // Use a different approach: build directly
-    // Reset positions from csm values
-    // We stored prefix sums in csm[count] — need to scatter buckets there
-    // Make a copy of positions (use offsets scratch)
-    for (uint i = 0; i <= max_count && i < n_buckets; i++) {
-        offsets[wOff + i] = csm[wOff + i];
+    // Now scratch[sOff + count] = start position for buckets with that count
+    // Copy positions to offsets (which is used as scratch in final pass)
+    for (uint i = 0; i <= max_count; i++) {
+        offsets[sOff + i] = scratch[sOff + i];
     }
+    // Scatter buckets: for each bucket, find its position in count-sorted order
     for (uint i = 0; i < n_buckets; i++) {
         uint c = counts[wOff + i];
-        uint dest = offsets[wOff + c];
-        offsets[wOff + c] = dest + 1;
+        uint dest = offsets[sOff + c];
+        offsets[sOff + c] = dest + 1;
         csm[wOff + dest] = (w << 16u) | i;
     }
 }

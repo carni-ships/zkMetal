@@ -1,3 +1,4 @@
+import Foundation
 import zkMetal
 
 // MARK: - GPU Range Proof Tests
@@ -144,4 +145,41 @@ public func runGPURangeProofTests() {
     }
 
     print("  GPU Range Proof engine version: \(GPURangeProofEngine.version.description)")
+
+    // Benchmark: throughput at various bit sizes
+    do {
+        let bitSizes = [8, 16, 32]
+        for bits in bitSizes {
+            let generators = IPAGenerators.generate(n: bits)
+            let blinding = frFromInt(42)
+            let value: UInt64 = (1 << UInt64(bits)) / 2  // middle of range
+
+            // Warmup
+            _ = engine.prove(value: value, blinding: blinding, generators: generators)
+
+            // Benchmark prove
+            let t0 = CFAbsoluteTimeGetCurrent()
+            var iterations = 0
+            while CFAbsoluteTimeGetCurrent() - t0 < 0.5 && iterations < 1000 {
+                _ = engine.prove(value: value, blinding: blinding, generators: generators)
+                iterations += 1
+            }
+            let proveTime = (CFAbsoluteTimeGetCurrent() - t0) * 1000 / Double(iterations)
+            let proveRate = 1000.0 / proveTime
+
+            // Benchmark verify
+            let proof = engine.prove(value: value, blinding: blinding, generators: generators)
+            let t1 = CFAbsoluteTimeGetCurrent()
+            iterations = 0
+            while CFAbsoluteTimeGetCurrent() - t1 < 0.5 && iterations < 1000 {
+                _ = engine.verify(proof: proof, commitment: proof.V, generators: generators)
+                iterations += 1
+            }
+            let verifyTime = (CFAbsoluteTimeGetCurrent() - t1) * 1000 / Double(iterations)
+            let verifyRate = 1000.0 / verifyTime
+
+            print(String(format: "  GPU Range Proof %d-bit: prove %.2fms (%d proofs/s), verify %.2fms (%d/s)",
+                        bits, proveTime, Int(proveRate), verifyTime, Int(verifyRate)))
+        }
+    }
 }

@@ -182,10 +182,14 @@ public class BrakedownEngine {
         enc.setBytes(&redCols32, length: 4, index: 5)        // redundancy length per row
         enc.setBytes(&degree32, length: 4, index: 6)         // expander degree
 
+        // Metal requires threadgroup width >= 32 for optimal SIMD utilization.
+        // Small threadgroups (width < 32) can cause threadgroup allocation stalls
+        // or silent GPU hangs on Apple Silicon M-series chips.
         let tg = min(64, Int(sparseEncodeFunction.maxTotalThreadsPerThreadgroup))
+        let tgWidth = max(min(tg, redundancyCols), 32)
         enc.dispatchThreads(
             MTLSize(width: redundancyCols, height: numRows, depth: 1),
-            threadsPerThreadgroup: MTLSize(width: min(tg, redundancyCols), height: 1, depth: 1)
+            threadsPerThreadgroup: MTLSize(width: tgWidth, height: 1, depth: 1)
         )
 
         enc.endEncoding()

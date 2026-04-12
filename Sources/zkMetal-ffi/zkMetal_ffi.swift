@@ -1407,7 +1407,9 @@ public func zkmetal_set_shader_dir(_ path: UnsafePointer<CChar>?) {
 
 @_cdecl("zkmetal_gpu_available")
 public func zkmetal_gpu_available() -> Int32 {
-    return MTLCreateSystemDefaultDevice() != nil ? 1 : 0
+    // Return 0 if GPU available (device != nil), 1 if not available (nil)
+    // This matches Rust's expectation: 0 = available, non-zero = unavailable
+    return MTLCreateSystemDefaultDevice() != nil ? 0 : 1
 }
 
 @_cdecl("zkmetal_version")

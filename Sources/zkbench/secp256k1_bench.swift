@@ -460,9 +460,9 @@ public func runSecp256k1MSMBench() {
             print("  C Pippenger correctness: \(match ? "PASS" : "FAIL")")
         }
 
-        // Performance
+        // Performance — centered scalars (no GLV)
         engine.useGLV = false
-        print("\n--- secp256k1 MSM Performance (GPU vs C Pippenger) ---")
+        print("\n--- secp256k1 MSM Performance (GPU centered, no GLV) ---")
         for logN in logSizes {
             let n = 1 << logN
             let pts = Array(allPoints.prefix(n))
@@ -496,6 +496,8 @@ public func runSecp256k1MSMBench() {
             fputs(String(format: "  2^%-2d: GPU %7.1fms | C Pip %7.1fms (%.1fx)\n",
                          logN, gpuMedian, cMedian, speedup), stderr)
         }
+
+
     } catch {
         print("  ERROR: \(error)")
     }

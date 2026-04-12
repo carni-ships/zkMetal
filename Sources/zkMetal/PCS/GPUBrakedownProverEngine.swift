@@ -645,19 +645,43 @@ public class GPUBrakedownProverEngine {
     // MARK: - Query Index Generation (Fiat-Shamir)
 
     /// Generate deterministic query indices from the commitment root.
-    /// Uses LCG seeded from the root hash, ensuring distinct indices.
+    /// Uses LCG seeded from the root hash. For small maxCol (<= 64), unique indices
+    /// are preferred but duplicates allowed after domain exhaustion (prevents infinite loop).
     public func generateQueryIndices(root: Fr, numQueries: Int, maxCol: Int) -> [Int] {
         var rng: UInt64 = frToUInt64(root)
 
-        var indices = [Int]()
-        indices.reserveCapacity(numQueries)
-        var seen = Set<Int>()
-        while indices.count < numQueries {
-            rng = rng &* 6364136223846793005 &+ 1442695040888963407
-            let idx = Int(rng >> 32) % maxCol
-            if !seen.contains(idx) {
-                seen.insert(idx)
-                indices.append(idx)
+        // Pre-allocate result array to avoid Swift Array append overhead.
+        var indices = [Int](repeating: 0, count: numQueries)
+        var count = 0
+
+        if maxCol <= 64 {
+            var seen: UInt64 = 0
+            var maxColU64 = UInt64(maxCol)
+            while count < numQueries {
+                rng = rng &* 6364136223846793005 &+ 1442695040888963407
+                let idxU64 = (rng >> 32) % maxColU64
+                let bit = UInt64(1) << idxU64
+                if seen & bit == 0 {
+                    seen |= bit
+                    indices[count] = Int(idxU64)
+                    count += 1
+                } else if seen == ~UInt64(0) >> (64 - maxCol) {
+                    // All bits set — domain exhausted, allow duplicate
+                    indices[count] = Int(idxU64)
+                    count += 1
+                }
+            }
+        } else {
+            // For large maxCol, use Set
+            var seenSet = Set<Int>()
+            while count < numQueries {
+                rng = rng &* 6364136223846793005 &+ 1442695040888963407
+                let idx = Int((rng >> 32) % UInt64(maxCol))
+                if seenSet.count < maxCol && !seenSet.contains(idx) {
+                    seenSet.insert(idx)
+                }
+                indices[count] = idx
+                count += 1
             }
         }
         return indices

@@ -460,7 +460,7 @@ public class GPUCircleSTARKProverEngine {
         let constraintT = CFAbsoluteTimeGetCurrent()
 
         // Step 7: Circle FRI
-        let friProof = circleFRI(
+        let friProof = try circleFRI(
             evals: compositionEvals, logN: logEval,
             numQueries: config.numQueries, transcript: &transcript
         )
@@ -747,7 +747,7 @@ public class GPUCircleSTARKProverEngine {
     private func circleFRI(
         evals: [M31], logN: Int, numQueries: Int,
         transcript: inout CircleSTARKTranscript
-    ) -> GPUCircleFRIProof {
+    ) throws -> GPUCircleFRIProof {
         var currentEvals = evals
         var currentLogN = logN
         var rounds = [GPUCircleFRIRound]()
@@ -784,6 +784,10 @@ public class GPUCircleSTARKProverEngine {
             _ = twiddles  // suppress unused warning
 
             // Commit folded polynomial with Poseidon2-M31 Merkle
+            // GPU buildMerkleTree expects pre-formatted 8-M31 digests, not individual M31 values.
+            // FRI folded values are individual M31 elements needing special leaf padding.
+            // For now, use CPU leaf hashing (correct format) + GPU internal levels when available.
+            // TODO: implement GPU FRI leaf hashing with proper Poseidon2 padding
             let foldTree = buildPoseidon2M31MerkleTree(folded, count: half)
             let foldRoot = poseidon2M31MerkleRoot(foldTree, n: half)
             transcript.absorbBytes(foldRoot.bytes)

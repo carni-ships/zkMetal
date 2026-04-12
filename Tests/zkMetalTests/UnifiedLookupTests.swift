@@ -22,6 +22,9 @@ func runUnifiedLookupTests() {
     testLogUpProveVerify()
     testLassoProveVerify()
     testBatchProve()
+
+    // --- Benchmark ---
+    benchmarkUnifiedLookup()
 }
 
 // MARK: - LookupTable Tests
@@ -200,5 +203,47 @@ func testBatchProve() {
         }
     } catch {
         expect(false, "Batch prove threw: \(error)")
+    }
+}
+
+// MARK: - Benchmark
+
+func benchmarkUnifiedLookup() {
+    do {
+        let engine = try UnifiedLookupEngine()
+
+        // Benchmark various table sizes and strategies
+        let configs: [(String, PrebuiltLookupTable, [Fr])] = [
+            ("Range-8 LogUp", RangeTable(bits: 8), (0..<256).map { frFromInt($0) }),
+            ("Range-16 LogUp", RangeTable(bits: 16), (0..<1024).map { frFromInt($0) }),
+        ]
+
+        for (name, table, lookups) in configs {
+            // Warmup
+            _ = try engine.prove(lookups: lookups, table: table, strategy: .logUp)
+
+            // Benchmark prove
+            let t0 = CFAbsoluteTimeGetCurrent()
+            var iterations = 0
+            while CFAbsoluteTimeGetCurrent() - t0 < 0.5 && iterations < 1000 {
+                _ = try engine.prove(lookups: lookups, table: table, strategy: .logUp)
+                iterations += 1
+            }
+            let proveTime = (CFAbsoluteTimeGetCurrent() - t0) * 1000 / Double(iterations)
+
+            // Benchmark verify
+            let proof = try engine.prove(lookups: lookups, table: table, strategy: .logUp)
+            let t1 = CFAbsoluteTimeGetCurrent()
+            iterations = 0
+            while CFAbsoluteTimeGetCurrent() - t1 < 0.5 && iterations < 1000 {
+                _ = try engine.verify(proof: proof, lookups: lookups, table: table)
+                iterations += 1
+            }
+            let verifyTime = (CFAbsoluteTimeGetCurrent() - t1) * 1000 / Double(iterations)
+
+            print(String(format: "  UnifiedLookup %s: prove %.2fms, verify %.2fms", name, proveTime, verifyTime))
+        }
+    } catch {
+        print("  UnifiedLookup benchmark error: \(error)")
     }
 }

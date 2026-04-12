@@ -74,6 +74,7 @@ public class BasefoldEngine {
     public let commandQueue: MTLCommandQueue
     let foldFunction: MTLComputePipelineState
     let foldFused2Function: MTLComputePipelineState
+    let foldFused4Function: MTLComputePipelineState
     let rsExtendFunction: MTLComputePipelineState
 
     private lazy var merkleEngine: Poseidon2MerkleEngine = {
@@ -113,12 +114,14 @@ public class BasefoldEngine {
 
         guard let foldFn = library.makeFunction(name: "basefold_fold"),
               let foldFused2Fn = library.makeFunction(name: "basefold_fold_fused2"),
+              let foldFused4Fn = library.makeFunction(name: "basefold_fold_fused4"),
               let rsExtendFn = library.makeFunction(name: "basefold_rs_extend") else {
             throw MSMError.missingKernel
         }
 
         self.foldFunction = try device.makeComputePipelineState(function: foldFn)
         self.foldFused2Function = try device.makeComputePipelineState(function: foldFused2Fn)
+        self.foldFused4Function = try device.makeComputePipelineState(function: foldFused4Fn)
         self.rsExtendFunction = try device.makeComputePipelineState(function: rsExtendFn)
         self.tuning = TuningManager.shared.config(device: device)
     }

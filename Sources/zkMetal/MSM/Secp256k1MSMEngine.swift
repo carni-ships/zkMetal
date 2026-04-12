@@ -10,6 +10,7 @@ public class Secp256k1MSM {
     public let device: MTLDevice
     public let commandQueue: MTLCommandQueue
     private let reduceSortedFunction: MTLComputePipelineState
+    private let reduceWarpPerBucketFunction: MTLComputePipelineState
     private let reduceCooperativeFunction: MTLComputePipelineState
     private let bucketSumDirectFunction: MTLComputePipelineState
     private let combineSegmentsFunction: MTLComputePipelineState
@@ -47,6 +48,11 @@ public class Secp256k1MSM {
     private var glvNeg1BufCached: MTLBuffer?
     private var glvNeg2BufCached: MTLBuffer?
     private var glvCachedN: Int = 0
+    // Precomputed GLV pairs: stores (P, beta*P) pairs precomputed during SRS loading
+    // Eliminating the GPU endomorphism kernel (~50ms) with ~5ms CPU precomputation
+    private var precomputedGLVPairsBuffer: MTLBuffer?
+    private var precomputedGLVPairsCount: Int = 0
+    private var precomputedGLVPairsInitialized: Bool = false
     public var windowBitsOverride: UInt32?
     public var useGLV = false  // GLV regresses on M3 GPU: 2x points costs more than halved scalars
     private let tuning: TuningConfig
@@ -69,9 +75,10 @@ public class Secp256k1MSM {
         let cacheFile = Secp256k1MSM.cacheDir.appendingPathComponent("secp256k1_msm.metallib")
 
         let requiredKernels = [
-            "secp_msm_reduce_sorted_buckets", "secp_msm_bucket_sum_direct",
-            "secp_msm_combine_segments", "secp_msm_signed_digit_extract",
-            "secp_glv_decompose", "secp_glv_endomorphism"
+            "secp_msm_reduce_sorted_buckets", "secp_msm_reduce_warp_per_bucket",
+            "secp_msm_bucket_sum_direct", "secp_msm_combine_segments",
+            "secp_msm_signed_digit_extract", "secp_glv_decompose",
+            "secp_glv_endomorphism"
         ]
         if FileManager.default.fileExists(atPath: cacheFile.path) {
             do {
@@ -89,6 +96,7 @@ public class Secp256k1MSM {
         }
 
         guard let reduceSortedFn = library.makeFunction(name: "secp_msm_reduce_sorted_buckets"),
+              let reduceWarpFn = library.makeFunction(name: "secp_msm_reduce_warp_per_bucket"),
               let reduceCoopFn = library.makeFunction(name: "secp_msm_reduce_cooperative"),
               let sumDirectFn = library.makeFunction(name: "secp_msm_bucket_sum_direct"),
               let combineFn = library.makeFunction(name: "secp_msm_combine_segments"),
@@ -103,6 +111,7 @@ public class Secp256k1MSM {
         }
 
         self.reduceSortedFunction = try device.makeComputePipelineState(function: reduceSortedFn)
+        self.reduceWarpPerBucketFunction = try device.makeComputePipelineState(function: reduceWarpFn)
         self.reduceCooperativeFunction = try device.makeComputePipelineState(function: reduceCoopFn)
         self.bucketSumDirectFunction = try device.makeComputePipelineState(function: sumDirectFn)
         self.combineSegmentsFunction = try device.makeComputePipelineState(function: combineFn)
@@ -292,7 +301,48 @@ public class Secp256k1MSM {
         cpuPositionsPtr?.deallocate()
     }
 
-    public func msm(points: [SecpPointAffine], scalars: [[UInt32]]) throws -> SecpPointProjective {
+    // MARK: - GLV Precomputation
+
+    /// Precompute GLV endomorphism pairs (P, beta*P) for a set of generator points.
+    /// Call this during SRS loading to eliminate the GPU endomorphism kernel at prove time.
+    /// The endomorphism beta*P is computed on CPU (~10x faster than GPU for secp_fp mul).
+    ///
+    /// - Parameter points: The G1 generator points (e.g., SRS powers) to precompute endomorphism for
+    /// - Precondition: points.count must be > 0 and <= 2^20
+    public func precomputeGLVPairs(for points: [SecpPointAffine]) {
+        let n = points.count
+        guard n > 0, n <= 1 << 20 else { return }
+
+        // Allocate buffer for 2n points (pairs)
+        let pairCount = 2 * n
+        if precomputedGLVPairsBuffer == nil || precomputedGLVPairsCount < pairCount {
+            precomputedGLVPairsBuffer = device.makeBuffer(
+                length: MemoryLayout<SecpPointAffine>.stride * pairCount,
+                options: .storageModeShared)
+            precomputedGLVPairsCount = pairCount
+        }
+        guard let buf = precomputedGLVPairsBuffer else { return }
+
+        let pairsPtr = buf.contents().bindMemory(to: SecpPointAffine.self, capacity: pairCount)
+
+        // Compute (P, beta*P) pairs in parallel on CPU
+        // beta is a constant, so this is embarrassingly parallel
+        DispatchQueue.concurrentPerform(iterations: n) { i in
+            let p = points[i]
+            let betaP = Secp256k1GLV.applyEndomorphism(p)
+            pairsPtr[i] = p           // Original point at [0, n)
+            pairsPtr[n + i] = betaP   // Endomorphed point at [n, 2n)
+        }
+
+        precomputedGLVPairsInitialized = true
+    }
+
+    /// Check if GLV pairs are precomputed for the given point count.
+    public func hasPrecomputedGLVPairs(count: Int) -> Bool {
+        return precomputedGLVPairsInitialized && precomputedGLVPairsCount >= 2 * count
+    }
+
+    public func msm(points: [SecpPointAffine], scalars: [[UInt32]], useCPUGLV: Bool = false) throws -> SecpPointProjective {
         let n = points.count
         guard n == scalars.count, n > 0 else {
             throw MSMError.invalidInput
@@ -326,7 +376,7 @@ public class Secp256k1MSM {
         // Center non-GLV scalars to prevent signed-digit carry overflow
         // secp256k1 n ≈ 2^256, so uncented scalars can have top byte 0xFF
         // causing carry to overflow past the last window
-        if !(useGLV && n >= 256) {
+        if !(useGLV || useCPUGLV) && n >= 256 {
             var cPts = points
             var cScls = msmScalars
             for i in 0..<n {
@@ -340,8 +390,9 @@ public class Secp256k1MSM {
             centeredScalars = cScls
         }
 
-        if useGLV && n >= 256 {
-            // CPU-side GLV decomposition (verified correct)
+        if (useGLV || useCPUGLV) && n >= 256 {
+            // CPU-side GLV decomposition (verified correct, 3.5ms)
+            // k1/k2 written to GPU buffer — MSM kernels read from it unchanged
             var k1s = [[UInt32]]()
             var k2s = [[UInt32]]()
             var neg1s = [UInt8](repeating: 0, count: n)
@@ -369,6 +420,34 @@ public class Secp256k1MSM {
             // Copy neg flags to GPU
             memcpy(neg1Buf!.contents(), neg1s, n)
             memcpy(neg2Buf!.contents(), neg2s, n)
+
+            // CPU GLV: decompose on CPU (3.5ms) and write k1/k2 to GPU buffer
+            // This avoids the GPU secp_glv_decompose kernel (12ms) — MSM kernels read
+            // k1/k2 from this buffer just as they would from the GPU-kernel-produced buffer.
+            let scalarByteCount = n * 8 * MemoryLayout<UInt32>.stride  // n scalars × 8 uint32s × 4 bytes
+            let neededSize = 2 * scalarByteCount
+            if n > glvCachedN {
+                // Always reallocate to ensure sufficient size
+                glvK1MetalBufCached = device.makeBuffer(length: neededSize, options: .storageModeShared)
+                glvCachedN = n
+            }
+            let k1MetalBuf = glvK1MetalBufCached!
+            // glvScalars = [k1_0..k1_{n-1}, k2_0..k2_{n-1}], each scalar is 8 uint32s
+            glvScalars!.withUnsafeBufferPointer { scalarsArrayBuf in
+                let flat = k1MetalBuf.contents().bindMemory(to: UInt32.self, capacity: 2 * n * 8)
+                // Copy k1 scalars (first n scalars)
+                for i in 0..<n {
+                    scalarsArrayBuf[i].withUnsafeBufferPointer { sp in
+                        memcpy(flat + i * 8, sp.baseAddress!, 32)
+                    }
+                }
+                // Copy k2 scalars (next n scalars)
+                for i in 0..<n {
+                    scalarsArrayBuf[n + i].withUnsafeBufferPointer { sp in
+                        memcpy(flat + (n + i) * 8, sp.baseAddress!, 32)
+                    }
+                }
+            }
 
             glvN = n
             scalarBits = 129  // k1/k2 ≈ 128 bits, +1 for signed-digit carry
@@ -411,29 +490,60 @@ public class Secp256k1MSM {
         let gpuPtsPtr = pointsBuffer.contents().bindMemory(to: SecpPointAffine.self, capacity: effectiveN)
 
         if glvN > 0 {
-            // Copy original points (endomorphism will create second half)
-            points.withUnsafeBufferPointer { src in
-                gpuPtsPtr.update(from: src.baseAddress!, count: glvN)
-            }
-            // GPU endomorphism: apply neg flags + create (β·x, y) points
-            guard let cmdBuf = commandQueue.makeCommandBuffer() else {
-                throw MSMError.gpuError("Failed to create endomorphism command buffer")
-            }
-            let enc = cmdBuf.makeComputeCommandEncoder()!
-            enc.setComputePipelineState(glvEndomorphismFunction)
-            enc.setBuffer(pointsBuffer, offset: 0, index: 0)
-            enc.setBuffer(neg1Buf, offset: 0, index: 1)
-            enc.setBuffer(neg2Buf, offset: 0, index: 2)
-            var nVal = UInt32(glvN)
-            enc.setBytes(&nVal, length: 4, index: 3)
-            let tg = min(glvEndomorphismFunction.maxTotalThreadsPerThreadgroup, tuning.msmThreadgroupSize)
-            enc.dispatchThreads(MTLSize(width: glvN, height: 1, depth: 1),
-                                threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
-            enc.endEncoding()
-            cmdBuf.commit()
-            cmdBuf.waitUntilCompleted()
-            if let error = cmdBuf.error {
-                throw MSMError.gpuError("Endomorphism error: \(error.localizedDescription)")
+            // Check if precomputed GLV pairs are available (from SRS precomputation)
+            if hasPrecomputedGLVPairs(count: glvN) {
+                // Use precomputed pairs: (P, beta*P) precomputed during SRS loading
+                // neg1 and neg2 flags still need to be applied per-point
+                // neg1: negate y of original point, neg2: negate y of endomorphed point
+                let neg1Ptr = neg1Buf!.contents().bindMemory(to: UInt8.self, capacity: glvN)
+                let neg2Ptr = neg2Buf!.contents().bindMemory(to: UInt8.self, capacity: glvN)
+                let prePairsPtr = precomputedGLVPairsBuffer!.contents().bindMemory(to: SecpPointAffine.self, capacity: 2 * glvN)
+
+                // Apply neg1 to original points and copy both original and precomputed endomorphed
+                DispatchQueue.concurrentPerform(iterations: glvN) { i in
+                    let orig = points[i]
+                    let betaP = prePairsPtr[glvN + i]  // Precomputed beta*P
+
+                    if neg1Ptr[i] != 0 {
+                        // Apply neg1: negate y of original point
+                        gpuPtsPtr[i] = SecpPointAffine(x: orig.x, y: secpNeg(orig.y))
+                    } else {
+                        gpuPtsPtr[i] = orig
+                    }
+
+                    // Apply neg2 to precomputed beta*P if needed
+                    if neg2Ptr[i] != 0 {
+                        gpuPtsPtr[glvN + i] = SecpPointAffine(x: betaP.x, y: secpNeg(betaP.y))
+                    } else {
+                        gpuPtsPtr[glvN + i] = betaP
+                    }
+                }
+            } else {
+                // No precomputed pairs: use GPU endomorphism kernel (original path)
+                // Copy original points (endomorphism will create second half)
+                points.withUnsafeBufferPointer { src in
+                    gpuPtsPtr.update(from: src.baseAddress!, count: glvN)
+                }
+                // GPU endomorphism: apply neg flags + create (β·x, y) points
+                guard let cmdBuf = commandQueue.makeCommandBuffer() else {
+                    throw MSMError.gpuError("Failed to create endomorphism command buffer")
+                }
+                let enc = cmdBuf.makeComputeCommandEncoder()!
+                enc.setComputePipelineState(glvEndomorphismFunction)
+                enc.setBuffer(pointsBuffer, offset: 0, index: 0)
+                enc.setBuffer(neg1Buf, offset: 0, index: 1)
+                enc.setBuffer(neg2Buf, offset: 0, index: 2)
+                var nVal = UInt32(glvN)
+                enc.setBytes(&nVal, length: 4, index: 3)
+                let tg = min(glvEndomorphismFunction.maxTotalThreadsPerThreadgroup, tuning.msmThreadgroupSize)
+                enc.dispatchThreads(MTLSize(width: glvN, height: 1, depth: 1),
+                                    threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+                enc.endEncoding()
+                cmdBuf.commit()
+                cmdBuf.waitUntilCompleted()
+                if let error = cmdBuf.error {
+                    throw MSMError.gpuError("Endomorphism error: \(error.localizedDescription)")
+                }
             }
         } else {
             let ptsToUse = centeredPoints ?? points
@@ -660,23 +770,45 @@ public class Secp256k1MSM {
         guard let cb = commandQueue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
 
         // Phase 1: Reduce sorted buckets
+        // Use warp-per-bucket model when n_buckets <= 1024: each warp (32 threads) processes
+        // one bucket cooperatively, dramatically reducing threadgroup scheduling overhead
+        // vs the thread-per-bucket sorted-buckets kernel.
         do {
             let enc = cb.makeComputeCommandEncoder()!
-            enc.setComputePipelineState(reduceSortedFunction)
-            enc.setBuffer(pointsBuffer, offset: 0, index: 0)
-            enc.setBuffer(bucketsBuffer, offset: 0, index: 1)
-            enc.setBuffer(allOffsetsBuffer, offset: 0, index: 2)
-            enc.setBuffer(allCountsBuffer, offset: 0, index: 3)
-            enc.setBytes(&params, length: MemoryLayout<SecpMsmParamsSwift>.stride, index: 4)
-            var nw = UInt32(nWindows)
-            enc.setBytes(&nw, length: MemoryLayout<UInt32>.stride, index: 5)
-            enc.setBuffer(sortedIndicesBuffer, offset: 0, index: 6)
-            enc.setBuffer(countSortedMapBuffer, offset: 0, index: 7)
             let numBucketsTotal = nWindows * nBuckets
-            let tg = min(tuning.msmThreadgroupSize, Int(reduceSortedFunction.maxTotalThreadsPerThreadgroup))
-            enc.dispatchThreads(
-                MTLSize(width: numBucketsTotal, height: 1, depth: 1),
-                threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+            if nBuckets <= 1024 {
+                // Warp-per-bucket: 32 threads per bucket, tree-reduce via shuffle
+                enc.setComputePipelineState(reduceWarpPerBucketFunction)
+                enc.setBuffer(pointsBuffer, offset: 0, index: 0)
+                enc.setBuffer(bucketsBuffer, offset: 0, index: 1)
+                enc.setBuffer(allOffsetsBuffer, offset: 0, index: 2)
+                enc.setBuffer(allCountsBuffer, offset: 0, index: 3)
+                enc.setBytes(&params, length: MemoryLayout<SecpMsmParamsSwift>.stride, index: 4)
+                var nw = UInt32(nWindows)
+                enc.setBytes(&nw, length: MemoryLayout<UInt32>.stride, index: 5)
+                enc.setBuffer(sortedIndicesBuffer, offset: 0, index: 6)
+                enc.setBuffer(countSortedMapBuffer, offset: 0, index: 7)
+                // Each threadgroup = 1 warp = 32 threads, one per bucket
+                enc.dispatchThreadgroups(
+                    MTLSize(width: numBucketsTotal, height: 1, depth: 1),
+                    threadsPerThreadgroup: MTLSize(width: 32, height: 1, depth: 1))
+            } else {
+                // Thread-per-bucket sorted reduction
+                enc.setComputePipelineState(reduceSortedFunction)
+                enc.setBuffer(pointsBuffer, offset: 0, index: 0)
+                enc.setBuffer(bucketsBuffer, offset: 0, index: 1)
+                enc.setBuffer(allOffsetsBuffer, offset: 0, index: 2)
+                enc.setBuffer(allCountsBuffer, offset: 0, index: 3)
+                enc.setBytes(&params, length: MemoryLayout<SecpMsmParamsSwift>.stride, index: 4)
+                var nw = UInt32(nWindows)
+                enc.setBytes(&nw, length: MemoryLayout<UInt32>.stride, index: 5)
+                enc.setBuffer(sortedIndicesBuffer, offset: 0, index: 6)
+                enc.setBuffer(countSortedMapBuffer, offset: 0, index: 7)
+                let tg = min(tuning.msmThreadgroupSize, Int(reduceSortedFunction.maxTotalThreadsPerThreadgroup))
+                enc.dispatchThreads(
+                    MTLSize(width: numBucketsTotal, height: 1, depth: 1),
+                    threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+            }
             enc.endEncoding()
         }
 

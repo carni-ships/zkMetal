@@ -50,6 +50,7 @@ public class MetalMSM {
     private var signedDigitCapacity = 0
     private var signedDigitBuffer: MTLBuffer?
     private var gpuSortPositionsBuffer: MTLBuffer?
+    private var gpuSortScratchBuffer: MTLBuffer?  // scratch for count-of-counts (n_points * n_windows)
     // Cached GLV buffers (reused across MSM calls)
     private var glvScalarInBufCached: MTLBuffer?
     private var glvK1MetalBufCached: MTLBuffer?
@@ -388,7 +389,11 @@ public class MetalMSM {
 
         if profileMSM { let _tp = CFAbsoluteTimeGetCurrent(); fputs(String(format: "  [profile] setup+alloc: %.2f ms\n", (_tp - _tStart) * 1000), stderr) }
         let gpuPtsPtr = pointsBuffer.contents().bindMemory(to: PointAffine.self, capacity: effectiveN)
-        let useGpuSort = false  // CPU sort always wins on M-series (GPU sync overhead > CPU work)
+        // GPU sort has correctness bugs (non-deterministic results between calls).
+        // The CSM kernel fix (scratch buffer for count-of-counts) is correct,
+        // but something else in the GPU sort path causes non-determinism.
+        // CPU sort is correct and fast (~2ms for 32K points), so use it.
+        let useGpuSort = false
         var endoCmdBuf: MTLCommandBuffer? = nil
         if glvN > 0 {
             // Copy points to GPU buffer before dispatching (shared mode = CPU writes visible to GPU)
@@ -684,14 +689,24 @@ public class MetalMSM {
         endoCmdBuf?.waitUntilCompleted()
         if profileMSM { let _t1 = CFAbsoluteTimeGetCurrent(); fputs(String(format: "  [profile] GLV+endo+signed_digit: %.2f ms\n", (_t1 - _tStart) * 1000), stderr) }
 
+        let _gpuSortStart = CFAbsoluteTimeGetCurrent()
         if useGpuSort {
-            // Ensure positions buffer is large enough
+            // GPU sort path with verification: runs GPU sort, then CPU sort, compares results
+            // This helps diagnose non-determinism by identifying which intermediate buffer diverges
             let posNeeded = nBuckets * nWindows
             if gpuSortPositionsBuffer == nil || gpuSortPositionsBuffer!.length < posNeeded * MemoryLayout<UInt32>.stride {
                 gpuSortPositionsBuffer = device.makeBuffer(length: posNeeded * MemoryLayout<UInt32>.stride, options: .storageModeShared)
             }
+            let sortedNeeded = effectiveN * nWindows
+            if self.sortedIndicesBuffer == nil || self.sortedIndicesBuffer!.length < sortedNeeded * MemoryLayout<UInt32>.stride {
+                self.sortedIndicesBuffer = device.makeBuffer(length: sortedNeeded * MemoryLayout<UInt32>.stride, options: .storageModeShared)
+            }
+            memset(self.sortedIndicesBuffer!.contents(), 0, sortedNeeded * MemoryLayout<UInt32>.stride)
+            let scratchNeeded = effectiveN * nWindows
+            if self.gpuSortScratchBuffer == nil || self.gpuSortScratchBuffer!.length < scratchNeeded * MemoryLayout<UInt32>.stride {
+                self.gpuSortScratchBuffer = device.makeBuffer(length: scratchNeeded * MemoryLayout<UInt32>.stride, options: .storageModeShared)
+            }
 
-            // Step 1: GPU histogram (single CB for hist)
             memset(allCountsBuffer.contents(), 0, nBuckets * nWindows * MemoryLayout<UInt32>.stride)
             do {
                 guard let histCB = commandQueue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
@@ -714,7 +729,6 @@ public class MetalMSM {
                 histCB.waitUntilCompleted()
             }
 
-            // Step 2: CPU prefix sum (fast sequential scan)
             let countsPtr = allCountsBuffer.contents().bindMemory(to: UInt32.self, capacity: nBuckets * nWindows)
             let offsetsPtr = allOffsetsBuffer.contents().bindMemory(to: UInt32.self, capacity: nBuckets * nWindows)
             let positionsPtr = gpuSortPositionsBuffer!.contents().bindMemory(to: UInt32.self, capacity: nBuckets * nWindows)
@@ -728,7 +742,7 @@ public class MetalMSM {
                 }
             }
 
-            // Step 3: GPU scatter + CSM build (single CB)
+            // GPU scatter + CSM build
             do {
                 guard let sortCB = commandQueue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
                 let scatterEnc = sortCB.makeComputeCommandEncoder()!
@@ -755,8 +769,11 @@ public class MetalMSM {
                 csmEnc.setBuffer(gpuSortPositionsBuffer, offset: 0, index: 2)
                 var nbVal2 = UInt32(nBuckets)
                 var nwVal2 = UInt32(nWindows)
+                var npVal2 = UInt32(effectiveN)
                 csmEnc.setBytes(&nbVal2, length: 4, index: 3)
                 csmEnc.setBytes(&nwVal2, length: 4, index: 4)
+                csmEnc.setBuffer(gpuSortScratchBuffer, offset: 0, index: 5)
+                csmEnc.setBytes(&npVal2, length: 4, index: 6)
                 csmEnc.dispatchThreads(MTLSize(width: nWindows, height: 1, depth: 1),
                                       threadsPerThreadgroup: MTLSize(width: nWindows, height: 1, depth: 1))
                 csmEnc.endEncoding()
@@ -764,15 +781,120 @@ public class MetalMSM {
                 sortCB.commit()
                 sortCB.waitUntilCompleted()
             }
+            let _gpuSortTime = CFAbsoluteTimeGetCurrent() - _gpuSortStart
+            fputs(String(format: "  [profile] GPU sort: %.2f ms\n", _gpuSortTime * 1000), stderr)
+
+            // VERIFICATION: Run CPU sort into separate buffers and compare
+            // Allocate temp buffers for CPU sort results
+            let cpuSortedNeeded = effectiveN * nWindows
+            let cpuSortedBuf = UnsafeMutablePointer<UInt32>.allocate(capacity: cpuSortedNeeded)
+            let cpuCSMNeeded = nBuckets * nWindows
+            let cpuCSMBuf = UnsafeMutablePointer<UInt32>.allocate(capacity: cpuCSMNeeded)
+            let cpuOffsetsNeeded = nBuckets * nWindows
+            let cpuOffsetsBuf = UnsafeMutablePointer<UInt32>.allocate(capacity: cpuOffsetsNeeded)
+
+            // Run CPU sort into temp buffers
+            let scratchStride = self.cpuScratchStride
+            DispatchQueue.concurrentPerform(iterations: nWindows) { w in
+                let wOff = w * nBuckets
+                let idxBase = w * effectiveN
+                let counts = countsBase + w * scratchStride
+                let positions = positionsBase + w * scratchStride
+                let sdBuf = signedDigitBuf + w * effectiveN
+
+                // Count buckets
+                for i in 0..<nBuckets { counts[i] = 0 }
+                for i in 0..<effectiveN {
+                    counts[Int(sdBuf[i] & 0x7FFFFFFF)] += 1
+                }
+
+                // Prefix sum
+                var runningOffset = 0
+                for i in 0..<nBuckets {
+                    cpuOffsetsBuf[wOff + i] = UInt32(runningOffset)
+                    positions[i] = runningOffset
+                    runningOffset += counts[i]
+                }
+
+                // Scatter into sorted array
+                for i in 0..<effectiveN {
+                    let raw = sdBuf[i]
+                    let digit = Int(raw & 0x7FFFFFFF)
+                    if digit == 0 { continue }
+                    var idx = UInt32(i)
+                    if (raw & 0x80000000) != 0 { idx |= 0x80000000 }
+                    cpuSortedBuf[idxBase + positions[digit]] = idx
+                    positions[digit] += 1
+                }
+
+                // Build CSM
+                var maxCount: Int = 0
+                for i in 0..<nBuckets {
+                    let c = Int(allCounts[wOff + i])
+                    if c > maxCount { maxCount = c }
+                }
+                for i in 0...maxCount { counts[i] = 0 }
+                for i in 0..<nBuckets {
+                    counts[Int(allCounts[wOff + i])] += 1
+                }
+                var running = 0
+                for c in stride(from: maxCount, through: 0, by: -1) {
+                    positions[c] = running
+                    running += counts[c]
+                }
+                for i in 0..<nBuckets {
+                    let c = Int(allCounts[wOff + i])
+                    let dest = positions[c]
+                    positions[c] = dest + 1
+                    cpuCSMBuf[wOff + dest] = UInt32(w << 16) | UInt32(i)
+                }
+            }
+
+            // Compare GPU vs CPU sorted indices
+            let gpuSortedPtr = sortedIndicesBuffer.contents().bindMemory(to: UInt32.self, capacity: sortedNeeded)
+            var sortedDiffs = 0
+            for i in 0..<sortedNeeded {
+                if gpuSortedPtr[i] != cpuSortedBuf[i] {
+                    sortedDiffs += 1
+                    if sortedDiffs <= 3 {
+                        fputs(String(format: "  [VERIFY] sorted_idx diff at \(i): GPU=0x\(String(gpuSortedPtr[i], radix: 16)), CPU=0x\(String(cpuSortedBuf[i], radix: 16))\n"), stderr)
+                    }
+                }
+            }
+            fputs(String(format: "  [VERIFY] sorted_indices: \(sortedDiffs) diffs out of \(sortedNeeded)\n"), stderr)
+
+            // Compare GPU vs CPU CSM
+            let gpuCSMPtr = countSortedMapBuffer.contents().bindMemory(to: UInt32.self, capacity: cpuCSMNeeded)
+            var csmDiffs = 0
+            for i in 0..<cpuCSMNeeded {
+                if gpuCSMPtr[i] != cpuCSMBuf[i] {
+                    csmDiffs += 1
+                    if csmDiffs <= 3 {
+                        fputs(String(format: "  [VERIFY] csm diff at \(i): GPU=0x\(String(gpuCSMPtr[i], radix: 16)), CPU=0x\(String(cpuCSMBuf[i], radix: 16))\n"), stderr)
+                    }
+                }
+            }
+            fputs(String(format: "  [VERIFY] count_sorted_map: \(csmDiffs) diffs out of \(cpuCSMNeeded)\n"), stderr)
+
+            // Compare GPU vs CPU offsets
+            var offsetsDiffs = 0
+            for i in 0..<cpuOffsetsNeeded {
+                if offsetsPtr[i] != cpuOffsetsBuf[i] {
+                    offsetsDiffs += 1
+                    if offsetsDiffs <= 3 {
+                        fputs(String(format: "  [VERIFY] offsets diff at \(i): GPU=\(offsetsPtr[i]), CPU=\(cpuOffsetsBuf[i])\n"), stderr)
+                    }
+                }
+            }
+            fputs(String(format: "  [VERIFY] offsets: \(offsetsDiffs) diffs out of \(cpuOffsetsNeeded)\n"), stderr)
+
+            cpuSortedBuf.deallocate()
+            cpuCSMBuf.deallocate()
+            cpuOffsetsBuf.deallocate()
         } else {
-            // Adaptive bucket sort: compute CV² of bucket distribution to decide
-            // whether CSM reordering is worth the overhead. When distribution is
-            // near-uniform (CV² < 0.5), skip CSM since all buckets have similar
-            // counts and SIMD coherence gain is negligible.
             let cv2Threshold = 0.5
             var skipCSM = false
             if effectiveN >= 8192 {
-                // Sample window 0 to estimate distribution uniformity
                 let cv2 = computeBucketCV2(windowIndex: 0)
                 skipCSM = cv2 < cv2Threshold
                 if profileMSM {

@@ -217,9 +217,11 @@ public class Poseidon2Engine {
         encoder.setBuffer(rcBuffer, offset: 0, index: 2)
         var numLevels = UInt32(subtreeSize.trailingZeroBitCount)
         encoder.setBytes(&numLevels, length: 4, index: 3)
-        let tgSize = min(subtreeSize / 2, 512)
+        // Metal requires threadgroup width >= 32 for optimal SIMD group utilization.
+        // Very small threadgroups can cause GPU stalls on M-series chips.
+        let tgSize = max(min(subtreeSize / 2, 512), 32)
         encoder.dispatchThreadgroups(MTLSize(width: numSubtrees, height: 1, depth: 1),
-                                      threadsPerThreadgroup: MTLSize(width: max(tgSize, 1), height: 1, depth: 1))
+                                      threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
     }
 
     /// Encode fused Merkle (full tree): writes all intermediate nodes at correct tree offsets.
@@ -275,9 +277,10 @@ public class Poseidon2Engine {
         encoder.setBuffer(rcBuffer, offset: 0, index: 2)
         var numLevelsVal = UInt32(numLevels)
         encoder.setBytes(&numLevelsVal, length: 4, index: 3)
-        let tgSize = min(512, Int(merkleFusedQuadFunction.maxTotalThreadsPerThreadgroup))
+        // Metal requires threadgroup width >= 32 for optimal SIMD group utilization.
+        let tgSize = max(min(512, Int(merkleFusedQuadFunction.maxTotalThreadsPerThreadgroup)), 32)
         encoder.dispatchThreadgroups(MTLSize(width: numSubtrees, height: 1, depth: 1),
-                                      threadsPerThreadgroup: MTLSize(width: max(tgSize, 1), height: 1, depth: 1))
+                                      threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
     }
 
     /// Encode scattered incremental Merkle update into an existing compute encoder.

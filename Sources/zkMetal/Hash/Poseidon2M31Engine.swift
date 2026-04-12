@@ -303,4 +303,6 @@ public class Poseidon2M31Engine {
         encoder.dispatchThreads(MTLSize(width: count, height: 1, depth: 1),
                                threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
     }
+
 }
+
