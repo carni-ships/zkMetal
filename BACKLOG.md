@@ -166,3 +166,154 @@ The `useCPUGLV` path exists in the engine and works correctly, but it is not an 
 **Estimated impact**: The endomorphism kernel touches 2n affine points (x, y coordinates = 64 bytes each = 128MB for n=2^18) with secp_fp multiply per point. At M3 Pro memory bandwidth (~200GB/s), this is ~0.6ms, but the actual kernel runs ~50ms due to secp_fp multiply per coordinate. Precomputing on CPU (where secp_fp multiply is ~10x faster) during SRS load costs ~5ms once, **saving ~45ms per proof**.
 
 **Why this helps**: The GLV endomorphism kernel (`secp_mul` per point for beta.x) is a separate GPU dispatch that dominates its time in affine-to-projective and coordinate transform overhead. If the SRS is loaded once and used for many proofs, precomputing the endomorphed points amortizes the 5ms CPU cost across all subsequent proofs.
+
+---
+
+## GPU MSM Theoretical Transformations (2026-04-12)
+
+**Problem**: GPU is 3x slower than CPU (781ms vs 276ms at 2^18). Root cause is **memory-bound sort phase** and **poor GPU utilization** from irregular bucket access patterns.
+
+### Why MSM is GPU-hostile
+1. **Random bucket indices** — scalar bits cause non-coalesced memory access
+2. **Irregular occupancy** — some buckets get many points, most get 0-1
+3. **Sort phase dominates** — O(n log n) with terrible GPU cache behavior
+4. **Dependent reductions** — can't parallelize across buckets until sort completes
+
+### Transformation 1: Batch Many Small MSMs *(HIGHEST IMPACT — IN PROGRESS)*
+
+**Core insight**: Instead of one 2^18 MSM, run 256 × 2^10 MSMs in parallel. Each small MSM has:
+- No sorting needed (small window fits in registers)
+- Fully predictable memory access
+- Trivially parallel across the 256 instances
+
+**Transform**:
+```
+Original: one 2^18 MSM → one big bucket sort + reduce
+New:      256 × 2^10 MSMs → each fits in registers, no sort, fully parallel
+```
+
+**Why GPU loves this**:
+- Embarrassingly parallel — 256 independent MSMs
+- Each small MSM: 2^10 = 1024 points, wb=8 → 256 buckets per MSM
+- Total work same, but memory access becomes coalesced and predictable
+- Thread block per small MSM: 256 thread blocks × 256 threads = 65K threads total
+
+**Code change**: Add `batchMSM(numSmallMSMs: Int, pointsPerMSM: Int)` that:
+1. Distributes n points into `numSmallMSMs` groups
+2. Each thread block handles one small MSM with windowed scalar multiplication
+3. Results are combined at the end
+
+**Estimated impact**: If each 2^10 MSM takes ~0.5ms on GPU (trivial size), 256 × 0.5ms = 128ms theoretical. Could be **3-6x faster** than current 781ms.
+
+**Why this could work**: At small sizes, GPU's parallelism wins. 2^10 is small enough that the sort phase is negligible and the doubling chain fits in registers.
+
+### Transformation 2: Precomputed Window Tables (Memory-Compute Tradeoff)
+
+**What**: Precompute a massive window table `W[i][j]` = i·P_j for all digits and points once, then MSM becomes table lookups instead of doubling chains.
+
+```
+// Scalar s in radix-2^k: s = Σ s_j · 2^{kj}
+// MSM = Σ (s_j · 2^{kj}) · P = Σ table[s_j][j]
+// One lookup + addition per digit instead of k doublings
+```
+
+**Cost**: num_digits × 2^k entries per point. For k=8, 18 × 256 = 4,608 entries × 64 bytes = 288KB per point. For 262K points: 72GB (too large).
+
+**Feasible variant**: Precompute for a **single base point G**, then use for all scalars. `W[i] = i·G` for i in [0, 256). MSM becomes:
+```
+MSM = Σ a_i · P_i = Σ (a_i mod 256) · P_i + Σ floor(a_i/256) · 2^8 · P_i
+    = Σ digit_table[a_i & 0xFF][i] + 2^8 · Σ digit_table[(a_i>>8) & 0xFF][i]
+```
+Still requires per-point tables. **Rejected for large n.**
+
+### Transformation 3: NAF (Non-Adjacent Form) Representation
+
+**What**: NAF guarantees at most n/3 ones per scalar (vs n/2 for binary):
+```
+Binary:  110110010
+NAF:     1 0 -1 0 1 0 -1 0
+```
+
+**Why this helps**: ~33% fewer point additions. Also enables signed point representation which can help with bucket load balancing.
+
+**Estimated impact**: 10-20% reduction in point additions. Low-medium impact, easy to implement.
+
+### Transformation 4: Higher Radix + Shared Memory Tree Reduction
+
+**What**: Use radix-2^r with r > wb and have each thread block aggregate one bucket using shared memory parallel reduction:
+
+```metal
+// Each thread block: 256 threads, handles one bucket
+// Threads cooperatively load all points belonging to this bucket
+// Tree reduction in shared memory: 256->128->64->32->16->8->4->2->1
+// Final result stored to global memory
+```
+
+**Why this helps**: Shared memory has ~10x bandwidth of global memory. Tree reduction eliminates the SIMD shuffle overhead in the current cooperative kernel.
+
+**Estimated impact**: 20-30% speedup on bucket reduction phase. Medium implementation cost.
+
+### Transformation 5: Bucket-Interleaved Memory Layout
+
+**What**: Pre-sort points into bucket-interleaved layout so adjacent threads access adjacent memory:
+
+```
+// Instead of: [P0, P1, P2, P3, P4, P5, P6, P7]
+// Pre-sort into: [P0, P4], [P1, P5], [P2, P6], [P3, P7]
+// Now adjacent threads access adjacent memory in reduction step
+```
+
+**Why this helps**: Enables fully coalesced memory access in bucket reduction phase.
+
+**Estimated impact**: 15-25% speedup. Requires preprocessing sort but eliminates the main memory bottleneck.
+
+### Transformation 6: Interleaved GLV + Batch Small MSMs
+
+**What**: Combine GLV decomposition with batch-small approach. GLV halves scalar bits (129→65), allowing wb=8 with only 256 buckets. Combined with batch 256 × 2^10:
+
+```
+Each 2^10 MSM: 1024 points, wb=8, 256 buckets
+GLV doubles to: 2048 points but halved bucket count
+Combined with batch: 128 × 2^11 MSMs
+```
+
+**Why this might work**: GLV alone failed because sort phase dominated. But with small batch MSMs where sort is cheap, GLV's halved bucket count could finally help.
+
+**Estimated impact**: Unknown. Requires empirical testing. **Medium risk** — GLV alone failed but small-batch combination is unexplored.
+
+### Transformation 7: MSM via Polynomial Evaluation (Hidden Structure)
+
+**What**: Exploit mathematical isomorphism:
+```
+MSM(Σ a_i · P_i) = Evaluation of f(X) = Σ a_i · log_G(P_i) at X=1
+```
+
+**Why this helps**: Becomes a polynomial evaluation problem (FFT-based, cache-coherent).
+
+**Problem**: Requires computing discrete logs, which is intractable for arbitrary points. **Theoretical only unless bases are fixed/special.**
+
+### Transformation 8: Cubic Sums / Multilinear Extension
+
+**What**: View MSM as gradient of multilinear polynomial:
+```rust
+MSM(Σ a_i P_i) = <∇f(0), Σ P_i> where f(t_1,...,t_n) = Σ a_i · t_i
+```
+
+**Why this helps**: Becomes a sumcheck-like problem with parallel reduction trees.
+
+**Problem**: Still requires discrete log. **Theoretical only.**
+
+---
+
+## Priority Ranking
+
+| Transformation | Impact | Cost | Risk | Status |
+|---------------|--------|------|------|--------|
+| 1. Batch Small MSMs | **Very High** | Medium | Low | **IN PROGRESS** |
+| 2. NAF Representation | Medium | Low | Very Low | Not started |
+| 3. Higher Radix + Shared Mem | Medium-High | Medium | Medium | Not started |
+| 4. Bucket-Interleaved Layout | Medium | Medium | Low | Not started |
+| 5. Precomputed Window Tables | High | High | Medium | Rejected (memory) |
+| 6. GLV + Batch Small | Unknown | Medium | Medium | Uncertain |
+| 7. Poly Evaluation | N/A | N/A | N/A | Theoretical only |
+| 8. Multilinear Extension | N/A | N/A | N/A | Theoretical only |

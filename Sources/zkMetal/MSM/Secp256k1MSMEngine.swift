@@ -21,6 +21,7 @@ public class Secp256k1MSM {
     private let gpuBuildCsmFunction: MTLComputePipelineState
     private let glvDecomposeFunction: MTLComputePipelineState
     private let glvEndomorphismFunction: MTLComputePipelineState
+    private let batchSmallMSMFunction: MTLComputePipelineState
 
     // Pre-allocated buffers
     private var maxAllocatedPoints = 0
@@ -78,7 +79,7 @@ public class Secp256k1MSM {
             "secp_msm_reduce_sorted_buckets", "secp_msm_reduce_warp_per_bucket",
             "secp_msm_bucket_sum_direct", "secp_msm_combine_segments",
             "secp_msm_signed_digit_extract", "secp_glv_decompose",
-            "secp_glv_endomorphism"
+            "secp_glv_endomorphism", "secp_msm_batch_small"
         ]
         if FileManager.default.fileExists(atPath: cacheFile.path) {
             do {
@@ -106,7 +107,8 @@ public class Secp256k1MSM {
               let gpuSortScatFn = library.makeFunction(name: "secp_msm_sort_scatter"),
               let gpuBuildCsmFn = library.makeFunction(name: "secp_msm_build_csm"),
               let glvDecomposeFn = library.makeFunction(name: "secp_glv_decompose"),
-              let glvEndoFn = library.makeFunction(name: "secp_glv_endomorphism") else {
+              let glvEndoFn = library.makeFunction(name: "secp_glv_endomorphism"),
+              let batchSmallFn = library.makeFunction(name: "secp_msm_batch_small") else {
             throw MSMError.missingKernel
         }
 
@@ -122,6 +124,7 @@ public class Secp256k1MSM {
         self.gpuBuildCsmFunction = try device.makeComputePipelineState(function: gpuBuildCsmFn)
         self.glvDecomposeFunction = try device.makeComputePipelineState(function: glvDecomposeFn)
         self.glvEndomorphismFunction = try device.makeComputePipelineState(function: glvEndoFn)
+        self.batchSmallMSMFunction = try device.makeComputePipelineState(function: batchSmallFn)
         self.tuning = TuningManager.shared.config(device: device)
     }
 
@@ -857,6 +860,92 @@ public class Secp256k1MSM {
             result = secpPointAdd(result, windowResults[w])
         }
         return result
+    }
+
+    /// Batch MSM — run multiple small MSMs in parallel on GPU
+    ///
+    /// Instead of one large MSM (2^18), splits into B batches of M points each.
+    /// Each batch is processed independently without global sorting, using shared
+    /// memory for bucket accumulation within each thread block.
+    ///
+    /// This approach trades memory for parallelism: for M=1024, wb=8, we have
+    /// 256 parallel MSMs, each with 256 buckets fitting in shared memory.
+    ///
+    /// - Parameters:
+    ///   - allPoints: Flat array of B×M points
+    ///   - allScalars: Flat array of B×M scalars (each 8 uint32s)
+    ///   - M: Points per MSM (batch size)
+    ///   - B: Number of batches (MSMs to run in parallel)
+    /// - Returns: Array of B results
+    public func batchMSM(allPoints: [SecpPointAffine], allScalars: [[UInt32]], M: Int, B: Int) throws -> [SecpPointProjective] {
+        precondition(M * B == allPoints.count, "M * B must equal allPoints.count")
+        precondition(allScalars.count == allPoints.count, "Scalars count must match points count")
+
+        let wb: UInt32 = 8  // Window bits for small MSMs
+        let nWindows = (256 + Int(wb) - 1) / Int(wb)
+
+        // Allocate buffers for batch data
+        let pointsSize = allPoints.count * MemoryLayout<SecpPointAffine>.stride
+        let scalarsSize = allScalars.count * 8 * MemoryLayout<UInt32>.stride
+        let resultsSize = B * MemoryLayout<SecpPointProjective>.stride
+
+        guard let pointsBuf = device.makeBuffer(length: pointsSize, options: .storageModeShared),
+              let scalarsBuf = device.makeBuffer(length: scalarsSize, options: .storageModeShared),
+              let resultsBuf = device.makeBuffer(length: resultsSize, options: .storageModeShared) else {
+            throw MSMError.gpuError("Failed to allocate batch buffers")
+        }
+
+        // Copy points
+        allPoints.withUnsafeBytes { src in
+            memcpy(pointsBuf.contents(), src.baseAddress!, pointsSize)
+        }
+
+        // Copy scalars (flattened)
+        var scalarIdx = 0
+        for scalar in allScalars {
+            for limb in scalar {
+                scalarsBuf.contents().bindMemory(to: UInt32.self, capacity: allScalars.count * 8)[scalarIdx] = limb
+                scalarIdx += 1
+            }
+        }
+
+        // Dispatch batch kernel
+        guard let cb = commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandQueue
+        }
+
+        let enc = cb.makeComputeCommandEncoder()!
+        enc.setComputePipelineState(batchSmallMSMFunction)
+        enc.setBuffer(pointsBuf, offset: 0, index: 0)
+        enc.setBuffer(scalarsBuf, offset: 0, index: 1)
+        enc.setBuffer(resultsBuf, offset: 0, index: 2)
+        var m = UInt32(M)
+        var b = UInt32(B)
+        var wbVal = wb
+        var nw = UInt32(nWindows)
+        enc.setBytes(&m, length: MemoryLayout<UInt32>.stride, index: 3)
+        enc.setBytes(&b, length: MemoryLayout<UInt32>.stride, index: 4)
+        enc.setBytes(&wbVal, length: MemoryLayout<UInt32>.stride, index: 5)
+        enc.setBytes(&nw, length: MemoryLayout<UInt32>.stride, index: 6)
+        enc.dispatchThreads(
+            MTLSize(width: B, height: 1, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
+        enc.endEncoding()
+
+        cb.commit()
+        cb.waitUntilCompleted()
+
+        if let error = cb.error { throw MSMError.gpuError(error.localizedDescription) }
+
+        // Read results
+        let resultsPtr = resultsBuf.contents().bindMemory(to: SecpPointProjective.self, capacity: B)
+        var results = [SecpPointProjective]()
+        results.reserveCapacity(B)
+        for i in 0..<B {
+            results.append(resultsPtr[i])
+        }
+
+        return results
     }
 }
 
