@@ -11,8 +11,8 @@ Poseidon2 Merkle tree is the bottleneck. 64 subtrees of 1024 leaves each. Upper 
 - [x] **LOOKUP reduction** — DONE: 256-element list from folded evals
 - [x] **fold-by-8 FRI** — DONE: Single round instead of 18
 - [x] **Poseidon2 Merkle fusing** — PROFILING: Upper tree (8 hashPairs dispatches) is the bottleneck. merkleFusedFull exists but only writes subtree roots, not upper tree nodes. Cannot fully fuse for >65K because upper tree size exceeds 1024-subtree capacity. Threadgroup size tuning: calibration uses synthetic workload (hashThreadgroupSize=64), but merkleFused kernels use fixed tgSize=512 — verified no mismatch.
-- [ ] **4-ary Merkle tree** — LOW PRIORITY: Halves depth from 18 to 9 levels, reduces dispatches from 8 to 2 for upper tree. Only ~2x gain on non-bottleneck phase.
-- [ ] **M3 Pro tuning** — CALIBRATION: hashThreadgroupSize=64 (calibration synthetic), but Poseidon2 uses fixed tgSize=512 for merkleFusedFull. Try higher TG sizes for upper tree.
+- [ ] **4-ary Merkle tree** — REJECTED: Poseidon2 is not associative. Hashing 4 elements at once via p2_hash_quad(a,b,c,d) produces different results than hierarchical hash(hash(a,b), hash(c,d)). Non-associativity is fundamental to cryptographic hash security — 4-ary Merkle only works for commutative/associative hashes like Blake3.
+- [x] **M3 Pro tuning** — DONE: hashThreadgroupSize=64 was a calibration artifact (synthetic XOR workload). For M3 Pro, calibrated value is 1024 (4x higher). However, after testing with updated calibration, no measurable impact on Blaze merkle time (600ms consistently). Root cause is Poseidon2 non-associativity + upper tree sequential dispatches — not threadgroup size. Floor estimate revised to ~150ms for Poseidon2 upper tree at 2^18.
 
 ## MSM BN254 (~1.4x headroom, ~72ms at 2^18 vs ~50ms floor)
 
@@ -53,7 +53,8 @@ Bottleneck: 256-bit Montgomery multiply on 32-bit ALUs + strided memory access.
 ## FRI Fold (~7x headroom, 2.9ms at 2^20 vs ~0.3ms floor)
 
 - [x] **Fold-by-4 cascade wiring** — DONE: Wired fri_fold_fused2_kernel through all 3 FRI engine layers. 901/901 tests pass.
-- [x] **Coalesced memory access** — LOW PRIORITY: FRI domain structure requires strided access (i, i+n/2). Transpose would add O(n) overhead. Apple Silicon hides latency via thread parallelism.
+- [x] **Fold-by-16 kernel** — DONE: Added fri_fold_fused4_kernel (4-round fused kernel) to GPUFRIFoldEngine. Enables single-dispatch fold-by-16 for logN >= 4. Reduces dispatch count from 6 to ~2 for 2^18 FRI. foldMultiRound and foldToFinal now use fold-by-16 when 4+ rounds remain.
+- [x] **FRI dual command queue pipelining** — NOT VIABLE: Fiat-Shamir requires challenges derived from Merkle roots - fold k+1 cannot start until Merkle k completes. Sequential dependencies are fundamental, not implementation-specific. Single-CB fold+Merkle already minimizes waits.
 
 ## Sumcheck (~5x headroom, 3.3ms at 2^20 vs ~1ms floor)
 

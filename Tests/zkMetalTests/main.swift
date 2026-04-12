@@ -245,6 +245,8 @@ let allTests: [(String, () -> Void)] = [
     ("pastantt", runPastaNTTTests),
     ("pastapoly", runPastaPolyTests),
     ("blaze", runBlazeTests),
+    ("basefoldbench", runBasefoldBenchmark),
+    ("pastanttbench", runPastaNTTBenchmark),
 ]
 
 // Parse CLI arguments for test filtering

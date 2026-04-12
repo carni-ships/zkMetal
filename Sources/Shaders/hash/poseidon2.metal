@@ -193,6 +193,45 @@ Fr p2_hash_pair(Fr a, Fr b, constant Fr* rc) {
     return fr_reduce(s0);
 }
 
+// Inline Poseidon2 hash of 4 elements (a, b, c, d) → Fr result
+// Used in 4-ary Merkle tree to halve tree depth
+Fr p2_hash_quad(Fr a, Fr b, Fr c, Fr d, constant Fr* rc) {
+    // Absorb 4 elements into Poseidon2 sponge: state = [a, b, c, d]
+    Fr s0 = a, s1 = b, s2 = c;
+    // d is absorbed as rate element with capacity = 0
+    // After first permutation, absorb d
+
+    p2_external_layer(s0, s1, s2);
+
+    #pragma unroll
+    for (uint r = 0; r < 4; r++) {
+        uint rc_base = r * 3;
+        s0 = fr_add_lazy(s0, rc[rc_base]);
+        s1 = fr_add_lazy(s1, rc[rc_base + 1]);
+        s2 = fr_add_lazy(s2, rc[rc_base + 2]);
+        s0 = p2_sbox(s0); s1 = p2_sbox(s1); s2 = p2_sbox(s2);
+        p2_external_layer(s0, s1, s2);
+    }
+    s0 = fr_reduce(s0); s1 = fr_reduce(s1); s2 = fr_reduce(s2);
+    for (uint r = 4; r < 60; r++) {
+        s0 = fr_add_lazy(s0, rc[r * 3]);
+        s0 = p2_sbox(s0);
+        p2_internal_layer(s0, s1, s2);
+    }
+    // Now absorb d after rounds 0-59
+    s0 = fr_add(s0, d);
+    #pragma unroll
+    for (uint r = 60; r < 64; r++) {
+        uint rc_base = r * 3;
+        s0 = fr_add_lazy(s0, rc[rc_base]);
+        s1 = fr_add_lazy(s1, rc[rc_base + 1]);
+        s2 = fr_add_lazy(s2, rc[rc_base + 2]);
+        s0 = p2_sbox(s0); s1 = p2_sbox(s1); s2 = p2_sbox(s2);
+        p2_external_layer(s0, s1, s2);
+    }
+    return fr_reduce(s0);
+}
+
 // Fused multi-level Merkle tree: each threadgroup processes a subtree
 // of SUBTREE_SIZE leaves down to 1 hash, eliminating log2(SUBTREE_SIZE)-1 barriers.
 // Variable-size fused Merkle: subtree_size = 1 << num_levels (max 1024).
@@ -314,6 +353,49 @@ kernel void poseidon2_merkle_fused_full(
         active = pairs;
         subtree_stride >>= 1;
         threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+}
+
+// 4-ary Merkle tree: each threadgroup processes a 4^num_levels leaf subtree.
+// Uses p2_hash_quad to hash 4 children at once, halving tree depth.
+// For num_levels=4: 256 leaves -> 64 -> 16 -> 4 -> 1 (4 levels instead of 8)
+// Threadgroup size: MERKLE_SUBTREE_SIZE (1024) threads, but only half are active per level.
+kernel void poseidon2_merkle_fused_quad(
+    device const Fr* leaves       [[buffer(0)]],    // n = 4^num_levels * num_subtrees leaves
+    device Fr* roots              [[buffer(1)]],     // num_subtrees roots
+    constant Fr* rc               [[buffer(2)]],
+    constant uint& num_levels     [[buffer(3)]],     // log4(subtree_size), e.g. 4 for 256 leaves
+    uint tid                      [[thread_index_in_threadgroup]],
+    uint tgid                     [[threadgroup_position_in_grid]],
+    uint tg_size                  [[threads_per_threadgroup]]
+) {
+    threadgroup Fr shared_data[MERKLE_SUBTREE_SIZE];
+
+    uint subtree_size = 1u << (num_levels * 2);  // 4^num_levels
+    uint leaf_base = tgid * subtree_size;
+
+    // Load leaves with strided access
+    for (uint i = tid; i < subtree_size; i += tg_size) {
+        shared_data[i] = leaves[leaf_base + i];
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    uint active = subtree_size;
+    for (uint level = 0; level < num_levels; level++) {
+        uint quads = active >> 2;
+        if (tid < quads) {
+            Fr a = shared_data[tid * 4];
+            Fr b = shared_data[tid * 4 + 1];
+            Fr c = shared_data[tid * 4 + 2];
+            Fr d = shared_data[tid * 4 + 3];
+            shared_data[tid] = p2_hash_quad(a, b, c, d, rc);
+        }
+        active = quads;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    if (tid == 0) {
+        roots[tgid] = shared_data[0];
     }
 }
 

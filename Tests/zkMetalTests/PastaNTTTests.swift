@@ -1,4 +1,5 @@
 import zkMetal
+import Foundation
 
 func runPastaNTTTests() {
     // ============================================================
@@ -273,4 +274,65 @@ func runPastaNTTTests() {
     } catch {
         expect(false, "Vesta GPU NTT error: \(error)")
     }
+}
+
+// MARK: - Benchmarks
+
+private func pastaNTTBenchmark() {
+    fputs("\n  Pasta NTT Benchmark:\n", stderr)
+
+    do {
+        let pallasEngine = try PallasNTTEngine()
+        let vestaEngine = try VestaNTTEngine()
+
+        // Pallas GPU benchmark
+        fputs("  Pallas (GPU):\n", stderr)
+        for logN in [12, 14, 16, 18] {
+            let n = 1 << logN
+            var input = [VestaFp](repeating: VestaFp.zero, count: n)
+            var rng: UInt64 = 0x1234_5678
+            for i in 0..<n {
+                rng = rng &* 6364136223846793005 &+ 1442695040888963407
+                input[i] = vestaFromInt(rng >> 32)
+            }
+
+            var times = [Double]()
+            for _ in 0..<3 {
+                let t0 = CFAbsoluteTimeGetCurrent()
+                let fwd = try pallasEngine.ntt(input)
+                let dt = (CFAbsoluteTimeGetCurrent() - t0) * 1000
+                times.append(dt)
+            }
+            times.sort()
+            fputs(String(format: "    2^%d: %.2f ms\n", logN, times[1]), stderr)
+        }
+
+        // Vesta GPU benchmark
+        fputs("  Vesta (GPU):\n", stderr)
+        for logN in [12, 14, 16, 18] {
+            let n = 1 << logN
+            var input = [PallasFp](repeating: PallasFp.zero, count: n)
+            var rng: UInt64 = 0x1234_5678
+            for i in 0..<n {
+                rng = rng &* 6364136223846793005 &+ 1442695040888963407
+                input[i] = pallasFromInt(rng >> 32)
+            }
+
+            var times = [Double]()
+            for _ in 0..<3 {
+                let t0 = CFAbsoluteTimeGetCurrent()
+                let fwd = try vestaEngine.ntt(input)
+                let dt = (CFAbsoluteTimeGetCurrent() - t0) * 1000
+                times.append(dt)
+            }
+            times.sort()
+            fputs(String(format: "    2^%d: %.2f ms\n", logN, times[1]), stderr)
+        }
+    } catch {
+        fputs("  Pasta NTT benchmark error: \(error)\n", stderr)
+    }
+}
+
+public func runPastaNTTBenchmark() {
+    pastaNTTBenchmark()
 }

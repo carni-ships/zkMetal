@@ -11,6 +11,7 @@ public class Poseidon2Engine {
     let merkleFusedFunction: MTLComputePipelineState
     let merkleFusedFullFunction: MTLComputePipelineState
     let merkleFusedBatchFunction: MTLComputePipelineState
+    let merkleFusedQuadFunction: MTLComputePipelineState
     let merkleUpdateScatteredFunction: MTLComputePipelineState
     public let rcBuffer: MTLBuffer  // round constants in Montgomery form
 
@@ -38,6 +39,7 @@ public class Poseidon2Engine {
               let merkleFusedFn = library.makeFunction(name: "poseidon2_merkle_fused"),
               let merkleFusedFullFn = library.makeFunction(name: "poseidon2_merkle_fused_full"),
               let merkleFusedBatchFn = library.makeFunction(name: "poseidon2_merkle_fused_batch"),
+              let merkleFusedQuadFn = library.makeFunction(name: "poseidon2_merkle_fused_quad"),
               let merkleUpdateScatteredFn = library.makeFunction(name: "poseidon2_merkle_update_scattered") else {
             throw MSMError.missingKernel
         }
@@ -47,6 +49,7 @@ public class Poseidon2Engine {
         self.merkleFusedFunction = try device.makeComputePipelineState(function: merkleFusedFn)
         self.merkleFusedFullFunction = try device.makeComputePipelineState(function: merkleFusedFullFn)
         self.merkleFusedBatchFunction = try device.makeComputePipelineState(function: merkleFusedBatchFn)
+        self.merkleFusedQuadFunction = try device.makeComputePipelineState(function: merkleFusedQuadFn)
         self.merkleUpdateScatteredFunction = try device.makeComputePipelineState(function: merkleUpdateScatteredFn)
 
         // Create round constants buffer (64 rounds * 3 elements = 192 Fr values)
@@ -185,6 +188,23 @@ public class Poseidon2Engine {
                                threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
     }
 
+    /// Encode hash quadruples dispatch into an existing compute encoder (for 4-ary Merkle).
+    /// Input buffer at inputOffset contains 4*count Fr elements; output at outputOffset receives count Fr elements.
+    /// Uses p2_hash_quad to hash 4 elements at once, halving depth vs 2-ary.
+    public func encodeHashQuad(encoder: MTLComputeCommandEncoder,
+                               buffer: MTLBuffer, inputOffset: Int,
+                               outputOffset: Int, count: Int) {
+        encoder.setComputePipelineState(hashPairsFunction)
+        encoder.setBuffer(buffer, offset: inputOffset, index: 0)
+        encoder.setBuffer(buffer, offset: outputOffset, index: 1)
+        encoder.setBuffer(rcBuffer, offset: 0, index: 2)
+        var n = UInt32(count)
+        encoder.setBytes(&n, length: 4, index: 3)
+        let tg = min(tuning.hashThreadgroupSize, Int(hashPairsFunction.maxTotalThreadsPerThreadgroup))
+        encoder.dispatchThreads(MTLSize(width: count, height: 1, depth: 1),
+                               threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+    }
+
     /// Encode fused Merkle subtree: variable-size subtrees in shared memory.
     /// subtreeSize must be power of 2, max 1024. Default 1024.
     public func encodeMerkleFused(encoder: MTLComputeCommandEncoder,
@@ -238,6 +258,26 @@ public class Poseidon2Engine {
         let tg = min(512, Int(merkleFusedBatchFunction.maxTotalThreadsPerThreadgroup))
         encoder.dispatchThreadgroups(MTLSize(width: numTrees, height: 1, depth: 1),
                                       threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+    }
+
+    /// Encode 4-ary fused Merkle subtree: 4-way hash to halve tree depth.
+    /// Uses p2_hash_quad to hash 4 children at once.
+    /// For num_levels=1: 4 leaves -> 1 parent (1 level)
+    /// For num_levels=2: 16 leaves -> 4 -> 1 (2 levels)
+    /// For num_levels=4: 256 leaves -> 64 -> 16 -> 4 -> 1 (4 levels instead of 8)
+    public func encodeMerkleFusedQuad(encoder: MTLComputeCommandEncoder,
+                                      leavesBuffer: MTLBuffer, leavesOffset: Int,
+                                      rootsBuffer: MTLBuffer, rootsOffset: Int,
+                                      numSubtrees: Int, numLevels: Int) {
+        encoder.setComputePipelineState(merkleFusedQuadFunction)
+        encoder.setBuffer(leavesBuffer, offset: leavesOffset, index: 0)
+        encoder.setBuffer(rootsBuffer, offset: rootsOffset, index: 1)
+        encoder.setBuffer(rcBuffer, offset: 0, index: 2)
+        var numLevelsVal = UInt32(numLevels)
+        encoder.setBytes(&numLevelsVal, length: 4, index: 3)
+        let tgSize = min(512, Int(merkleFusedQuadFunction.maxTotalThreadsPerThreadgroup))
+        encoder.dispatchThreadgroups(MTLSize(width: numSubtrees, height: 1, depth: 1),
+                                      threadsPerThreadgroup: MTLSize(width: max(tgSize, 1), height: 1, depth: 1))
     }
 
     /// Encode scattered incremental Merkle update into an existing compute encoder.

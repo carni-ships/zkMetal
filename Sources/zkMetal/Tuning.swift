@@ -24,7 +24,7 @@ public struct TuningConfig: Codable {
         nttFourStepThreshold: 10,
         msmThreadgroupSize: 256,
         msmWindowBitsLarge: 16,
-        hashThreadgroupSize: 256,
+        hashThreadgroupSize: 256,  // was 64; synthetic XOR cal biased low — Poseidon2 S-box is register-heavy
         friThreadgroupSize: 256,
         sumcheckFusedTGSize: 128,
         sumcheckPerRoundTGSize: 256

@@ -27,6 +27,7 @@ public class GPUFRIFoldEngine {
     // Pipeline states
     private let foldKernel: MTLComputePipelineState
     private let foldFused2Kernel: MTLComputePipelineState
+    private let foldFused4Kernel: MTLComputePipelineState
     private let domainInverseKernel: MTLComputePipelineState
 
     // Cached domain inverse buffers: [logN] -> MTLBuffer
@@ -58,12 +59,14 @@ public class GPUFRIFoldEngine {
 
         guard let foldFn = library.makeFunction(name: "fri_fold_kernel"),
               let fused2Fn = library.makeFunction(name: "fri_fold_fused2_kernel"),
+              let fused4Fn = library.makeFunction(name: "fri_fold_fused4"),
               let invFn = library.makeFunction(name: "fri_domain_inverse_kernel") else {
             throw MSMError.missingKernel
         }
 
         self.foldKernel = try device.makeComputePipelineState(function: foldFn)
         self.foldFused2Kernel = try device.makeComputePipelineState(function: fused2Fn)
+        self.foldFused4Kernel = try device.makeComputePipelineState(function: fused4Fn)
         self.domainInverseKernel = try device.makeComputePipelineState(function: invFn)
     }
 
@@ -73,9 +76,13 @@ public class GPUFRIFoldEngine {
         let shaderDir = findShaderDir()
         let frSource = try String(contentsOfFile: shaderDir + "/fields/bn254_fr.metal", encoding: .utf8)
         let foldSource = try String(contentsOfFile: shaderDir + "/fri/fri_fold.metal", encoding: .utf8)
+        let kernelsSource = try String(contentsOfFile: shaderDir + "/fri/fri_kernels.metal", encoding: .utf8)
 
         // Strip #include directives (we inline dependencies)
         let cleanFold = foldSource.split(separator: "\n")
+            .filter { !$0.contains("#include") }
+            .joined(separator: "\n")
+        let cleanKernels = kernelsSource.split(separator: "\n")
             .filter { !$0.contains("#include") }
             .joined(separator: "\n")
 
@@ -84,7 +91,7 @@ public class GPUFRIFoldEngine {
             .replacingOccurrences(of: "#define BN254_FR_METAL", with: "")
             .replacingOccurrences(of: "#endif // BN254_FR_METAL", with: "")
 
-        let combined = cleanFr + "\n" + cleanFold
+        let combined = cleanFr + "\n" + cleanFold + "\n" + cleanKernels
         let options = MTLCompileOptions()
         options.fastMathEnabled = true
         return try device.makeLibrary(source: combined, options: options)
@@ -294,6 +301,92 @@ public class GPUFRIFoldEngine {
                            challenge1: challenge1, n: 1 << logN)
     }
 
+    // MARK: - Fused Fold-by-16 (Single Dispatch)
+
+    /// Fold by 16 in a single GPU dispatch using the fused 4-round kernel.
+    /// Input: evals buffer of size n (Fr elements), four challenges.
+    /// Output: new MTLBuffer of size n/16.
+    /// Uses inv_twiddles buffer for round 1 (omega_N^{-i} for i in [0, n)).
+    /// Subsequent round twiddles computed via squaring (no additional memory reads).
+    public func foldBy16(evals: MTLBuffer, invTwiddles: MTLBuffer,
+                          challenges: [Fr], n: Int) throws -> MTLBuffer {
+        let sixteenth = n >> 4
+        let stride = MemoryLayout<Fr>.stride
+
+        // CPU fallback for small inputs - chain single-round folds
+        if n < GPUFRIFoldEngine.cpuFallbackThreshold * 4 {
+            var evalsArray = [Fr](repeating: .zero, count: n)
+            evalsArray.withUnsafeMutableBytes { dst in
+                let src = evals.contents()
+                dst.copyBytes(from: UnsafeRawBufferPointer(start: src, count: n * stride))
+            }
+            // Build domains and chain 4 folds
+            var curLogN = n.trailingZeroBitCount
+            var curN = n
+            for i in 0..<4 {
+                let halfN = curN >> 1
+                // Build invTwiddles for this domain size (omega^{-i} for i in [0, halfN))
+                let invTw = precomputeInverseTwiddles(logN: curLogN - 1)
+                let domainInvBuf = precomputeDomainInverses(domain: invTw)
+                let curBuf = device.makeBuffer(bytes: evalsArray, length: curN * stride,
+                                               options: .storageModeShared)!
+                let foldedBuf = try cpuFold(evals: curBuf, domainInv: domainInvBuf,
+                                             challenge: challenges[i], n: curN)
+                // Copy result back to array
+                let ptr = foldedBuf.contents().bindMemory(to: Fr.self, capacity: halfN)
+                evalsArray = Array(UnsafeBufferPointer(start: ptr, count: halfN))
+                curN = halfN
+                curLogN -= 1
+            }
+            guard let outBuf = device.makeBuffer(bytes: evalsArray, length: sixteenth * stride,
+                                                  options: .storageModeShared) else {
+                throw MSMError.gpuError("foldBy16: failed to allocate output")
+            }
+            return outBuf
+        }
+
+        let outBuf = device.makeBuffer(length: sixteenth * stride, options: .storageModeShared)!
+
+        guard let cmdBuf = commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
+        }
+
+        var nVal = UInt32(n)
+        let enc = cmdBuf.makeComputeCommandEncoder()!
+        enc.setComputePipelineState(foldFused4Kernel)
+        enc.setBuffer(evals, offset: 0, index: 0)
+        enc.setBuffer(outBuf, offset: 0, index: 1)
+        enc.setBuffer(invTwiddles, offset: 0, index: 2)
+        enc.setBytes(challenges, length: 4 * stride, index: 3)
+        enc.setBytes(&nVal, length: 4, index: 4)
+
+        let tg = min(tuning.friThreadgroupSize,
+                     Int(foldFused4Kernel.maxTotalThreadsPerThreadgroup))
+        enc.dispatchThreads(MTLSize(width: sixteenth, height: 1, depth: 1),
+                           threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+        enc.endEncoding()
+
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+        if let error = cmdBuf.error {
+            throw MSMError.gpuError(error.localizedDescription)
+        }
+
+        return outBuf
+    }
+
+    /// Convenience: fold-by-16 using multiplicative domain (roots of unity).
+    /// Automatically precomputes and caches domain inverses for all 4 sub-rounds.
+    public func foldBy16(evals: MTLBuffer, logN: Int,
+                         challenges: [Fr]) throws -> MTLBuffer {
+        precondition(logN >= 4, "Need logN >= 4 for fold-by-16")
+        precondition(challenges.count >= 4, "Need 4 challenges for fold-by-16")
+        // Build inv_twiddles: omega_N^{-i} for i in [0, n)
+        let invTwiddles = getCachedDomainInverses(logN: logN)
+        return try foldBy16(evals: evals, invTwiddles: invTwiddles,
+                            challenges: challenges, n: 1 << logN)
+    }
+
     // MARK: - Multi-Round Fold (GPU-Resident)
 
     /// Fold multiple rounds in a single command buffer, keeping data on GPU
@@ -327,8 +420,37 @@ public class GPUFRIFoldEngine {
         var round = 0
 
         while round < numRounds {
+            // Use fused fold-by-16 (4 rounds) when we have 4+ rounds left and size >= 16
+            if round + 3 < numRounds && currentN >= 16 {
+                let sixteenth = currentN / 16
+                let invTwiddles = getCachedDomainInverses(logN: currentLogN)
+                let outBuf = usePing ? pingBuf! : pongBuf!
+
+                var nVal = UInt32(currentN)
+                let cSlice = Array(challenges[round..<(round + 4)])
+                enc.setComputePipelineState(foldFused4Kernel)
+                enc.setBuffer(currentBuf, offset: 0, index: 0)
+                enc.setBuffer(outBuf, offset: 0, index: 1)
+                enc.setBuffer(invTwiddles, offset: 0, index: 2)
+                enc.setBytes(cSlice, length: 4 * stride, index: 3)
+                enc.setBytes(&nVal, length: 4, index: 4)
+
+                let tg = min(tuning.friThreadgroupSize,
+                             Int(foldFused4Kernel.maxTotalThreadsPerThreadgroup))
+                enc.dispatchThreads(MTLSize(width: sixteenth, height: 1, depth: 1),
+                                   threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+
+                if round + 4 < numRounds {
+                    enc.memoryBarrier(scope: .buffers)
+                }
+
+                currentBuf = outBuf
+                currentN = sixteenth
+                currentLogN -= 4
+                usePing = !usePing
+                round += 4
             // Use fused fold-by-4 kernel when we have 2+ rounds left and size >= 4
-            if round + 1 < numRounds && currentN >= 4 {
+            } else if round + 1 < numRounds && currentN >= 4 {
                 let quarter = currentN / 4
                 let domainInv = getCachedDomainInverses(logN: currentLogN)
                 let domainInv2 = getCachedDomainInverses(logN: currentLogN - 1)
@@ -502,8 +624,15 @@ public class GPUFRIFoldEngine {
         while i < challenges.count {
             let n = 1 << currentLogN
 
+            // Use fused fold-by-16 when we have 4+ rounds left and size >= 16
+            if i + 3 < challenges.count && currentLogN >= 4 && n >= GPUFRIFoldEngine.cpuFallbackThreshold * 4 {
+                let cSlice = Array(challenges[i..<(i + 4)])
+                currentBuf = try foldBy16(evals: currentBuf, logN: currentLogN,
+                                         challenges: cSlice)
+                currentLogN -= 4
+                i += 4
             // Use fused fold-by-4 when we have 2+ rounds left and size >= 4
-            if i + 1 < challenges.count && currentLogN >= 2 && n >= GPUFRIFoldEngine.cpuFallbackThreshold * 2 {
+            } else if i + 1 < challenges.count && currentLogN >= 2 && n >= GPUFRIFoldEngine.cpuFallbackThreshold * 2 {
                 currentBuf = try foldBy4(evals: currentBuf, logN: currentLogN,
                                          challenge0: challenges[i], challenge1: challenges[i + 1])
                 currentLogN -= 2

@@ -276,11 +276,15 @@ public class GPUBasefoldProverEngine {
         let numVars = Int(log2(Double(n)))
 
         // RS-encode the evaluations
+        let tEncode = CFAbsoluteTimeGetCurrent()
         let encoded = rsEncode(evaluations: evaluations)
+        fputs(String(format: "  [profile] rs_encode: %.2fms\n", (CFAbsoluteTimeGetCurrent() - tEncode) * 1000), stderr)
 
         // Build Merkle tree over encoded evaluations
+        let tMerkle = CFAbsoluteTimeGetCurrent()
         let tree = try merkleEngine.buildTree(encoded)
         let root = tree.last!
+        fputs(String(format: "  [profile] merkle: %.2fms\n", (CFAbsoluteTimeGetCurrent() - tMerkle) * 1000), stderr)
 
         return BasefoldProverCommitment(
             root: root,
@@ -325,10 +329,13 @@ public class GPUBasefoldProverEngine {
         precondition(n == (1 << numVars), "Evaluation count must be 2^numVars")
 
         // Phase 1: GPU-accelerated fold-by-4 folding
+        let tFold = CFAbsoluteTimeGetCurrent()
         let (foldLayers, levelStrides) = try computeFoldLayers(evaluations: evals, point: point)
         let numLevels = foldLayers.count
+        fputs(String(format: "  [profile] fold: %.2fms\n", (CFAbsoluteTimeGetCurrent() - tFold) * 1000), stderr)
 
         // Phase 2: Build Merkle trees over each committed fold layer and extract roots
+        let tMerkle = CFAbsoluteTimeGetCurrent()
         var foldRoots: [Fr] = []
         foldRoots.reserveCapacity(numLevels)
         var layerTrees: [[Fr]] = []
@@ -344,6 +351,7 @@ public class GPUBasefoldProverEngine {
                 layerTrees.append(layer)
             }
         }
+        fputs(String(format: "  [profile] merkle: %.2fms (%d layers)\n", (CFAbsoluteTimeGetCurrent() - tMerkle) * 1000, numLevels), stderr)
 
         let finalValue = foldLayers.last!.first ?? Fr.zero
 

@@ -789,3 +789,58 @@ private func testIdentityPolynomial() {
         expect(false, "identity polynomial: error \(error)")
     }
 }
+
+// MARK: - Benchmark
+
+private func basefoldBenchmark() {
+    do {
+        let engine = try GPUBasefoldProverEngine(config: .standard)
+        let n = 1 << 18  // 2^18 = 262144 evaluations
+        let numVars = 18
+
+        fputs(String(format: "\n  Basefold Prover Benchmark (n=2^%d, m=1):\n", numVars), stderr)
+
+        // Create test polynomial
+        var evals = [Fr](repeating: Fr.zero, count: n)
+        for i in 0..<n {
+            evals[i] = frFromInt(UInt64(i % 1000))
+        }
+
+        // Benchmark commit (5 runs)
+        var commitTimes = [Double]()
+        for _ in 0..<5 {
+            let t0 = CFAbsoluteTimeGetCurrent()
+            let commitment = try engine.commit(evaluations: evals)
+            let dt = (CFAbsoluteTimeGetCurrent() - t0) * 1000
+            commitTimes.append(dt)
+        }
+        commitTimes.sort()
+        fputs(String(format: "    Commit:    %.2f ms (median of 5)\n", commitTimes[2]), stderr)
+
+        // Create a random point
+        var point = [Fr](repeating: Fr.zero, count: numVars)
+        for i in 0..<numVars {
+            point[i] = frFromInt(UInt64((i + 1) * 12345 % 1000))
+        }
+
+        // Benchmark open (3 runs)
+        var openTimes = [Double]()
+        for _ in 0..<3 {
+            let commitment = try engine.commit(evaluations: evals)
+            let t0 = CFAbsoluteTimeGetCurrent()
+            let proof = try engine.open(commitment: commitment, point: point)
+            let dt = (CFAbsoluteTimeGetCurrent() - t0) * 1000
+            openTimes.append(dt)
+        }
+        openTimes.sort()
+        fputs(String(format: "    Open:      %.2f ms (median of 3)\n", openTimes[1]), stderr)
+
+        fputs(String(format: "  Basefold version: %@\n", GPUBasefoldProverEngine.version.description), stderr)
+    } catch {
+        fputs("  Basefold benchmark error: \(error)\n", stderr)
+    }
+}
+
+public func runBasefoldBenchmark() {
+    basefoldBenchmark()
+}
