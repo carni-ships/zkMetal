@@ -2,7 +2,7 @@
 
 GPU-accelerated zero-knowledge proof library for Apple Silicon. Metal compute shaders + C/NEON field arithmetic + Swift orchestration.
 
-**~211 primitives** across 18 fields and 10 elliptic curves. 573 source files, 107 Metal shaders, 33 C/NEON files, 239 test files. 50+ engines converted to optimized C batch kernels with prefetch, branchless arithmetic, and auto-parallel dispatch (`dispatch_apply` for n >= 4096). All BN254 Fr serial field loops eliminated — `frBatchInverse` (9 call sites), Hadamard vector ops, axpy/inner product, in-place fold, Montgomery's trick patterns all batch-converted. BabyBear/Goldilocks STARK provers now use C kernels for FRI fold, vanishing polynomial, and batch inverse.
+**~211 primitives** across 18 fields and 10 elliptic curves. 573 source files, 107 Metal shaders, 33 C/NEON files, 244 test files (241 suites). 50+ engines converted to optimized C batch kernels with prefetch, branchless arithmetic, and auto-parallel dispatch (`dispatch_apply` for n >= 4096). All BN254 Fr serial field loops eliminated — `frBatchInverse` (9 call sites), Hadamard vector ops, axpy/inner product, in-place fold, Montgomery's trick patterns all batch-converted. BabyBear/Goldilocks STARK provers now use C kernels for FRI fold, vanishing polynomial, and batch inverse.
 
 - **Core:** MSM (Pippenger+GLV), NTT (four-step FFT), Poseidon2/Keccak/Blake3/SHA-256, Merkle trees
 - **Proof systems:** Plonk, HyperPlonk, Fflonk, Groth16, STARK (Circle/BabyBear/Goldilocks/Stark252), Spartan, Marlin, GKR
@@ -49,7 +49,7 @@ GPU-accelerated zero-knowledge proof library for Apple Silicon. Metal compute sh
 | Primitive | Platform | Description |
 |-----------|----------|-------------|
 | **Poseidon2** | GPU | Algebraic hash — BN254 (t=3), M31 (t=16), BabyBear (width-16, SP1 config). Duplex sponge mode |
-| **Pasta Poseidon** | GPU | Mina Kimchi variant — Pallas/Vesta Fp, 55 full rounds, x^7 S-box, full MDS, width-3. ~2.7M hash/s |
+| **Pasta Poseidon** | GPU | Mina Kimchi variant — Pallas/Vesta Fp, 55 full rounds, x^7 S-box, full MDS, width-3. ~0.9M hash/s (GPU), ~50K hash/s (CPU CIOS) |
 | **Keccak-256** | GPU/CPU | SHA-3 hash with NEON acceleration, fused Merkle subtree |
 | **Blake3** | GPU/CPU | BLAKE3 hash with NEON acceleration, batch + Merkle trees |
 | **SHA-256** | GPU | Batch hash + fused Merkle subtree |
@@ -65,6 +65,7 @@ GPU-accelerated zero-knowledge proof library for Apple Silicon. Metal compute sh
 | **Sumcheck** | GPU | Interactive sumcheck — dense, sparse O(nnz), univariate, multilinear |
 | **Polynomial Ops** | GPU | NTT multiply, Horner multi-eval, division, interpolation, vanishing polynomial |
 | **Coset LDE** | GPU | Fused zero-pad + coset-shift for BabyBear/Goldilocks/BN254 |
+| **GPU Additive FFT** | GPU | Fused Cantor/lin-Chung-Han additive FFT over GF(2^8), all k levels in single dispatch, pointwise mul, batch transform, polynomial multiply |
 | **Reed-Solomon** | GPU | Erasure coding for data availability sampling |
 
 ### Polynomial Commitment Schemes
@@ -125,7 +126,7 @@ GPU-accelerated zero-knowledge proof library for Apple Silicon. Metal compute sh
 | **Grumpkin** | GPU | BN254 inner curve, GPU MSM |
 | **Jubjub** | CPU | Twisted Edwards over BLS12-381 Fr (Zcash Sapling) |
 | **Schnorr** | CPU | BIP 340 Bitcoin Taproot signatures |
-| **Binius** | GPU/CPU | Binary tower GF(2^8)→GF(2^128), additive FFT, multilinear polynomial ops |
+| **Binius** | GPU/CPU | Binary tower GF(2^8)→GF(2^128), GPU additive FFT (fused k-level), multilinear polynomial ops |
 
 ### zkVM
 
@@ -236,9 +237,8 @@ ICICLE-Metal has ~85ms per-call kernel compilation overhead. zkMetal is **18-33x
 | Poseidon2 | 2^12 | 523ms | 19ms (C CIOS) | 2.3ms | **8x** |
 | Poseidon2 | 2^14 | 2.0s | 75ms (C CIOS) | 2.3ms | **33x** |
 | Poseidon2 | 2^16 | 8.0s | 302ms (C CIOS) | 8.5ms | **36x** |
-| Pasta Poseidon | 2^16 | 16.1s | 1.1s (C CIOS) | 24ms | **45x** |
-| Pasta Poseidon | 2^18 | -- | 4.2s (C CIOS) | 97ms | **43x** |
-| Pasta Poseidon | 2^20 | -- | 16.8s (C CIOS) | 389ms | **43x** |
+| Pasta Poseidon | 2^16 | 16.1s | 1.1s (C CIOS) | 117ms (~0.6M hash/s) | **9x** |
+| Pasta Poseidon | 2^18 | -- | 4.2s (C CIOS) | 212ms (~0.6M hash/s) | **20x** |
 | Keccak-256 | 2^14 | 100ms | 23ms (parallel) | 0.20ms | **500x** |
 | Keccak-256 | 2^16 | 387ms | 89ms (parallel) | 0.45ms | **860x** |
 | Keccak-256 | 2^18 | 1.6s | 360ms (parallel) | 1.4ms | **1143x** |
@@ -319,6 +319,19 @@ Full fold-to-constant: 2^20 in 2.3ms (20 rounds, fused cascade kernels).
 | Multiply (NTT) | deg 2^16 | 2.4s | 7.7ms | **319x** |
 | Multi-eval (Horner) | deg 2^10, 1024 pts | -- | 1.7ms | -- |
 | Multi-eval (Horner) | deg 2^14, 16384 pts | -- | 114ms | -- |
+
+### GPU Additive FFT (GF(2^8))
+
+Fused Cantor/Lin-Chung-Han additive FFT — all k butterfly levels in single Metal dispatch. 1 global read + 1 global write, intermediate data in registers.
+
+| Size | Elements | Time | Throughput |
+|------|----------|------|------------|
+| 2^16 | 65,536 | 5.75ms | 11.4 M elem/s |
+| 2^18 | 262,144 | 8.89ms | 29.5 M elem/s |
+| 2^20 | 1,048,576 | 9.24ms | 113.5 M elem/s |
+| 2^22 | 4,194,304 | 13.00ms | 322.7 M elem/s |
+
+Throughput increases with size as fixed kernel dispatch overhead is amortized. Single dispatch avoids k separate kernel launches and memory round-trips.
 
 ### KZG Commitments (BN254 G1)
 
@@ -481,9 +494,9 @@ C CIOS Montgomery acceleration: pre-computed wiring topology, cached buffers, eq
 | Lasso 2^18 | 29ms prove, 26ms verify | C-accelerated: prove **17x** (481→29ms), verify **62x** (1.6s→26ms) |
 | LogUp 2^12 | 15ms prove, 16ms verify | Optimal for small-medium tables |
 | cq 2^16 | 8ms prove, 2ms verify | O(N log N) independent of table size |
-| Binius FFT 2^16 | 21ms (CPU) | Binary tower GF(2^32) GPU batch: 0.67ms mul at 2^18 |
+| Binius GF(2^8) GPU FFT 2^22 | 13ms | Fused additive FFT over GF(2^8) (1M elem/s), full tower in progress |
 | BLS12-381 | Sign 26ms, Verify 82ms, **Pairing 1.0ms** | Projective G2 Miller loop + sparse line mul + dedicated fp_sqr: **78×** (78→1.0ms) |
-| BN254 GPU Pairing (n=16) | 34ms (vs 5.6ms C = **0.16x**) | Projective Miller loop, fused line-line mul, batched final exp |
+| BN254 GPU Pairing (n=16) | 34ms (vs 5.6ms C = **0.16x**) | GPU is 6x slower than CPU — projective Miller loop is memory-bound on GPU |
 | BN254 C Pairing (n=1) | **0.5ms** (15× vs Swift) | CIOS __uint128_t + Granger-Scott cyc_sqr + sparse line + projective G2 |
 | Schnorr BIP 340 | Sign 0.12ms, Verify 0.11ms, Batch 0.03ms/sig (256) | x-only pubkeys, SHA-256 tagged hashing |
 | Ed25519 EdDSA | Sign 0.06ms, Verify 0.08ms, MSM 256pt 0.8ms | C Fq CIOS + Shamir's trick, RFC 8032 test vectors |
@@ -502,7 +515,7 @@ C CIOS Montgomery acceleration: pre-computed wiring topology, cached buffers, eq
 | Kyber-768 KEM | KeyGen 0.07ms, Encap 0.08ms, Decap 0.02ms | GPU NTT: 5.6M NTTs/s at batch 10K |
 | Dilithium2 signatures | KeyGen 0.07ms, Sign 0.07ms, Verify 0.04ms | GPU NTT: 1.6M NTTs/s at batch 10K |
 | HE NTT (RNS) | L CRT limbs in parallel | BFV keygen/encrypt/decrypt/add/mul |
-| Reed-Solomon | NTT-based erasure coding | BabyBear + GF(2^16), encode+decode verified |
+| Reed-Solomon | 2^14 BabyBear: 20ms, BN254: 24ms (~0.8M elem/s) | NTT-based erasure coding, BabyBear + GF(2^16), encode+decode verified |
 | Witness Gen BN254 2^18 | 3.0ms (877M cells/s) | GPU instruction-stream, **117x** vs CPU |
 | Witness Gen M31 2^22 | 5.4ms (1.5B cells/s) | Circle STARK Fibonacci AIR |
 | Constraint IR 2^16 | 5.3ms (248M constraints/s) | Runtime IR -> Metal -> GPU, **140x** at 2^14 |
@@ -525,13 +538,13 @@ Methodology: Compute-bound = total_ops / 3.6T flops (BN254 mul = ~64 32-bit muls
 | 2 | NTT BN254 2^22 | 26ms | ~3ms | Compute + strided BW (256-bit: 64 muls/elem) | ~9x |
 | 3 | Sumcheck 2^20 | 4.7ms | ~1ms | Bandwidth (2^20 x 32B per round), fused CB | ~5x |
 | 4 | FRI Fold 2^20 | 2.1ms | ~0.3ms | Bandwidth (fold-by-2), 21 layers | ~7x |
-| 5 | BLS12-377 MSM 2^18 | ~119ms (GPU) | ~35ms | 12x32-bit Fq377 on 32-bit SIMD: 144 mul32/mul + Montgomery reduction. 11 muls per point add ≈ 1584 mul32/pt add. Karatsuba would need more temp registers → register spills. GPU is ~3.4x above floor (119ms vs 35ms). | ~3.4x |
-| 6 | Keccak Merkle 2^20 | 4.7ms (4-ary) | ~2.2ms | 4-ary halves levels, compute-limited | ~3.5x |
-| 7 | Blake3 Batch 2^20 | 1.0ms | ~0.6ms | Bandwidth (2^20 x 64B), uint4 vectorized loads + cycle permute | ~1.7x |
-| 8 | Basefold open 2^18 | 99ms | ~20ms | Fold-by-4 + pipelined Merkle (9 rounds vs 18) | ~3x |
-| 9 | Poseidon2 batch 2^16 | 8.1ms | ~1.8ms | Compute (390 ops/elem, 22 sequential rounds limit parallelism) | ~4.5x |
-| 10 | secp256k1 MSM 2^18 | 766ms (GPU) / 247ms (CPU) | ~30ms | GPU: 4x64-bit Montgomery CIOS (64-bit emulated via 32-bit carry chains on M3 GPU); CPU: native uint64. GLV makes GPU 3x worse (2517ms). GPU is 3x slower than CPU. | ~26x (GPU) / ~8x (CPU) |
-| 11 | Binius FFT 2^16 (CPU) | 21ms | ~5ms | CPU only; XOR-add is free but table mul is serial | ~4x |
+| 5 | GPU Additive FFT 2^22 | 13ms | ~0.5ms | GF(2^8) multiply via bit-shift (8 ops/byte); k=22 serial multiplies per elem limits parallelism | ~26x |
+| 6 | BLS12-377 MSM 2^18 | ~119ms (GPU) | ~35ms | 12x32-bit Fq377 on 32-bit SIMD: 144 mul32/mul + Montgomery reduction. 11 muls per point add ≈ 1584 mul32/pt add. Karatsuba would need more temp registers → register spills. GPU is ~3.4x above floor (119ms vs 35ms). | ~3.4x |
+| 7 | Keccak Merkle 2^20 | 4.7ms (4-ary) | ~2.2ms | 4-ary halves levels, compute-limited | ~3.5x |
+| 8 | Blake3 Batch 2^20 | 1.0ms | ~0.6ms | Bandwidth (2^20 x 64B), uint4 vectorized loads + cycle permute | ~1.7x |
+| 9 | Basefold open 2^18 | 99ms | ~20ms | Fold-by-4 + pipelined Merkle (9 rounds vs 18) | ~3x |
+| 10 | Poseidon2 batch 2^16 | 8.1ms | ~1.8ms | Compute (390 ops/elem, 22 sequential rounds limit parallelism) | ~4.5x |
+| 11 | secp256k1 MSM 2^18 | 766ms (GPU) / 247ms (CPU) | ~30ms | GPU: 4x64-bit Montgomery CIOS (64-bit emulated via 32-bit carry chains on M3 GPU); CPU: native uint64. GLV makes GPU 3x worse (2517ms). GPU is 3x slower than CPU. | ~26x (GPU) / ~8x (CPU) |
 | 12 | Constraint IR 2^16 | 5.3ms | ~1.5ms | Compute (20 constraints x 65K rows, pipeline compile overhead) | ~3.5x |
 | 13 | Witness Gen BN254 2^18 | 3.0ms | ~0.9ms | Memory bandwidth (10 cols x 262K x 32B = 84MB) | ~3.3x |
 | 14 | Plonk prove 1024 | 50ms | ~15ms | C CIOS + Keccak transcript + batched poly ops | ~3x |
@@ -728,7 +741,7 @@ swift build -c release
 
 ## Correctness & Testing
 
-Run `swift build -c release && .build/release/zkMetalTests`. 234 test files, 233 test suites. All GPU kernels verified against CPU reference implementations.
+Run `swift build -c release && .build/release/zkMetalTests`. 244 test files, 241 test suites. All GPU kernels verified against CPU reference implementations.
 
 Filter tests by keyword: `.build/release/zkMetalTests pairing groth16 gpu` runs only matching suites. Use `--list` to see all test names.
 
