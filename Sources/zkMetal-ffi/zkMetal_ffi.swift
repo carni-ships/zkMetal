@@ -268,6 +268,37 @@ public func zkmetal_pairing_engine_destroy(_ engine: UnsafeMutableRawPointer?) {
     Unmanaged<BN254PairingEngine>.fromOpaque(engine).release()
 }
 
+// MARK: - Pasta NTT Engine Lifecycle (CPU kernels — no GPU engine needed)
+
+@_cdecl("zkmetal_pasta_ntt_engine_create")
+public func zkmetal_pasta_ntt_engine_create(_ out: UnsafeMutablePointer<UnsafeMutableRawPointer?>) -> Int32 {
+    // Pasta NTT uses CPU kernels from pasta_ntt.c; no GPU engine needed.
+    // Return a dummy non-null pointer to satisfy the C API contract.
+    let dummy = UnsafeMutableRawPointer(bitPattern: 0x1)!
+    out.pointee = dummy
+    return ZKMETAL_SUCCESS
+}
+
+@_cdecl("zkmetal_pasta_ntt_engine_destroy")
+public func zkmetal_pasta_ntt_engine_destroy(_ engine: UnsafeMutableRawPointer?) {
+    // No-op: CPU kernels have no mutable engine state to clean up.
+}
+
+// MARK: - Pasta Poseidon Engine Lifecycle (CPU kernels — no GPU engine needed)
+
+@_cdecl("zkmetal_pasta_poseidon_engine_create")
+public func zkmetal_pasta_poseidon_engine_create(_ out: UnsafeMutablePointer<UnsafeMutableRawPointer?>) -> Int32 {
+    // Pasta Poseidon uses CPU kernels from pasta_poseidon.c; no GPU engine needed.
+    let dummy = UnsafeMutableRawPointer(bitPattern: 0x2)!
+    out.pointee = dummy
+    return ZKMETAL_SUCCESS
+}
+
+@_cdecl("zkmetal_pasta_poseidon_engine_destroy")
+public func zkmetal_pasta_poseidon_engine_destroy(_ engine: UnsafeMutableRawPointer?) {
+    // No-op: CPU kernels have no mutable engine state to clean up.
+}
+
 // MARK: - MSM (engine-based)
 
 @_cdecl("zkmetal_bn254_msm")
@@ -584,6 +615,69 @@ private func _ntt_impl(
     }
 }
 
+// MARK: - Pasta NTT (CPU kernels — direct C FFI)
+
+// External C kernels from pasta_ntt.c
+@_silgen_name("pallas_fr_ntt")
+private func _c_pallas_fr_ntt(_ data: UnsafeMutablePointer<UInt64>, _ logN: Int32)
+
+@_silgen_name("pallas_fr_intt")
+private func _c_pallas_fr_intt(_ data: UnsafeMutablePointer<UInt64>, _ logN: Int32)
+
+@_silgen_name("vesta_fr_ntt")
+private func _c_vesta_fr_ntt(_ data: UnsafeMutablePointer<UInt64>, _ logN: Int32)
+
+@_silgen_name("vesta_fr_intt")
+private func _c_vesta_fr_intt(_ data: UnsafeMutablePointer<UInt64>, _ logN: Int32)
+
+@_cdecl("zkmetal_pallas_ntt_auto")
+public func zkmetal_pallas_ntt_auto(
+    _ dataPtr: UnsafeMutablePointer<UInt8>,
+    _ logN: UInt32
+) -> Int32 {
+    if logN < 1 { return ZKMETAL_ERR_INVALID_INPUT }
+    dataPtr.withMemoryRebound(to: UInt64.self, capacity: (1 << logN) * 4) { ptr in
+        _c_pallas_fr_ntt(ptr, Int32(logN))
+    }
+    return ZKMETAL_SUCCESS
+}
+
+@_cdecl("zkmetal_pallas_intt_auto")
+public func zkmetal_pallas_intt_auto(
+    _ dataPtr: UnsafeMutablePointer<UInt8>,
+    _ logN: UInt32
+) -> Int32 {
+    if logN < 1 { return ZKMETAL_ERR_INVALID_INPUT }
+    dataPtr.withMemoryRebound(to: UInt64.self, capacity: (1 << logN) * 4) { ptr in
+        _c_pallas_fr_intt(ptr, Int32(logN))
+    }
+    return ZKMETAL_SUCCESS
+}
+
+@_cdecl("zkmetal_vesta_ntt_auto")
+public func zkmetal_vesta_ntt_auto(
+    _ dataPtr: UnsafeMutablePointer<UInt8>,
+    _ logN: UInt32
+) -> Int32 {
+    if logN < 1 { return ZKMETAL_ERR_INVALID_INPUT }
+    dataPtr.withMemoryRebound(to: UInt64.self, capacity: (1 << logN) * 4) { ptr in
+        _c_vesta_fr_ntt(ptr, Int32(logN))
+    }
+    return ZKMETAL_SUCCESS
+}
+
+@_cdecl("zkmetal_vesta_intt_auto")
+public func zkmetal_vesta_intt_auto(
+    _ dataPtr: UnsafeMutablePointer<UInt8>,
+    _ logN: UInt32
+) -> Int32 {
+    if logN < 1 { return ZKMETAL_ERR_INVALID_INPUT }
+    dataPtr.withMemoryRebound(to: UInt64.self, capacity: (1 << logN) * 4) { ptr in
+        _c_vesta_fr_intt(ptr, Int32(logN))
+    }
+    return ZKMETAL_SUCCESS
+}
+
 // MARK: - Poseidon2 (engine-based)
 
 @_cdecl("zkmetal_bn254_poseidon2_hash_pairs")
@@ -640,6 +734,43 @@ private func _poseidon2_impl(
     } catch {
         return ZKMETAL_ERR_GPU_ERROR
     }
+}
+
+// MARK: - Pasta Poseidon Permutation (CPU kernels — direct C FFI)
+
+// External C kernels from pasta_poseidon.c
+@_silgen_name("pallas_poseidon_permutation_cpu")
+private func _c_pallas_poseidon_permutation_cpu(_ state: UnsafePointer<UInt64>, _ result: UnsafeMutablePointer<UInt64>)
+
+@_silgen_name("vesta_poseidon_permutation_cpu")
+private func _c_vesta_poseidon_permutation_cpu(_ state: UnsafePointer<UInt64>, _ result: UnsafeMutablePointer<UInt64>)
+
+@_cdecl("zkmetal_pallas_poseidon_permutation_auto")
+public func zkmetal_pallas_poseidon_permutation_auto(
+    _ statePtr: UnsafePointer<UInt8>,
+    _ resultPtr: UnsafeMutablePointer<UInt8>
+) -> Int32 {
+    // state: 12 * 8 = 96 bytes (3 field elements × 4 uint64_t each)
+    statePtr.withMemoryRebound(to: UInt64.self, capacity: 12) { stateSrc in
+        resultPtr.withMemoryRebound(to: UInt64.self, capacity: 12) { resultDst in
+            _c_pallas_poseidon_permutation_cpu(stateSrc, resultDst)
+        }
+    }
+    return ZKMETAL_SUCCESS
+}
+
+@_cdecl("zkmetal_vesta_poseidon_permutation_auto")
+public func zkmetal_vesta_poseidon_permutation_auto(
+    _ statePtr: UnsafePointer<UInt8>,
+    _ resultPtr: UnsafeMutablePointer<UInt8>
+) -> Int32 {
+    // state: 12 * 8 = 96 bytes (3 field elements × 4 uint64_t each)
+    statePtr.withMemoryRebound(to: UInt64.self, capacity: 12) { stateSrc in
+        resultPtr.withMemoryRebound(to: UInt64.self, capacity: 12) { resultDst in
+            _c_vesta_poseidon_permutation_cpu(stateSrc, resultDst)
+        }
+    }
+    return ZKMETAL_SUCCESS
 }
 
 // MARK: - Keccak-256 (engine-based)
@@ -1163,6 +1294,102 @@ private func _msm_batch_impl(
         scalarOffset += count * 32
     }
 
+    return ZKMETAL_SUCCESS
+}
+
+// MARK: - Pasta Endo-Combine (CPU C kernel, batch g1 + g2.scale(scalar))
+
+// External C kernel for pasta endo-combine
+@_silgen_name("batch_pallas_endo_combine")
+private func _c_batch_pallas_endo_combine(
+    _ g1_x: UnsafePointer<UInt64>,
+    _ g1_y: UnsafePointer<UInt64>,
+    _ g2_x: UnsafePointer<UInt64>,
+    _ g2_y: UnsafePointer<UInt64>,
+    _ endo_coeff: UnsafePointer<UInt64>,
+    _ scalars: UnsafePointer<UInt64>,
+    _ count: UInt32,
+    _ result_x: UnsafeMutablePointer<UInt64>,
+    _ result_y: UnsafeMutablePointer<UInt64>
+)
+
+@_silgen_name("batch_vesta_endo_combine")
+private func _c_batch_vesta_endo_combine(
+    _ g1_x: UnsafePointer<UInt64>,
+    _ g1_y: UnsafePointer<UInt64>,
+    _ g2_x: UnsafePointer<UInt64>,
+    _ g2_y: UnsafePointer<UInt64>,
+    _ endo_coeff: UnsafePointer<UInt64>,
+    _ scalars: UnsafePointer<UInt64>,
+    _ count: UInt32,
+    _ result_x: UnsafeMutablePointer<UInt64>,
+    _ result_y: UnsafeMutablePointer<UInt64>
+)
+
+@_cdecl("zkmetal_pallas_endo_combine_auto")
+public func zkmetal_pallas_endo_combine_auto(
+    _ g1_x: UnsafePointer<UInt8>,
+    _ g1_y: UnsafePointer<UInt8>,
+    _ g2_x: UnsafePointer<UInt8>,
+    _ g2_y: UnsafePointer<UInt8>,
+    _ endo_coeff: UnsafePointer<UInt8>,
+    _ scalars: UnsafePointer<UInt8>,
+    _ count: UInt32,
+    _ result_x: UnsafeMutablePointer<UInt8>,
+    _ result_y: UnsafeMutablePointer<UInt8>
+) -> Int32 {
+    if count == 0 { return ZKMETAL_SUCCESS }
+
+    // Compute buffer sizes: g1_x/g1_y/g2_x/g2_y: count * 32 bytes (4 u64 each)
+    // scalars: count * 64 bytes (8 u64 each)
+    // result_x/result_y: count * 32 bytes (4 u64 each)
+    let count32 = Int(count)
+    let g1_x_ptr = g1_x.withMemoryRebound(to: UInt64.self, capacity: count32 * 4) { $0 }
+    let g1_y_ptr = g1_y.withMemoryRebound(to: UInt64.self, capacity: count32 * 4) { $0 }
+    let g2_x_ptr = g2_x.withMemoryRebound(to: UInt64.self, capacity: count32 * 4) { $0 }
+    let g2_y_ptr = g2_y.withMemoryRebound(to: UInt64.self, capacity: count32 * 4) { $0 }
+    let endo_ptr = endo_coeff.withMemoryRebound(to: UInt64.self, capacity: 4) { $0 }
+    let scalars_ptr = scalars.withMemoryRebound(to: UInt64.self, capacity: count32 * 8) { $0 }
+    let result_x_ptr = result_x.withMemoryRebound(to: UInt64.self, capacity: count32 * 4) { $0 }
+    let result_y_ptr = result_y.withMemoryRebound(to: UInt64.self, capacity: count32 * 4) { $0 }
+
+    _c_batch_pallas_endo_combine(
+        g1_x_ptr, g1_y_ptr, g2_x_ptr, g2_y_ptr,
+        endo_ptr, scalars_ptr, count,
+        result_x_ptr, result_y_ptr
+    )
+    return ZKMETAL_SUCCESS
+}
+
+@_cdecl("zkmetal_vesta_endo_combine_auto")
+public func zkmetal_vesta_endo_combine_auto(
+    _ g1_x: UnsafePointer<UInt8>,
+    _ g1_y: UnsafePointer<UInt8>,
+    _ g2_x: UnsafePointer<UInt8>,
+    _ g2_y: UnsafePointer<UInt8>,
+    _ endo_coeff: UnsafePointer<UInt8>,
+    _ scalars: UnsafePointer<UInt8>,
+    _ count: UInt32,
+    _ result_x: UnsafeMutablePointer<UInt8>,
+    _ result_y: UnsafeMutablePointer<UInt8>
+) -> Int32 {
+    if count == 0 { return ZKMETAL_SUCCESS }
+
+    let count32 = Int(count)
+    let g1_x_ptr = g1_x.withMemoryRebound(to: UInt64.self, capacity: count32 * 4) { $0 }
+    let g1_y_ptr = g1_y.withMemoryRebound(to: UInt64.self, capacity: count32 * 4) { $0 }
+    let g2_x_ptr = g2_x.withMemoryRebound(to: UInt64.self, capacity: count32 * 4) { $0 }
+    let g2_y_ptr = g2_y.withMemoryRebound(to: UInt64.self, capacity: count32 * 4) { $0 }
+    let endo_ptr = endo_coeff.withMemoryRebound(to: UInt64.self, capacity: 4) { $0 }
+    let scalars_ptr = scalars.withMemoryRebound(to: UInt64.self, capacity: count32 * 8) { $0 }
+    let result_x_ptr = result_x.withMemoryRebound(to: UInt64.self, capacity: count32 * 4) { $0 }
+    let result_y_ptr = result_y.withMemoryRebound(to: UInt64.self, capacity: count32 * 4) { $0 }
+
+    _c_batch_vesta_endo_combine(
+        g1_x_ptr, g1_y_ptr, g2_x_ptr, g2_y_ptr,
+        endo_ptr, scalars_ptr, count,
+        result_x_ptr, result_y_ptr
+    )
     return ZKMETAL_SUCCESS
 }
 

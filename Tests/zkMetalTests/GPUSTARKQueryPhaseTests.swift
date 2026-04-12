@@ -22,6 +22,9 @@ public func runGPUSTARKQueryPhaseTests() {
     suite("GPU STARK Query Phase — FRI Query Decommitment")
     testFRIQueryDecommitment()
 
+    suite("GPU STARK Query Phase — GPU Batch FRI Decommitment")
+    testGPUBatchFRIDecommitment()
+
     suite("GPU STARK Query Phase — Deep Composition At Queries")
     testDeepCompositionAtQueries()
 
@@ -327,6 +330,106 @@ private func testFRIQueryDecommitment() {
 
     } catch {
         expect(false, "FRI query decommitment test failed: \(error)")
+    }
+}
+
+// MARK: - GPU Batch FRI Decommitment
+
+/// Test the GPU-accelerated batch FRI query decommitment.
+private func testGPUBatchFRIDecommitment() {
+    do {
+        let engine = try GPUSTARKQueryPhaseEngine()
+        let config = makeConfig(numQueries: 32, numFRIRounds: 3)  // 32 >= gpuThreshold of 16
+        let seed = frFromInt(13)
+        let querySet = engine.sampleQueryIndices(seed: seed, config: config)
+
+        let (friLayers, friMerkle) = buildFRILayers(engine: engine, config: config)
+
+        // Build domain inverses (needed for GPU batch path)
+        var domainInvs = [[Fr]]()
+        for round in 0..<config.numFRIRounds {
+            let size = friLayers[round].count
+            var invs = [Fr](repeating: .zero, count: size)
+            for i in 0..<size {
+                // Simple domain inverse: 1/(i+1)
+                let val = frFromInt(UInt64(i + 1))
+                invs[i] = frInverse(val)
+            }
+            domainInvs.append(invs)
+        }
+
+        // Fake challenges (one per FRI round)
+        let challenges = [
+            frFromInt(42), frFromInt(43), frFromInt(44)
+        ]
+
+        // GPU batch path — produce FRI decommitments
+        let gpuDecomm = try engine.gpuBatchFRIDecommit(
+            querySet: querySet,
+            friLayers: friLayers,
+            friMerkleData: friMerkle,
+            domainInvs: domainInvs,
+            challenges: challenges,
+            config: config)
+
+        // Verify structure: one decommitment per query, one layer per FRI round
+        expectEqual(gpuDecomm.count, querySet.indices.count,
+                    "Should have one FRI decommitment per query")
+
+        for fd in gpuDecomm {
+            expectEqual(fd.layers.count, config.numFRIRounds,
+                        "Should have one layer decommitment per FRI round")
+            expectEqual(fd.foldedIndices.count, config.numFRIRounds,
+                        "Should have one folded index per FRI round")
+
+            // Each layer's value should be from the FRI layer data
+            for (round, layer) in fd.layers.enumerated() {
+                let fIdx = fd.foldedIndices[round]
+                expect(fIdx >= 0 && fIdx < friLayers[round].count,
+                       "Folded index should be within layer bounds at round \(round)")
+                expect(frEqual(layer.value, friLayers[round][fIdx]),
+                       "FRI layer value should match at round \(round)")
+            }
+        }
+
+        // Also verify that generateDecommitments with domainInvs uses GPU path
+        let ldeColumns = buildSimpleLDE(config: config)
+        let compSegs = buildSimpleComposition(config: config)
+        let (traceRoot, traceLeaves, traceNodes) = buildTree(
+            engine: engine, ldeColumns: ldeColumns, domainSize: config.ldeDomainSize)
+        let (compRoot, compLeaves, compNodes) = engine.buildMerkleTree(leaves: compSegs[0])
+        let zeta = frFromInt(7)
+        let oodFrame = OODEvaluationFrame(
+            zeta: zeta,
+            traceEvals: [frFromInt(10), frFromInt(20)],
+            traceNextEvals: [frFromInt(30), frFromInt(40)],
+            compositionEvals: [frFromInt(50)])
+        let alpha = frFromInt(5)
+
+        let result = try engine.generateDecommitments(
+            querySet: querySet,
+            ldeColumns: ldeColumns,
+            traceMerkleLeaves: traceLeaves,
+            traceMerkleNodes: traceNodes,
+            traceCommitment: traceRoot,
+            compositionSegments: compSegs,
+            compMerkleLeaves: compLeaves,
+            compMerkleNodes: compNodes,
+            compCommitment: compRoot,
+            friLayers: friLayers,
+            friMerkleData: friMerkle,
+            domainInvs: domainInvs,
+            challenges: challenges,
+            oodFrame: oodFrame,
+            alpha: alpha,
+            config: config)
+
+        expectEqual(result.friDecommitments.count, querySet.indices.count,
+                    "FRI decommitment count should match")
+
+        expect(true, "GPU batch FRI decommitment")
+    } catch {
+        expect(false, "GPU batch FRI decommitment test failed: \(error)")
     }
 }
 

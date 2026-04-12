@@ -910,3 +910,383 @@ void vesta_fp_batch_inverse(const uint64_t *in, uint64_t *out, int n) {
     }
     memcpy(&out[0], inv_acc, 32);
 }
+
+// ============================================================
+// Pasta endo-combine kernel (affine batch g1 + g2.scale(scalar))
+// Uses signed-digit window with 2-bit digits, 64 iterations.
+// endo_coeff multiplies g2.x before point operations.
+// Result[i] = g1[i] + g2[i].scale(scalar) in affine coordinates.
+// ============================================================
+
+// Helper: projective addition with mixed addition (proj P + affine Q).
+// Returns 1 if result is identity, 0 otherwise.
+static int pa_proj_add_aff(const uint64_t projP[12], const uint64_t affQ[8], uint64_t result[12]) {
+    if (pa_pt_is_id(projP)) {
+        memcpy(result, affQ, 64);
+        memcpy(result + 8, PA_ONE, 32);
+        return 0;
+    }
+    if (ve_is_zero(affQ)) {
+        memcpy(result, projP, 96);
+        return 0;
+    }
+    // Mixed addition: projective P + affine Q (Z_Q = 1)
+    const uint64_t *px = projP, *py = projP+4, *pz = projP+8;
+    const uint64_t *qx = affQ, *qy = affQ+4;
+
+    uint64_t z1z1[4], u2[4], s2[4], h[4], hh[4], rr[4], t1[4];
+    uint64_t j[4], vv[4];
+
+    pa_sqr(pz, z1z1);
+    pa_mul(qx, z1z1, u2);
+    pa_mul(pz, z1z1, t1);
+    pa_mul(qy, t1, s2);
+
+    pa_sub(u2, px, h);
+    pa_sub(s2, py, t1);
+    pa_dbl(t1, rr);
+
+    if (pa_is_zero(h)) {
+        if (pa_is_zero(rr)) {
+            pa_pt_dbl(projP, result);
+            return 0;
+        }
+        return 1; // identity
+    }
+
+    pa_sqr(h, hh);
+    pa_mul(h, hh, j);
+    pa_mul(px, hh, vv);
+
+    pa_sqr(rr, result);
+    pa_sub(result, j, result);
+    pa_dbl(vv, t1);
+    pa_sub(result, t1, result);
+
+    pa_sub(vv, result, t1);
+    pa_mul(rr, t1, result + 4);
+    pa_mul(py, j, t1);
+    pa_dbl(t1, t1);
+    pa_sub(result + 4, t1, result + 4);
+
+    pa_add(pz, h, t1);
+    pa_sqr(t1, t1);
+    pa_sub(t1, z1z1, t1);
+    pa_sub(t1, hh, result + 8);
+    return 0;
+}
+
+static void pa_proj_dbl(const uint64_t p[12], uint64_t r[12]) {
+    pa_pt_dbl(p, r);
+}
+
+// Convert affine (8 u64) to projective (12 u64) with Z=1.
+static void pa_aff_to_proj(const uint64_t aff[8], uint64_t proj[12]) {
+    memcpy(proj, aff, 64);
+    memcpy(proj + 8, PA_ONE, 32);
+}
+
+// Negate y coordinate of affine point (in-place, Montgomery form).
+static void pa_aff_neg_inplace(uint64_t aff[8]) {
+    pa_neg(aff + 4, aff + 4);
+}
+
+// Multiply x coordinate of affine point by scalar (in-place).
+static void pa_aff_scale_x(uint64_t aff[8], const uint64_t scalar[4]) {
+    uint64_t new_x[4];
+    pa_mul(aff, scalar, new_x);
+    memcpy(aff, new_x, 32);
+}
+
+// Add two affine points (result may alias either input).
+static void pa_aff_add(const uint64_t a[8], const uint64_t b[8], uint64_t r[8]) {
+    uint64_t t[12];
+    pa_aff_to_proj(a, t);
+    pa_proj_add_aff(t, b, t);
+    memcpy(r, t, 64);
+}
+
+// Convert projective point to affine (Z=1 assumed, or handle Z=0 -> identity).
+static void pa_proj_to_aff(const uint64_t proj[12], uint64_t aff[8]) {
+    if (pa_pt_is_id(proj)) {
+        memset(aff, 0, 64);
+        return;
+    }
+    // affine = proj / Z: x' = X / Z^2, y' = Y / Z^3
+    uint64_t z_inv[4], z_inv2[4], z_inv3[4];
+    pa_inv(proj + 8, z_inv);
+    pa_sqr(z_inv, z_inv2);
+    pa_mul(z_inv2, z_inv, z_inv3);
+    pa_mul(proj, z_inv2, aff);
+    pa_mul(proj + 4, z_inv3, aff + 4);
+}
+
+// Signed-digit endo-combine for Pallas.
+// g1, g2: count affine points (8 u64 each: x[4], y[4]).
+// endo_coeff: 4 u64 Montgomery form.
+// scalars: count * 8 u64 (128-bit little-endian, standard integer form).
+// result: count affine points (8 u64 each).
+void batch_pallas_endo_combine(
+    const uint64_t *g1_x, const uint64_t *g1_y,
+    const uint64_t *g2_x, const uint64_t *g2_y,
+    const uint64_t *endo_coeff,
+    const uint64_t *scalars,
+    uint32_t count,
+    uint64_t *result_x, uint64_t *result_y)
+{
+    if (count == 0) return;
+
+    for (uint32_t i = 0; i < count; i++) {
+        const uint64_t *g2_ax = g2_x + i * 4;
+        const uint64_t *g2_ay = g2_y + i * 4;
+        const uint64_t *sc = scalars + i * 8;
+
+        // Build table entries in projective form:
+        // t0 = identity (already zeroed)
+        // t1 = g2 (projective)
+        // t2 = endo(g2) — multiply x by endo_coeff
+        // t3 = g2 + endo(g2) — add in affine then convert
+
+        uint64_t t1[12], t2[12], t3[12], t4[12];
+        uint64_t acc[12], tmp_s[12], tmp_acc[12];
+
+        // t1 = g2 (projective)
+        pa_aff_to_proj(g2_ax, t1);
+
+        // t2 = endo(g2): multiply x by endo_coeff, keep y
+        memcpy(t2, g2_ax, 32);
+        pa_mul(t2, endo_coeff, t2);
+        memcpy(t2 + 4, g2_ay, 32);
+        memcpy(t2 + 8, PA_ONE, 32);
+
+        // t3 = g2 + endo(g2) in affine
+        uint64_t t3_aff[8];
+        pa_aff_add(g2_ax, t2, t3_aff);
+        pa_aff_to_proj(t3_aff, t3);
+
+        // acc = t3 + t3 = 2 * (g2 + endo(g2)) = 2 * (phi(g2) + g2)
+        pa_proj_dbl(t3, acc);
+
+        // Process 64 iterations of 2 bits each (128-bit scalar).
+        // Each iteration: acc = acc + s; acc = acc + acc, where s depends on scalar bits.
+        for (int iter = 63; iter >= 0; iter--) {
+            // Extract 2 bits at positions 2*iter and 2*iter+1
+            int word_idx = (2 * iter) / 64;
+            int bit_idx = (2 * iter) % 64;
+
+            uint64_t w = sc[word_idx];
+            if (bit_idx + 1 < 64) {
+                w |= sc[word_idx + 1] << 64;
+            }
+            uint64_t bit0 = (w >> (2 * iter)) & 1;
+            uint64_t bit1 = (w >> (2 * iter + 1)) & 1;
+
+            // s = g2 (affine form in tmp_s, then projective in tmp_s)
+            uint64_t tmp_s_aff[8];
+            memcpy(tmp_s_aff, g2_ax, 32);
+            memcpy(tmp_s_aff + 4, g2_ay, 32);
+
+            // Conditionally negate s
+            if (bit0) {
+                pa_aff_neg_inplace(tmp_s_aff);
+            }
+
+            // Conditionally apply endomorphism to s
+            if (bit1) {
+                pa_aff_scale_x(tmp_s_aff, endo_coeff);
+            }
+
+            // acc = acc + s (projective + affine)
+            pa_proj_add_aff(acc, tmp_s_aff, tmp_acc);
+            memcpy(acc, tmp_acc, 96);
+
+            // acc = acc + acc = 2 * acc
+            pa_proj_dbl(acc, tmp_acc);
+            memcpy(acc, tmp_acc, 96);
+        }
+
+        // acc = acc + g1[i] (projective + affine)
+        uint64_t g1_aff[8];
+        memcpy(g1_aff, g1_x + i * 4, 32);
+        memcpy(g1_aff + 4, g1_y + i * 4, 32);
+        pa_proj_add_aff(acc, g1_aff, acc);
+
+        // Convert to affine
+        uint64_t res_aff[8];
+        pa_proj_to_aff(acc, res_aff);
+        memcpy(result_x + i * 4, res_aff, 32);
+        memcpy(result_y + i * 4, res_aff + 4, 32);
+    }
+}
+
+// Same helper functions for Vesta
+static int ve_proj_add_aff(const uint64_t projP[12], const uint64_t affQ[8], uint64_t result[12]) {
+    if (ve_pt_is_id(projP)) {
+        memcpy(result, affQ, 64);
+        memcpy(result + 8, VE_ONE, 32);
+        return 0;
+    }
+    if (ve_is_zero(affQ)) {
+        memcpy(result, projP, 96);
+        return 0;
+    }
+    const uint64_t *px = projP, *py = projP+4, *pz = projP+8;
+    const uint64_t *qx = affQ, *qy = affQ+4;
+
+    uint64_t z1z1[4], u2[4], s2[4], h[4], hh[4], rr[4], t1[4];
+    uint64_t j[4], vv[4];
+
+    ve_sqr(pz, z1z1);
+    ve_mul(qx, z1z1, u2);
+    ve_mul(pz, z1z1, t1);
+    ve_mul(qy, t1, s2);
+
+    ve_sub(u2, px, h);
+    ve_sub(s2, py, t1);
+    ve_dbl(t1, rr);
+
+    if (ve_is_zero(h)) {
+        if (ve_is_zero(rr)) {
+            ve_pt_dbl(projP, result);
+            return 0;
+        }
+        return 1;
+    }
+
+    ve_sqr(h, hh);
+    ve_mul(h, hh, j);
+    ve_mul(px, hh, vv);
+
+    ve_sqr(rr, result);
+    ve_sub(result, j, result);
+    ve_dbl(vv, t1);
+    ve_sub(result, t1, result);
+
+    ve_sub(vv, result, t1);
+    ve_mul(rr, t1, result + 4);
+    ve_mul(py, j, t1);
+    ve_dbl(t1, t1);
+    ve_sub(result + 4, t1, result + 4);
+
+    ve_add(pz, h, t1);
+    ve_sqr(t1, t1);
+    ve_sub(t1, z1z1, t1);
+    ve_sub(t1, hh, result + 8);
+    return 0;
+}
+
+static void ve_proj_dbl(const uint64_t p[12], uint64_t r[12]) {
+    ve_pt_dbl(p, r);
+}
+
+static void ve_aff_to_proj(const uint64_t aff[8], uint64_t proj[12]) {
+    memcpy(proj, aff, 64);
+    memcpy(proj + 8, VE_ONE, 32);
+}
+
+static void ve_aff_neg_inplace(uint64_t aff[8]) {
+    ve_neg(aff + 4, aff + 4);
+}
+
+static void ve_aff_scale_x(uint64_t aff[8], const uint64_t scalar[4]) {
+    uint64_t new_x[4];
+    ve_mul(aff, scalar, new_x);
+    memcpy(aff, new_x, 32);
+}
+
+static void ve_aff_add(const uint64_t a[8], const uint64_t b[8], uint64_t r[8]) {
+    uint64_t t[12];
+    ve_aff_to_proj(a, t);
+    ve_proj_add_aff(t, b, t);
+    memcpy(r, t, 64);
+}
+
+static void ve_proj_to_aff(const uint64_t proj[12], uint64_t aff[8]) {
+    if (ve_pt_is_id(proj)) {
+        memset(aff, 0, 64);
+        return;
+    }
+    uint64_t z_inv[4], z_inv2[4], z_inv3[4];
+    ve_inv(proj + 8, z_inv);
+    ve_sqr(z_inv, z_inv2);
+    ve_mul(z_inv2, z_inv, z_inv3);
+    ve_mul(proj, z_inv2, aff);
+    ve_mul(proj + 4, z_inv3, aff + 4);
+}
+
+void batch_vesta_endo_combine(
+    const uint64_t *g1_x, const uint64_t *g1_y,
+    const uint64_t *g2_x, const uint64_t *g2_y,
+    const uint64_t *endo_coeff,
+    const uint64_t *scalars,
+    uint32_t count,
+    uint64_t *result_x, uint64_t *result_y)
+{
+    if (count == 0) return;
+
+    for (uint32_t i = 0; i < count; i++) {
+        const uint64_t *g2_ax = g2_x + i * 4;
+        const uint64_t *g2_ay = g2_y + i * 4;
+        const uint64_t *sc = scalars + i * 8;
+
+        uint64_t t1[12], t2[12], t3[12], t4[12];
+        uint64_t acc[12], tmp_s[12], tmp_acc[12];
+
+        // t1 = g2
+        ve_aff_to_proj(g2_ax, t1);
+
+        // t2 = endo(g2)
+        memcpy(t2, g2_ax, 32);
+        ve_mul(t2, endo_coeff, t2);
+        memcpy(t2 + 4, g2_ay, 32);
+        memcpy(t2 + 8, VE_ONE, 32);
+
+        // t3 = g2 + endo(g2)
+        uint64_t t3_aff[8];
+        ve_aff_add(g2_ax, t2, t3_aff);
+        ve_aff_to_proj(t3_aff, t3);
+
+        // acc = 2 * (g2 + endo(g2))
+        ve_proj_dbl(t3, acc);
+
+        for (int iter = 63; iter >= 0; iter--) {
+            int word_idx = (2 * iter) / 64;
+            int bit_idx = (2 * iter) % 64;
+
+            uint64_t w = sc[word_idx];
+            if (bit_idx + 1 < 64) {
+                w |= sc[word_idx + 1] << 64;
+            }
+            uint64_t bit0 = (w >> (2 * iter)) & 1;
+            uint64_t bit1 = (w >> (2 * iter + 1)) & 1;
+
+            uint64_t tmp_s_aff[8];
+            memcpy(tmp_s_aff, g2_ax, 32);
+            memcpy(tmp_s_aff + 4, g2_ay, 32);
+
+            if (bit0) {
+                ve_aff_neg_inplace(tmp_s_aff);
+            }
+
+            if (bit1) {
+                ve_aff_scale_x(tmp_s_aff, endo_coeff);
+            }
+
+            ve_proj_add_aff(acc, tmp_s_aff, tmp_acc);
+            memcpy(acc, tmp_acc, 96);
+
+            ve_proj_dbl(acc, tmp_acc);
+            memcpy(acc, tmp_acc, 96);
+        }
+
+        uint64_t g1_aff[8];
+        memcpy(g1_aff, g1_x + i * 4, 32);
+        memcpy(g1_aff + 4, g1_y + i * 4, 32);
+        ve_proj_add_aff(acc, g1_aff, acc);
+
+        uint64_t res_aff[8];
+        ve_proj_to_aff(acc, res_aff);
+        memcpy(result_x + i * 4, res_aff, 32);
+        memcpy(result_y + i * 4, res_aff + 4, 32);
+    }
+}

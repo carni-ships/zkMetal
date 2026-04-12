@@ -45,6 +45,8 @@ typedef void* ZkMetalPoseidon2Engine;
 typedef void* ZkMetalKeccakEngine;
 typedef void* ZkMetalFRIEngine;
 typedef void* ZkMetalPairingEngine;
+typedef void* ZkMetalPastaNTTEngine;
+typedef void* ZkMetalPastaPoseidonEngine;
 
 // ============================================================================
 // Engine lifecycle
@@ -92,6 +94,18 @@ ZkMetalStatus zkmetal_fri_engine_create(ZkMetalFRIEngine* out);
 
 /// Destroy a FRI engine.
 void zkmetal_fri_engine_destroy(ZkMetalFRIEngine engine);
+
+/// Create a Pasta NTT engine (CPU kernels — no GPU needed).
+ZkMetalStatus zkmetal_pasta_ntt_engine_create(ZkMetalPastaNTTEngine* out);
+
+/// Destroy a Pasta NTT engine.
+void zkmetal_pasta_ntt_engine_destroy(ZkMetalPastaNTTEngine engine);
+
+/// Create a Pasta Poseidon engine (CPU kernels — no GPU needed).
+ZkMetalStatus zkmetal_pasta_poseidon_engine_create(ZkMetalPastaPoseidonEngine* out);
+
+/// Destroy a Pasta Poseidon engine.
+void zkmetal_pasta_poseidon_engine_destroy(ZkMetalPastaPoseidonEngine engine);
 
 /// Create a BN254 pairing engine.
 ZkMetalStatus zkmetal_pairing_engine_create(ZkMetalPairingEngine* out);
@@ -222,6 +236,38 @@ ZkMetalStatus zkmetal_bn254_intt_auto(
 );
 
 // ============================================================================
+// Pasta NTT (Pallas Fr and Vesta Fr — CPU kernels)
+// ============================================================================
+// Pasta NTT uses CPU kernels from pasta_ntt.c.
+// Each field element is 4 x uint64_t in Montgomery form (32 bytes).
+// Pallas Fr: scalar field of Pallas curve = base field of Vesta curve.
+// Vesta Fr:  scalar field of Vesta curve = base field of Pallas curve.
+
+/// Forward NTT on Pallas Fr (in-place). data is n field elements (n = 2^log_n).
+ZkMetalStatus zkmetal_pallas_ntt_auto(
+    uint8_t* data,
+    uint32_t log_n
+);
+
+/// Inverse NTT on Pallas Fr (in-place).
+ZkMetalStatus zkmetal_pallas_intt_auto(
+    uint8_t* data,
+    uint32_t log_n
+);
+
+/// Forward NTT on Vesta Fr (in-place).
+ZkMetalStatus zkmetal_vesta_ntt_auto(
+    uint8_t* data,
+    uint32_t log_n
+);
+
+/// Inverse NTT on Vesta Fr (in-place).
+ZkMetalStatus zkmetal_vesta_intt_auto(
+    uint8_t* data,
+    uint32_t log_n
+);
+
+// ============================================================================
 // Poseidon2 Hash (BN254 Fr)
 // ============================================================================
 
@@ -240,6 +286,27 @@ ZkMetalStatus zkmetal_bn254_poseidon2_hash_pairs_auto(
     const uint8_t* input,
     uint32_t n_pairs,
     uint8_t* output
+);
+
+// ============================================================================
+// Pasta Poseidon Permutation (CPU kernels)
+// ============================================================================
+// Pasta Poseidon uses CPU kernels from pasta_poseidon.c.
+// 55 full rounds, x^7 S-box, full MDS, width=3, rate=2 (Mina Kimchi variant).
+// state: 12 x uint64_t (3 field elements × 4 limbs, Montgomery form, 96 bytes).
+
+/// Poseidon permutation on Pallas Fr.
+/// - state:  96 bytes input (12 x uint64_t)
+/// - result: 96 bytes output (same layout)
+ZkMetalStatus zkmetal_pallas_poseidon_permutation_auto(
+    const uint8_t* state,
+    uint8_t* result
+);
+
+/// Poseidon permutation on Vesta Fr.
+ZkMetalStatus zkmetal_vesta_poseidon_permutation_auto(
+    const uint8_t* state,
+    uint8_t* result
 );
 
 // ============================================================================
@@ -333,6 +400,41 @@ ZkMetalStatus zkmetal_bn254_pairing_check_auto(
     const uint8_t* g1_points,
     const uint8_t* g2_points,
     uint32_t n_pairs
+);
+
+// ============================================================================
+// Pasta endo-combine (CPU C kernel, batch g1 + g2.scale(scalar))
+// Computes result[i] = g1[i] + g2[i].scale(scalar) for i in 0..count.
+// Uses signed-digit window algorithm (2-bit digits, 64 iterations).
+// All points in affine coordinates, Montgomery form (32 bytes each).
+// endo_coeff: 32-byte field element (Montgomery form of endomorphism coefficient).
+// scalars: count * 64 bytes (128-bit little-endian standard integer form).
+// ============================================================================
+
+/// Pallas endo-combine using a lazy singleton engine.
+ZkMetalStatus zkmetal_pallas_endo_combine_auto(
+    const uint8_t* g1_x,     // count * 32 bytes affine x (Montgomery)
+    const uint8_t* g1_y,     // count * 32 bytes affine y (Montgomery)
+    const uint8_t* g2_x,     // count * 32 bytes affine x (Montgomery)
+    const uint8_t* g2_y,     // count * 32 bytes affine y (Montgomery)
+    const uint8_t* endo_coeff, // 32 bytes field element (Montgomery)
+    const uint8_t* scalars,  // count * 64 bytes (128-bit LE standard integer)
+    uint32_t count,
+    uint8_t* result_x,      // count * 32 bytes output affine x
+    uint8_t* result_y       // count * 32 bytes output affine y
+);
+
+/// Vesta endo-combine using a lazy singleton engine.
+ZkMetalStatus zkmetal_vesta_endo_combine_auto(
+    const uint8_t* g1_x,
+    const uint8_t* g1_y,
+    const uint8_t* g2_x,
+    const uint8_t* g2_y,
+    const uint8_t* endo_coeff,
+    const uint8_t* scalars,
+    uint32_t count,
+    uint8_t* result_x,
+    uint8_t* result_y
 );
 
 // ============================================================================

@@ -174,6 +174,8 @@ public struct BatchDecommitmentResult {
 
 public enum STARKQueryPhaseError: Error, CustomStringConvertible {
     case noGPU
+    case gpuError(String)
+    case noCommandBuffer
     case invalidQueryIndex(String)
     case merkleTreeMissing(String)
     case decommitmentFailed(String)
@@ -184,6 +186,8 @@ public enum STARKQueryPhaseError: Error, CustomStringConvertible {
     public var description: String {
         switch self {
         case .noGPU: return "No Metal GPU device found"
+        case .gpuError(let msg): return "GPU error: \(msg)"
+        case .noCommandBuffer: return "No command buffer"
         case .invalidQueryIndex(let msg): return "Invalid query index: \(msg)"
         case .merkleTreeMissing(let msg): return "Merkle tree missing: \(msg)"
         case .decommitmentFailed(let msg): return "Decommitment failed: \(msg)"
@@ -472,6 +476,304 @@ public final class GPUSTARKQueryPhaseEngine {
         return results
     }
 
+    // MARK: - GPU Batch FRI Decommitment
+
+    /// GPU-accelerated batch FRI decommitment: parallel extract + fold recompute for all queries.
+    ///
+    /// Dispatches two kernels:
+    /// 1. `fri_batch_query_bn254` — extracts (value, sibling) for each (query, layer) pair
+    ///    and recomputes the FRI fold: (a+b) + c*(a-b)*d_inv
+    /// 2. `fri_merkle_paths_bn254` — generates Merkle auth paths for each pair
+    ///
+    /// Falls back to CPU for small query counts (< gpuThreshold).
+    public func gpuBatchFRIDecommit(
+        querySet: QueryIndexSet,
+        friLayers: [[Fr]],
+        friMerkleData: [(leaves: [Fr], nodes: [Fr], root: Fr)],
+        domainInvs: [[Fr]],
+        challenges: [Fr],
+        config: STARKQueryPhaseConfig
+    ) throws -> [FRIQueryDecommitment] {
+        guard useGPU, let device = device, let commandQueue = commandQueue else {
+            throw STARKQueryPhaseError.noGPU
+        }
+        guard querySet.indices.count >= GPUSTARKQueryPhaseEngine.gpuThreshold else {
+            // Fall through to CPU path
+            return try generateFRIDecommitments(
+                querySet: querySet, friLayers: friLayers,
+                friMerkleData: friMerkleData, config: config)
+        }
+
+        let numQueries = querySet.indices.count
+        let numLayers = config.numFRIRounds
+        let maxDepth = Int(log2(Double(friLayers[0].count))) + 1
+
+        // Precompute layer sizes and offsets
+        var layerSizes = [UInt32]()
+        var layerOffsets = [UInt32]()
+        var invOffsets = [UInt32]()
+        var totalLayerSize = 0
+        var totalInvSize = 0
+        for layer in friLayers {
+            layerOffsets.append(UInt32(totalLayerSize))
+            layerSizes.append(UInt32(layer.count))
+            totalLayerSize += layer.count
+        }
+        for inv in domainInvs {
+            invOffsets.append(UInt32(totalInvSize))
+            totalInvSize += inv.count
+        }
+
+        // Flatten friLayers and domainInvs into ContiguousArrays
+        var flatLayers = [Fr](repeating: .zero, count: totalLayerSize)
+        var flatInvs = [Fr](repeating: .zero, count: totalInvSize)
+        var offset = 0
+        for layer in friLayers {
+            for v in layer { flatLayers[offset] = v; offset += 1 }
+        }
+        offset = 0
+        for inv in domainInvs {
+            for v in inv { flatInvs[offset] = v; offset += 1 }
+        }
+
+        // Allocate GPU buffers
+        let frSize = MemoryLayout<Fr>.stride
+        let layerSizeBytes = layerSizes.count * MemoryLayout<UInt32>.stride
+        let flatLayerBytes = totalLayerSize * frSize
+        let flatInvBytes = totalInvSize * frSize
+        let outBytes = numQueries * numLayers * frSize
+        let idxOutBytes = numQueries * numLayers * MemoryLayout<UInt32>.stride
+        let pathBytes = numQueries * numLayers * maxDepth * frSize
+
+        guard let layersBuf = device.makeBuffer(length: flatLayerBytes, options: .storageModeShared),
+              let invsBuf = device.makeBuffer(length: flatInvBytes, options: .storageModeShared),
+              let sizesBuf = device.makeBuffer(length: layerSizeBytes, options: .storageModeShared),
+              let layerOffBuf = device.makeBuffer(length: layerSizeBytes, options: .storageModeShared),
+              let invOffBuf = device.makeBuffer(length: layerSizeBytes, options: .storageModeShared),
+              let queryBuf = device.makeBuffer(length: numQueries * MemoryLayout<UInt32>.stride, options: .storageModeShared),
+              let chalBuf = device.makeBuffer(length: numLayers * frSize, options: .storageModeShared),
+              let valuesBuf = device.makeBuffer(length: outBytes, options: .storageModeShared),
+              let sibBuf = device.makeBuffer(length: outBytes, options: .storageModeShared),
+              let foldedBuf = device.makeBuffer(length: outBytes, options: .storageModeShared),
+              let idxBuf = device.makeBuffer(length: idxOutBytes, options: .storageModeShared) else {
+            throw STARKQueryPhaseError.gpuError("Failed to allocate FRI query buffers")
+        }
+
+        // Copy data to GPU
+        flatLayers.withUnsafeBytes { memcpy(layersBuf.contents(), $0.baseAddress!, flatLayerBytes) }
+        flatInvs.withUnsafeBytes { memcpy(invsBuf.contents(), $0.baseAddress!, flatInvBytes) }
+        layerSizes.withUnsafeBytes { memcpy(sizesBuf.contents(), $0.baseAddress!, layerSizeBytes) }
+        layerOffsets.withUnsafeBytes { memcpy(layerOffBuf.contents(), $0.baseAddress!, layerSizeBytes) }
+        invOffsets.withUnsafeBytes { memcpy(invOffBuf.contents(), $0.baseAddress!, layerSizeBytes) }
+        querySet.indices.withUnsafeBytes { memcpy(queryBuf.contents(), $0.baseAddress!, numQueries * MemoryLayout<UInt32>.stride) }
+        challenges.withUnsafeBytes { memcpy(chalBuf.contents(), $0.baseAddress!, numLayers * frSize) }
+
+        // Ensure kernels are compiled
+        let batchQueryKernel = try getBatchQueryKernel(device: device)
+        let pathKernel = try getMerklPathsKernel(device: device)
+
+        guard let cmdBuf = commandQueue.makeCommandBuffer() else {
+            throw STARKQueryPhaseError.noCommandBuffer
+        }
+        guard let enc = cmdBuf.makeComputeCommandEncoder() else {
+            throw STARKQueryPhaseError.gpuError("No encoder")
+        }
+
+        // Kernel 1: fri_batch_query_bn254
+        var nQ = UInt32(numQueries)
+        var nL = UInt32(numLayers)
+        enc.setComputePipelineState(batchQueryKernel)
+        enc.setBuffer(layersBuf, offset: 0, index: 0)
+        enc.setBuffer(queryBuf, offset: 0, index: 1)
+        enc.setBuffer(chalBuf, offset: 0, index: 2)
+        enc.setBuffer(invsBuf, offset: 0, index: 3)
+        enc.setBuffer(sizesBuf, offset: 0, index: 4)
+        enc.setBuffer(layerOffBuf, offset: 0, index: 5)
+        enc.setBuffer(invOffBuf, offset: 0, index: 6)
+        enc.setBuffer(valuesBuf, offset: 0, index: 7)
+        enc.setBuffer(sibBuf, offset: 0, index: 8)
+        enc.setBuffer(foldedBuf, offset: 0, index: 9)
+        enc.setBuffer(idxBuf, offset: 0, index: 10)
+        enc.setBytes(&nQ, length: 4, index: 11)
+        enc.setBytes(&nL, length: 4, index: 12)
+
+        let totalThreads = numQueries * numLayers
+        let tgSize = min(batchQueryKernel.maxTotalThreadsPerThreadgroup, 256)
+        enc.dispatchThreads(MTLSize(width: totalThreads, height: 1, depth: 1),
+                            threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
+        enc.endEncoding()
+
+        // Now read back indices for path kernel input
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+
+        let idxPtr = idxBuf.contents().bindMemory(to: UInt32.self, capacity: numQueries * numLayers)
+        let valuesPtr = valuesBuf.contents().bindMemory(to: Fr.self, capacity: numQueries * numLayers)
+        let sibPtr = sibBuf.contents().bindMemory(to: Fr.self, capacity: numQueries * numLayers)
+        let foldedPtr = foldedBuf.contents().bindMemory(to: Fr.self, capacity: numQueries * numLayers)
+
+        // Build per-layer Merkle data for path kernel
+        var totalMerkleNodes = 0
+        var totalMerkleLeaves = 0
+        for md in friMerkleData {
+            totalMerkleLeaves += md.leaves.count
+            totalMerkleNodes += md.nodes.count
+        }
+        var flatLeaves = [Fr](repeating: .zero, count: totalMerkleLeaves)
+        var flatNodes = [Fr](repeating: .zero, count: totalMerkleNodes)
+        var leafOffs = [UInt32]()
+        var nodeOffs = [UInt32]()
+        var leafOff = 0
+        var nodeOff = 0
+        for md in friMerkleData {
+            leafOffs.append(UInt32(leafOff))
+            nodeOffs.append(UInt32(nodeOff))
+            for v in md.leaves { flatLeaves[leafOff] = v; leafOff += 1 }
+            for v in md.nodes { flatNodes[nodeOff] = v; nodeOff += 1 }
+        }
+
+        guard let merkleLeavesBuf = device.makeBuffer(length: totalMerkleLeaves * frSize, options: .storageModeShared),
+              let merkleNodesBuf = device.makeBuffer(length: totalMerkleNodes * frSize, options: .storageModeShared),
+              let merkleSizesBuf = device.makeBuffer(length: numLayers * MemoryLayout<UInt32>.stride, options: .storageModeShared),
+              let merkleLeafOffBuf = device.makeBuffer(length: numLayers * MemoryLayout<UInt32>.stride, options: .storageModeShared),
+              let merkleNodeOffBuf = device.makeBuffer(length: numLayers * MemoryLayout<UInt32>.stride, options: .storageModeShared),
+              let pathsBuf = device.makeBuffer(length: pathBytes, options: .storageModeShared) else {
+            throw STARKQueryPhaseError.gpuError("Failed to allocate Merkle path buffers")
+        }
+
+        flatLeaves.withUnsafeBytes { memcpy(merkleLeavesBuf.contents(), $0.baseAddress!, totalMerkleLeaves * frSize) }
+        flatNodes.withUnsafeBytes { memcpy(merkleNodesBuf.contents(), $0.baseAddress!, totalMerkleNodes * frSize) }
+        var merkleSizes = layerSizes
+        merkleSizes.withUnsafeBytes { memcpy(merkleSizesBuf.contents(), $0.baseAddress!, numLayers * MemoryLayout<UInt32>.stride) }
+        leafOffs.withUnsafeBytes { memcpy(merkleLeafOffBuf.contents(), $0.baseAddress!, numLayers * MemoryLayout<UInt32>.stride) }
+        nodeOffs.withUnsafeBytes { memcpy(merkleNodeOffBuf.contents(), $0.baseAddress!, numLayers * MemoryLayout<UInt32>.stride) }
+
+        guard let cmdBuf2 = commandQueue.makeCommandBuffer() else {
+            throw STARKQueryPhaseError.noCommandBuffer
+        }
+        guard let enc2 = cmdBuf2.makeComputeCommandEncoder() else {
+            throw STARKQueryPhaseError.gpuError("No encoder 2")
+        }
+
+        var maxDepthU = UInt32(maxDepth)
+        enc2.setComputePipelineState(pathKernel)
+        enc2.setBuffer(merkleLeavesBuf, offset: 0, index: 0)
+        enc2.setBuffer(merkleNodesBuf, offset: 0, index: 1)
+        enc2.setBuffer(merkleSizesBuf, offset: 0, index: 2)
+        enc2.setBuffer(merkleLeafOffBuf, offset: 0, index: 3)
+        enc2.setBuffer(merkleNodeOffBuf, offset: 0, index: 4)
+        enc2.setBuffer(idxBuf, offset: 0, index: 5)
+        enc2.setBuffer(pathsBuf, offset: 0, index: 6)
+        enc2.setBytes(&nQ, length: 4, index: 7)
+        enc2.setBytes(&nL, length: 4, index: 8)
+        enc2.setBytes(&maxDepthU, length: 4, index: 9)
+        enc2.dispatchThreads(MTLSize(width: totalThreads, height: 1, depth: 1),
+                             threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
+        enc2.endEncoding()
+        cmdBuf2.commit()
+        cmdBuf2.waitUntilCompleted()
+
+        // Read back paths
+        let pathsPtr = pathsBuf.contents().bindMemory(to: Fr.self, capacity: numQueries * numLayers * maxDepth)
+
+        // Build FRIQueryDecommitment structs from GPU results
+        var results = [FRIQueryDecommitment]()
+        results.reserveCapacity(numQueries)
+
+        for q in 0..<numQueries {
+            var layers = [FRILayerDecommitment]()
+            layers.reserveCapacity(numLayers)
+            var foldedIdxs = [Int]()
+
+            for l in 0..<numLayers {
+                let outIdx = q * numLayers + l
+                let fi = Int(idxPtr[outIdx])
+                foldedIdxs.append(fi)
+
+                // Extract Merkle path for this (query, layer)
+                var siblings = [Fr]()
+                siblings.reserveCapacity(maxDepth)
+                for d in 0..<maxDepth {
+                    siblings.append(pathsPtr[outIdx * maxDepth + d])
+                }
+                let path = FrMerklePath(
+                    leafIndex: fi,
+                    leaf: valuesPtr[outIdx],
+                    siblings: siblings,
+                    root: friMerkleData[l].root)
+
+                layers.append(FRILayerDecommitment(
+                    value: valuesPtr[outIdx],
+                    siblingValue: sibPtr[outIdx],
+                    merklePath: path))
+            }
+
+            results.append(FRIQueryDecommitment(
+                queryIndex: Int(querySet.indices[q]),
+                layers: layers,
+                foldedIndices: foldedIdxs))
+        }
+
+        return results
+    }
+
+    // MARK: - Kernel Compilation Helpers
+
+    private var _batchQueryKernel: MTLComputePipelineState?
+    private var _merklePathsKernel: MTLComputePipelineState?
+
+    private func getBatchQueryKernel(device: MTLDevice) throws -> MTLComputePipelineState {
+        if let k = _batchQueryKernel { return k }
+        let shaderDir = findShaderDir()
+        let frSource = try String(contentsOfFile: shaderDir + "/fields/bn254_fr.metal", encoding: .utf8)
+        let querySource = try String(contentsOfFile: shaderDir + "/fri/fri_query_batch.metal", encoding: .utf8)
+
+        let cleanFr = frSource
+            .replacingOccurrences(of: "#ifndef BN254_FR_METAL", with: "")
+            .replacingOccurrences(of: "#define BN254_FR_METAL", with: "")
+            .replacingOccurrences(of: "#endif // BN254_FR_METAL", with: "")
+        let cleanQuery = querySource
+            .replacingOccurrences(of: "#include \"../fields/bn254_fr.metal\"", with: "")
+
+        let combined = cleanFr + "\n" + cleanQuery
+        let options = MTLCompileOptions()
+        options.fastMathEnabled = true
+        let library = try device.makeLibrary(source: combined, options: options)
+
+        guard let fn = library.makeFunction(name: "fri_batch_query_bn254") else {
+            throw STARKQueryPhaseError.decommitmentFailed("Missing fri_batch_query_bn254 kernel")
+        }
+        let k = try device.makeComputePipelineState(function: fn)
+        _batchQueryKernel = k
+        return k
+    }
+
+    private func getMerklPathsKernel(device: MTLDevice) throws -> MTLComputePipelineState {
+        if let k = _merklePathsKernel { return k }
+        let shaderDir = findShaderDir()
+        let frSource = try String(contentsOfFile: shaderDir + "/fields/bn254_fr.metal", encoding: .utf8)
+        let querySource = try String(contentsOfFile: shaderDir + "/fri/fri_query_batch.metal", encoding: .utf8)
+
+        let cleanFr = frSource
+            .replacingOccurrences(of: "#ifndef BN254_FR_METAL", with: "")
+            .replacingOccurrences(of: "#define BN254_FR_METAL", with: "")
+            .replacingOccurrences(of: "#endif // BN254_FR_METAL", with: "")
+        let cleanQuery = querySource
+            .replacingOccurrences(of: "#include \"../fields/bn254_fr.metal\"", with: "")
+
+        let combined = cleanFr + "\n" + cleanQuery
+        let options = MTLCompileOptions()
+        options.fastMathEnabled = true
+        let library = try device.makeLibrary(source: combined, options: options)
+
+        guard let fn = library.makeFunction(name: "fri_merkle_paths_bn254") else {
+            throw STARKQueryPhaseError.decommitmentFailed("Missing fri_merkle_paths_bn254 kernel")
+        }
+        let k = try device.makeComputePipelineState(function: fn)
+        _merklePathsKernel = k
+        return k
+    }
+
     // MARK: - Deep Composition Evaluation at Query Points
 
     /// Evaluate DEEP composition D(x) = sum alpha^t * (f_t(x) - f_t(z)) / (x - z) at query points.
@@ -566,6 +868,9 @@ public final class GPUSTARKQueryPhaseEngine {
     // MARK: - Full Batch Decommitment
 
     /// Generate complete batch decommitments for all queries (main entry point).
+    ///
+    /// Uses GPU-accelerated batch FRI decommitment when domainInvs and challenges
+    /// are provided (enabling parallel fold recomputation across all queries).
     public func generateDecommitments(
         querySet: QueryIndexSet,
         ldeColumns: [[Fr]],
@@ -578,6 +883,8 @@ public final class GPUSTARKQueryPhaseEngine {
         compCommitment: Fr,
         friLayers: [[Fr]],
         friMerkleData: [(leaves: [Fr], nodes: [Fr], root: Fr)],
+        domainInvs: [[Fr]]? = nil,
+        challenges: [Fr]? = nil,
         oodFrame: OODEvaluationFrame,
         alpha: Fr,
         config: STARKQueryPhaseConfig
@@ -600,12 +907,23 @@ public final class GPUSTARKQueryPhaseEngine {
             commitment: compCommitment,
             config: config)
 
-        // Step 3: FRI decommitments
-        let friDecomm = try generateFRIDecommitments(
-            querySet: querySet,
-            friLayers: friLayers,
-            friMerkleData: friMerkleData,
-            config: config)
+        // Step 3: FRI decommitments (GPU batch when domainInvs/challenges available)
+        let friDecomm: [FRIQueryDecommitment]
+        if let invs = domainInvs, let chal = challenges, invs.count == config.numFRIRounds {
+            friDecomm = try gpuBatchFRIDecommit(
+                querySet: querySet,
+                friLayers: friLayers,
+                friMerkleData: friMerkleData,
+                domainInvs: invs,
+                challenges: chal,
+                config: config)
+        } else {
+            friDecomm = try generateFRIDecommitments(
+                querySet: querySet,
+                friLayers: friLayers,
+                friMerkleData: friMerkleData,
+                config: config)
+        }
 
         // Step 4: Deep composition evaluations
         let deepEvals = try evaluateDeepAtQueries(

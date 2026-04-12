@@ -1619,4 +1619,38 @@ void vesta_fr_batch_add(const uint64_t *a, const uint64_t *b, uint64_t *result, 
 void vesta_fr_batch_sub(const uint64_t *a, const uint64_t *b, uint64_t *result, int n);
 void vesta_fr_inner_product(const uint64_t *a, const uint64_t *b, int n, uint64_t result[4]);
 
+// ============================================================
+// Pasta endo-combine kernel (affine batch g1 + g2.scale(scalar))
+// Uses signed-digit window with 2-bit digits, 64 iterations.
+// Result[i] = g1[i] + g2[i].scale(scalar) in affine coordinates.
+// ============================================================
+
+/// Pallas endo-combine: result[i] = g1[i] + g2[i].scale(scalar).
+/// All coordinates in Montgomery form.
+/// @param g1_x     count * 4 u64 (affine x coordinates).
+/// @param g1_y     count * 4 u64 (affine y coordinates).
+/// @param g2_x     count * 4 u64 (affine x coordinates).
+/// @param g2_y     count * 4 u64 (affine y coordinates).
+/// @param endo_coeff 4 u64 Montgomery form of endomorphism coefficient.
+/// @param scalars  count * 8 u64 (128-bit little-endian standard integer).
+/// @param count    Number of points.
+/// @param result_x count * 4 u64 output affine x coordinates.
+/// @param result_y count * 4 u64 output affine y coordinates.
+void batch_pallas_endo_combine(
+    const uint64_t *g1_x, const uint64_t *g1_y,
+    const uint64_t *g2_x, const uint64_t *g2_y,
+    const uint64_t *endo_coeff,
+    const uint64_t *scalars,
+    uint32_t count,
+    uint64_t *result_x, uint64_t *result_y);
+
+/// Vesta endo-combine (same signature as Pallas).
+void batch_vesta_endo_combine(
+    const uint64_t *g1_x, const uint64_t *g1_y,
+    const uint64_t *g2_x, const uint64_t *g2_y,
+    const uint64_t *endo_coeff,
+    const uint64_t *scalars,
+    uint32_t count,
+    uint64_t *result_x, uint64_t *result_y);
+
 #endif // NEON_FIELD_OPS_H
