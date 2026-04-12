@@ -34,6 +34,7 @@ public class NTTEngine {
     let columnButterflyFunction: MTLComputePipelineState
     let columnButterflyRadix4Function: MTLComputePipelineState
     let transposeRectFunction: MTLComputePipelineState
+    let transposeOutOfPlaceFunction: MTLComputePipelineState
     let invColumnButterflyFunction: MTLComputePipelineState
     let invColumnButterflyRadix4Function: MTLComputePipelineState
     let invColumnFusedSubblockFunction: MTLComputePipelineState
@@ -97,6 +98,7 @@ public class NTTEngine {
               let columnButterflyFn = library.makeFunction(name: "ntt_column_butterfly"),
               let columnButterflyRadix4Fn = library.makeFunction(name: "ntt_column_butterfly_radix4"),
               let transposeRectFn = library.makeFunction(name: "ntt_transpose_rect"),
+              let transposeOutOfPlaceFn = library.makeFunction(name: "ntt_transpose_outofplace"),
               let invColumnButterflyFn = library.makeFunction(name: "intt_column_butterfly"),
               let invColumnButterflyRadix4Fn = library.makeFunction(name: "intt_column_butterfly_radix4"),
               let invColumnFusedSubblockTwiddleFn = library.makeFunction(name: "intt_column_fused_subblock"),
@@ -134,6 +136,7 @@ public class NTTEngine {
         self.columnButterflyFunction = try device.makeComputePipelineState(function: columnButterflyFn)
         self.columnButterflyRadix4Function = try device.makeComputePipelineState(function: columnButterflyRadix4Fn)
         self.transposeRectFunction = try device.makeComputePipelineState(function: transposeRectFn)
+        self.transposeOutOfPlaceFunction = try device.makeComputePipelineState(function: transposeOutOfPlaceFn)
         self.invColumnButterflyFunction = try device.makeComputePipelineState(function: invColumnButterflyFn)
         self.invColumnButterflyRadix4Function = try device.makeComputePipelineState(function: invColumnButterflyRadix4Fn)
         self.invColumnFusedSubblockFunction = try device.makeComputePipelineState(function: invColumnFusedSubblockTwiddleFn)
@@ -616,14 +619,23 @@ public class NTTEngine {
 
             enc.memoryBarrier(scope: .buffers)
 
-            // Step 4: In-place square transpose (N1 = N2)
-            enc.setComputePipelineState(transposeFunction)
+            // Step 4: Out-of-place square transpose (N1 = N2)
+            // Replaces in-place transpose which wastes 50% of threads (row>=col check)
+            // and has uncoalesced strided memory access.
+            let scratch = getScratchBuffer(n: nInt)
+            enc.setComputePipelineState(transposeOutOfPlaceFunction)
             enc.setBuffer(data, offset: 0, index: 0)
-            enc.setBytes(&n1Val, length: 4, index: 1)
-            let trTg = min(tuning.nttThreadgroupSize, Int(transposeFunction.maxTotalThreadsPerThreadgroup))
+            enc.setBuffer(scratch, offset: 0, index: 1)
+            enc.setBytes(&n1Val, length: 4, index: 2)
+            let trTg = min(tuning.nttThreadgroupSize, Int(transposeOutOfPlaceFunction.maxTotalThreadsPerThreadgroup))
             enc.dispatchThreads(MTLSize(width: nInt, height: 1, depth: 1),
                                 threadsPerThreadgroup: MTLSize(width: trTg, height: 1, depth: 1))
             enc.endEncoding()
+
+            // Blit transposed data from scratch back to data buffer
+            let blit = cmdBuf.makeBlitCommandEncoder()!
+            blit.copy(from: scratch, sourceOffset: 0, to: data, destinationOffset: 0, size: nInt * MemoryLayout<Fr>.stride)
+            blit.endEncoding()
         } else if needsExtended {
             // Unbalanced extended path: use scratch buffer + blit (N1 ≠ N2)
             let scratch = getScratchBuffer(n: nInt)
@@ -656,14 +668,21 @@ public class NTTEngine {
                                       threadsPerThreadgroup: MTLSize(width: rowThreads, height: 1, depth: 1))
             enc.memoryBarrier(scope: .buffers)
 
-            // In-place square transpose (N1 = N2 for balanced split)
-            enc.setComputePipelineState(transposeFunction)
+            // Out-of-place square transpose (N1 = N2 for balanced split)
+            let scratch = getScratchBuffer(n: nInt)
+            enc.setComputePipelineState(transposeOutOfPlaceFunction)
             enc.setBuffer(data, offset: 0, index: 0)
-            enc.setBytes(&n1Val, length: 4, index: 1)
-            let tg4 = min(tuning.nttThreadgroupSize, Int(transposeFunction.maxTotalThreadsPerThreadgroup))
+            enc.setBuffer(scratch, offset: 0, index: 1)
+            enc.setBytes(&n1Val, length: 4, index: 2)
+            let tg4 = min(tuning.nttThreadgroupSize, Int(transposeOutOfPlaceFunction.maxTotalThreadsPerThreadgroup))
             enc.dispatchThreads(MTLSize(width: nInt, height: 1, depth: 1),
                                 threadsPerThreadgroup: MTLSize(width: tg4, height: 1, depth: 1))
             enc.endEncoding()
+
+            // Blit transposed data from scratch back to data buffer
+            let blit = cmdBuf.makeBlitCommandEncoder()!
+            blit.copy(from: scratch, sourceOffset: 0, to: data, destinationOffset: 0, size: nInt * MemoryLayout<Fr>.stride)
+            blit.endEncoding()
         }
 
         cmdBuf.commit()
@@ -799,41 +818,49 @@ public class NTTEngine {
                                       threadsPerThreadgroup: MTLSize(width: subThreads, height: 1, depth: 1))
             enc2.endEncoding()
         } else {
-            // Standard path: square transpose
-            enc.setComputePipelineState(transposeFunction)
+            // Standard path: square transpose (out-of-place to avoid 50% thread waste)
+            let scratch = getScratchBuffer(n: nInt)
+            enc.setComputePipelineState(transposeOutOfPlaceFunction)
             enc.setBuffer(data, offset: 0, index: 0)
-            enc.setBytes(&n1Val, length: 4, index: 1)
-            let tg1 = min(tuning.nttThreadgroupSize, Int(transposeFunction.maxTotalThreadsPerThreadgroup))
+            enc.setBuffer(scratch, offset: 0, index: 1)
+            enc.setBytes(&n1Val, length: 4, index: 2)
+            let tg1 = min(tuning.nttThreadgroupSize, Int(transposeOutOfPlaceFunction.maxTotalThreadsPerThreadgroup))
             enc.dispatchThreads(MTLSize(width: nInt, height: 1, depth: 1),
                                 threadsPerThreadgroup: MTLSize(width: tg1, height: 1, depth: 1))
-            enc.memoryBarrier(scope: .buffers)
+            enc.endEncoding()
+
+            // Blit transposed data from scratch back to data buffer
+            let blit = cmdBuf.makeBlitCommandEncoder()!
+            blit.copy(from: scratch, sourceOffset: 0, to: data, destinationOffset: 0, size: nInt * MemoryLayout<Fr>.stride)
+            blit.endEncoding()
 
             // Step 2: N1 row DIF iFFTs of size N2
-            enc.setComputePipelineState(invRowFusedFunction)
-            enc.setBuffer(data, offset: 0, index: 0)
-            enc.setBuffer(invTwiddles, offset: 0, index: 1)
-            enc.setBytes(&nVal, length: 4, index: 2)
+            let enc2 = cmdBuf.makeComputeCommandEncoder()!
+            enc2.setComputePipelineState(invRowFusedFunction)
+            enc2.setBuffer(data, offset: 0, index: 0)
+            enc2.setBuffer(invTwiddles, offset: 0, index: 1)
+            enc2.setBytes(&nVal, length: 4, index: 2)
             var logN2Val = UInt32(logN2)
-            enc.setBytes(&logN2Val, length: 4, index: 3)
+            enc2.setBytes(&logN2Val, length: 4, index: 3)
             let rowThreads = Int(n2) / 2
-            enc.dispatchThreadgroups(MTLSize(width: Int(n1), height: 1, depth: 1),
+            enc2.dispatchThreadgroups(MTLSize(width: Int(n1), height: 1, depth: 1),
                                      threadsPerThreadgroup: MTLSize(width: rowThreads, height: 1, depth: 1))
-            enc.memoryBarrier(scope: .buffers)
+            enc2.memoryBarrier(scope: .buffers)
 
             // Steps 3+4+5 fused: Column DIF iFFTs with inverse twiddle + scale
-            enc.setComputePipelineState(invColumnFusedTwiddleFunction)
-            enc.setBuffer(data, offset: 0, index: 0)
-            enc.setBuffer(invTwiddles, offset: 0, index: 1)
-            enc.setBytes(&nVal, length: 4, index: 2)
-            enc.setBytes(&n1Val, length: 4, index: 3)
-            enc.setBytes(&n2Val, length: 4, index: 4)
+            enc2.setComputePipelineState(invColumnFusedTwiddleFunction)
+            enc2.setBuffer(data, offset: 0, index: 0)
+            enc2.setBuffer(invTwiddles, offset: 0, index: 1)
+            enc2.setBytes(&nVal, length: 4, index: 2)
+            enc2.setBytes(&n1Val, length: 4, index: 3)
+            enc2.setBytes(&n2Val, length: 4, index: 4)
             var logN1Val = UInt32(logN1)
-            enc.setBytes(&logN1Val, length: 4, index: 5)
-            enc.setBuffer(invN, offset: 0, index: 6)
+            enc2.setBytes(&logN1Val, length: 4, index: 5)
+            enc2.setBuffer(invN, offset: 0, index: 6)
             let colThreads = Int(n1) / 2
-            enc.dispatchThreadgroups(MTLSize(width: Int(n2), height: 1, depth: 1),
+            enc2.dispatchThreadgroups(MTLSize(width: Int(n2), height: 1, depth: 1),
                                        threadsPerThreadgroup: MTLSize(width: colThreads, height: 1, depth: 1))
-            enc.endEncoding()
+            enc2.endEncoding()
         }
 
         cmdBuf.commit()

@@ -1405,6 +1405,24 @@ kernel void ntt_transpose(
     data[j] = tmp;
 }
 
+// Out-of-place square transpose: data[row*N+col] -> output[col*N+row]
+// All threads do useful work (no early exit), fully coalesced reads and writes.
+// Replaces the in-place transpose which wastes 50% of threads (row >= col check).
+kernel void ntt_transpose_outofplace(
+    device const Fr* input         [[buffer(0)]],
+    device Fr* output              [[buffer(1)]],
+    constant uint& n_side          [[buffer(2)]],    // matrix side length (N1 = N2)
+    uint gid                       [[thread_position_in_grid]]
+) {
+    uint total = n_side * n_side;
+    if (gid >= total) return;
+
+    uint row = gid / n_side;
+    uint col = gid % n_side;
+    // write to transposed position: output[col*n_side + row] = input[row*n_side + col]
+    output[col * n_side + row] = input[gid];
+}
+
 // ===== Row-layout kernels for transposed column FFTs =====
 // After transposing N1×N2 → N2×N1, column FFTs become row FFTs (coalesced access).
 // Data layout: N2 rows of N1 contiguous elements each.
