@@ -94,6 +94,7 @@ let allTests: [(String, () -> Void)] = [
     ("recursivesnark", runRecursiveSNARKTests),
     ("prooftranscriptcodec", runProofTranscriptCodecTests),
     ("gpufft", runGPUFFTTests),
+    ("gpuadditivefft", runGPUAdditiveFFTTests),
     ("sparsepolycommit", runSparsePolyCommitTests),
     ("gpumultipointeval", runGPUMultiPointEvalTests),
     ("stark252stark", runStark252STARKTests),

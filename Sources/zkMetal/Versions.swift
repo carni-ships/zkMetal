@@ -71,6 +71,7 @@ public enum Versions {
     public static let circleFRI      = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let univariateSumcheck = PrimitiveVersion(version: "1.1.0", updated: "2026-04-04")
     public static let blaze         = PrimitiveVersion(version: "1.0.0", updated: "2026-04-10")  // Interleaved RAA codes
+    public static let additiveFFT   = PrimitiveVersion(version: "1.0.0", updated: "2026-04-12")  // GPU GF(2^8) Cantor FFT
 
     // --- BLS12-381 ---
     public static let bls12381       = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
@@ -505,6 +506,7 @@ public enum Versions {
             ("GPU FRI Grind",    gpuFRIGrinding),
             ("GPU Custom Gate",  gpuPlonkCustomGate),
             ("GPU Binius Poly",  gpuBiniusPoly),
+            ("GPU Additive FFT", additiveFFT),
             ("GPU Proof Agg",    gpuProofBatchAggregation),
         ]
         print("=== zkMetal Primitive Versions ===")
