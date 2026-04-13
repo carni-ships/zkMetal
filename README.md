@@ -535,8 +535,8 @@ Methodology: Compute-bound = total_ops / 3.6T flops (BN254 mul = ~64 32-bit muls
 | Rank | Primitive | Current | Theoretical Floor | Bottleneck | Headroom |
 |------|-----------|---------|-------------------|------------|----------|
 | 1 | GPU Additive FFT 2^22 | 10.98ms | ~0.5ms | LUT lookup replaces shift-XOR multiply; k=22 serial butterfly levels still limit parallelism | ~22x |
-| 2 | secp256k1 MSM 2^18 (GPU) | 200ms | ~30ms | 4x64-bit Montgomery CIOS; GPU now matches CPU after GLV buffer fix (9d6b54a) | ~7x |
-| 3 | secp256k1 MSM 2^18 (CPU) | 221ms | ~30ms | Native uint64 CIOS; C Pippenger with GLV | ~7x |
+| 2 | secp256k1 MSM 2^18 (GPU) | ~260ms | ~30ms | 4x64-bit Montgomery CIOS; GPU batch MSM kernel (secp_msm_batch_small) with GLV disabled due to 2x sort overhead | ~8x |
+| 3 | secp256k1 MSM 2^18 (CPU) | ~220ms | ~30ms | Native uint64 CIOS; C Pippenger with GLV | ~7x |
 | 4 | MSM BN254 2^18 | 73ms | ~5ms | Random-access BW (scatter bucket accumulation) | ~11x |
 | 5 | NTT BN254 2^22 | 26ms | ~3ms | Compute + strided BW (256-bit: 64 muls/elem) | ~9x |
 | 6 | FRI Fold 2^20 | 2.1ms | ~0.3ms | Bandwidth (fold-by-2), 21 layers | ~7x |
