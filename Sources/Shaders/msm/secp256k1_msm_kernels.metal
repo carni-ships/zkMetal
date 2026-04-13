@@ -513,10 +513,10 @@ kernel void secp_msm_batch_small(
         threadgroup_barrier(mem_flags::mem_none);
 
         // Phase 3: Extract digits and accumulate into buckets
-        // Each thread processes its points strided
-        // Point i with digit d contributes: add point[i] once to bucket[d]
-        // After all threads: bucket[d] = Σ P_i for all i with digit d
-        for (uint i = lid; i < M; i += 256) {
+        // Only lid==0 does the accumulation to avoid race conditions when multiple
+        // threads try to accumulate to the same bucket simultaneously.
+        // Other threads wait at the barrier and skip to Phase 4.
+        for (uint i = 0; i < M; i++) {
             // Extract signed digit for window w from scalar[i]
             uint bit_off = w * wb;
             uint limb_idx = bit_off >> 5;  // / 32
@@ -548,10 +548,12 @@ kernel void secp_msm_batch_small(
 
                 // Accumulate point into bucket[digit] ONCE
                 // bucket[d] = Σ P_i (sum of all points with digit d)
+                // Note: use secp_point_add_mixed (safe) to handle doubling case
+                // when bucket already contains the same point.
                 if (secp_point_is_identity(s_buckets[digit])) {
                     s_buckets[digit] = pt_proj;
                 } else {
-                    s_buckets[digit] = secp_point_add_mixed_unsafe(s_buckets[digit], pt);
+                    s_buckets[digit] = secp_point_add_mixed(s_buckets[digit], pt);
                 }
             }
         }
