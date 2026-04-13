@@ -424,12 +424,12 @@ C CIOS Montgomery acceleration: pre-computed wiring topology, cached buffers, eq
 
 | Points | BN254 GPU | BLS12-377 GPU | secp256k1 GPU | secp256k1 C Pip | Pallas GPU | Vesta GPU | Grumpkin GPU | Ed25519 GPU | BN254 G2 GPU |
 |--------|-----------|---------------|---------------|-----------------|------------|-----------|--------------|-------------|--------------|
-| 2^8 | 1.1ms | 9ms | 1.3ms | 1.4ms | 5.3ms | 4.9ms | 3.3ms | 0.8ms | 13ms |
-| 2^10 | 3.0ms | 35ms | 4.3ms | 4.3ms | 12ms | 10ms | -- | 22ms | 38ms |
-| 2^12 | 8.1ms | 23ms | 50ms | 7.7ms | 17ms | 17ms | 20ms | -- | 63ms |
-| 2^14 | 22ms | 29ms | 93ms | 24ms | 20ms | 20ms | 258ms | -- | 812ms |
-| 2^16 | 27ms | 55ms | 242ms | 75ms | 39ms | 39ms | 48ms | -- | -- |
-| 2^18 | 45ms | 119ms | 783ms | 259ms | 66ms | 65ms | -- | -- | -- |
+| 2^8 | 1.1ms | 9ms | 0.8ms | 0.8ms | 5.3ms | 4.9ms | 3.3ms | 0.8ms | 13ms |
+| 2^10 | 3.0ms | 35ms | 2.4ms | 2.4ms | 12ms | 10ms | -- | 22ms | 38ms |
+| 2^12 | 8.1ms | 23ms | 56ms | 6.8ms | 17ms | 17ms | 20ms | -- | 63ms |
+| 2^14 | 22ms | 29ms | 42ms | 21ms | 20ms | 20ms | 258ms | -- | 812ms |
+| 2^16 | 27ms | 55ms | 72ms | 64ms | 39ms | 39ms | 48ms | -- | -- |
+| 2^18 | 45ms | 119ms | 200ms | 221ms | 66ms | 65ms | -- | -- | -- |
 
 ### CPU Optimizations
 
@@ -535,8 +535,8 @@ Methodology: Compute-bound = total_ops / 3.6T flops (BN254 mul = ~64 32-bit muls
 | Rank | Primitive | Current | Theoretical Floor | Bottleneck | Headroom |
 |------|-----------|---------|-------------------|------------|----------|
 | 1 | GPU Additive FFT 2^22 | 10.98ms | ~0.5ms | LUT lookup replaces shift-XOR multiply; k=22 serial butterfly levels still limit parallelism | ~22x |
-| 2 | secp256k1 MSM 2^18 (GPU) | 766ms | ~30ms | 4x64-bit Montgomery CIOS (64-bit emulated via 32-bit carry chains on M3 GPU); GLV makes GPU 3x slower than CPU | ~26x |
-| 3 | secp256k1 MSM 2^18 (CPU) | 247ms | ~30ms | Native uint64 CIOS; GLV helps on CPU (247ms vs 2517ms GPU) | ~8x |
+| 2 | secp256k1 MSM 2^18 (GPU) | 200ms | ~30ms | 4x64-bit Montgomery CIOS; GPU now matches CPU after GLV buffer fix (9d6b54a) | ~7x |
+| 3 | secp256k1 MSM 2^18 (CPU) | 221ms | ~30ms | Native uint64 CIOS; C Pippenger with GLV | ~7x |
 | 4 | MSM BN254 2^18 | 73ms | ~5ms | Random-access BW (scatter bucket accumulation) | ~11x |
 | 5 | NTT BN254 2^22 | 26ms | ~3ms | Compute + strided BW (256-bit: 64 muls/elem) | ~9x |
 | 6 | FRI Fold 2^20 | 2.1ms | ~0.3ms | Bandwidth (fold-by-2), 21 layers | ~7x |
