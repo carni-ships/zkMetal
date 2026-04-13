@@ -470,7 +470,7 @@ private func testSumcheck() {
         var challenges = [Fr]()
         for i in 0..<fullNumVars { challenges.append(frFromInt(UInt64(i + 1) * 7)) }
 
-        let (rounds, _) = try engine.fullSumcheck(evals: fullEvals, challenges: challenges)
+        let (rounds, _) = try engine.fullSumcheckAuto(evals: fullEvals, challenges: challenges)
         var runningEvals = fullEvals
         var protocolCorrect = true
         for i in 0..<fullNumVars {

@@ -1648,9 +1648,10 @@ typedef struct {
 } SumcheckRoundChunk;
 
 // Fused round-poly + reduce worker: computes S(0), S(1), S(2) partial sums
-// AND writes reduced output in a single pass (one memory traversal).
+// AND writes reduced output to separate buffer (not in-place).
 typedef struct {
-    uint64_t *buf;        // mutable: writes reduced values to first half
+    uint64_t *buf;        // read-only: original values for round poly
+    uint64_t *out;        // write-only: reduced output
     const uint64_t *challenge;
     int halfN;
     uint64_t s0[4], s1[4], s2[4];
@@ -1662,23 +1663,25 @@ static void sumcheck_fused_worker(SumcheckFusedChunk *c) {
     uint64_t s1[4] = {0,0,0,0};
     uint64_t s2[4] = {0,0,0,0};
     uint64_t *buf = c->buf;
+    uint64_t *out = c->out;
     const uint64_t *ch = c->challenge;
     int halfN = c->halfN;
     for (int i = c->start; i < c->end; i++) {
-        uint64_t *a = buf + i * 4;
-        uint64_t *b = buf + (halfN + i) * 4;
-        // Round poly: accumulate S(0), S(1), S(2)
+        const uint64_t *a = buf + i * 4;
+        const uint64_t *b = buf + (halfN + i) * 4;
+        uint64_t *outA = out + i * 4;
+        // Round poly: accumulate S(0), S(1), S(2) from ORIGINAL values
         uint64_t tmp[4];
         fr_add(s0, a, tmp); memcpy(s0, tmp, 32);
         fr_add(s1, b, tmp); memcpy(s1, tmp, 32);
         uint64_t twoB[4]; fr_add(b, b, twoB);
         uint64_t f2[4]; fr_sub(twoB, a, f2);
         fr_add(s2, f2, tmp); memcpy(s2, tmp, 32);
-        // Reduce: a = a + ch * (b - a)
+        // Reduce: write to separate output buffer (NOT in-place)
         uint64_t diff[4]; fr_sub(b, a, diff);
         uint64_t rd[4]; fr_mul(ch, diff, rd);
         uint64_t res[4]; fr_add(a, rd, res);
-        memcpy(a, res, 32);
+        memcpy(outA, res, 32);
     }
     memcpy(c->s0, s0, 32);
     memcpy(c->s1, s1, 32);
@@ -1714,8 +1717,10 @@ void bn254_fr_full_sumcheck(const uint64_t *evals, int numVars,
                              const uint64_t *challenges,
                              uint64_t *rounds, uint64_t *finalEval) {
     int n = 1 << numVars;
-    uint64_t *buf = (uint64_t *)malloc(n * 32);
-    memcpy(buf, evals, n * 32);
+    uint64_t *bufA = (uint64_t *)malloc(n * 32);
+    uint64_t *bufB = (uint64_t *)malloc(n * 16); // only need halfN * 32 at any point
+    memcpy(bufA, evals, n * 32);
+    uint64_t *src = bufA, *dst = bufB;
 
     // Pre-allocate thread chunks once, reused across all rounds
     const int maxThreads = 8;
@@ -1727,13 +1732,14 @@ void bn254_fr_full_sumcheck(const uint64_t *evals, int numVars,
 
         const uint64_t *ch = challenges + round * 4;
         if (halfN >= 8192) {
-            // Fused parallel round-poly + reduce (single memory traversal)
+            // Parallel round-poly + reduce with separate output buffer
             int nT = 8;
             if (halfN / 1024 < nT) nT = halfN / 1024;
             if (nT < 1) nT = 1;
             int perT = (halfN + nT - 1) / nT;
             for (int t = 0; t < nT; t++) {
-                chunks[t].buf = buf;
+                chunks[t].buf = src;
+                chunks[t].out = dst;
                 chunks[t].challenge = ch;
                 chunks[t].halfN = halfN;
                 chunks[t].start = t * perT;
@@ -1744,7 +1750,7 @@ void bn254_fr_full_sumcheck(const uint64_t *evals, int numVars,
                 ^(size_t idx) {
                     sumcheck_fused_worker(&chunks[idx]);
                 });
-            // Reduce partial sums from all threads
+            // Accumulate partial sums from all threads
             memcpy(rout, chunks[0].s0, 32);
             memcpy(rout + 4, chunks[0].s1, 32);
             memcpy(rout + 8, chunks[0].s2, 32);
@@ -1755,34 +1761,38 @@ void bn254_fr_full_sumcheck(const uint64_t *evals, int numVars,
                 fr_add(rout + 8, chunks[t].s2, tmp); memcpy(rout + 8, tmp, 32);
             }
         } else {
-            // Single-threaded fused round-poly + reduce
+            // Single-threaded round-poly + reduce with separate output buffer
             uint64_t s0[4] = {0,0,0,0};
             uint64_t s1[4] = {0,0,0,0};
             uint64_t s2[4] = {0,0,0,0};
             for (int i = 0; i < halfN; i++) {
-                uint64_t *a = buf + i * 4;
-                uint64_t *b = buf + (halfN + i) * 4;
+                const uint64_t *a = src + i * 4;
+                const uint64_t *b = src + (halfN + i) * 4;
+                uint64_t *outA = dst + i * 4;
                 uint64_t tmp[4];
                 fr_add(s0, a, tmp); memcpy(s0, tmp, 32);
                 fr_add(s1, b, tmp); memcpy(s1, tmp, 32);
                 uint64_t twoB[4]; fr_add(b, b, twoB);
                 uint64_t f2[4]; fr_sub(twoB, a, f2);
                 fr_add(s2, f2, tmp); memcpy(s2, tmp, 32);
-                // Reduce in same pass
+                // Reduce to separate output buffer
                 uint64_t diff[4]; fr_sub(b, a, diff);
                 uint64_t rd[4]; fr_mul(ch, diff, rd);
                 uint64_t res[4]; fr_add(a, rd, res);
-                memcpy(a, res, 32);
+                memcpy(outA, res, 32);
             }
             memcpy(rout, s0, 32);
             memcpy(rout + 4, s1, 32);
             memcpy(rout + 8, s2, 32);
         }
+        // Swap buffers for next round
         n = halfN;
+        uint64_t *tmp = src; src = dst; dst = tmp;
     }
-    memcpy(finalEval, buf, 32);
+    memcpy(finalEval, src, 32); // src now points to final reduced value
     free(chunks);
-    free(buf);
+    free(bufA);
+    free(bufB);
 }
 
 // Evaluate multilinear extension at a point.

@@ -331,60 +331,6 @@ public func cSecpPippengerMSM(points: [SecpPointAffine], scalars: [[UInt32]]) ->
     return result
 }
 
-/// NAF MSM for secp256k1 using interleaved multi-scalar multiplication.
-/// NAF (Non-Adjacent Form) has at most n/3 non-zero digits vs n/2 for binary.
-/// ~33% fewer point additions but requires 256 doublings regardless of scalar.
-public func cSecpNAFMSM(points: [SecpPointAffine], scalars: [[UInt32]]) -> SecpPointProjective {
-    let n = points.count
-    precondition(n == scalars.count)
-    if n == 0 { return secpPointIdentity() }
-
-    var flatScalars = [UInt32]()
-    flatScalars.reserveCapacity(n * 8)
-    for s in scalars { flatScalars.append(contentsOf: s) }
-
-    var result = SecpPointProjective(x: SecpFp.one, y: SecpFp.one, z: SecpFp.zero)
-
-    points.withUnsafeBytes { ptsBuf in
-        flatScalars.withUnsafeBufferPointer { scBuf in
-            withUnsafeMutableBytes(of: &result) { resBuf in
-                secp256k1_naf_msm(
-                    ptsBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                    scBuf.baseAddress!,
-                    Int32(n),
-                    resBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
-                )
-            }
-        }
-    }
-    return result
-}
-
-/// NAF scalar multiplication for a single point-scalar pair.
-public func cSecpNAFMul(point: SecpPointAffine, scalar: [UInt32]) -> SecpPointProjective {
-    var pt = point
-    var result = SecpPointProjective(x: SecpFp.one, y: SecpFp.one, z: SecpFp.zero)
-
-    // Convert scalar from [UInt32] (8 × 32-bit) to [UInt64] (4 × 64-bit)
-    var scalar64 = [UInt64](repeating: 0, count: 4)
-    for i in 0..<4 {
-        scalar64[i] = UInt64(scalar[2*i]) | (UInt64(scalar[2*i+1]) << 32)
-    }
-
-    withUnsafeBytes(of: &pt) { ptBuf in
-        withUnsafeBytes(of: &scalar64) { scBuf in
-            withUnsafeMutableBytes(of: &result) { resBuf in
-                secp256k1_naf_mul(
-                    ptBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                    scBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
-                    resBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
-                )
-            }
-        }
-    }
-    return result
-}
-
 // MARK: - Fp helpers
 
 /// Convert raw 4×64 limbs to Montgomery form Fp element

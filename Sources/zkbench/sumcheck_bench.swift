@@ -68,7 +68,7 @@ public func runSumcheckBench() {
             challenges.append(frFromInt(UInt64(i + 1) * 7))
         }
 
-        let (rounds, finalEval) = try engine.fullSumcheck(evals: fullEvals, challenges: challenges)
+        let (rounds, finalEval) = try engine.fullSumcheckAuto(evals: fullEvals, challenges: challenges)
         print("  Full sumcheck (\(fullNumVars) vars): \(rounds.count) rounds, final eval computed")
 
         // Verify: for each round, S(0) + S(1) should equal running sum
