@@ -123,11 +123,11 @@ public class Poseidon2MerkleEngine {
 
         let enc = cmdBuf.makeComputeCommandEncoder()!
 
-        // Use fused subtrees only when n <= 65536. At larger sizes, the thread waste
-        // from idle threads in upper subtree levels exceeds dispatch overhead savings.
-        // Tested: fused is 1.7x faster than level-by-level at 2^16 — shared memory
-        // saves enough global memory round-trips to outweigh 80% thread waste.
-        let useFused = n >= subtreeSize && n <= 65536
+        // Use fused subtrees for all trees with enough leaves for parallelism.
+        // The shared-memory fused kernel eliminates log2(subtreeSize)-1 barriers per subtree,
+        // and the upper tree still has sufficient parallelism with numSubtrees = n/subtreeSize.
+        // For n=1M with 1024 subtrees: 11 dispatches (1 fused + 10 binary) vs 20 binary.
+        let useFused = n >= subtreeSize
 
         if useFused {
             // Phase 1: Fused subtrees for bottom 10 levels.
