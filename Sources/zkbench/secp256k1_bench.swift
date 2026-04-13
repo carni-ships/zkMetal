@@ -550,6 +550,48 @@ public func runSecp256k1MSMBench() {
                     print("    Got:      x=\(secpToInt(batchAff.x))")
                 }
             }
+
+            // Debug: test with B=2, M=1 to verify batch processing works
+            do {
+                let M = 1
+                let B = 2
+                let testPts = [allPoints[0], allPoints[0]]  // G, G
+                let scalars: [[UInt32]] = [[1, 0, 0, 0, 0, 0, 0, 0], [1, 0, 0, 0, 0, 0, 0, 0]]
+                // Result should be [G, G]
+                let refResult0 = cSecpPippengerMSM(points: [testPts[0]], scalars: [scalars[0]])
+                let refResult1 = cSecpPippengerMSM(points: [testPts[1]], scalars: [scalars[1]])
+                let batchResults = try engine.batchMSM(allPoints: testPts, allScalars: scalars, M: M, B: B)
+                let refAff0 = secpPointToAffine(refResult0)
+                let refAff1 = secpPointToAffine(refResult1)
+                let batchAff0 = secpPointToAffine(batchResults[0])
+                let batchAff1 = secpPointToAffine(batchResults[1])
+                let match0 = secpToInt(refAff0.x) == secpToInt(batchAff0.x) && secpToInt(refAff0.y) == secpToInt(batchAff0.y)
+                let match1 = secpToInt(refAff1.x) == secpToInt(batchAff1.x) && secpToInt(refAff1.y) == secpToInt(batchAff1.y)
+                print("  B=2, M=1, scalar=1,1: \(match0 && match1 ? "PASS" : "FAIL")")
+                if !match0 { print("    Result 0: Expected G, Got x=\(secpToInt(batchAff0.x))") }
+                if !match1 { print("    Result 1: Expected G, Got x=\(secpToInt(batchAff1.x))") }
+            }
+
+            // Debug: test with B=1, M=2 but same point twice, scalar=1,1
+            // Should compute 1*G + 1*G = 2G
+            do {
+                let M = 2
+                let B = 1
+                let testPts = [allPoints[0], allPoints[0]]  // G, G (same point twice)
+                let scalars: [[UInt32]] = [[1, 0, 0, 0, 0, 0, 0, 0], [1, 0, 0, 0, 0, 0, 0, 0]]
+                // 1*G + 1*G = 2G
+                let refResult = cSecpPippengerMSM(points: testPts, scalars: scalars)
+                let batchResults = try engine.batchMSM(allPoints: testPts, allScalars: scalars, M: M, B: B)
+                let refAff = secpPointToAffine(refResult)
+                let batchAff = secpPointToAffine(batchResults[0])
+                let match = secpToInt(refAff.x) == secpToInt(batchAff.x) &&
+                            secpToInt(refAff.y) == secpToInt(batchAff.y)
+                print("  M=2, scalar=1,1 (same point G,G): \(match ? "PASS" : "FAIL")")
+                if !match {
+                    print("    Expected 2G: x=\(secpToInt(refAff.x))")
+                    print("    Got:        x=\(secpToInt(batchAff.x))")
+                }
+            }
         }
 
         // Performance — centered scalars (no GLV)

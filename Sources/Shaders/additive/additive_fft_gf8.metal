@@ -321,15 +321,10 @@ kernel void additive_fft_gf8_forward_then_pointwise_mul(
 }
 
 // Forward additive FFT with SIMD shuffle optimization.
-// NOTE: This kernel is disabled because Metal's simd_shuffle only works within
-// a single SIMD group (32 threads with consecutive lane IDs). For halfSize >= 32,
-// upper and lower butterfly partners are in DIFFERENT SIMD groups, making the
-// shuffle impossible. The original uncoalesced-read kernel remains the working path.
+// DEPRECATED: Metal simd_shuffle is intra-warp only (32 threads), which doesn't
+// align with additive FFT butterfly pattern at fine granularities.
+// halfSize = 16 at depth 11 for 2^16 FFT, meaning threads t and t^16 are in DIFFERENT
+// warps, so shuffle cannot exchange butterfly partners.
+//
 // See: https://developer.apple.com/documentation/metal/metal_simdgroup_functions
-
-#ifdef USE_LUT
-// kernel void additive_fft_gf8_forward_shuffle(...) — DISABLED
-// Metal simd_shuffle is intra-group only. The shuffle approach requires either:
-// (a) A different GPU architecture with cross-warp shuffle, OR
-// (b) A kernel redesign where threads process pairs cooperatively within a warp
-#endif
+// The existing fused kernel remains optimal.
