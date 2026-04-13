@@ -236,6 +236,18 @@ extern "C" {
         round: c_int, n_in: c_int, current_table_size: c_int,
         s0: *mut u64, s1: *mut u64, s2: *mut u64,
     );
+    pub fn gkr_sumcheck_step_bddt(
+        wiring: *const u64, num_entries: c_int,
+        cur_vx: *const u64, vx_size: c_int, cur_vy: *const u64, vy_size: c_int,
+        round: c_int, n_in: c_int, current_table_size: c_int, block_size: c_int,
+        s0: *mut u64, s1: *mut u64, s2: *mut u64,
+    );
+    pub fn gkr_sumcheck_round_x_bddt(
+        wiring: *const u64, num_entries: c_int,
+        cur_vx: *const u64, vx_size: c_int, cur_vy: *const u64, vy_size: c_int,
+        n_in: c_int, half_size: c_int, block_size: c_int,
+        s0: *mut u64, s1: *mut u64, s2: *mut u64,
+    );
 }
 
 // =============================================================================

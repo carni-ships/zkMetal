@@ -445,41 +445,49 @@ kernel void secp_msm_build_csm(
 // Solution: Split into B small MSMs (M points each), run all B in parallel.
 //
 // Each thread block handles one small MSM (M points, wb window bits):
-// 1. Load all M points into shared memory (cooperative loading)
-// 2. Extract signed-digit windows for each point's scalar
-// 3. Accumulate into shared buckets using parallel reduction
-// 4. Reduce buckets to single result via Horner's method
-// 5. Write result to global memory
+//  1. Load all M points into shared memory (cooperative loading)
+//  2. Extract signed-digit windows for each point's scalar
+//  3. Accumulate into shared buckets using parallel reduction
+//  4. Reduce buckets to single result via Pippenger's method
+//  5. Write result to global memory
 //
-// Key insight: For small M (≤4096), we can do bucket accumulation in shared
+// Key insight: For small M (≤64), we can do bucket accumulation in shared
 // memory without global sorting. Sorting overhead O(M log M) becomes negligible
 // when M is small, and the bucket reduction is fully parallel.
 //
 // Threadgroup: 256 threads, one MSM of M points
 // B = n / M parallel MSMs on the GPU
+//
+// Shared memory layout (fits within 32KB limit):
+//  - s_points[64]: 64 × 64 = 4KB  (for M≤64 points)
+//  - s_buckets[128]: 128 × 192 = 24KB  (192 = sizeof(SecpPointProjective))
+//  - s_scalars[64*8]: 64 × 8 × 4 = 2KB
+//  Total: ~30KB ✓
 // ============================================================================
-
 kernel void secp_msm_batch_small(
     device const SecpPointAffine* all_points    [[buffer(0)]],  // B × M points
-    device const uint32* all_scalars_flat     [[buffer(1)]],  // B × M × 8 uint32
-    device SecpPointProjective* results       [[buffer(2)]],  // B results
-    constant uint& M                         [[buffer(3)]],  // points per MSM
-    constant uint& B                         [[buffer(4)]],  // number of MSMs
-    constant uint& wb                       [[buffer(5)]],  // window bits
-    uint tgid                               [[threadgroup_position_in_grid]],
-    uint lid                                [[thread_index_in_threadgroup]]
+    device const uint* all_scalars_flat         [[buffer(1)]],  // B × M × 8 uint
+    device SecpPointProjective* results         [[buffer(2)]],  // B results
+    constant uint& M                             [[buffer(3)]],  // points per MSM (≤64)
+    constant uint& B                             [[buffer(4)]],  // number of MSMs
+    constant uint& wb                           [[buffer(5)]],  // window bits (≤7)
+    uint tgid                                   [[threadgroup_position_in_grid]],
+    uint lid                                    [[thread_index_in_threadgroup]]
 ) {
     if (tgid >= B) return;
 
-    const uint n_windows = (256 + wb - 1) / wb;
-    const uint n_buckets = 1 << wb;
+    const uint n_windows = (256 + wb - 1) / wb;  // 256-bit scalars
+    const uint n_buckets = 1 << wb;               // 2^wb buckets
     const uint half_buckets = n_buckets >> 1;
     const uint mask = n_buckets - 1;
 
-    // Shared memory: points (64KB for 1024 points) + buckets (48KB)
-    threadgroup SecpPointAffine s_points[1024];
-    threadgroup SecpPointProjective s_buckets[256];
-    threadgroup uint32 s_scalars[1024 * 8];
+    // Shared memory: ≤30KB total for M≤64, wb≤7
+    // s_points[64]: 64 × 64 = 4KB
+    // s_buckets[128]: 128 × 192 = 24KB  (192 = sizeof(SecpPointProjective))
+    // s_scalars[64*8]: 64 × 8 × 4 = 2KB
+    threadgroup SecpPointAffine s_points[64];
+    threadgroup SecpPointProjective s_buckets[128];
+    threadgroup uint s_scalars[64 * 8];
 
     uint b = tgid;
 
@@ -493,45 +501,41 @@ kernel void secp_msm_batch_small(
     }
     threadgroup_barrier(mem_flags::mem_none);
 
-    // Phase 2: Initialize buckets
-    if (lid < n_buckets) {
-        s_buckets[lid] = secp_point_identity();
-    }
-    threadgroup_barrier(mem_flags::mem_none);
+    // Pippenger accumulation: result = Σ 2^{w*wb} * window_result[w]
+    SecpPointProjective accumulator = secp_point_identity();
 
-    // Phase 3: Accumulate into buckets
-    // Each thread processes all its points' contributions to all windows
-    // Accumulation pattern: each thread accumulates into PRIVATE buffer first,
-    // then we do a second pass to merge into shared buckets
-    // But to save memory, we do direct accumulation with care
+    // Process each window
+    for (uint w = 0; w < n_windows; w++) {
+        // Phase 2: Initialize buckets to identity
+        if (lid < n_buckets) {
+            s_buckets[lid] = secp_point_identity();
+        }
+        threadgroup_barrier(mem_flags::mem_none);
 
-    // For each point i that this thread handles, add to all windows' buckets
-    // We distribute points across threads: thread j handles points j, j+256, j+512, ...
-    for (uint i = lid; i < M; i += 256) {
-        uint32* scalar = &s_scalars[i * 8];
-
-        // Extract signed digits for all windows
-        uint carry = 0;
-        for (uint w = 0; w < n_windows; w++) {
+        // Phase 3: Extract digits and accumulate into buckets
+        // Each thread processes its points strided
+        // Point i with digit d contributes: add point[i] once to bucket[d]
+        // After all threads: bucket[d] = Σ P_i for all i with digit d
+        for (uint i = lid; i < M; i += 256) {
+            // Extract signed digit for window w from scalar[i]
             uint bit_off = w * wb;
             uint limb_idx = bit_off >> 5;  // / 32
-            uint bit_pos = bit_off & 31;  // % 32
+            uint bit_pos = bit_off & 31;   // % 32
 
             uint idx = 0;
             if (limb_idx < 8) {
-                idx = scalar[limb_idx] >> bit_pos;
+                idx = s_scalars[i * 8 + limb_idx] >> bit_pos;
                 if (bit_pos + wb > 32 && limb_idx + 1 < 8) {
-                    idx |= scalar[limb_idx + 1] << (32 - bit_pos);
+                    idx |= s_scalars[i * 8 + limb_idx + 1] << (32 - bit_pos);
                 }
                 idx &= mask;
             }
 
-            uint digit = idx + carry;
-            carry = 0;
+            // Signed-digit recoding
+            uint digit = idx;
             bool negate = false;
             if (digit > half_buckets) {
                 digit = n_buckets - digit;
-                carry = 1;
                 negate = true;
             }
 
@@ -542,9 +546,8 @@ kernel void secp_msm_batch_small(
                 }
                 SecpPointProjective pt_proj = secp_point_from_affine(pt);
 
-                // Accumulate into bucket[digit]
-                // Use simple read-modify-write with identity check
-                // Race condition possible but rare with random scalars
+                // Accumulate point into bucket[digit] ONCE
+                // bucket[d] = Σ P_i (sum of all points with digit d)
                 if (secp_point_is_identity(s_buckets[digit])) {
                     s_buckets[digit] = pt_proj;
                 } else {
@@ -552,31 +555,45 @@ kernel void secp_msm_batch_small(
                 }
             }
         }
-    }
-    threadgroup_barrier(mem_flags::mem_none);
+        threadgroup_barrier(mem_flags::mem_none);
 
-    // Phase 4: Final reduction
-    if (lid == 0) {
-        SecpPointProjective result = secp_point_identity();
-
-        for (int w = int(n_windows) - 1; w >= 0; w--) {
-            // Add bucket w's sum
-            if (!secp_point_is_identity(s_buckets[w])) {
-                if (secp_point_is_identity(result)) {
-                    result = s_buckets[w];
-                } else {
-                    result = secp_point_add_unsafe(result, s_buckets[w]);
+        // Phase 4: Reduce buckets to window result
+        // window_result = Σ d * bucket[d] = Σ d * (Σ P_i) = Σ d*P_i
+        SecpPointProjective window_result = secp_point_identity();
+        for (uint d = 1; d < n_buckets; d++) {
+            if (!secp_point_is_identity(s_buckets[d])) {
+                // Scale bucket[d] by d: bucket[d] + bucket[d] + ... (d times)
+                // But bucket[d] = Σ P_i, so d * bucket[d] = Σ d*P_i
+                SecpPointProjective scaled = s_buckets[d];
+                for (uint k = 1; k < d; k++) {
+                    scaled = secp_point_add_unsafe(scaled, s_buckets[d]);
                 }
-            }
-
-            // Apply weight: multiply by 2^{wb} for next window
-            if (w > 0) {
-                for (uint d = 0; d < wb; d++) {
-                    result = secp_point_double(result);
+                if (secp_point_is_identity(window_result)) {
+                    window_result = scaled;
+                } else {
+                    window_result = secp_point_add_unsafe(window_result, scaled);
                 }
             }
         }
 
-        results[b] = result;
+        // Phase 5: Scale window_result by 2^{w*wb} and add to accumulator
+        // result = Σ 2^{w*wb} * window_result[w]
+        // Scale by 2^{w*wb} via repeated doubling
+        for (uint k = 0; k < w * wb; k++) {
+            window_result = secp_point_double(window_result);
+        }
+        if (!secp_point_is_identity(window_result)) {
+            if (secp_point_is_identity(accumulator)) {
+                accumulator = window_result;
+            } else {
+                accumulator = secp_point_add_unsafe(accumulator, window_result);
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_none);
+    }
+
+    // Write final result
+    if (lid == 0) {
+        results[b] = accumulator;
     }
 }

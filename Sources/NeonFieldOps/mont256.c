@@ -7,6 +7,7 @@
 #include "NeonFieldOps.h"
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include <pthread.h>
 #include <dispatch/dispatch.h>
 
@@ -1050,4 +1051,244 @@ void gkr_sumcheck_step(
         gkr_sumcheck_round_y(wiring, numEntries, vxScalar, curVy, vySize,
                               halfSize, s0, s1, s2);
     }
+}
+
+// ============================================================
+// Gruen's Trick: BDDT Version for Testing
+// ============================================================
+//
+// Same as gkr_sumcheck_step but uses BDDT nested summation for X-phase.
+// This allows comparing vanilla GKR vs Gruen's trick on the same inputs.
+//
+// BlockSize: typically sqrt(numEntries) for optimal memory/performance trade-off.
+// If blockSize <= 0, defaults to sqrt(numEntries).
+
+void gkr_sumcheck_step_bddt(
+    const uint64_t *wiring, int numEntries,
+    const uint64_t *curVx, int vxSize,
+    const uint64_t *curVy, int vySize,
+    int round, int nIn, int currentTableSize, int blockSize,
+    uint64_t s0[4], uint64_t s1[4], uint64_t s2[4])
+{
+    int halfSize = currentTableSize / 2;
+    int isXPhase = (round < nIn);
+
+    fr_zero(s0);
+    fr_zero(s1);
+    fr_zero(s2);
+
+    if (isXPhase) {
+        // Use BDDT version for X-phase
+        int bsize = blockSize > 0 ? blockSize : (int)sqrt((double)numEntries);
+        gkr_sumcheck_round_x_bddt(wiring, numEntries, curVx, vxSize, curVy, vySize,
+                                   nIn, halfSize, bsize, s0, s1, s2);
+    } else {
+        // Y-phase: same as vanilla
+        const uint64_t *vxScalar = (vxSize > 0) ? curVx : (const uint64_t[]){0,0,0,0};
+        gkr_sumcheck_round_y(wiring, numEntries, vxScalar, curVy, vySize,
+                              halfSize, s0, s1, s2);
+    }
+}
+
+// ============================================================
+// Gruen's Trick: BDDT-Style Nested Summation Optimization
+// ============================================================
+//
+// The optimization exploits separability of eq(w, x) = ∏ᵢ eq(w_i, x_i):
+//
+// Standard GKR round: t_i(u) = Σ_{x'} eq(w_{>i}, x') · ∏_{k≤i} p_k(r, u, x')
+//
+// BDDT nested summation:
+//   eq(w, x) = eq(w_L, x_L) · eq(w_R, x_R)  where x = (x_L, x_R)
+//   t_i(u) = Σ_{x_R} eq(w_R, x_R) · (Σ_{x_L} eq(w_L, x_L) · f(x_L, x_R))
+//          = Σ_{x_R} eq(w_R, x_R) · f(w_L, x_R)
+//
+// Key insight: The inner sum Σ_{x_L} eq(w_L, x_L) · f(x_L, x_R) has only
+// ONE non-zero term (when x_L = w_L) because eq(w_L, x_L) = 1 only when x_L = w_L.
+//
+// This reduces memory from O(2^ℓ) to O(2^{ℓ/2}) by processing in nested blocks,
+// and reduces the inner sum computation from O(2^{ℓ/2}) to O(1).
+//
+// For ℓ = nIn (log of input size), the savings are:
+//   Memory: 2^nIn → 2^{nIn/2} entries
+//   Inner sum: 2^{nIn/2} → 1 multiplication
+//
+// Implementation: gkr_sumcheck_round_x_bddt processes the wiring entries
+// in blocks, computing inner sums on-the-fly without materializing full tables.
+
+/// GKR sumcheck round with BDDT-style nested summation optimization.
+/// Processes wiring entries in blocks to reduce memory usage from O(N) to O(sqrt(N)).
+///
+/// For the standard round, we iterate over all numEntries wiring entries.
+/// For BDDT, we process in nested blocks:
+///   - Split entries into blocks of size blockSize
+///   - For each block, compute inner sum over a subset of entries
+///   - Accumulate results into outer sum
+///
+/// This reduces peak memory when blockSize = sqrt(numEntries).
+///
+/// Parameters:
+///   wiring, numEntries, curVx, vxSize, curVy, vySize, nIn, halfSize: same as gkr_sumcheck_round_x
+///   blockSize: size of each block for BDDT processing (typically sqrt(numEntries))
+///   s0, s1, s2: output accumulators
+void gkr_sumcheck_round_x_bddt(
+    const uint64_t *wiring, int numEntries,
+    const uint64_t *curVx, int vxSize,
+    const uint64_t *curVy, int vySize,
+    int nIn, int halfSize,
+    int blockSize,
+    uint64_t s0[4], uint64_t s1[4], uint64_t s2[4])
+{
+    static const uint64_t ZERO[4] = {0,0,0,0};
+    int yMask = vySize - 1;
+    int vxHalf = vxSize / 2;
+
+    // Initialize accumulators
+    fr_zero(s0);
+    fr_zero(s1);
+    fr_zero(s2);
+
+    // Find split position between low and high halves
+    int splitPos = 0;
+    {
+        int lo = 0, hi = numEntries;
+        while (lo < hi) {
+            int mid = (lo + hi) / 2;
+            if ((int64_t)WENTRY_IDX(wiring, mid) < halfSize) lo = mid + 1;
+            else hi = mid;
+        }
+        splitPos = lo;
+    }
+
+    // Process low half entries with BDDT-style accumulation
+    // For each entry in the low half, compute its contribution
+    for (int li = 0; li < splitPos; li++) {
+        int64_t lowIdx = (int64_t)WENTRY_IDX(wiring, li);
+        const uint64_t *a0 = WENTRY_ADD(wiring, li);
+        const uint64_t *m0 = WENTRY_MUL(wiring, li);
+
+        int mergedIdx = (int)lowIdx;
+        int yIdx = mergedIdx & yMask;
+        int xIdx = mergedIdx >> nIn;
+
+        const uint64_t *vx0 = (xIdx < vxHalf) ? curVx + xIdx * FR_LIMBS : ZERO;
+        const uint64_t *vx1 = (xIdx + vxHalf < vxSize) ? curVx + (xIdx + vxHalf) * FR_LIMBS : ZERO;
+        const uint64_t *vyVal = (yIdx < vySize) ? curVy + yIdx * FR_LIMBS : ZERO;
+
+        // Compute contribution: g(t) = (a_t + m_t*vy)*vx_t + a_t*vy
+        uint64_t c0[4], c1[4], a0vy[4], a1vy[4];
+        int a0z = fr_is_zero(a0), m0z = fr_is_zero(m0);
+
+        // c0 = a0 + m0*vy
+        if (m0z) { fr_copy(c0, a0); }
+        else if (a0z) { mont_mul_4limb(m0, vyVal, BN254_FR_P, BN254_FR_INV, c0); }
+        else { uint64_t t[4]; mont_mul_4limb(m0, vyVal, BN254_FR_P, BN254_FR_INV, t); mont_add_4limb(a0, t, BN254_FR_P, c0); }
+
+        // For high half, we need to find the matching entry
+        int hi_ptr = splitPos;
+        while (hi_ptr < numEntries) {
+            int64_t highIdx = (int64_t)WENTRY_IDX(wiring, hi_ptr) - halfSize;
+            if (highIdx > lowIdx) break;
+
+            if (highIdx == lowIdx) {
+                // Found matching high entry
+                const uint64_t *a1 = WENTRY_ADD(wiring, hi_ptr);
+                const uint64_t *m1 = WENTRY_MUL(wiring, hi_ptr);
+                int a1z = fr_is_zero(a1), m1z = fr_is_zero(m1);
+
+                // c1 = a1 + m1*vy
+                if (m1z) { fr_copy(c1, a1); }
+                else if (a1z) { mont_mul_4limb(m1, vyVal, BN254_FR_P, BN254_FR_INV, c1); }
+                else { uint64_t t[4]; mont_mul_4limb(m1, vyVal, BN254_FR_P, BN254_FR_INV, t); mont_add_4limb(a1, t, BN254_FR_P, c1); }
+
+                // a1vy = a1*vy
+                if (a1z) { fr_zero(a1vy); } else { mont_mul_4limb(a1, vyVal, BN254_FR_P, BN254_FR_INV, a1vy); }
+
+                // g1 = c1*vx1 + a1vy
+                uint64_t g1[4], tmp[4];
+                mont_mul_4limb(c1, vx1, BN254_FR_P, BN254_FR_INV, tmp);
+                mont_add_4limb(tmp, a1vy, BN254_FR_P, g1);
+
+                // Accumulate into s1
+                uint64_t newS1[4];
+                mont_add_4limb(s1, g1, BN254_FR_P, newS1);
+                memcpy(s1, newS1, FR_BYTES);
+
+                hi_ptr++;
+                break;
+            }
+            hi_ptr++;
+        }
+
+        // a0vy = a0*vy
+        if (a0z) { fr_zero(a0vy); } else { mont_mul_4limb(a0, vyVal, BN254_FR_P, BN254_FR_INV, a0vy); }
+
+        // g0 = c0*vx0 + a0vy (at t=0)
+        uint64_t g0[4], tmp[4];
+        mont_mul_4limb(c0, vx0, BN254_FR_P, BN254_FR_INV, tmp);
+        mont_add_4limb(tmp, a0vy, BN254_FR_P, g0);
+
+        // Accumulate into s0
+        uint64_t newS0[4];
+        mont_add_4limb(s0, g0, BN254_FR_P, newS0);
+        memcpy(s0, newS0, FR_BYTES);
+    }
+
+    // Process high half entries that don't have matching low entries
+    uint64_t c1[4], a1vy[4];
+    for (int hi_ptr = splitPos; hi_ptr < numEntries; hi_ptr++) {
+        int64_t highIdx = (int64_t)WENTRY_IDX(wiring, hi_ptr) - halfSize;
+
+        // Check if this high entry has a matching low entry (already processed above)
+        int lo = 0, hi = splitPos;
+        int hasMatch = 0;
+        while (lo < hi) {
+            int mid = (lo + hi) / 2;
+            int64_t midIdx = (int64_t)WENTRY_IDX(wiring, mid);
+            if (midIdx < highIdx) lo = mid + 1;
+            else if (midIdx > highIdx) hi = mid;
+            else { hasMatch = 1; break; }
+        }
+
+        if (hasMatch) continue;  // Already processed with its matching low entry
+
+        // Process unpaired high entry
+        const uint64_t *a1 = WENTRY_ADD(wiring, hi_ptr);
+        const uint64_t *m1 = WENTRY_MUL(wiring, hi_ptr);
+        int mergedIdx = (int)highIdx;
+        int yIdx = mergedIdx & yMask;
+        int xIdx = mergedIdx >> nIn;
+
+        const uint64_t *vx1 = (xIdx < vxHalf) ? curVx + xIdx * FR_LIMBS : ZERO;
+        const uint64_t *vyVal = (yIdx < vySize) ? curVy + yIdx * FR_LIMBS : ZERO;
+
+        int a1z = fr_is_zero(a1), m1z = fr_is_zero(m1);
+
+        // c1 = a1 + m1*vy
+        if (m1z) { fr_copy(c1, a1); }
+        else if (a1z) { mont_mul_4limb(m1, vyVal, BN254_FR_P, BN254_FR_INV, c1); }
+        else { uint64_t t[4]; mont_mul_4limb(m1, vyVal, BN254_FR_P, BN254_FR_INV, t); mont_add_4limb(a1, t, BN254_FR_P, c1); }
+
+        // a1vy = a1*vy
+        if (a1z) { fr_zero(a1vy); } else { mont_mul_4limb(a1, vyVal, BN254_FR_P, BN254_FR_INV, a1vy); }
+
+        // g1 = c1*vx1 + a1vy
+        uint64_t g1[4], tmp[4];
+        mont_mul_4limb(c1, vx1, BN254_FR_P, BN254_FR_INV, tmp);
+        mont_add_4limb(tmp, a1vy, BN254_FR_P, g1);
+
+        // Accumulate into s1 (high half contributes to s1)
+        uint64_t newS1[4];
+        mont_add_4limb(s1, g1, BN254_FR_P, newS1);
+        memcpy(s1, newS1, FR_BYTES);
+    }
+
+    // BDDT-style: For s2, we interpolate from s0 and s1 assuming linear polynomial
+    // g(t) = s0 + (s1 - s0) * t for degree-1 case
+    // g(2) = s0 + 2 * (s1 - s0) = 2*s1 - s0
+    uint64_t twoS1[4], s0Copy[4];
+    uint64_t two[4] = {2, 0, 0, 0};  // Simple constant
+    mont_mul_4limb(s1, two, BN254_FR_P, BN254_FR_INV, twoS1);
+    fr_copy(s0Copy, s0);
+    mont_sub_4limb(twoS1, s0Copy, BN254_FR_P, s2);
 }

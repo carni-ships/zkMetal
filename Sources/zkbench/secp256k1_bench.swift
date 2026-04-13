@@ -460,6 +460,98 @@ public func runSecp256k1MSMBench() {
             print("  C Pippenger correctness: \(match ? "PASS" : "FAIL")")
         }
 
+        // Batch MSM correctness test (small MSMs)
+        do {
+            print("\n--- Batch MSM Correctness ---")
+
+            // Test with scalar = 1 (identity scalar)
+            // Compute 1*G = G using both methods
+            do {
+                let M = 1
+                let B = 1
+                let testPts = [allPoints[0]]  // G
+                // Scalar of 1 in little-endian: [1, 0, 0, 0, 0, 0, 0, 0]
+                let scalarOne: [[UInt32]] = [[1, 0, 0, 0, 0, 0, 0, 0]]
+                let refResult = cSecpPippengerMSM(points: testPts, scalars: scalarOne)
+                let batchResults = try engine.batchMSM(allPoints: testPts, allScalars: scalarOne, M: M, B: B)
+                let refAff = secpPointToAffine(refResult)
+                let batchAff = secpPointToAffine(batchResults[0])
+                let match = secpToInt(refAff.x) == secpToInt(batchAff.x) &&
+                            secpToInt(refAff.y) == secpToInt(batchAff.y)
+                print("  M=1, scalar=1: \(match ? "PASS" : "FAIL")")
+                if !match {
+                    print("    Expected: x=\(secpToInt(refAff.x))")
+                    print("    Got:      x=\(secpToInt(batchAff.x))")
+                }
+            }
+
+            // Test with scalar = 2
+            do {
+                let M = 1
+                let B = 1
+                let testPts = [allPoints[0]]  // G
+                let scalarTwo: [[UInt32]] = [[2, 0, 0, 0, 0, 0, 0, 0]]
+                let refResult = cSecpPippengerMSM(points: testPts, scalars: scalarTwo)
+                let batchResults = try engine.batchMSM(allPoints: testPts, allScalars: scalarTwo, M: M, B: B)
+                let refAff = secpPointToAffine(refResult)
+                let batchAff = secpPointToAffine(batchResults[0])
+                let match = secpToInt(refAff.x) == secpToInt(batchAff.x) &&
+                            secpToInt(refAff.y) == secpToInt(batchAff.y)
+                print("  M=1, scalar=2: \(match ? "PASS" : "FAIL")")
+                if !match {
+                    print("    Expected: x=\(secpToInt(refAff.x))")
+                    print("    Got:      x=\(secpToInt(batchAff.x))")
+                }
+            }
+
+            // Test with M=2, scalar=1 for both points
+            do {
+                let M = 2
+                let B = 1
+                let testPts = [allPoints[0], allPoints[1]]  // G, 2G
+                // Scalar of 1 for both: 1*G + 1*(2G) = 3G
+                let scalars: [[UInt32]] = [[1, 0, 0, 0, 0, 0, 0, 0], [1, 0, 0, 0, 0, 0, 0, 0]]
+                let refResult = cSecpPippengerMSM(points: testPts, scalars: scalars)
+                let batchResults = try engine.batchMSM(allPoints: testPts, allScalars: scalars, M: M, B: B)
+                let refAff = secpPointToAffine(refResult)
+                let batchAff = secpPointToAffine(batchResults[0])
+                let match = secpToInt(refAff.x) == secpToInt(batchAff.x) &&
+                            secpToInt(refAff.y) == secpToInt(batchAff.y)
+                print("  M=2, scalar=1,1: \(match ? "PASS" : "FAIL")")
+                if !match {
+                    print("    Expected: x=\(secpToInt(refAff.x))")
+                    print("    Got:      x=\(secpToInt(batchAff.x))")
+                    // Also print what 2G looks like for reference
+                    let twoG = secpPointAdd(secpPointFromAffine(testPts[0]), secpPointFromAffine(testPts[0]))
+                    let twoGAff = secpPointToAffine(twoG)
+                    print("    2G x=      \(secpToInt(twoGAff.x))")
+                    let threeG = secpPointAdd(refResult, secpPointFromAffine(testPts[0]))
+                    let threeGAff = secpPointToAffine(threeG)
+                    print("    3G x=      \(secpToInt(threeGAff.x))")
+                }
+            }
+
+            // Test with M=2, scalar=[1,2] to debug
+            do {
+                let M = 2
+                let B = 1
+                let testPts = [allPoints[0], allPoints[1]]  // G, 2G
+                // 1*G + 2*(2G) = 5G
+                let scalars: [[UInt32]] = [[1, 0, 0, 0, 0, 0, 0, 0], [2, 0, 0, 0, 0, 0, 0, 0]]
+                let refResult = cSecpPippengerMSM(points: testPts, scalars: scalars)
+                let batchResults = try engine.batchMSM(allPoints: testPts, allScalars: scalars, M: M, B: B)
+                let refAff = secpPointToAffine(refResult)
+                let batchAff = secpPointToAffine(batchResults[0])
+                let match = secpToInt(refAff.x) == secpToInt(batchAff.x) &&
+                            secpToInt(refAff.y) == secpToInt(batchAff.y)
+                print("  M=2, scalar=1,2: \(match ? "PASS" : "FAIL")")
+                if !match {
+                    print("    Expected: x=\(secpToInt(refAff.x))")
+                    print("    Got:      x=\(secpToInt(batchAff.x))")
+                }
+            }
+        }
+
         // Performance — centered scalars (no GLV)
         engine.useGLV = false
         print("\n--- secp256k1 MSM Performance (GPU centered, no GLV) ---")
@@ -496,6 +588,83 @@ public func runSecp256k1MSMBench() {
             fputs(String(format: "  2^%-2d: GPU %7.1fms | C Pip %7.1fms (%.1fx)\n",
                          logN, gpuMedian, cMedian, speedup), stderr)
         }
+
+        // NAF MSM benchmarks
+        print("\n--- NAF MSM Correctness ---")
+
+        // NAF scalar mul correctness: NAF(G, k) = k*G
+        do {
+            let gen = secp256k1Generator()
+            let gProj = secpPointFromAffine(gen)
+            for trial in 0..<3 {
+                var s: [UInt32] = [UInt32](repeating: 0, count: 8)
+                s[0] = UInt32(1 << (trial * 3 + 1))  // Small scalars for CPU test
+                let nafResult = cSecpNAFMul(point: gen, scalar: s)
+                let expected = secpPointMulInt(gProj, Int(s[0]))
+                let nafAff = secpPointToAffine(nafResult)
+                let expAff = secpPointToAffine(expected)
+                let match = secpToInt(nafAff.x) == secpToInt(expAff.x) &&
+                            secpToInt(nafAff.y) == secpToInt(expAff.y)
+                print("  NAF k*G = k*G (k=\(s[0])): \(match ? "PASS" : "FAIL")")
+            }
+        }
+
+        // NAF MSM correctness vs C Pippenger (small n only - NAF MSM is slow)
+        do {
+            let testN = 64  // NAF MSM is O(n*256) vs Pippenger O(n*log(n)/w)
+            let testPts = Array(allPoints.prefix(testN))
+            let testScls = Array(allScalars.prefix(testN))
+            let pipResult = cSecpPippengerMSM(points: testPts, scalars: testScls)
+            let nafResult = cSecpNAFMSM(points: testPts, scalars: testScls)
+            let pipAff = secpPointToAffine(pipResult)
+            let nafAff = secpPointToAffine(nafResult)
+            let match = secpToInt(pipAff.x) == secpToInt(nafAff.x) &&
+                        secpToInt(pipAff.y) == secpToInt(nafAff.y)
+            print("  NAF MSM vs Pippenger (n=64): \(match ? "PASS" : "FAIL")")
+        }
+
+        // NAF MSM benchmark (small n only)
+        print("\n--- NAF MSM Performance (small n only) ---")
+        let nafLogSizes = [6, 8, 10, 12]
+        for logN in nafLogSizes {
+            let n = 1 << logN
+            let pts = Array(allPoints.prefix(n))
+            let scls = Array(allScalars.prefix(n))
+
+            // NAF MSM
+            let _ = cSecpNAFMSM(points: pts, scalars: scls) // warmup
+            var nafTimes = [Double]()
+            let runs = 3
+            for _ in 0..<runs {
+                let start = CFAbsoluteTimeGetCurrent()
+                let _ = cSecpNAFMSM(points: pts, scalars: scls)
+                let elapsed = (CFAbsoluteTimeGetCurrent() - start) * 1000
+                nafTimes.append(elapsed)
+            }
+            nafTimes.sort()
+            let nafMedian = nafTimes[runs / 2]
+
+            // C Pippenger MSM
+            let _ = cSecpPippengerMSM(points: pts, scalars: scls) // warmup
+            var pipTimes = [Double]()
+            for _ in 0..<runs {
+                let start = CFAbsoluteTimeGetCurrent()
+                let _ = cSecpPippengerMSM(points: pts, scalars: scls)
+                let elapsed = (CFAbsoluteTimeGetCurrent() - start) * 1000
+                pipTimes.append(elapsed)
+            }
+            pipTimes.sort()
+            let pipMedian = pipTimes[runs / 2]
+
+            let ratio = pipMedian > 0 ? nafMedian / pipMedian : 0
+            fputs(String(format: "  2^%-2d: NAF %7.1fms | Pippenger %7.1fms (NAF/Pip=%.2fx)\n",
+                         logN, nafMedian, pipMedian, ratio), stderr)
+        }
+
+        print("\n  NAF analysis: NAF has ~33% fewer additions but requires 256 doublings,")
+        print("  making it slower than Pippenger for large MSM. NAF is better suited")
+        print("  for single scalar mul or small MSM where the overhead of many doublings")
+        print("  is amortized over fewer points.")
 
 
     } catch {

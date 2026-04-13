@@ -19,6 +19,16 @@
 import Foundation
 import NeonFieldOps
 
+// Allow calling the BDDT version from Swift
+@_silgen_name("gkr_sumcheck_step_bddt")
+fileprivate func gkr_sumcheck_step_bddt_c(
+    _ wiring: UnsafePointer<UInt64>, _ numEntries: Int32,
+    _ curVx: UnsafePointer<UInt64>, _ vxSize: Int32,
+    _ curVy: UnsafePointer<UInt64>, _ vySize: Int32,
+    _ round: Int32, _ nIn: Int32, _ currentTableSize: Int32, _ blockSize: Int32,
+    _ s0: UnsafeMutablePointer<UInt64>, _ s1: UnsafeMutablePointer<UInt64>, _ s2: UnsafeMutablePointer<UInt64>)
+
+
 // MARK: - GKR Proof Types
 
 /// A single round of the sumcheck sub-protocol within GKR.
@@ -67,6 +77,9 @@ public class GKREngine {
     private var _cachedWiringAlt: [UInt64] = []
     private var _cachedVx: [UInt64] = []
     private var _cachedVy: [UInt64] = []
+
+    /// Enable BDDT/Gruen's trick optimization for sumcheck (for benchmarking)
+    public static var useBDDT: Bool = false
 
     public init(circuit: LayeredCircuit) {
         self.circuit = circuit
@@ -330,13 +343,37 @@ public class GKREngine {
         for round in 0..<totalVars {
             let halfSize = currentTableSize / 2
 
-            gkr_sumcheck_step(
-                _cachedWiring, Int32(numWiringEntries),
-                _cachedVx, vxSize,
-                _cachedVy, vySize,
-                Int32(round), Int32(nIn), currentTableSize,
-                &s0, &s1, &s2
-            )
+            if GKREngine.useBDDT {
+                // Use BDDT/Gruen's trick optimization
+                let blockSize = Int32(sqrt(Double(numEntries)))
+                _cachedWiring.withUnsafeBufferPointer { wBuf in
+                    _cachedVx.withUnsafeBufferPointer { vxBuf in
+                        _cachedVy.withUnsafeBufferPointer { vyBuf in
+                            var s0Out = s0
+                            var s1Out = s1
+                            var s2Out = s2
+                            gkr_sumcheck_step_bddt_c(
+                                wBuf.baseAddress!, Int32(numWiringEntries),
+                                vxBuf.baseAddress!, vxSize,
+                                vyBuf.baseAddress!, vySize,
+                                Int32(round), Int32(nIn), currentTableSize, blockSize,
+                                &s0Out, &s1Out, &s2Out
+                            )
+                            s0 = s0Out
+                            s1 = s1Out
+                            s2 = s2Out
+                        }
+                    }
+                }
+            } else {
+                gkr_sumcheck_step(
+                    _cachedWiring, Int32(numWiringEntries),
+                    _cachedVx, vxSize,
+                    _cachedVy, vySize,
+                    Int32(round), Int32(nIn), currentTableSize,
+                    &s0, &s1, &s2
+                )
+            }
 
             let frS0 = s0.withUnsafeBytes { Fr(v: $0.load(as: (UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32).self)) }
             let frS1 = s1.withUnsafeBytes { Fr(v: $0.load(as: (UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32).self)) }

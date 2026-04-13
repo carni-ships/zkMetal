@@ -169,6 +169,22 @@ void secp256k1_point_to_affine(const uint64_t *p, uint64_t *ax, uint64_t *ay);
 void secp256k1_pippenger_msm(const uint64_t *points, const uint32_t *scalars,
                               int n, uint64_t *result);
 
+/// secp256k1 NAF scalar multiplication using double-and-add with NAF digits.
+/// NAF (Non-Adjacent Form) has at most n/3 non-zero digits (vs n/2 for binary).
+/// @param p  Affine point: 8 uint64_t (x[4], y[4], Montgomery form).
+/// @param scalar  Scalar: 4 uint64_t (little-endian, non-Montgomery).
+/// @param result  Output projective point: 12 uint64_t.
+void secp256k1_naf_mul(const uint64_t *p, const uint64_t *scalar, uint64_t *result);
+
+/// secp256k1 NAF MSM using interleaved multi-scalar multiplication.
+/// Processes NAF digits from MSB to LSB, with ~33% fewer point additions than binary.
+/// @param points  n affine points as n×8 uint64_t (x[4], y[4] per point).
+/// @param scalars n scalars as n×8 uint32_t (little-endian limbs).
+/// @param n       Number of points.
+/// @param result   Output projective point: 12 uint64_t.
+void secp256k1_naf_msm(const uint64_t *points, const uint32_t *scalars,
+                       int n, uint64_t *result);
+
 /// Forward NTT on Goldilocks field using ARM NEON intrinsics.
 /// NEON-vectorized add/sub butterflies with interleaved scalar mul for ILP.
 /// @param data Array of n = 2^logN uint64_t elements in [0, p).
@@ -504,6 +520,28 @@ void gkr_sumcheck_step(
     const uint64_t *curVx, int vxSize,
     const uint64_t *curVy, int vySize,
     int round, int nIn, int currentTableSize,
+    uint64_t s0[4], uint64_t s1[4], uint64_t s2[4]);
+
+/// Single-round step for GKR sumcheck with BDDT optimization.
+/// Same as gkr_sumcheck_step but uses BDDT nested summation for X-phase.
+/// blockSize: typically sqrt(numEntries) for optimal memory/performance trade-off.
+/// If blockSize <= 0, defaults to sqrt(numEntries).
+void gkr_sumcheck_step_bddt(
+    const uint64_t *wiring, int numEntries,
+    const uint64_t *curVx, int vxSize,
+    const uint64_t *curVy, int vySize,
+    int round, int nIn, int currentTableSize, int blockSize,
+    uint64_t s0[4], uint64_t s1[4], uint64_t s2[4]);
+
+/// GKR sumcheck round with BDDT-style nested summation optimization.
+/// Uses block-wise processing to reduce memory from O(N) to O(sqrt(N)).
+/// Parameters: same as gkr_sumcheck_round_x, plus blockSize for BDDT block size.
+void gkr_sumcheck_round_x_bddt(
+    const uint64_t *wiring, int numEntries,
+    const uint64_t *curVx, int vxSize,
+    const uint64_t *curVy, int vySize,
+    int nIn, int halfSize,
+    int blockSize,
     uint64_t s0[4], uint64_t s1[4], uint64_t s2[4]);
 
 /// Dual projective MSM: compute two MSMs with shared thread pool.

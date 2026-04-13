@@ -1045,3 +1045,281 @@ void secp256k1_fp_neg(const uint64_t a[4], uint64_t r[4]) {
     }
 }
 void secp256k1_fp_inv(const uint64_t a[4], uint64_t r[4]) { secp_fp_inv(a, r); }
+
+// ============================================================
+// NAF (Non-Adjacent Form) conversion for secp256k1 scalars
+//
+// NAF properties:
+// - Digits are from {-1, 0, 1}
+// - No two non-zero digits are adjacent
+// - At most n/3 non-zero digits (vs n/2 for binary)
+// - NAF representation is unique
+//
+// NAF digit encoding: 0=0, 1=1, 2=-1
+// ============================================================
+
+// Compute NAF representation of a 256-bit scalar.
+// scalar: 4×uint64_t little-endian (non-Montgomery integer)
+// naf_digits: output array, filled with NAF digits (0, 1, or 2 for -1)
+// max_len: maximum capacity of naf_digits array
+// Returns: number of NAF digits written
+//
+// NAF algorithm (LSB to MSB):
+//   while scalar > 0:
+//     if scalar is odd:
+//       naf = 2 - (scalar mod 4)  → gives 1 if scalar≡1 (mod 4), -1 if scalar≡3 (mod 4)
+//       scalar = (scalar - naf) / 2
+//     else:
+//       naf = 0
+//       scalar = scalar / 2
+//     emit naf
+static uint32_t secp_naf_convert(const uint64_t scalar[4], uint8_t *naf_digits, uint32_t max_len) {
+    // Working copy of scalar (4×uint64_t = 256 bits)
+    uint64_t s[4];
+    memcpy(s, scalar, 32);
+
+    uint32_t naf_len = 0;
+
+    // Process until scalar becomes 0
+    while (!(s[0] == 0 && s[1] == 0 && s[2] == 0 && s[3] == 0)) {
+        if (naf_len >= max_len) break;  // Safety check
+
+        // Check if scalar is odd
+        int is_odd = (s[0] & 1u) != 0;
+
+        uint8_t naf_digit;
+        if (is_odd) {
+            // scalar mod 4: look at bits 0 and 1
+            uint64_t mod4 = s[0] & 3u;
+            if (mod4 == 1u) {
+                // scalar ≡ 1 (mod 4) → NAF digit = +1, s = (s - 1) / 2
+                naf_digit = 1;
+                // Subtract 1 from scalar
+                uint128_t borrow = (uint128_t)s[0] - 1;
+                s[0] = (uint64_t)borrow;
+                uint64_t borrow_next = (uint64_t)(borrow >> 64);
+                if (borrow_next) {
+                    borrow = (uint128_t)s[1] - 1;
+                    s[1] = (uint64_t)borrow;
+                    borrow_next = (uint64_t)(borrow >> 64);
+                }
+                if (borrow_next) {
+                    borrow = (uint128_t)s[2] - 1;
+                    s[2] = (uint64_t)borrow;
+                    borrow_next = (uint64_t)(borrow >> 64);
+                }
+                if (borrow_next) {
+                    s[3] = s[3] - 1;
+                }
+            } else {
+                // mod4 == 3 (scalar ≡ 3 (mod 4)) → NAF digit = -1 (encoded as 2), s = (s + 1) / 2
+                naf_digit = 2;
+                // Add 1 to scalar: s = (s + 1) >> 1
+                uint128_t carry = (uint128_t)s[0] + 1;
+                s[0] = (uint64_t)carry;
+                carry >>= 64;
+                if (carry) {
+                    carry = (uint128_t)s[1] + 1;
+                    s[1] = (uint64_t)carry;
+                    carry >>= 64;
+                }
+                if (carry) {
+                    carry = (uint128_t)s[2] + 1;
+                    s[2] = (uint64_t)carry;
+                    carry >>= 64;
+                }
+                if (carry) {
+                    s[3] = s[3] + 1;
+                }
+            }
+            // Shift right by 1 (divide by 2)
+            uint64_t carry = 0;
+            for (int i = 3; i >= 0; i--) {
+                uint64_t next_carry = s[i] & 1u;
+                s[i] = (s[i] >> 1) | (carry << 63);
+                carry = next_carry;
+            }
+        } else {
+            // Scalar is even: NAF digit = 0, just shift right
+            naf_digit = 0;
+            uint64_t carry = 0;
+            for (int i = 3; i >= 0; i--) {
+                uint64_t next_carry = s[i] & 1u;
+                s[i] = (s[i] >> 1) | (carry << 63);
+                carry = next_carry;
+            }
+        }
+
+        naf_digits[naf_len++] = naf_digit;
+    }
+
+    return naf_len;
+}
+
+// Count non-zero NAF digits
+static uint32_t secp_naf_nonzero_count(const uint8_t *naf_digits, uint32_t naf_len) {
+    uint32_t count = 0;
+    for (uint32_t i = 0; i < naf_len; i++) {
+        if (naf_digits[i] != 0) count++;
+    }
+    return count;
+}
+
+// NAF-based scalar multiplication using double-and-add with NAF digits.
+// This is primarily for verification/benchmarking - the bucket method is more efficient for large MSM.
+// p: affine point (8 uint64_t: x[4], y[4])
+// scalar: 4×uint64_t little-endian (non-Montgomery integer)
+// r: result projective point (12 uint64_t)
+void secp256k1_naf_scalar_mul(const uint64_t p[8], const uint64_t scalar[4], uint64_t r[12]) {
+    // Convert scalar to NAF
+    uint8_t naf_digits[300];  // NAF of 256-bit scalar has at most 256 digits, typically ~170
+    uint32_t naf_len = secp_naf_convert(scalar, naf_digits, 300);
+
+    // Initialize result as identity
+    secp_pt_set_id(r);
+
+    if (naf_len == 0) return;
+
+    // Process NAF digits from MSB to LSB
+    for (int i = (int)naf_len - 1; i >= 0; i--) {
+        // Double
+        uint64_t tmp[12];
+        secp_pt_dbl(r, tmp);
+        memcpy(r, tmp, 96);
+
+        // Add or subtract based on NAF digit
+        if (naf_digits[i] == 1) {
+            // +1: add point
+            uint64_t p_proj[12];
+            memcpy(p_proj, p, 64);
+            memcpy(p_proj + 8, SECP_ONE, 32);
+            secp_pt_add(r, p_proj, tmp);
+            memcpy(r, tmp, 96);
+        } else if (naf_digits[i] == 2) {
+            // -1 (encoded as 2): subtract point = add negated point
+            uint64_t neg_p[12];
+            memcpy(neg_p, p, 64);
+            // Negate y coordinate
+            uint64_t neg_y[4];
+            secp_fp_sub((const uint64_t[]){0xfffffffefffffc2fULL, 0xffffffffffffffffULL,
+                                          0xffffffffffffffffULL, 0xffffffffffffffffULL},
+                       p + 4, neg_y);
+            memcpy(neg_p + 4, neg_y, 32);
+            memcpy(neg_p + 8, SECP_ONE, 32);
+            secp_pt_add(r, neg_p, tmp);
+            memcpy(r, tmp, 96);
+        }
+        // naf_digits[i] == 0: no addition, just continue
+    }
+}
+
+// NAF MSM using interleaved multi-scalar multiplication
+// Processes NAF digits from MSB to LSB, with doubling between positions
+// This is efficient for MSMs where the number of non-zero NAF digits is small
+//
+// Algorithm:
+//   result = identity
+//   for pos from max_naf_len-1 down to 0:
+//     result = 2 * result
+//     for each scalar i where naf_digits[i][pos] != 0:
+//       if naf_digits[i][pos] == 1: result = result + points[i]
+//       if naf_digits[i][pos] == 2: result = result - points[i]
+//
+// Complexity:
+//   - NAF guarantees at most n/3 non-zero digits (vs n/2 for binary)
+//   - Number of doublings = max NAF length ~ 256
+//   - Number of additions = number of non-zero NAF digits ~ n/3
+//
+// For n=2^18 points: ~87K non-zero NAF digits vs ~131K binary digits
+// ~33% reduction in point additions
+void secp256k1_naf_msm(const uint64_t *points, const uint32_t *scalars, int n, uint64_t *r) {
+    if (n == 0) {
+        secp_pt_set_id(r);
+        return;
+    }
+    if (n == 1) {
+        // Convert scalar from uint32_t[8] to uint64_t[4] format
+        uint64_t scalar64[4];
+        scalar64[0] = (uint64_t)scalars[0] | ((uint64_t)scalars[1] << 32);
+        scalar64[1] = (uint64_t)scalars[2] | ((uint64_t)scalars[3] << 32);
+        scalar64[2] = (uint64_t)scalars[4] | ((uint64_t)scalars[5] << 32);
+        scalar64[3] = (uint64_t)scalars[6] | ((uint64_t)scalars[7] << 32);
+        secp256k1_naf_scalar_mul(points, scalar64, r);
+        return;
+    }
+
+    // Convert all scalars to NAF representation
+    // Each NAF digit is stored as 0, 1, or 2 (where 2 = -1)
+    uint8_t *naf_all = (uint8_t *)malloc((size_t)n * 300);
+    uint32_t *naf_lengths = (uint32_t *)malloc((size_t)n * sizeof(uint32_t));
+    uint32_t max_naf_len = 0;
+
+    for (int i = 0; i < n; i++) {
+        // Convert scalar from uint32_t[8] to uint64_t[4] format
+        uint64_t scalar64[4];
+        const uint32_t *s32 = scalars + (size_t)i * 8;
+        scalar64[0] = (uint64_t)s32[0] | ((uint64_t)s32[1] << 32);
+        scalar64[1] = (uint64_t)s32[2] | ((uint64_t)s32[3] << 32);
+        scalar64[2] = (uint64_t)s32[4] | ((uint64_t)s32[5] << 32);
+        scalar64[3] = (uint64_t)s32[6] | ((uint64_t)s32[7] << 32);
+        naf_lengths[i] = secp_naf_convert(scalar64, naf_all + (size_t)i * 300, 300);
+        if (naf_lengths[i] > max_naf_len) max_naf_len = naf_lengths[i];
+    }
+
+    if (max_naf_len == 0) {
+        secp_pt_set_id(r);
+        free(naf_all);
+        free(naf_lengths);
+        return;
+    }
+
+    // Initialize result as identity
+    uint64_t result[12];
+    secp_pt_set_id(result);
+
+    // Temporary point buffer
+    uint64_t tmp[12];
+    uint64_t point_proj[12];
+
+    // Process from MSB to LSB of NAF representation
+    for (int pos = (int)max_naf_len - 1; pos >= 0; pos--) {
+        // Double result
+        secp_pt_dbl(result, tmp);
+        memcpy(result, tmp, 96);
+
+        // Add/subtract points that have non-zero NAF digit at this position
+        for (int i = 0; i < n; i++) {
+            if (pos < (int)naf_lengths[i]) {
+                uint8_t digit = naf_all[(size_t)i * 300 + pos];
+                if (digit == 1) {
+                    // Positive: add point
+                    memcpy(point_proj, points + (size_t)i * 8, 64);
+                    memcpy(point_proj + 8, SECP_ONE, 32);
+                    secp_pt_add(result, point_proj, tmp);
+                    memcpy(result, tmp, 96);
+                } else if (digit == 2) {
+                    // Negative (encoded as 2): subtract point = add negated point
+                    memcpy(point_proj, points + (size_t)i * 8, 64);
+                    // Negate y coordinate
+                    uint64_t neg_y[4];
+                    secp_fp_sub((const uint64_t[]){0xfffffffefffffc2fULL, 0xffffffffffffffffULL,
+                                                  0xffffffffffffffffULL, 0xffffffffffffffffULL},
+                               point_proj + 4, neg_y);
+                    memcpy(point_proj + 4, neg_y, 32);
+                    memcpy(point_proj + 8, SECP_ONE, 32);
+                    secp_pt_add(result, point_proj, tmp);
+                    memcpy(result, tmp, 96);
+                }
+            }
+        }
+    }
+
+    memcpy(r, result, 96);
+    free(naf_all);
+    free(naf_lengths);
+}
+
+// Wrapper: NAF scalar multiplication for verification
+void secp256k1_naf_mul(const uint64_t p[8], const uint64_t scalar[4], uint64_t r[12]) {
+    secp256k1_naf_scalar_mul(p, scalar, r);
+}

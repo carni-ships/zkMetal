@@ -927,6 +927,21 @@ void gkr_sumcheck_step(
     int round, int nIn, int currentTableSize,
     uint64_t s0[4], uint64_t s1[4], uint64_t s2[4]);
 
+void gkr_sumcheck_step_bddt(
+    const uint64_t *wiring, int numEntries,
+    const uint64_t *curVx, int vxSize,
+    const uint64_t *curVy, int vySize,
+    int round, int nIn, int currentTableSize, int blockSize,
+    uint64_t s0[4], uint64_t s1[4], uint64_t s2[4]);
+
+void gkr_sumcheck_round_x_bddt(
+    const uint64_t *wiring, int numEntries,
+    const uint64_t *curVx, int vxSize,
+    const uint64_t *curVy, int vySize,
+    int nIn, int halfSize,
+    int blockSize,
+    uint64_t s0[4], uint64_t s1[4], uint64_t s2[4]);
+
 /* -- Spartan R1CS ------------------------------------------------ */
 
 void spartan_sparse_matvec(const uint64_t *entries, int numEntries,

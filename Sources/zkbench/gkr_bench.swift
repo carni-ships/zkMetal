@@ -101,5 +101,57 @@ public func runGKRBench() {
         fputs("  IP 2^\(logN): \(st)\n", stderr)
     }
 
+    // Compare vanilla GKR vs BDDT/Gruen's trick
+    fputs("\n  Gruen's Trick (BDDT) comparison:\n", stderr)
+    let bddtConfigs: [(Int, Int)] = quick ? [(4, 4), (5, 4)] : [(4, 4), (5, 4), (6, 4), (6, 8), (8, 4)]
+    for (logW, depth) in bddtConfigs {
+        let circuit = LayeredCircuit.repeatedHashCircuit(logWidth: logW, depth: depth)
+        let inputs = randomInputs(1 << logW)
+        let output = circuit.evaluateOutput(inputs: inputs)
+
+        // Vanilla GKR
+        GKREngine.useBDDT = false
+        let vanillaEngine = GKREngine(circuit: circuit)
+        let vanillaProof: GKRProof
+        var vanillaProveTime = 0.0
+        do {
+            let pt = Transcript(label: "bddt-test", backend: .keccak256)
+            let t0 = CFAbsoluteTimeGetCurrent()
+            vanillaProof = vanillaEngine.prove(inputs: inputs, transcript: pt)
+            vanillaProveTime = CFAbsoluteTimeGetCurrent() - t0
+        }
+        let vanillaValid: Bool
+        do {
+            let vt = Transcript(label: "bddt-test", backend: .keccak256)
+            vanillaValid = vanillaEngine.verify(inputs: inputs, output: output, proof: vanillaProof, transcript: vt)
+        }
+
+        // BDDT GKR
+        GKREngine.useBDDT = true
+        let bddtEngine = GKREngine(circuit: circuit)
+        let bddtProof: GKRProof
+        var bddtProveTime = 0.0
+        do {
+            let pt = Transcript(label: "bddt-test", backend: .keccak256)
+            let t0 = CFAbsoluteTimeGetCurrent()
+            bddtProof = bddtEngine.prove(inputs: inputs, transcript: pt)
+            bddtProveTime = CFAbsoluteTimeGetCurrent() - t0
+        }
+        let bddtValid: Bool
+        do {
+            let vt = Transcript(label: "bddt-test", backend: .keccak256)
+            bddtValid = bddtEngine.verify(inputs: inputs, output: output, proof: bddtProof, transcript: vt)
+        }
+
+        // Reset flag
+        GKREngine.useBDDT = false
+
+        let speedup = vanillaProveTime / bddtProveTime
+        let match = vanillaValid == bddtValid && vanillaValid == true
+        fputs(String(format: "  2^%-4d d=%-4d vanilla:%7.3fms  bddt:%7.3fms  speedup:%6.2fx  %@\n",
+                    logW, depth, vanillaProveTime * 1000, bddtProveTime * 1000, speedup,
+                    match ? "PASS" : "FAIL"), stderr)
+    }
+
     fputs("\n  No NTT required - pure algebraic sumcheck\n", stderr)
 }
