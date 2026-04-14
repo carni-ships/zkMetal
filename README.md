@@ -121,7 +121,7 @@ Generic recursive proof composition where the outer proof is always Groth16 (BN2
 | **Plonk** | Plonk (BN254) | ~200K | KZG openings, permutation check, gate constraints |
 | **Halo2** | Halo2 (→Plonk) | ~300K | Compiled to Plonk via Halo2Backend |
 | **Plonky2** | Plonky2 (Goldilocks) | ~100K | FRI-based, Goldilocks fits natively in BN254 Fr |
-| **IPA** | IPA (Pasta) | ~165K | Commitment folding via double-and-add, Pasta cycle |
+| **IPA** | IPA (Pasta) | ~164K | Commitment folding via double-and-add, Pasta cycle |
 
 **Key insight**: Pallas Fp = Vesta Fr, enabling efficient cross-curve recursion. Pallas point coordinates are native field elements in a Vesta circuit.
 
