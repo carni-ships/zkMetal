@@ -516,6 +516,7 @@ C CIOS Montgomery acceleration: pre-computed wiring topology, cached buffers, eq
 | Primitive | Key Benchmark | Notes |
 |-----------|---------------|-------|
 | HyperNova fold | 0.09ms/fold (1000 steps), N=4: 0.21ms, N=8: 0.46ms | Keccak256 transcript + C CIOS + pre-computed affine: **40x** (3.6ms→0.09ms) |
+| Supernova fold | 0.69ms/fold (16-step multi-circuit) | Multi-circuit IVC with program counter routing, alternating squaring/multiplication circuits |
 | Basefold open 2^18 | 61ms | Fold-by-4 (halved rounds) + pipelined dual-queue Merkle overlap |
 | Brakedown PCS | -- | Crashes on some hardware (signal 139) |
 | Zeromorph PCS | -- | Crashes on some hardware (signal 139) |

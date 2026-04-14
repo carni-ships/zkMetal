@@ -100,6 +100,7 @@ let allTests: [(String, () -> Void)] = [
     ("verkleproofengine", runVerkleProofEngineTests),
     ("plonkisharith", runPlonkishArithTests),
     ("novaengine", runNovaEngineTests),
+    ("supernova", runSupernovaTests),
     ("gpucosetldeengine", runGPUCosetLDEEngineTests),
     ("plonky2verifier", runPlonky2VerifierTests),
     ("gpubatchinverseengine", runGPUBatchInverseEngineTests),
