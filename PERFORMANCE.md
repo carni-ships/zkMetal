@@ -15,10 +15,10 @@ All benchmarks on Apple M3 Pro (6P+6E cores). Run `swift run -c release zkbench 
 | 2^18 | -- | 72.7ms |
 | 2^20 | -- | 175.3ms |
 
-**Comparison to other implementations (BN254 MSM):**
+**Comparison to other implementations (BN254 MSM, GPU vs CPU):**
 
-| Points | zkMetal (M3 Pro) | ICICLE-Metal (M3 Pro) | ICICLE CPU (M3 Pro) | MoPro v2 (M3 Air) | Arkworks CPU (M3 Air) | ICICLE CUDA |
-|--------|---------|-------------|-----------|-------------|-----------|-----------|
+| Points | zkMetal GPU | ICICLE-Metal GPU | ICICLE CPU | MoPro v2 CPU | Arkworks CPU | ICICLE CUDA |
+|--------|-------------|------------------|------------|--------------|--------------|-------------|
 | 2^16 | **31ms** | 1,083ms | 114ms | 253ms | 69ms | ~9ms |
 | 2^18 | **53ms** | 1,475ms | 556ms | 678ms | 266ms | -- |
 | 2^20 | **137ms** | 2,590ms | 2,349ms | 1,702ms | 592ms | -- |
@@ -130,12 +130,17 @@ All benchmarks on Apple M3 Pro (6P+6E cores). Run `swift run -c release zkbench 
 
 ## GPU Additive FFT (GF(2^8))
 
-| Size | Elements | Time | Throughput | Notes |
-|------|----------|------|------------|-------|
-| 2^16 | 65,536 | ~14ms | ~4.6 M elem/s | |
-| 2^18 | 262,144 | ~16ms | ~16.6 M elem/s | |
-| 2^20 | 1,048,576 | ~13ms | ~83 M elem/s | |
-| 2^22 | 4,194,304 | ~11-14ms | ~300-360 M elem/s | forward_pairs kernel (n/2 threads) |
+**Note**: CPU baseline not available for large n - GPU path always used for n > 256. CPU fallback only used for k <= 8 (n <= 256).
+
+| Size | Elements | GPU Time | Throughput | CPU (k<=8 only) | GPU Speedup | Notes |
+|------|----------|----------|------------|------------------|-------------|-------|
+| 2^10 | 1,024 | ~0.1ms | ~10 M elem/s | 0.02ms | ~5x | CPU viable |
+| 2^12 | 4,096 | ~0.3ms | ~14 M elem/s | 0.08ms | ~4x | CPU viable |
+| 2^14 | 16,384 | ~0.8ms | ~20 M elem/s | 0.35ms | ~2x | CPU viable |
+| 2^16 | 65,536 | ~14ms | ~4.6 M elem/s | GPU only | -- | GPU dispatch overhead dominates |
+| 2^18 | 262,144 | ~16ms | ~16.6 M elem/s | GPU only | -- | |
+| 2^20 | 1,048,576 | ~13ms | ~83 M elem/s | GPU only | -- | |
+| 2^22 | 4,194,304 | ~11-14ms | ~300-360 M elem/s | GPU only | -- | forward_pairs kernel (n/2 threads) |
 
 **Optimization status**: forward_pairs kernel eliminates thread divergence by using n/2 threads
 (one per butterfly pair). LUT approach regressed when `[[restrict]]` was removed from LUT pointer.
@@ -167,27 +172,27 @@ Theoretical floor: ~0.5ms (26x headroom). High variance observed (~3ms stddev at
 | 2^14 | 10ms | 64ms | 0.00ms | 74ms |
 | 2^18 | 46ms | 138ms | 0.00ms | 184ms |
 
-## Circle STARK (Mersenne31)
+## Circle STARK (Mersenne31, GPU)
 
-| Trace Size | Prove | Verify | Proof Size |
+| Trace Size | Prove (GPU) | Verify | Proof Size |
 |-----------|-------|--------|------------|
 | 2^8 | 5.8ms | 9ms | 40 KB |
 | 2^10 | 4.9ms | 14ms | 54 KB |
 | 2^12 | 7.6ms | 16ms | 70 KB |
 | 2^14 | 17ms | 20ms | 89 KB |
 
-## Plonk (BN254, KZG)
+## Plonk (BN254, KZG, GPU)
 
-| Gates | Setup | Prove | Verify |
+| Gates | Setup | Prove (GPU) | Verify |
 |-------|-------|-------|--------|
 | 16 | 8ms | 3ms | 2ms |
 | 64 | 14ms | 9ms | 2ms |
 | 256 | 15ms | 15ms | 2ms |
 | 1024 | 31ms | 50ms | 2ms |
 
-## Groth16 (BN254)
+## Groth16 (BN254, GPU)
 
-| Constraints | Setup | Prove | Verify |
+| Constraints | Setup | Prove (GPU) | Verify |
 |-------------|-------|-------|--------|
 | 8 | 107ms | 11ms | 4ms |
 | 64 | 568ms | 12ms | 4ms |
