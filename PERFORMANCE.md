@@ -280,9 +280,9 @@ Theoretical floor: ~0.5ms (26x headroom). High variance observed (~3ms stddev at
 | 3 | NTT BN254 2^22 | 26ms | ~3ms | ~9x | |
 | 4 | secp256k1 MSM (GPU) | ~260ms | ~30ms | ~8x | GPU sort + bucket-interleaved |
 | 5 | FRI Fold 2^20 | 2.1ms | ~0.3ms | ~7x | |
-| 6 | Nova fold (256c) | ~5.6ms | ~1ms | ~5x | GPU sparse matvec integrated |
-| 7 | GPU Radix Sort 2^22 | 6.4ms | ~1ms | ~6x | |
-| 8 | NTT Goldilocks 2^24 | 3.1ms | ~0.5ms | ~6x | |
+| 6 | GPU Radix Sort 2^22 | 6.4ms | ~1ms | ~6x | |
+| 7 | NTT Goldilocks 2^24 | 3.1ms | ~0.5ms | ~6x | |
+| 8 | Nova fold (256c) | ~5.6ms | ~1ms | ~5x | GPU sparse matvec integrated |
 | 9 | NTT BabyBear 2^24 | 2.3ms | ~0.5ms | ~4-5x | |
 | 10 | Merkle Keccak 2^18 | 4.5ms | ~1ms | ~4x | |
 | 11 | Merkle Poseidon2 2^18 | 45ms | ~10ms | ~4x | |
@@ -291,9 +291,20 @@ Theoretical floor: ~0.5ms (26x headroom). High variance observed (~3ms stddev at
 | 14 | NTT BN254 2^24 | 110.9ms | ~40ms | ~3x | |
 | 15 | Circle STARK 2^14 | 17ms | ~6ms | ~3x | |
 | 16 | Poseidon2 GPU 2^14 | 2.3ms | ~0.8ms | ~3x | |
-| 17 | FRI Fold 2^22 | 7.52ms | ~3ms | ~2.5x | |
-| 18 | Keccak-256 GPU 2^18 | 1.4ms | ~0.6ms | ~2x | |
-| 19 | Blake3 batch GPU | 0.001 μs/hash | ~0.001 μs/hash | ~1x | Near optimal |
-| 20 | Groth16 Prove (256) | 14ms | ~14ms | ~1x | Near optimal |
-| 21 | BN254 Fr mul (C) | 16ns | ~16ns | ~1x | Near optimal (SIMD CIOS) |
-| 22 | Batch inverse (C) 100K | 1.6ms | ~1.6ms | ~1x | Near optimal (Montgomery's trick) |
+| 17 | NTT BLS12-377 2^24 | 110ms | ~40ms | ~3x | |
+| 18 | FRI Fold 2^22 | 7.52ms | ~3ms | ~2.5x | |
+| 19 | Keccak-256 GPU 2^18 | 1.4ms | ~0.6ms | ~2x | |
+| 20 | Merkle Blake3 2^18 | 3.9ms | ~2ms | ~2x | |
+| 21 | GPU Sort 2^18 | 1.3ms | ~0.7ms | ~2x | |
+| 22 | NTT Goldilocks 2^20 | 0.70ms | ~0.4ms | ~2x | |
+| 23 | Sumcheck BN254 2^20 | 24.0ms | ~12ms | ~2x | C kernel 9.55ms |
+| 24 | secp256k1 MSM 2^16 (GPU) | 72ms | ~40ms | ~2x | |
+| 25 | BLS12-377 MSM 2^18 (GPU) | 119ms | ~60ms | ~2x | |
+| 26 | BN254 MSM 2^20 (GPU) | 175ms | ~100ms | ~1.8x | |
+| 27 | Blake3 batch GPU | 0.001 μs/hash | ~0.001 μs/hash | ~1x | Near optimal |
+| 28 | Groth16 Prove (256) | 14ms | ~14ms | ~1x | Near optimal |
+| 29 | BN254 Fr mul (C) | 16ns | ~16ns | ~1x | Near optimal (SIMD CIOS) |
+| 30 | Batch inverse (C) 100K | 1.6ms | ~1.6ms | ~1x | Near optimal (Montgomery's trick) |
+| 31 | BN254 batch mul (C) 100K | 1.3ms | ~1.3ms | ~1x | Near optimal (CIOS) |
+| 32 | IPA prove n=256 | 11.8ms | ~11ms | ~1x | Near optimal |
+| 33 | Basefold open 2^18 | 61ms | ~60ms | ~1x | Near optimal |
