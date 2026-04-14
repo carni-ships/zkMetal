@@ -45,6 +45,7 @@ public class Secp256k1MSM {
     private var cpuScratchCapacity = 0
     private var signedDigitPtr: UnsafeMutablePointer<UInt32>?
     private var signedDigitCapacity = 0
+    private var scalarsGPUBuffer: MTLBuffer?
     // GLV cached buffers
     private var glvScalarInBufCached: MTLBuffer?
     private var glvK1MetalBufCached: MTLBuffer?
@@ -58,6 +59,7 @@ public class Secp256k1MSM {
     private var precomputedGLVPairsInitialized: Bool = false
     public var windowBitsOverride: UInt32?
     public var useGLV = false  // GLV regresses on M3 GPU: 2x points costs more than halved scalars
+    public var useGPUSort = false  // Use GPU sorting kernels instead of CPU (experimental)
     private let tuning: TuningConfig
 
     public static let cacheDir = FileManager.default.homeDirectoryForCurrentUser
@@ -291,6 +293,9 @@ public class Secp256k1MSM {
                 length: MemoryLayout<UInt32>.stride * nb * nw, options: .storageModeShared)
             signedDigitBuffer = device.makeBuffer(
                 length: MemoryLayout<UInt32>.stride * np * nw, options: .storageModeShared)
+            // GPU scalars buffer: n * 8 uint32s for GPU signed-digit extract kernel
+            scalarsGPUBuffer = device.makeBuffer(
+                length: MemoryLayout<UInt32>.stride * np * 8, options: .storageModeShared)
             maxAllocatedPoints = np
             maxAllocatedBuckets = nb
             maxAllocatedWindows = nw
@@ -577,8 +582,201 @@ public class Secp256k1MSM {
         let countsBase = cpuCountsPtr!
         let positionsBase = cpuPositionsPtr!
 
-        // CPU signed-digit extraction (works for both GLV and non-GLV)
+        // activeScalars is used by both GPU and CPU paths
         let activeScalars = glvScalars ?? centeredScalars ?? msmScalars
+
+        // GPU sort path: use GPU kernels for extraction and counting sort
+        if useGPUSort && effectiveN >= 4096 && nWindows >= 2 {
+            // scalarsGPUBuffer and signedDigitBuffer are class properties (optional)
+            // The rest are shadowed local variables from guard let (non-optional)
+            let scalarsGPUBuf = scalarsGPUBuffer!
+            let digitsBuf = signedDigitBuffer!
+            // countsBuf, sortedIdxBuf, csmBuf are already non-optional (shadowed)
+            let countsBuf = allCountsBuffer
+            let sortedIdxBuf = sortedIndicesBuffer
+            let csmBuf = countSortedMapBuffer
+
+            // Copy scalars to GPU buffer
+            let scalarByteCount = effectiveN * 8 * MemoryLayout<UInt32>.stride
+            _ = scalarByteCount  // suppress unused warning
+            activeScalars.withUnsafeBufferPointer { scalarsArrayBuf in
+                let gpuScalarsPtr = scalarsGPUBuf.contents().bindMemory(to: UInt32.self, capacity: effectiveN * 8)
+                for i in 0..<effectiveN {
+                    scalarsArrayBuf[i].withUnsafeBufferPointer { sp in
+                        memcpy(gpuScalarsPtr + i * 8, sp.baseAddress!, 32)
+                    }
+                }
+            }
+
+            guard let cb = commandQueue.makeCommandBuffer() else {
+                throw MSMError.noCommandBuffer
+            }
+
+            // Phase 1: GPU signed-digit extraction
+            do {
+                let enc = cb.makeComputeCommandEncoder()!
+                enc.setComputePipelineState(signedDigitFunction)
+                enc.setBuffer(scalarsGPUBuf, offset: 0, index: 0)
+                enc.setBuffer(digitsBuf, offset: 0, index: 1)
+                var nPts = UInt32(effectiveN)
+                var wb = windowBits
+                var nWin = UInt32(nWindows)
+                enc.setBytes(&nPts, length: 4, index: 2)
+                enc.setBytes(&wb, length: 4, index: 3)
+                enc.setBytes(&nWin, length: 4, index: 4)
+                enc.dispatchThreads(
+                    MTLSize(width: effectiveN, height: 1, depth: 1),
+                    threadsPerThreadgroup: MTLSize(width: min(256, effectiveN), height: 1, depth: 1))
+                enc.endEncoding()
+            }
+
+            // Phase 2: GPU histogram (zero counts first via CPU, then GPU adds to them)
+            let countsPtr = countsBuf.contents().bindMemory(to: UInt32.self, capacity: nBuckets * nWindows)
+            for i in 0..<nBuckets * nWindows { countsPtr[i] = 0 }
+
+            do {
+                let enc = cb.makeComputeCommandEncoder()!
+                enc.setComputePipelineState(gpuSortHistogramFunction)
+                enc.setBuffer(digitsBuf, offset: 0, index: 0)
+                enc.setBuffer(countsBuf, offset: 0, index: 1)
+                var nPts = UInt32(effectiveN)
+                var nBkts = UInt32(nBuckets)
+                var nWin = UInt32(nWindows)
+                enc.setBytes(&nPts, length: 4, index: 2)
+                enc.setBytes(&nBkts, length: 4, index: 3)
+                enc.setBytes(&nWin, length: 4, index: 4)
+                enc.dispatchThreads(
+                    MTLSize(width: effectiveN * nWindows, height: 1, depth: 1),
+                    threadsPerThreadgroup: MTLSize(width: min(256, effectiveN * nWindows), height: 1, depth: 1))
+                enc.endEncoding()
+            }
+
+            // Phase 3: GPU scatter
+            do {
+                let enc = cb.makeComputeCommandEncoder()!
+                enc.setComputePipelineState(gpuSortScatterFunction)
+                enc.setBuffer(digitsBuf, offset: 0, index: 0)
+                enc.setBuffer(sortedIdxBuf, offset: 0, index: 1)
+                enc.setBuffer(countsBuf, offset: 0, index: 2)
+                var nPts = UInt32(effectiveN)
+                var nBkts = UInt32(nBuckets)
+                var nWin = UInt32(nWindows)
+                enc.setBytes(&nPts, length: 4, index: 3)
+                enc.setBytes(&nBkts, length: 4, index: 4)
+                enc.setBytes(&nWin, length: 4, index: 5)
+                enc.dispatchThreads(
+                    MTLSize(width: effectiveN * nWindows, height: 1, depth: 1),
+                    threadsPerThreadgroup: MTLSize(width: min(256, effectiveN * nWindows), height: 1, depth: 1))
+                enc.endEncoding()
+            }
+
+            // Phase 4: GPU build count-sorted map
+            do {
+                let enc = cb.makeComputeCommandEncoder()!
+                enc.setComputePipelineState(gpuBuildCsmFunction)
+                enc.setBuffer(countsBuf, offset: 0, index: 0)
+                enc.setBuffer(csmBuf, offset: 0, index: 1)
+                enc.setBuffer(countsBuf, offset: 0, index: 2)  // reuse counts as offsets output
+                var nBkts = UInt32(nBuckets)
+                var nWin = UInt32(nWindows)
+                enc.setBytes(&nBkts, length: 4, index: 3)
+                enc.setBytes(&nWin, length: 4, index: 4)
+                enc.dispatchThreads(
+                    MTLSize(width: nWindows, height: 1, depth: 1),
+                    threadsPerThreadgroup: MTLSize(width: min(256, nWindows), height: 1, depth: 1))
+                enc.endEncoding()
+            }
+
+            cb.commit()
+            cb.waitUntilCompleted()
+
+            // Skip CPU extraction and counting sort - go directly to GPU reduction
+            guard let cb2 = commandQueue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
+
+            // Phase 1: Reduce sorted buckets
+            do {
+                let enc = cb2.makeComputeCommandEncoder()!
+                let numBucketsTotal = nWindows * nBuckets
+                if nBuckets <= 1024 {
+                    enc.setComputePipelineState(reduceWarpPerBucketFunction)
+                    enc.setBuffer(pointsBuffer, offset: 0, index: 0)
+                    enc.setBuffer(bucketsBuffer, offset: 0, index: 1)
+                    enc.setBuffer(allOffsetsBuffer, offset: 0, index: 2)
+                    enc.setBuffer(allCountsBuffer, offset: 0, index: 3)
+                    enc.setBytes(&params, length: MemoryLayout<SecpMsmParamsSwift>.stride, index: 4)
+                    var nw = UInt32(nWindows)
+                    enc.setBytes(&nw, length: MemoryLayout<UInt32>.stride, index: 5)
+                    enc.setBuffer(sortedIndicesBuffer, offset: 0, index: 6)
+                    enc.setBuffer(countSortedMapBuffer, offset: 0, index: 7)
+                    enc.dispatchThreadgroups(
+                        MTLSize(width: numBucketsTotal, height: 1, depth: 1),
+                        threadsPerThreadgroup: MTLSize(width: 32, height: 1, depth: 1))
+                } else {
+                    enc.setComputePipelineState(reduceSharedMemFunction)
+                    enc.setBuffer(pointsBuffer, offset: 0, index: 0)
+                    enc.setBuffer(bucketsBuffer, offset: 0, index: 1)
+                    enc.setBuffer(allOffsetsBuffer, offset: 0, index: 2)
+                    enc.setBuffer(allCountsBuffer, offset: 0, index: 3)
+                    enc.setBytes(&params, length: MemoryLayout<SecpMsmParamsSwift>.stride, index: 4)
+                    var nw = UInt32(nWindows)
+                    enc.setBytes(&nw, length: MemoryLayout<UInt32>.stride, index: 5)
+                    enc.setBuffer(sortedIndicesBuffer, offset: 0, index: 6)
+                    enc.setBuffer(countSortedMapBuffer, offset: 0, index: 7)
+                    enc.dispatchThreadgroups(
+                        MTLSize(width: numBucketsTotal, height: 1, depth: 1),
+                        threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
+                }
+                enc.endEncoding()
+            }
+
+            // Phase 2: Bucket sum + combine
+            do {
+                var nWinsBatch = UInt32(nWindows)
+                let enc = cb2.makeComputeCommandEncoder()!
+                enc.setComputePipelineState(bucketSumDirectFunction)
+                enc.setBuffer(bucketsBuffer, offset: 0, index: 0)
+                enc.setBuffer(segmentResultsBuffer, offset: 0, index: 1)
+                enc.setBytes(&params, length: MemoryLayout<SecpMsmParamsSwift>.stride, index: 2)
+                enc.setBytes(&nSegs, length: MemoryLayout<UInt32>.stride, index: 3)
+                enc.setBytes(&nWinsBatch, length: MemoryLayout<UInt32>.stride, index: 4)
+                let totalSegments = nSegments * nWindows
+                enc.dispatchThreads(
+                    MTLSize(width: totalSegments, height: 1, depth: 1),
+                    threadsPerThreadgroup: MTLSize(width: min(tuning.msmThreadgroupSize, totalSegments), height: 1, depth: 1))
+                enc.memoryBarrier(scope: .buffers)
+
+                enc.setComputePipelineState(combineSegmentsFunction)
+                enc.setBuffer(segmentResultsBuffer, offset: 0, index: 0)
+                enc.setBuffer(windowResultsBuffer, offset: 0, index: 1)
+                enc.setBytes(&nSegs, length: MemoryLayout<UInt32>.stride, index: 2)
+                enc.dispatchThreads(
+                    MTLSize(width: nWindows, height: 1, depth: 1),
+                    threadsPerThreadgroup: MTLSize(width: min(tuning.msmThreadgroupSize, nWindows), height: 1, depth: 1))
+                enc.endEncoding()
+            }
+            cb2.commit()
+            cb2.waitUntilCompleted()
+
+            if let error = cb2.error { throw MSMError.gpuError(error.localizedDescription) }
+
+            let winResultsPtr = windowResultsBuffer.contents().bindMemory(to: SecpPointProjective.self, capacity: nWindows)
+            var windowResults = [SecpPointProjective](repeating: secpPointIdentity(), count: nWindows)
+            for w in 0..<nWindows {
+                windowResults[w] = winResultsPtr[w]
+            }
+
+            var result = windowResults.last!
+            for w in stride(from: nWindows - 2, through: 0, by: -1) {
+                for _ in 0..<windowBits {
+                    result = secpPointDouble(result)
+                }
+                result = secpPointAdd(result, windowResults[w])
+            }
+            return result
+        }
+
+        // CPU signed-digit extraction (works for both GLV and non-GLV)
+        // Note: activeScalars is declared above for GPU sort compatibility
         do {
             let sdNeeded = effectiveN * nWindows
             if sdNeeded > signedDigitCapacity {
