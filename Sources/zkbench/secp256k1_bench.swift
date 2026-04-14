@@ -460,6 +460,72 @@ public func runSecp256k1MSMBench() {
             print("  C Pippenger correctness: \(match ? "PASS" : "FAIL")")
         }
 
+        // NAF reference implementation test
+        do {
+            print("\n--- NAF Reference Implementation ---")
+
+            // Test NAF MSM vs C Pippenger for various sizes
+            let nafTestSizes = [1, 2, 4, 8, 16]
+            for testN in nafTestSizes {
+                let testPts = Array(allPoints.prefix(testN))
+                let testScls = Array(allScalars.prefix(testN))
+                let cResult = cSecpPippengerMSM(points: testPts, scalars: testScls)
+                let nafResult = Secp256k1MSM.nafMSM(points: testPts, scalars: testScls)
+                let cAff = secpPointToAffine(cResult)
+                let nafAff = secpPointToAffine(nafResult)
+                let match = secpToInt(cAff.x) == secpToInt(nafAff.x) &&
+                            secpToInt(cAff.y) == secpToInt(nafAff.y)
+                print("  NAF vs C Pippenger n=\(testN): \(match ? "PASS" : "FAIL")")
+                if !match {
+                    print("    C result: x=\(secpToInt(cAff.x))")
+                    print("    NAF result: x=\(secpToInt(nafAff.x))")
+                }
+            }
+        }
+
+        // Batch NAF MSM correctness test
+        do {
+            print("\n--- Batch NAF MSM Correctness ---")
+
+            // Test NAF batch MSM vs C Pippenger for M=2
+            let M = 2
+            let B = 4
+            let testN = M * B
+            let testPts = Array(allPoints.prefix(testN))
+            let testScls = Array(allScalars.prefix(testN))
+
+            // Reference: C Pippenger for each MSM separately
+            var refResults = [SecpPointProjective]()
+            for b in 0..<B {
+                let pts = Array(testPts[b*M..<(b+1)*M])
+                let scs = Array(testScls[b*M..<(b+1)*M])
+                refResults.append(cSecpPippengerMSM(points: pts, scalars: scs))
+            }
+
+            // NAF batch GPU MSM
+            do {
+                let nafResults = try engine.batchNAFMSM(allPoints: testPts, allScalars: testScls, M: M, B: B)
+                var allMatch = true
+                for b in 0..<B {
+                    let refAff = secpPointToAffine(refResults[b])
+                    let nafAff = secpPointToAffine(nafResults[b])
+                    let match = secpToInt(refAff.x) == secpToInt(nafAff.x) &&
+                                secpToInt(refAff.y) == secpToInt(nafAff.y)
+                    if !match { allMatch = false }
+                    print("  NAF batch M=\(M) B=\(B) [\(b)]: \(match ? "PASS" : "FAIL")")
+                    if !match {
+                        print("    Expected: x=\(secpToInt(refAff.x))")
+                        print("    Got:      x=\(secpToInt(nafAff.x))")
+                    }
+                }
+                if allMatch {
+                    print("  All NAF batch tests PASS")
+                }
+            } catch {
+                print("  NAF batch MSM error: \(error)")
+            }
+        }
+
         // Batch MSM correctness test (small MSMs)
         do {
             print("\n--- Batch MSM Correctness ---")

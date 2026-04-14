@@ -118,6 +118,9 @@ public class SupernovaProver {
     /// Pedersen parameters for witness commitment
     public let pp: PedersenParams
 
+    /// GPU sparse matvec engine for CSR matrix-vector products.
+    private let sparseMatvecEngine: GPUSparseMatvecEngine?
+
     /// Initialize with multiple circuit shapes.
     public init(shapes: [NovaR1CSShape]) {
         self.shapes = shapes
@@ -126,12 +129,14 @@ public class SupernovaProver {
         let maxConstraints = shapes.map { $0.numConstraints }.max() ?? 1
         let maxSize = max(maxWitness, maxConstraints)
         self.pp = PedersenParams.generate(size: max(maxSize, 1))
+        self.sparseMatvecEngine = try? GPUSparseMatvecEngine()
     }
 
     /// Initialize with pre-generated Pedersen parameters.
     public init(shapes: [NovaR1CSShape], pp: PedersenParams) {
         self.shapes = shapes
         self.pp = pp
+        self.sparseMatvecEngine = try? GPUSparseMatvecEngine()
     }
 
     // MARK: - Initialize (Base Case)
@@ -185,11 +190,17 @@ public class SupernovaProver {
                                 shape: shapeRunning)
         let z2 = buildFreshZ(x: newPublicInput, witness: newWitness, shape: shapeNew)
 
+        let useGPU = sparseMatvecEngine != nil
+
         // Fused matvec for running circuit when matrices share sparsity pattern (~2x faster)
         let Az1: [Fr]
         let Bz1: [Fr]
         let Cz1: [Fr]
-        if shapeRunning.matricesSharePattern {
+        if useGPU && shapeRunning.matricesSharePattern {
+            let (a1, b1, c1) = shapeRunning.A.mulVecTripleGPU(z1, shapeRunning.B, shapeRunning.C,
+                                                               engine: sparseMatvecEngine)
+            (Az1, Bz1, Cz1) = (a1, b1, c1)
+        } else if shapeRunning.matricesSharePattern {
             let (a1, b1, c1) = shapeRunning.mulVecABC(z1)
             (Az1, Bz1, Cz1) = (a1, b1, c1)
         } else {
@@ -202,7 +213,11 @@ public class SupernovaProver {
         let Az2: [Fr]
         let Bz2: [Fr]
         let Cz2: [Fr]
-        if shapeNew.matricesSharePattern {
+        if useGPU && shapeNew.matricesSharePattern {
+            let (a2, b2, c2) = shapeNew.A.mulVecTripleGPU(z2, shapeNew.B, shapeNew.C,
+                                                           engine: sparseMatvecEngine)
+            (Az2, Bz2, Cz2) = (a2, b2, c2)
+        } else if shapeNew.matricesSharePattern {
             let (a2, b2, c2) = shapeNew.mulVecABC(z2)
             (Az2, Bz2, Cz2) = (a2, b2, c2)
         } else {
@@ -256,11 +271,17 @@ public class SupernovaProver {
                                 shape: shapeRunning)
         let z2 = buildFreshZ(x: newPublicInput, witness: newWitness, shape: shapeNew)
 
+        let useGPU = sparseMatvecEngine != nil
+
         // Fused matvec for running circuit when matrices share sparsity pattern
         let Az1: [Fr]
         let Bz1: [Fr]
         let Cz1: [Fr]
-        if shapeRunning.matricesSharePattern {
+        if useGPU && shapeRunning.matricesSharePattern {
+            let (a1, b1, c1) = shapeRunning.A.mulVecTripleGPU(z1, shapeRunning.B, shapeRunning.C,
+                                                               engine: sparseMatvecEngine)
+            (Az1, Bz1, Cz1) = (a1, b1, c1)
+        } else if shapeRunning.matricesSharePattern {
             let (a1, b1, c1) = shapeRunning.mulVecABC(z1)
             (Az1, Bz1, Cz1) = (a1, b1, c1)
         } else {
@@ -273,7 +294,11 @@ public class SupernovaProver {
         let Az2: [Fr]
         let Bz2: [Fr]
         let Cz2: [Fr]
-        if shapeNew.matricesSharePattern {
+        if useGPU && shapeNew.matricesSharePattern {
+            let (a2, b2, c2) = shapeNew.A.mulVecTripleGPU(z2, shapeNew.B, shapeNew.C,
+                                                           engine: sparseMatvecEngine)
+            (Az2, Bz2, Cz2) = (a2, b2, c2)
+        } else if shapeNew.matricesSharePattern {
             let (a2, b2, c2) = shapeNew.mulVecABC(z2)
             (Az2, Bz2, Cz2) = (a2, b2, c2)
         } else {

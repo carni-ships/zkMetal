@@ -23,6 +23,7 @@ let allTests: [(String, () -> Void)] = [
     ("groth16prover", runGroth16ProverTests),
     ("unifiedlookup", runUnifiedLookupTests),
     ("multimsm", runMultiMSMTests),
+    ("secp256k1batchmsm", runSecp256k1BatchMSMTests),
     ("witnessgen", runWitnessGenTests),
     ("protogalaxy", runProtogalaxyTests),
     ("ivc", runIVCTests),

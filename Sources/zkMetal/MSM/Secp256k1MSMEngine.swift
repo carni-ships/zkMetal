@@ -60,6 +60,7 @@ public class Secp256k1MSM {
     public var windowBitsOverride: UInt32?
     public var useGLV = false  // GLV regresses on M3 GPU: 2x points costs more than halved scalars
     public var useGPUSort = false  // Use GPU sorting kernels instead of CPU (experimental)
+    public var useBucketInterleaved = true  // Pre-sort points into bucket-interleaved layout for improved memory coalescing
     private let tuning: TuningConfig
 
     public static let cacheDir = FileManager.default.homeDirectoryForCurrentUser
@@ -651,40 +652,162 @@ public class Secp256k1MSM {
                 enc.endEncoding()
             }
 
-            // Phase 3: GPU scatter
-            do {
-                let enc = cb.makeComputeCommandEncoder()!
-                enc.setComputePipelineState(gpuSortScatterFunction)
-                enc.setBuffer(digitsBuf, offset: 0, index: 0)
-                enc.setBuffer(sortedIdxBuf, offset: 0, index: 1)
-                enc.setBuffer(countsBuf, offset: 0, index: 2)
-                var nPts = UInt32(effectiveN)
-                var nBkts = UInt32(nBuckets)
-                var nWin = UInt32(nWindows)
-                enc.setBytes(&nPts, length: 4, index: 3)
-                enc.setBytes(&nBkts, length: 4, index: 4)
-                enc.setBytes(&nWin, length: 4, index: 5)
-                enc.dispatchThreads(
-                    MTLSize(width: effectiveN * nWindows, height: 1, depth: 1),
-                    threadsPerThreadgroup: MTLSize(width: min(256, effectiveN * nWindows), height: 1, depth: 1))
-                enc.endEncoding()
-            }
+            cb.commit()
+            cb.waitUntilCompleted()
 
-            // Phase 4: GPU build count-sorted map
-            do {
-                let enc = cb.makeComputeCommandEncoder()!
-                enc.setComputePipelineState(gpuBuildCsmFunction)
-                enc.setBuffer(countsBuf, offset: 0, index: 0)
-                enc.setBuffer(csmBuf, offset: 0, index: 1)
-                enc.setBuffer(countsBuf, offset: 0, index: 2)  // reuse counts as offsets output
-                var nBkts = UInt32(nBuckets)
-                var nWin = UInt32(nWindows)
-                enc.setBytes(&nBkts, length: 4, index: 3)
-                enc.setBytes(&nWin, length: 4, index: 4)
-                enc.dispatchThreads(
-                    MTLSize(width: nWindows, height: 1, depth: 1),
-                    threadsPerThreadgroup: MTLSize(width: min(256, nWindows), height: 1, depth: 1))
-                enc.endEncoding()
+            // Phase 3: Bucket-interleaved sort on CPU
+            // This replaces GPU scatter with CPU computation that produces indices in index order
+            // (GPU scatter writes in arrival order due to atomic contention, which differs from CPU sort)
+            if useBucketInterleaved {
+                // Read digits back from GPU for CPU sorting
+                let digitsPtr = digitsBuf.contents().bindMemory(to: UInt32.self, capacity: effectiveN * nWindows)
+                var digitsLocal = [UInt32](repeating: 0, count: effectiveN * nWindows)
+                for i in 0..<effectiveN * nWindows {
+                    digitsLocal[i] = digitsPtr[i]
+                }
+
+                // Compute bucket-interleaved sorted_indices on CPU
+                // For each window w:
+                //   - All bucket-0 points first (in index order: 0, 1, 2, ...)
+                //   - Then all bucket-1 points (in index order)
+                //   - etc.
+                let sortedIdxLocal = sortedIdxBuf.contents().bindMemory(to: UInt32.self, capacity: effectiveN * nWindows)
+
+                // Compute per-bucket counts and prefix sums
+                var bucketCounts = [UInt32](repeating: 0, count: nBuckets * nWindows)
+                var bucketPositions = [UInt32](repeating: 0, count: nBuckets * nWindows)
+
+                // Count buckets
+                for w in 0..<nWindows {
+                    let wOff = w * nBuckets
+                    let idxBase = w * effectiveN
+                    for i in 0..<effectiveN {
+                        let raw = digitsLocal[idxBase + i]
+                        let digit = Int(raw & 0x7FFFFFFF)
+                        if digit > 0 {
+                            bucketCounts[wOff + digit] += 1
+                        }
+                    }
+                }
+
+                // Prefix sum to get positions (bucket-interleaved: bucket 0 first, then bucket 1, etc.)
+                for w in 0..<nWindows {
+                    let wOff = w * nBuckets
+                    var runningOffset: UInt32 = 0
+                    for b in 0..<nBuckets {
+                        bucketPositions[wOff + b] = runningOffset
+                        runningOffset += bucketCounts[wOff + b]
+                    }
+                }
+
+                // Scatter indices in bucket-interleaved order (index order within each bucket)
+                for w in 0..<nWindows {
+                    let wOff = w * nBuckets
+                    let idxBase = w * effectiveN
+                    for i in 0..<effectiveN {
+                        let raw = digitsLocal[idxBase + i]
+                        let digit = Int(raw & 0x7FFFFFFF)
+                        if digit == 0 { continue }
+                        var idx = UInt32(i)
+                        if (raw & 0x80000000) != 0 { idx |= 0x80000000 }
+                        let pos = Int(bucketPositions[wOff + digit])
+                        sortedIdxLocal[idxBase + pos] = idx
+                        bucketPositions[wOff + digit] += 1
+                    }
+                }
+
+                // Update counts buffer with bucket counts (needed for reduce phase)
+                for i in 0..<nBuckets * nWindows {
+                    countsPtr[i] = bucketCounts[i]
+                }
+
+                // Copy bucket positions to allOffsetsBuffer (needed by reduce kernel)
+                let offsetsPtr = allOffsetsBuffer.contents().bindMemory(to: UInt32.self, capacity: nBuckets * nWindows)
+                for i in 0..<nBuckets * nWindows {
+                    offsetsPtr[i] = bucketPositions[i]
+                }
+
+                // Compute count-sorted map (csm) on CPU
+                // This maps from output position to original bucket/window for SIMD coherence
+                // Matches the GPU secp_msm_build_csm kernel logic
+                let csmLocal = csmBuf.contents().bindMemory(to: UInt32.self, capacity: nBuckets * nWindows)
+                for w in 0..<nWindows {
+                    let wOff = w * nBuckets
+
+                    // Find max count
+                    var maxCount: UInt32 = 0
+                    for i in 0..<nBuckets {
+                        let c = bucketCounts[wOff + i]
+                        if c > maxCount { maxCount = c }
+                    }
+
+                    // Initialize csm[0..maxCount] = 0
+                    for i in 0...Int(maxCount) where i < nBuckets {
+                        csmLocal[wOff + i] = 0
+                    }
+
+                    // Count how many buckets have each count value
+                    for i in 0..<nBuckets {
+                        let c = bucketCounts[wOff + i]
+                        if Int(c) < nBuckets {
+                            csmLocal[wOff + Int(c)] += 1
+                        }
+                    }
+
+                    // Prefix sum: running = 0; for c = maxCount down to 0: csm[c] = running; running += old_csm[c]
+                    var running: UInt32 = 0
+                    for c in stride(from: Int(maxCount), through: 0, by: -1) {
+                        let cnt = csmLocal[wOff + c]
+                        csmLocal[wOff + c] = running
+                        running += cnt
+                    }
+
+                    // Build csm: for each bucket i, place it at offsets[count[i]]
+                    for i in 0..<nBuckets {
+                        let c = Int(bucketCounts[wOff + i])
+                        if c < nBuckets {
+                            let dest = Int(csmLocal[wOff + c])
+                            csmLocal[wOff + dest] = UInt32(w << 16) | UInt32(i)
+                            csmLocal[wOff + c] = UInt32(dest + 1)  // update offset for next bucket with same count
+                        }
+                    }
+                }
+            } else {
+                // Phase 3: GPU scatter (original path)
+                do {
+                    let enc = cb.makeComputeCommandEncoder()!
+                    enc.setComputePipelineState(gpuSortScatterFunction)
+                    enc.setBuffer(digitsBuf, offset: 0, index: 0)
+                    enc.setBuffer(sortedIdxBuf, offset: 0, index: 1)
+                    enc.setBuffer(countsBuf, offset: 0, index: 2)
+                    var nPts = UInt32(effectiveN)
+                    var nBkts = UInt32(nBuckets)
+                    var nWin = UInt32(nWindows)
+                    enc.setBytes(&nPts, length: 4, index: 3)
+                    enc.setBytes(&nBkts, length: 4, index: 4)
+                    enc.setBytes(&nWin, length: 4, index: 5)
+                    enc.dispatchThreads(
+                        MTLSize(width: effectiveN * nWindows, height: 1, depth: 1),
+                        threadsPerThreadgroup: MTLSize(width: min(256, effectiveN * nWindows), height: 1, depth: 1))
+                    enc.endEncoding()
+                }
+
+                // Phase 4: GPU build count-sorted map
+                do {
+                    let enc = cb.makeComputeCommandEncoder()!
+                    enc.setComputePipelineState(gpuBuildCsmFunction)
+                    enc.setBuffer(countsBuf, offset: 0, index: 0)
+                    enc.setBuffer(csmBuf, offset: 0, index: 1)
+                    enc.setBuffer(countsBuf, offset: 0, index: 2)  // reuse counts as offsets output
+                    var nBkts = UInt32(nBuckets)
+                    var nWin = UInt32(nWindows)
+                    enc.setBytes(&nBkts, length: 4, index: 3)
+                    enc.setBytes(&nWin, length: 4, index: 4)
+                    enc.dispatchThreads(
+                        MTLSize(width: nWindows, height: 1, depth: 1),
+                        threadsPerThreadgroup: MTLSize(width: min(256, nWindows), height: 1, depth: 1))
+                    enc.endEncoding()
+                }
             }
 
             cb.commit()

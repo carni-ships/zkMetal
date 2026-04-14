@@ -52,6 +52,8 @@ public class GPUNovaFoldEngine {
 
     /// GPU inner product engine for cross-term computation.
     private let ipEngine: GPUInnerProductEngine?
+    /// GPU sparse matvec engine for CSR matrix-vector products.
+    private let sparseMatvecEngine: GPUSparseMatvecEngine?
     /// Whether to use GPU (falls back to CPU if Metal unavailable).
     public let gpuAvailable: Bool
 
@@ -73,6 +75,8 @@ public class GPUNovaFoldEngine {
             self.ipEngine = nil
             self.gpuAvailable = false
         }
+
+        self.sparseMatvecEngine = try? GPUSparseMatvecEngine()
     }
 
     /// Initialize with pre-generated Pedersen parameters.
@@ -88,6 +92,8 @@ public class GPUNovaFoldEngine {
             self.ipEngine = nil
             self.gpuAvailable = false
         }
+
+        self.sparseMatvecEngine = try? GPUSparseMatvecEngine()
     }
 
     // MARK: - Initialize (base case)
@@ -117,7 +123,8 @@ public class GPUNovaFoldEngine {
     ///
     /// T[i] = Az1[i]*Bz2[i] + Az2[i]*Bz1[i] - u1*Cz2[i] - Cz1[i]
     ///
-    /// Uses GPU inner product engine for large vectors, CPU for small.
+    /// Uses GPU sparse matvec engine for CSR matrices when available and beneficial.
+    /// Falls back to CPU for small matrices or when GPU is unavailable.
     public func computeCrossTerm(
         runningInstance: NovaRelaxedInstance,
         runningWitness: NovaRelaxedWitness,
@@ -130,6 +137,9 @@ public class GPUNovaFoldEngine {
             witness: NovaR1CSWitness(W: runningWitness.W))
         let z2 = shape.buildZ(instance: newInstance, witness: newWitness)
 
+        let m = shape.numConstraints
+        let useGPU = sparseMatvecEngine != nil && m >= (sparseMatvecEngine?.cpuThreshold ?? 64)
+
         // Fused matvec when matrices share sparsity pattern (~2x faster for structured-sparse)
         let az1: [Fr]
         let bz1: [Fr]
@@ -137,7 +147,15 @@ public class GPUNovaFoldEngine {
         let az2: [Fr]
         let bz2: [Fr]
         let cz2: [Fr]
-        if shape.matricesSharePattern {
+
+        if useGPU && shape.matricesSharePattern {
+            // GPU path: use fused triple matvec
+            let (a1, b1, c1) = shape.A.mulVecTripleGPU(z1, shape.B, shape.C,
+                                                        engine: sparseMatvecEngine)
+            let (a2, b2, c2) = shape.A.mulVecTripleGPU(z2, shape.B, shape.C,
+                                                        engine: sparseMatvecEngine)
+            (az1, bz1, cz1, az2, bz2, cz2) = (a1, b1, c1, a2, b2, c2)
+        } else if shape.matricesSharePattern {
             let (a1, b1, c1) = shape.mulVecABC(z1)
             let (a2, b2, c2) = shape.mulVecABC(z2)
             (az1, bz1, cz1, az2, bz2, cz2) = (a1, b1, c1, a2, b2, c2)
@@ -150,7 +168,6 @@ public class GPUNovaFoldEngine {
             cz2 = shape.C.mulVec(z2)
         }
 
-        let m = shape.numConstraints
         var T = [Fr](repeating: .zero, count: m)
 
         if m >= 4 {
