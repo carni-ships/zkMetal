@@ -68,6 +68,17 @@ inline SecpPointProjective simd_shuffle_down_secp_point(SecpPointProjective p, u
     return r;
 }
 
+// SIMD shuffle xor helper for tree reduction (pairs lanes i and i^offset)
+inline SecpPointProjective simd_shuffle_xor_secp_point(SecpPointProjective p, uint offset) {
+    SecpPointProjective r;
+    for (int k = 0; k < SECP_LIMBS; k++) {
+        r.x.v[k] = simd_shuffle_xor(p.x.v[k], offset);
+        r.y.v[k] = simd_shuffle_xor(p.y.v[k], offset);
+        r.z.v[k] = simd_shuffle_xor(p.z.v[k], offset);
+    }
+    return r;
+}
+
 // Phase 1b: Warp-per-bucket — one warp (32 threads) per bucket.
 // Designed for n_buckets <= 1024 where total warps (n_buckets * n_windows / 32)
 // is small enough to avoid excessive threadgroup scheduling overhead.
@@ -181,6 +192,159 @@ kernel void secp_msm_reduce_cooperative(
             } else if (!secp_point_is_identity(other)) {
                 acc = secp_point_add_unsafe(acc, other);
             }
+        }
+    }
+
+    if (lid == 0) buckets[flat_idx] = acc;
+}
+
+// Phase 1d: Shared memory reduction — 256 threads per bucket for large buckets.
+// Higher radix (2^8) with warp-per-bucket using shared memory parallel reduction.
+// Tree reduction: 256->128->64->32->16->8->4->2->1.
+// This eliminates SIMD shuffle overhead for buckets with many points.
+kernel void secp_msm_reduce_shared_mem(
+    device const SecpPointAffine* points    [[buffer(0)]],
+    device SecpPointProjective* buckets     [[buffer(1)]],
+    device const uint* bucket_offsets       [[buffer(2)]],
+    device const uint* bucket_counts        [[buffer(3)]],
+    constant SecpMsmParams& params          [[buffer(4)]],
+    constant uint& n_windows               [[buffer(5)]],
+    device const uint* sorted_indices       [[buffer(6)]],
+    device const uint* count_sorted_map     [[buffer(7)]],
+    uint tgid                              [[threadgroup_position_in_grid]],
+    uint lid                               [[thread_index_in_threadgroup]]
+) {
+    uint total = params.n_buckets * n_windows;
+    if (tgid >= total) return;
+
+    uint orig_pos = count_sorted_map[tgid];
+    uint orig_bucket = orig_pos & 0xFFFFu;
+    uint orig_window = orig_pos >> 16u;
+    uint flat_idx = orig_window * params.n_buckets + orig_bucket;
+
+    if (orig_bucket == 0 || bucket_counts[flat_idx] == 0) {
+        if (lid == 0) buckets[flat_idx] = secp_point_identity();
+        return;
+    }
+
+    uint count = bucket_counts[flat_idx];
+    uint base = orig_window * params.n_points;
+    uint offset = bucket_offsets[flat_idx];
+
+    // Shared memory: 256 Projective points (256 * 96 = 24KB, within 32KB limit)
+    threadgroup SecpPointProjective s_buf[256];
+
+    // Phase A: Cooperative load into shared memory
+    // Each thread loads points at indices: lid, lid+256, lid+512, ...
+    // This distributes count points evenly across 256 threads
+    SecpPointProjective acc = secp_point_identity();
+    for (uint i = lid; i < count; i += 256) {
+        uint raw_idx = sorted_indices[base + offset + i];
+        SecpPointAffine pt = points[raw_idx & 0x7FFFFFFFu];
+        if (raw_idx & 0x80000000u) pt.y = secp_neg(pt.y);
+        if (secp_point_is_identity(acc)) {
+            acc = secp_point_from_affine(pt);
+        } else {
+            acc = secp_point_add_mixed_unsafe(acc, pt);
+        }
+    }
+
+    // Store partial result to shared memory
+    s_buf[lid] = acc;
+    threadgroup_barrier(mem_flags::mem_none);
+
+    // Phase B: Tree reduction using all 256 threads
+    // Level 0: 256 threads, offset=128, pairs (0,128), (1,129), ...
+    if (lid < 128) {
+        SecpPointProjective other = s_buf[lid ^ 128];
+        if (secp_point_is_identity(acc)) {
+            acc = other;
+        } else if (!secp_point_is_identity(other)) {
+            acc = secp_point_add_unsafe(acc, other);
+        }
+        s_buf[lid] = acc;
+    }
+    threadgroup_barrier(mem_flags::mem_none);
+
+    // Level 1: 128 threads, offset=64
+    if (lid < 64) {
+        SecpPointProjective other = s_buf[lid ^ 64];
+        if (secp_point_is_identity(acc)) {
+            acc = other;
+        } else if (!secp_point_is_identity(other)) {
+            acc = secp_point_add_unsafe(acc, other);
+        }
+        s_buf[lid] = acc;
+    }
+    threadgroup_barrier(mem_flags::mem_none);
+
+    // Level 2: 64 threads, offset=32
+    if (lid < 32) {
+        SecpPointProjective other = s_buf[lid ^ 32];
+        if (secp_point_is_identity(acc)) {
+            acc = other;
+        } else if (!secp_point_is_identity(other)) {
+            acc = secp_point_add_unsafe(acc, other);
+        }
+        s_buf[lid] = acc;
+    }
+    threadgroup_barrier(mem_flags::mem_none);
+
+    // Level 3: 32 threads, offset=16
+    if (lid < 16) {
+        SecpPointProjective other = s_buf[lid ^ 16];
+        if (secp_point_is_identity(acc)) {
+            acc = other;
+        } else if (!secp_point_is_identity(other)) {
+            acc = secp_point_add_unsafe(acc, other);
+        }
+        s_buf[lid] = acc;
+    }
+    threadgroup_barrier(mem_flags::mem_none);
+
+    // Level 4: 16 threads, offset=8
+    if (lid < 8) {
+        SecpPointProjective other = s_buf[lid ^ 8];
+        if (secp_point_is_identity(acc)) {
+            acc = other;
+        } else if (!secp_point_is_identity(other)) {
+            acc = secp_point_add_unsafe(acc, other);
+        }
+        s_buf[lid] = acc;
+    }
+    threadgroup_barrier(mem_flags::mem_none);
+
+    // Level 5: 8 threads, offset=4
+    if (lid < 4) {
+        SecpPointProjective other = s_buf[lid ^ 4];
+        if (secp_point_is_identity(acc)) {
+            acc = other;
+        } else if (!secp_point_is_identity(other)) {
+            acc = secp_point_add_unsafe(acc, other);
+        }
+        s_buf[lid] = acc;
+    }
+    threadgroup_barrier(mem_flags::mem_none);
+
+    // Level 6: 4 threads, offset=2
+    if (lid < 2) {
+        SecpPointProjective other = s_buf[lid ^ 2];
+        if (secp_point_is_identity(acc)) {
+            acc = other;
+        } else if (!secp_point_is_identity(other)) {
+            acc = secp_point_add_unsafe(acc, other);
+        }
+        s_buf[lid] = acc;
+    }
+    threadgroup_barrier(mem_flags::mem_none);
+
+    // Level 7: 2 threads, offset=1
+    if (lid < 1) {
+        SecpPointProjective other = s_buf[lid ^ 1];
+        if (secp_point_is_identity(acc)) {
+            acc = other;
+        } else if (!secp_point_is_identity(other)) {
+            acc = secp_point_add_unsafe(acc, other);
         }
     }
 
@@ -589,6 +753,141 @@ kernel void secp_msm_batch_small(
                 accumulator = window_result;
             } else {
                 accumulator = secp_point_add_unsafe(accumulator, window_result);
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_none);
+    }
+
+    // Write final result
+    if (lid == 0) {
+        results[b] = accumulator;
+    }
+}
+
+// ============================================================================
+// NAF Batch MSM Kernel — NAF representation for ~33% fewer point additions
+//
+// NAF (Non-Adjacent Form) produces digits -1, 0, +1 with at most n/3 non-zero
+// digits (vs n/2 for binary). This means ~33% fewer point additions.
+//
+// NAF encoding:
+//   Each NAF digit is stored as uint8: 0 = zero, 1 = +1, 2 = -1
+//   The NAF digits are precomputed on CPU since NAF extraction is sequential.
+//
+// Layout: all_naf_digits[b * M * 256 + i * 256 + bit] = NAF digit for point i at bit position
+//
+// Kernel structure:
+//   1. Load M points into shared memory
+//   2. For each bit position (0-255):
+//      - Threads cooperatively accumulate pos_acc and neg_acc
+//      - result = 2 * result + (pos_acc - neg_acc)
+//   3. Write final result
+//
+// Shared memory layout (fits within 32KB limit):
+//   - s_points[64]: 64 × 64 = 4KB
+//   - s_naf[64 * 256]: 64 × 256 × 1 = 16KB  (NAF digits)
+//   Total: ~20KB ✓
+// ============================================================================
+kernel void secp_msm_batch_small_naf(
+    device const SecpPointAffine* all_points       [[buffer(0)]],  // B × M points
+    device const uint8_t* all_naf_digits          [[buffer(1)]],  // B × M × 256 NAF digits
+    device SecpPointProjective* results           [[buffer(2)]],  // B results
+    constant uint& M                              [[buffer(3)]],  // points per MSM (≤64)
+    constant uint& B                              [[buffer(4)]],  // number of MSMs
+    uint tgid                                     [[threadgroup_position_in_grid]],
+    uint lid                                      [[thread_index_in_threadgroup]]
+) {
+    if (tgid >= B) return;
+
+    // NAF processes 256 bit positions
+    const uint NAF_BITS = 256;
+
+    // Shared memory: ~20KB total for M≤64
+    // s_points[64]: 64 × 64 = 4KB
+    // s_naf[64 * 256]: 64 × 256 × 1 = 16KB
+    threadgroup SecpPointAffine s_points[64];
+    threadgroup uint8_t s_naf[64 * 256];
+
+    uint b = tgid;
+
+    // Phase 1: Load points and NAF digits cooperatively
+    if (lid < M) {
+        uint idx = b * M + lid;
+        s_points[lid] = all_points[idx];
+
+        // Load NAF digits for this point (256 bytes)
+        uint naf_base = (b * M + lid) * NAF_BITS;
+        for (uint bit = 0; bit < NAF_BITS; bit++) {
+            s_naf[lid * NAF_BITS + bit] = all_naf_digits[naf_base + bit];
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_none);
+
+    // NAF MSM accumulation: result = Σ NAF_digit[i] * 2^i * P_i
+    // Process bit-by-bit: result = 2 * result + (pos_acc - neg_acc) at each bit
+    SecpPointProjective accumulator = secp_point_identity();
+
+    for (uint bit = 0; bit < NAF_BITS; bit++) {
+        // Phase 2: Initialize accumulators
+        SecpPointProjective pos_acc = secp_point_identity();
+        SecpPointProjective neg_acc = secp_point_identity();
+
+        // Phase 3: Accumulate points based on NAF digit
+        // Only lid==0 does accumulation to avoid races
+        if (lid == 0) {
+            for (uint i = 0; i < M; i++) {
+                // Get NAF digit for point i at bit position
+                uint8_t naf_digit = s_naf[i * NAF_BITS + bit];
+
+                if (naf_digit == 1) {
+                    // +1: add point
+                    if (secp_point_is_identity(pos_acc)) {
+                        pos_acc = secp_point_from_affine(s_points[i]);
+                    } else {
+                        pos_acc = secp_point_add_mixed(pos_acc, s_points[i]);
+                    }
+                } else if (naf_digit == 2) {
+                    // -1: add negated point
+                    SecpPointAffine neg_pt = s_points[i];
+                    neg_pt.y = secp_neg(neg_pt.y);
+                    if (secp_point_is_identity(neg_acc)) {
+                        neg_acc = secp_point_from_affine(neg_pt);
+                    } else {
+                        neg_acc = secp_point_add_mixed(neg_acc, neg_pt);
+                    }
+                }
+                // naf_digit == 0: skip
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_none);
+
+        // Phase 4: Compute bit contribution
+        // bit_result = pos_acc - neg_acc = pos_acc + (-neg_acc)
+        SecpPointProjective bit_result;
+        if (secp_point_is_identity(pos_acc)) {
+            bit_result = neg_acc;
+        } else if (secp_point_is_identity(neg_acc)) {
+            bit_result = pos_acc;
+        } else {
+            // neg_acc = -neg_acc by negating y of all points in it
+            // Actually we already negated during accumulation, so just add
+            bit_result = secp_point_add_unsafe(pos_acc, neg_acc);
+        }
+
+        // Phase 5: Accumulate into result
+        // result = 2 * result + bit_result
+        if (!secp_point_is_identity(bit_result)) {
+            // accumulator = 2 * accumulator + bit_result
+            if (!secp_point_is_identity(accumulator)) {
+                accumulator = secp_point_double(accumulator);
+                accumulator = secp_point_add_unsafe(accumulator, bit_result);
+            } else {
+                accumulator = bit_result;
+            }
+        } else {
+            // Just double the accumulator
+            if (!secp_point_is_identity(accumulator)) {
+                accumulator = secp_point_double(accumulator);
             }
         }
         threadgroup_barrier(mem_flags::mem_none);

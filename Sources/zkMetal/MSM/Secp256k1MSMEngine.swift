@@ -12,6 +12,7 @@ public class Secp256k1MSM {
     private let reduceSortedFunction: MTLComputePipelineState
     private let reduceWarpPerBucketFunction: MTLComputePipelineState
     private let reduceCooperativeFunction: MTLComputePipelineState
+    private let reduceSharedMemFunction: MTLComputePipelineState
     private let bucketSumDirectFunction: MTLComputePipelineState
     private let combineSegmentsFunction: MTLComputePipelineState
     private let hornerCombineFunction: MTLComputePipelineState
@@ -22,6 +23,7 @@ public class Secp256k1MSM {
     private let glvDecomposeFunction: MTLComputePipelineState
     private let glvEndomorphismFunction: MTLComputePipelineState
     private let batchMSMBatchFunction: MTLComputePipelineState
+    private let batchNAFBatchFunction: MTLComputePipelineState
 
     // Pre-allocated buffers
     private var maxAllocatedPoints = 0
@@ -77,9 +79,10 @@ public class Secp256k1MSM {
 
         let requiredKernels = [
             "secp_msm_reduce_sorted_buckets", "secp_msm_reduce_warp_per_bucket",
-            "secp_msm_bucket_sum_direct", "secp_msm_combine_segments",
-            "secp_msm_signed_digit_extract", "secp_glv_decompose",
-            "secp_glv_endomorphism", "secp_msm_batch_small"
+            "secp_msm_reduce_shared_mem", "secp_msm_bucket_sum_direct",
+            "secp_msm_combine_segments", "secp_msm_signed_digit_extract",
+            "secp_glv_decompose", "secp_glv_endomorphism",
+            "secp_msm_batch_small", "secp_msm_batch_small_naf"
         ]
         if FileManager.default.fileExists(atPath: cacheFile.path) {
             do {
@@ -99,6 +102,7 @@ public class Secp256k1MSM {
         guard let reduceSortedFn = library.makeFunction(name: "secp_msm_reduce_sorted_buckets"),
               let reduceWarpFn = library.makeFunction(name: "secp_msm_reduce_warp_per_bucket"),
               let reduceCoopFn = library.makeFunction(name: "secp_msm_reduce_cooperative"),
+              let reduceSharedMemFn = library.makeFunction(name: "secp_msm_reduce_shared_mem"),
               let sumDirectFn = library.makeFunction(name: "secp_msm_bucket_sum_direct"),
               let combineFn = library.makeFunction(name: "secp_msm_combine_segments"),
               let hornerFn = library.makeFunction(name: "secp_msm_horner_combine"),
@@ -108,13 +112,15 @@ public class Secp256k1MSM {
               let gpuBuildCsmFn = library.makeFunction(name: "secp_msm_build_csm"),
               let glvDecomposeFn = library.makeFunction(name: "secp_glv_decompose"),
               let glvEndoFn = library.makeFunction(name: "secp_glv_endomorphism"),
-              let batchMSMFn = library.makeFunction(name: "secp_msm_batch_small") else {
+              let batchMSMFn = library.makeFunction(name: "secp_msm_batch_small"),
+              let batchNAFFn = library.makeFunction(name: "secp_msm_batch_small_naf") else {
             throw MSMError.missingKernel
         }
 
         self.reduceSortedFunction = try device.makeComputePipelineState(function: reduceSortedFn)
         self.reduceWarpPerBucketFunction = try device.makeComputePipelineState(function: reduceWarpFn)
         self.reduceCooperativeFunction = try device.makeComputePipelineState(function: reduceCoopFn)
+        self.reduceSharedMemFunction = try device.makeComputePipelineState(function: reduceSharedMemFn)
         self.bucketSumDirectFunction = try device.makeComputePipelineState(function: sumDirectFn)
         self.combineSegmentsFunction = try device.makeComputePipelineState(function: combineFn)
         self.hornerCombineFunction = try device.makeComputePipelineState(function: hornerFn)
@@ -125,6 +131,7 @@ public class Secp256k1MSM {
         self.glvDecomposeFunction = try device.makeComputePipelineState(function: glvDecomposeFn)
         self.glvEndomorphismFunction = try device.makeComputePipelineState(function: glvEndoFn)
         self.batchMSMBatchFunction = try device.makeComputePipelineState(function: batchMSMFn)
+        self.batchNAFBatchFunction = try device.makeComputePipelineState(function: batchNAFFn)
         self.tuning = TuningManager.shared.config(device: device)
     }
 
@@ -796,8 +803,9 @@ public class Secp256k1MSM {
                     MTLSize(width: numBucketsTotal, height: 1, depth: 1),
                     threadsPerThreadgroup: MTLSize(width: 32, height: 1, depth: 1))
             } else {
-                // Thread-per-bucket sorted reduction
-                enc.setComputePipelineState(reduceSortedFunction)
+                // Shared memory reduction: 256 threads per bucket for large buckets
+                // Tree reduction in shared memory: 256->128->64->32->16->8->4->2->1
+                enc.setComputePipelineState(reduceSharedMemFunction)
                 enc.setBuffer(pointsBuffer, offset: 0, index: 0)
                 enc.setBuffer(bucketsBuffer, offset: 0, index: 1)
                 enc.setBuffer(allOffsetsBuffer, offset: 0, index: 2)
@@ -807,10 +815,10 @@ public class Secp256k1MSM {
                 enc.setBytes(&nw, length: MemoryLayout<UInt32>.stride, index: 5)
                 enc.setBuffer(sortedIndicesBuffer, offset: 0, index: 6)
                 enc.setBuffer(countSortedMapBuffer, offset: 0, index: 7)
-                let tg = min(tuning.msmThreadgroupSize, Int(reduceSortedFunction.maxTotalThreadsPerThreadgroup))
-                enc.dispatchThreads(
+                // Each threadgroup = 256 threads, one per bucket
+                enc.dispatchThreadgroups(
                     MTLSize(width: numBucketsTotal, height: 1, depth: 1),
-                    threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+                    threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
             }
             enc.endEncoding()
         }
@@ -944,6 +952,214 @@ public class Secp256k1MSM {
             results.append(resultsPtr[i])
         }
         return results
+    }
+
+    // MARK: - NAF Batch MSM
+
+    /// NAF Batch MSM: compute B small MSMs using NAF representation.
+    ///
+    /// NAF (Non-Adjacent Form) produces digits -1, 0, +1 with at most n/3 non-zero
+    /// digits (vs n/2 for binary). This results in ~33% fewer point additions.
+    ///
+    /// NAF digits are precomputed on CPU since NAF extraction is sequential.
+    ///
+    /// - Parameters:
+    ///   - allPoints: Flat array of B×M affine points
+    ///   - allScalars: Flat array of B×M scalars, each scalar is 8 UInt32 limbs
+    ///   - M: Points per MSM (≤64)
+    ///   - B: Number of parallel MSMs
+    /// - Returns: Array of B projective points (one per MSM result)
+    public func batchNAFMSM(allPoints: [SecpPointAffine], allScalars: [[UInt32]], M: Int, B: Int) throws -> [SecpPointProjective] {
+        let totalPoints = M * B
+        guard totalPoints > 0, totalPoints == allPoints.count else {
+            throw MSMError.invalidInput
+        }
+        guard M <= 64 else {
+            throw MSMError.invalidInput
+        }
+
+        // Allocate buffers
+        let pointsSize = MemoryLayout<SecpPointAffine>.stride * totalPoints
+        let nafDigitsSize = totalPoints * 256  // 256 NAF digits per scalar
+        let resultsSize = MemoryLayout<SecpPointProjective>.stride * B
+
+        guard let pointsBuf = device.makeBuffer(length: pointsSize, options: .storageModeShared),
+              let nafDigitsBuf = device.makeBuffer(length: nafDigitsSize, options: .storageModeShared),
+              let resultsBuf = device.makeBuffer(length: resultsSize, options: .storageModeShared) else {
+            throw MSMError.gpuError("Failed to allocate Metal buffers")
+        }
+
+        // Copy points to GPU
+        allPoints.withUnsafeBufferPointer { src in
+            memcpy(pointsBuf.contents(), src.baseAddress!, pointsSize)
+        }
+
+        // Precompute NAF digits on CPU (parallel)
+        let nafDigitsPtr = nafDigitsBuf.contents().bindMemory(to: UInt8.self, capacity: nafDigitsSize)
+
+        // Process scalars in parallel
+        DispatchQueue.concurrentPerform(iterations: totalPoints) { idx in
+            let scalar = Secp256k1MSM.reduceModN(allScalars[idx])
+            let naf = Self.nafDecompose(scalar)
+            let baseOffset = idx * 256
+
+            // Store NAF digits (0 = zero, 1 = +1, 2 = -1)
+            for bit in 0..<256 {
+                let digit: UInt8
+                if bit < naf.count {
+                    switch naf[bit] {
+                    case 1: digit = 1   // +1
+                    case -1: digit = 2  // -1
+                    default: digit = 0  // 0
+                    }
+                } else {
+                    digit = 0  // No more digits = 0
+                }
+                nafDigitsPtr[baseOffset + bit] = digit
+            }
+        }
+
+        // Dispatch NAF kernel
+        guard let cb = commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
+        }
+        let enc = cb.makeComputeCommandEncoder()!
+        enc.setComputePipelineState(batchNAFBatchFunction)
+        enc.setBuffer(pointsBuf, offset: 0, index: 0)
+        enc.setBuffer(nafDigitsBuf, offset: 0, index: 1)
+        enc.setBuffer(resultsBuf, offset: 0, index: 2)
+
+        var mVal = UInt32(M)
+        var bVal = UInt32(B)
+        enc.setBytes(&mVal, length: MemoryLayout<UInt32>.stride, index: 3)
+        enc.setBytes(&bVal, length: MemoryLayout<UInt32>.stride, index: 4)
+
+        // One threadgroup per MSM (B threadgroups)
+        enc.dispatchThreadgroups(MTLSize(width: B, height: 1, depth: 1),
+                                 threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
+        enc.endEncoding()
+        cb.commit()
+        cb.waitUntilCompleted()
+
+        if let error = cb.error {
+            throw MSMError.gpuError(error.localizedDescription)
+        }
+
+        // Copy results back
+        let resultsPtr = resultsBuf.contents().bindMemory(to: SecpPointProjective.self, capacity: B)
+        var results = [SecpPointProjective]()
+        results.reserveCapacity(B)
+        for i in 0..<B {
+            results.append(resultsPtr[i])
+        }
+        return results
+    }
+
+    /// NAF decomposition for a scalar (8 limbs, little-endian).
+    /// Returns NAF digits (0, +1, -1) from LSB to MSB.
+    private static func nafDecompose(_ scalar: [UInt32]) -> [Int8] {
+        // Convert to big integer representation for NAF algorithm
+        var s = scalar
+        var result = [Int8]()
+        result.reserveCapacity(256)
+
+        // NAF algorithm: process until scalar is zero
+        while !Self.isZero(s) {
+            let isOdd = (s[0] & 1) != 0
+            var k: Int8 = 0
+
+            if isOdd {
+                // k = 2 - (s mod 4)
+                // s mod 4 = s[0] & 3
+                let sMod4 = Int(s[0] & 3)
+                if sMod4 == 1 {
+                    k = 1   // +1
+                } else {
+                    k = -1  // -1 (sMod4 == 3)
+                }
+                // s = s - k
+                s = Self.subScalar(s, k)
+            }
+            // else k = 0
+
+            result.append(k)
+
+            // s = s / 2 (shift right by 1)
+            s = Self.shiftRight1(s)
+        }
+
+        return result
+    }
+
+    /// Subtract k (where k is -1 or +1) from scalar.
+    /// s = s - k = s + (-k) for k=1, or s + (2^32-1) + 1 for k=-1
+    private static func subScalar(_ s: [UInt32], _ k: Int8) -> [UInt32] {
+        var result = [UInt32](repeating: 0, count: 8)
+        var borrow: Int64 = 0
+
+        for i in 0..<8 {
+            if k == 1 {
+                borrow += Int64(s[i]) - 1
+            } else {
+                // k == -1: add UInt32.max (which is -1 in two's complement)
+                borrow += Int64(s[i]) + Int64(UInt32.max)
+            }
+            result[i] = UInt32(truncatingIfNeeded: borrow & 0xFFFFFFFF)
+            borrow >>= 32
+        }
+        return result
+    }
+
+    /// Shift scalar right by 1 bit (s = s / 2)
+    private static func shiftRight1(_ s: [UInt32]) -> [UInt32] {
+        var result = [UInt32](repeating: 0, count: 8)
+        var carry: UInt32 = 0
+
+        for i in stride(from: 7, through: 0, by: -1) {
+            result[i] = (s[i] >> 1) | carry
+            carry = (s[i] & 1) << 31
+        }
+        return result
+    }
+
+    /// Check if scalar is zero
+    private static func isZero(_ s: [UInt32]) -> Bool {
+        for i in 0..<8 {
+            if s[i] != 0 { return false }
+        }
+        return true
+    }
+
+    /// NAF MSM reference implementation for correctness verification.
+    /// Computes MSM by explicit NAF decomposition (CPU, not GPU).
+    public static func nafMSM(points: [SecpPointAffine], scalars: [[UInt32]]) -> SecpPointProjective {
+        let n = points.count
+        guard n == scalars.count, n > 0 else {
+            return secpPointIdentity()
+        }
+
+        var result = secpPointIdentity()
+
+        for i in 0..<n {
+            let naf = nafDecompose(reduceModN(scalars[i]))
+            var point = secpPointFromAffine(points[i])
+
+            // Process NAF digits from MSB to LSB (right to left in the array)
+            // NAF representation: result = sum(d_i * 2^i * P_i) where d_i in {-1, 0, +1}
+            for j in stride(from: naf.count - 1, through: 0, by: -1) {
+                result = secpPointDouble(result)
+                let digit = naf[j]
+                if digit == 1 {
+                    result = secpPointAdd(result, point)
+                } else if digit == -1 {
+                    let negPoint = SecpPointAffine(x: point.x, y: secpNeg(point.y))
+                    result = secpPointAdd(result, secpPointFromAffine(negPoint))
+                }
+                // digit == 0: no addition
+            }
+        }
+
+        return result
     }
 }
 

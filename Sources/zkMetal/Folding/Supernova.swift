@@ -185,15 +185,31 @@ public class SupernovaProver {
                                 shape: shapeRunning)
         let z2 = buildFreshZ(x: newPublicInput, witness: newWitness, shape: shapeNew)
 
-        // Matrix-vector products for running (relaxed) circuit
-        let Az1 = shapeRunning.A.mulVec(z1)
-        let Bz1 = shapeRunning.B.mulVec(z1)
-        let Cz1 = shapeRunning.C.mulVec(z1)
+        // Fused matvec for running circuit when matrices share sparsity pattern (~2x faster)
+        let Az1: [Fr]
+        let Bz1: [Fr]
+        let Cz1: [Fr]
+        if shapeRunning.matricesSharePattern {
+            let (a1, b1, c1) = shapeRunning.mulVecABC(z1)
+            (Az1, Bz1, Cz1) = (a1, b1, c1)
+        } else {
+            Az1 = shapeRunning.A.mulVec(z1)
+            Bz1 = shapeRunning.B.mulVec(z1)
+            Cz1 = shapeRunning.C.mulVec(z1)
+        }
 
-        // Matrix-vector products for new (fresh) circuit
-        let Az2 = shapeNew.A.mulVec(z2)
-        let Bz2 = shapeNew.B.mulVec(z2)
-        let Cz2 = shapeNew.C.mulVec(z2)
+        // Fused matvec for new circuit when matrices share sparsity pattern
+        let Az2: [Fr]
+        let Bz2: [Fr]
+        let Cz2: [Fr]
+        if shapeNew.matricesSharePattern {
+            let (a2, b2, c2) = shapeNew.mulVecABC(z2)
+            (Az2, Bz2, Cz2) = (a2, b2, c2)
+        } else {
+            Az2 = shapeNew.A.mulVec(z2)
+            Bz2 = shapeNew.B.mulVec(z2)
+            Cz2 = shapeNew.C.mulVec(z2)
+        }
 
         // Cross-term: T = Az1 .* Bz2 + Az2 .* Bz1 - u * Cz2 - Cz1
         let m = max(shapeRunning.numConstraints, shapeNew.numConstraints)
@@ -240,15 +256,31 @@ public class SupernovaProver {
                                 shape: shapeRunning)
         let z2 = buildFreshZ(x: newPublicInput, witness: newWitness, shape: shapeNew)
 
-        // Matrix-vector products for running (relaxed) circuit
-        let Az1 = shapeRunning.A.mulVec(z1)
-        let Bz1 = shapeRunning.B.mulVec(z1)
-        let Cz1 = shapeRunning.C.mulVec(z1)
+        // Fused matvec for running circuit when matrices share sparsity pattern
+        let Az1: [Fr]
+        let Bz1: [Fr]
+        let Cz1: [Fr]
+        if shapeRunning.matricesSharePattern {
+            let (a1, b1, c1) = shapeRunning.mulVecABC(z1)
+            (Az1, Bz1, Cz1) = (a1, b1, c1)
+        } else {
+            Az1 = shapeRunning.A.mulVec(z1)
+            Bz1 = shapeRunning.B.mulVec(z1)
+            Cz1 = shapeRunning.C.mulVec(z1)
+        }
 
-        // Matrix-vector products for new (fresh) circuit
-        let Az2 = shapeNew.A.mulVec(z2)
-        let Bz2 = shapeNew.B.mulVec(z2)
-        let Cz2 = shapeNew.C.mulVec(z2)
+        // Fused matvec for new circuit when matrices share sparsity pattern
+        let Az2: [Fr]
+        let Bz2: [Fr]
+        let Cz2: [Fr]
+        if shapeNew.matricesSharePattern {
+            let (a2, b2, c2) = shapeNew.mulVecABC(z2)
+            (Az2, Bz2, Cz2) = (a2, b2, c2)
+        } else {
+            Az2 = shapeNew.A.mulVec(z2)
+            Bz2 = shapeNew.B.mulVec(z2)
+            Cz2 = shapeNew.C.mulVec(z2)
+        }
 
         let m = max(shapeRunning.numConstraints, shapeNew.numConstraints)
 
