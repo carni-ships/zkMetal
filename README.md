@@ -533,18 +533,18 @@ How close each primitive is to the hardware floor on M3 Pro (~3.6 TFLOPS GPU com
 Methodology: Compute-bound = total_ops / 3.6T flops (BN254 mul = ~64 32-bit muls). Memory-bound = total_bytes / 150 GB/s. Dispatch-bound = N_dispatches x 0.5ms. Compound protocols = sum of component floors.
 
 | Rank | Primitive | Current | Theoretical Floor | Bottleneck | Headroom |
-|------|-----------|---------|-------------------|------------|----------|
+|------:|------------|--------:|------------------:|------------|----------:|
 | 1 | GPU Additive FFT 2^22 | 10.98ms | ~0.5ms | LUT lookup replaces shift-XOR multiply; k=22 serial butterfly levels still limit parallelism | ~22x |
-| 2 | secp256k1 MSM 2^18 (GPU) | ~260ms | ~30ms | 4x64-bit Montgomery CIOS; GPU batch MSM kernel (secp_msm_batch_small) with GLV disabled due to 2x sort overhead | ~8x |
-| 3 | secp256k1 MSM 2^18 (CPU) | ~220ms | ~30ms | Native uint64 CIOS; C Pippenger with GLV | ~7x |
-| 4 | MSM BN254 2^18 | 73ms | ~5ms | Random-access BW (scatter bucket accumulation) | ~11x |
-| 5 | NTT BN254 2^22 | 26ms | ~3ms | Compute + strided BW (256-bit: 64 muls/elem) | ~9x |
-| 6 | FRI Fold 2^20 | 2.1ms | ~0.3ms | Bandwidth (fold-by-2), 21 layers | ~7x |
+| 2 | MSM BN254 2^18 | 73ms | ~5ms | Random-access BW (scatter bucket accumulation) | ~11x |
+| 3 | NTT BN254 2^22 | 26ms | ~3ms | Compute + strided BW (256-bit: 64 muls/elem) | ~9x |
+| 4 | secp256k1 MSM 2^18 (GPU) | ~260ms | ~30ms | 4x64-bit Montgomery CIOS; GPU batch MSM kernel (secp_msm_batch_small) with GLV disabled due to 2x sort overhead | ~8x |
+| 5 | FRI Fold 2^20 | 2.1ms | ~0.3ms | Bandwidth (fold-by-2), 21 layers | ~7x |
+| 6 | secp256k1 MSM 2^18 (CPU) | ~220ms | ~30ms | Native uint64 CIOS; C Pippenger with GLV | ~7x |
 | 7 | Sumcheck 2^20 | 4.7ms | ~1ms | Bandwidth (2^20 x 32B per round), fused CB | ~5x |
 | 8 | Poseidon2 batch 2^16 | 8.1ms | ~1.8ms | Compute (390 ops/elem, 22 sequential rounds limit parallelism) | ~4.5x |
-| 9 | BLS12-377 MSM 2^18 | ~119ms (GPU) | ~35ms | 12x32-bit Fq377 on 32-bit SIMD: 144 mul32/mul + Montgomery reduction. 11 muls per point add ≈ 1584 mul32/pt add. Karatsuba would need more temp registers → register spills | ~3.4x |
-| 10 | Keccak Merkle 2^20 | 4.7ms (4-ary) | ~2.2ms | 4-ary halves levels, compute-limited | ~3.5x |
-| 11 | Constraint IR 2^16 | 5.3ms | ~1.5ms | Compute (20 constraints x 65K rows, pipeline compile overhead) | ~3.5x |
+| 9 | Keccak Merkle 2^20 | 4.7ms (4-ary) | ~2.2ms | 4-ary halves levels, compute-limited | ~3.5x |
+| 10 | Constraint IR 2^16 | 5.3ms | ~1.5ms | Compute (20 constraints x 65K rows, pipeline compile overhead) | ~3.5x |
+| 11 | BLS12-377 MSM 2^18 | ~119ms (GPU) | ~35ms | 12x32-bit Fq377 on 32-bit SIMD: 144 mul32/mul + Montgomery reduction. 11 muls per point add ≈ 1584 mul32/pt add. Karatsuba would need more temp registers → register spills | ~3.4x |
 | 12 | Witness Gen BN254 2^18 | 3.0ms | ~0.9ms | Memory bandwidth (10 cols x 262K x 32B = 84MB) | ~3.3x |
 | 13 | Basefold open 2^18 | 99ms | ~20ms | Fold-by-4 + pipelined Merkle (9 rounds vs 18) | ~3x |
 | 14 | Plonk prove 1024 | 50ms | ~15ms | C CIOS + Keccak transcript + batched poly ops | ~3x |
