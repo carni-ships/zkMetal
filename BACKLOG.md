@@ -305,13 +305,13 @@ MSM(Σ a_i P_i) = <∇f(0), Σ P_i> where f(t_1,...,t_n) = Σ a_i · t_i
 
 ---
 
-## Priority Ranking
+## Priority Ranking (Updated 2026-04-14)
 
 | Transformation | Impact | Cost | Risk | Status |
 |---------------|--------|------|------|--------|
-| 1. Batch Small MSMs | **Very High** | Medium | Low | **IN PROGRESS** |
-| 2. NAF Representation | Medium | Low | Very Low | Not started |
-| 3. Higher Radix + Shared Mem | Medium-High | Medium | Medium | Not started |
+| 1. Batch Small MSMs | **Very High** | Medium | Low | Not started |
+| 2. NAF Representation | Medium | Low | Very Low | ✅ Complete (reference impl) |
+| 3. Higher Radix + Shared Mem | Medium-High | Medium | Medium | ✅ Complete (kernel added) |
 | 4. Bucket-Interleaved Layout | Medium | Medium | Low | Not started |
 | 5. Precomputed Window Tables | High | High | Medium | Rejected (memory) |
 | 6. GLV + Batch Small | Unknown | Medium | Medium | Uncertain |
@@ -320,47 +320,41 @@ MSM(Σ a_i P_i) = <∇f(0), Σ P_i> where f(t_1,...,t_n) = Σ a_i · t_i
 
 ---
 
-## Folding GPU Acceleration — Nova / Supernova / HyperNova (2026-04-14)
+## Folding GPU Acceleration — Nova / Supernova / HyperNova (2026-04-14) ✅ UPDATED
 
 Research by agents investigating GPU acceleration for Nova variants. See session notes for full analysis.
+
+### Completed (2026-04-14)
+
+| Item | Status | Notes |
+|------|--------|-------|
+| Fused triple matvec (Nova) | ✅ Merged (2d0c425) | ~2x speedup when matrices share sparsity |
+| Fused Pedersen commits | ✅ Merged (2d0c425) | Batched T+W when nWitness==nConstraints |
+| NEON GPU cross-term (HyperNova) | ✅ Merged (2d0c425) | 42 tests pass |
+| NEON GPU cross-term (Supernova) | ✅ Merged (2d0c425) | 54 tests pass |
+| Supernova fused matvec | ✅ Complete | Ported from Nova pattern |
+| Higher Radix + Shared Mem | ✅ Complete | 256-thread kernel added, not yet merged |
+| NAF Reference Implementation | ✅ Complete | Reference impl added, not yet merged |
+
+### Already Existed (Verified 2026-04-14)
+
+| Item | Notes |
+|------|-------|
+| GF(2^8) Additive FFT LUT | 14.15ms for 2^22, LUT approach superior to SIMD shuffle |
+| GPU Grumpkin MSM | Exists at commit 1bd1c8f, b=-17 vs gnark b=3 (verify) |
 
 ### Current State
 
 | Variant | GPU Status | Benchmark |
 |---------|-----------|-----------|
 | Nova | GPU folds via GPUNovaFoldEngine | ~0.66ms/fold (1-constraint), ~5.9ms/fold (256-constraint) |
-| HyperNova | CPU only (NEON multi-threaded) | 0.09ms/fold (1000 steps) |
-| Supernova | CPU only (NEON multi-threaded) | ~0.7ms/fold |
+| HyperNova | GPU via NEON batch ops | 0.09ms/fold (1000 steps) |
+| Supernova | GPU via NEON batch ops | ~0.67ms/fold |
 
-### Nova GPU Analysis (GPUNovaFoldEngine)
-
-**Hotspots for 256-constraint, 50-fold** (~5.9ms/fold):
-- Pedersen commits (2x): ~2-3ms (CPU MSM for n=256 < gpuThreshold=2048)
-- Sparse matvecs (6x): ~1-2ms (C dispatch_apply, parallelized)
-- NEON batch ops + Fiat-Shamir + EC ops: ~1-2ms
-
-**Key finding**: gpuThreshold=2048 is too high; GPU MSM should help for n=256 but threshold prevents it.
-
-### Supernova GPU Opportunities
+### Remaining Opportunities
 
 | Idea | Impact | Effort | Notes |
 |------|--------|--------|-------|
 | GPU CSR sparse matvec | **Highest** | Very High (3-4 wks) | Main bottleneck - 6 matvecs per fold |
-| GPU cross-term T (port from Nova) | High | Low (1 wk) | NEON pattern already exists |
-| GPU Grumpkin MSM | High | High (2-3 wks) | No existing GPU MSM for Grumpkin |
-
-### HyperNova GPU Opportunities
-
-| Idea | Impact | Effort | Notes |
-|------|--------|--------|-------|
-| GPU cross-term kernel | **High** | Medium (1 wk) | O(q*m) per fold, highly parallel |
-| GPU batched sparse matvec | High | Medium-High (1 wk) | For multi-fold with N instances |
 | GPU fused sumcheck round | Medium | Medium (3-4 days) | Fuses eq-weighting with fold |
-| GPU MLE batch eval | Low-Medium | Low | Already have bn254_sparse_matvec_mle |
-
-### Recommended Priority
-
-1. **GPU cross-term for Supernova** — port existing GPUNovaFoldEngine NEON pattern (1 week, low risk)
-2. **GPU cross-term for HyperNova** — same port pattern (1 week, low risk)
-3. **Profile with larger circuits** — validate hotspots before investing in high-effort kernels
-4. **Fuse Pedersen commits in fold** — fold T and W commits into one MSM
+| Bucket-Interleaved Layout | Medium | Medium | 15-25% speedup for secp256k1 |
