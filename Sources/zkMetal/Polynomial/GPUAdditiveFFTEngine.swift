@@ -20,6 +20,7 @@ public class GPUAdditiveFFTEngine {
     public let device: MTLDevice
     public let commandQueue: MTLCommandQueue
     public let forwardFn: MTLComputePipelineState?
+    public let forwardPairsFn: MTLComputePipelineState?  // All-threads-active variant
     public let forwardShuffleFn: MTLComputePipelineState?
     let inverseFn: MTLComputePipelineState?
     let forwardBatchFn: MTLComputePipelineState?
@@ -56,6 +57,7 @@ public class GPUAdditiveFFTEngine {
         // Try to compile Metal shaders with USE_LUT=1; if this fails, GPU path is unavailable
         if let library = try? GPUAdditiveFFTEngine.compileShaders(device: device, defines: ["USE_LUT"]) {
             self.forwardFn = try? device.makeComputePipelineState(function: library.makeFunction(name: "additive_fft_gf8_forward")!)
+            self.forwardPairsFn = try? device.makeComputePipelineState(function: library.makeFunction(name: "additive_fft_gf8_forward_pairs")!)
             self.forwardShuffleFn = nil  // Shuffle kernel disabled — Metal simd_shuffle is intra-group only
             self.inverseFn = try? device.makeComputePipelineState(function: library.makeFunction(name: "additive_fft_gf8_inverse")!)
             self.forwardBatchFn = try? device.makeComputePipelineState(function: library.makeFunction(name: "additive_fft_gf8_forward_batch")!)
@@ -63,6 +65,7 @@ public class GPUAdditiveFFTEngine {
             self.fusedForwardThenMulFn = try? device.makeComputePipelineState(function: library.makeFunction(name: "additive_fft_gf8_forward_then_pointwise_mul")!)
         } else {
             self.forwardFn = nil
+            self.forwardPairsFn = nil
             self.forwardShuffleFn = nil
             self.inverseFn = nil
             self.forwardBatchFn = nil
