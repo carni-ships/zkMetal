@@ -299,13 +299,15 @@ Full fold-to-constant: 2^20 in 2.3ms (20 rounds, fused cascade kernels).
 
 ### Sumcheck (BN254 Fr)
 
-| Variables | GPU | C Kernel | Vanilla | GPU vs Vanilla |
+| Variables | GPU | C Kernel | Vanilla | Best vs Vanilla |
 |-----------|-----|----------|---------|----------------|
-| 2^14 | 0.66ms | 0.41ms | 0.4ms | **1x** |
-| 2^16 | 0.96ms | 1.1ms | 1.2ms | **1x** |
-| 2^18 | 2.0ms | 3.0ms | 3.9ms | **2x** |
-| 2^20 | 4.9ms | 10ms | 15ms | **3x** |
-| 2^22 | 10ms | 35ms | 50ms | **5x** |
+| 2^14 | 16.0ms | 0.50ms | 0.3ms | C 1x |
+| 2^16 | 16.0ms | 1.04ms | 1.3ms | C 1x |
+| 2^18 | 16.0ms | 2.64ms | 3.6ms | C 1x |
+| 2^20 | 24.0ms | 9.55ms | 14.0ms | C 1x |
+| 2^22 | 84.6ms | 33.8ms | 84.9ms | C 3x |
+
+**GPU has ~16ms constant dispatch overhead** that dominates at small sizes. C path (CIOS Montgomery + dispatch_apply threading) is faster for all tested sizes. GPU can win at very large sizes (2^24+) where compute time exceeds dispatch overhead.
 
 **Sparse sumcheck** at 1% density: 8-9x faster than dense. At 10%: ~2x faster.
 

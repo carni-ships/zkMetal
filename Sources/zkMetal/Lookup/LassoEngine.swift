@@ -506,9 +506,46 @@ public class LassoEngine {
             let S = table.subtables[k].count
             let logS = Int(log2(Double(S)))
 
-            // Read-side: GPU sumcheck (2^18 elements)
-            let (readRounds, readFinalEval) = try sumcheckEngine.fullSumcheck(
-                evals: cd.hRead, challenges: cd.readChallenges)
+            // Read-side: C sumcheck for small inputs (avoids GPU kernel bug in fused path)
+            // The GPU sumcheck_fused_multiround kernel has a data dependency bug where subsequent
+            // rounds read stale data. TODO: fix the kernel.
+            let readRounds: [(Fr, Fr, Fr)]
+            let readFinalEval: Fr
+            if logM <= 16 {
+                // C path: correct for all input sizes
+                let rRoundsCount = logM * 12
+                var rRoundsRaw = [UInt64](repeating: 0, count: rRoundsCount)
+                var rFinalRaw = [UInt64](repeating: 0, count: 4)
+                cd.hRead.withUnsafeBytes { evPtr in
+                    cd.readChallenges.withUnsafeBytes { chPtr in
+                        bn254_fr_full_sumcheck(
+                            evPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(logM),
+                            chPtr.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            &rRoundsRaw,
+                            &rFinalRaw
+                        )
+                    }
+                }
+                var rounds = [(Fr, Fr, Fr)]()
+                rounds.reserveCapacity(logM)
+                for r in 0..<logM {
+                    let b = r * 12
+                    rounds.append((
+                        Fr.from64([rRoundsRaw[b], rRoundsRaw[b+1], rRoundsRaw[b+2], rRoundsRaw[b+3]]),
+                        Fr.from64([rRoundsRaw[b+4], rRoundsRaw[b+5], rRoundsRaw[b+6], rRoundsRaw[b+7]]),
+                        Fr.from64([rRoundsRaw[b+8], rRoundsRaw[b+9], rRoundsRaw[b+10], rRoundsRaw[b+11]])
+                    ))
+                }
+                readRounds = rounds
+                readFinalEval = Fr.from64(rFinalRaw)
+            } else {
+                // GPU path: only for large inputs where C is too slow
+                let (gpuRounds, gpuFinal) = try sumcheckEngine.fullSumcheck(
+                    evals: cd.hRead, challenges: cd.readChallenges)
+                readRounds = gpuRounds
+                readFinalEval = gpuFinal
+            }
 
             // Table-side: C CPU sumcheck (256 elements — GPU dispatch overhead not worthwhile)
             let tableRounds: [(Fr, Fr, Fr)]
