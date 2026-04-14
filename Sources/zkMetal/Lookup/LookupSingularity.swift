@@ -183,7 +183,10 @@ public class LookupSingularityProver {
                              transcript: inout [UInt8]) throws
         -> (rounds: [(Fr, Fr, Fr)], finalEval: Fr, challenges: [Fr])
     {
-        let useGPU = evals.count >= 256
+        // Use C path for small numVars (avoids GPU kernel bug in fused multiround path)
+        // The GPU sumcheck_fused_multiround kernel has a data dependency issue where
+        // subsequent rounds read stale data. C path is correct for all sizes.
+        let useGPU = numVars > 16
         var rounds = [(Fr, Fr, Fr)]()
         var challenges = [Fr]()
         rounds.reserveCapacity(numVars)
