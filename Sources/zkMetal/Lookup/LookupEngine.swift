@@ -460,48 +460,27 @@ public class LookupEngine {
     // MARK: - Sumcheck execution
 
     /// Run a sumcheck protocol with round-by-round Fiat-Shamir challenge derivation.
-    /// Uses GPU for sizes ≥ 256, CPU for smaller.
+    /// Uses GPU for sizes > 2^16, CPU for smaller (avoids GPU kernel bug in fused path).
     /// Returns: (round polynomials, final evaluation, challenges used)
     private func runSumcheck(evals: [Fr], numVars: Int,
                              transcript: inout [UInt8]) throws
         -> (rounds: [(Fr, Fr, Fr)], finalEval: Fr, challenges: [Fr])
     {
-        let useGPU = evals.count >= 256
         var rounds = [(Fr, Fr, Fr)]()
         var challenges = [Fr]()
         rounds.reserveCapacity(numVars)
         challenges.reserveCapacity(numVars)
 
-        if useGPU {
-            // Generate all challenges first (Fiat-Shamir from transcript seed)
-            for _ in 0..<numVars {
-                let c = deriveChallenge(transcript)
-                challenges.append(c)
-                appendFr(&transcript, c)
-            }
-            let (gpuRounds, finalEval) = try sumcheckEngine.fullSumcheck(
-                evals: evals, challenges: challenges)
-            return (gpuRounds, finalEval, challenges)
-        } else {
-            // CPU round-by-round with proper Fiat-Shamir
-            var current = evals
-            for _ in 0..<numVars {
-                let roundPoly = SumcheckEngine.cpuRoundPoly(evals: current)
-                rounds.append(roundPoly)
-
-                // Derive challenge from transcript including this round's polynomial
-                appendFr(&transcript, roundPoly.0)
-                appendFr(&transcript, roundPoly.1)
-                appendFr(&transcript, roundPoly.2)
-                let challenge = deriveChallenge(transcript)
-                challenges.append(challenge)
-                appendFr(&transcript, challenge)
-
-                current = SumcheckEngine.cpuReduce(evals: current, challenge: challenge)
-            }
-            precondition(current.count == 1)
-            return (rounds, current[0], challenges)
+        // Generate all challenges first (Fiat-Shamir from transcript seed)
+        for _ in 0..<numVars {
+            let c = deriveChallenge(transcript)
+            challenges.append(c)
+            appendFr(&transcript, c)
         }
+        // Use fullSumcheckAuto to auto-select GPU vs C path (C for numVars <= 16)
+        let (sumcheckRounds, finalEval) = try sumcheckEngine.fullSumcheckAuto(
+            evals: evals, challenges: challenges)
+        return (sumcheckRounds, finalEval, challenges)
     }
 
     // MARK: - Helpers
