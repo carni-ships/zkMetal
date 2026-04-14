@@ -271,11 +271,29 @@ Theoretical floor: ~0.5ms (26x headroom). High variance observed (~3ms stddev at
 
 ## Theoretical Floor Analysis
 
+**High headroom** = potential optimization targets | **Low headroom** = well-optimized primitives
+
 | Rank | Primitive | Current | Floor | Headroom | Status |
 |------:|------------|--------:|------:|----------:|--------|
 | 1 | GPU Additive FFT 2^22 | ~11-14ms | ~0.5ms | ~26-28x | forward_pairs kernel (n/2 threads) |
-| 2 | MSM BN254 2^18 | 73ms | ~5ms | ~11x | |
+| 2 | MSM BN254 2^18 | 73ms | ~5ms | ~11x | Karatsuba complete |
 | 3 | NTT BN254 2^22 | 26ms | ~3ms | ~9x | |
-| 4 | secp256k1 MSM (GPU) | ~260ms | ~30ms | ~8x | GPU sort + bucket-interleaved in progress |
+| 4 | secp256k1 MSM (GPU) | ~260ms | ~30ms | ~8x | GPU sort + bucket-interleaved |
 | 5 | FRI Fold 2^20 | 2.1ms | ~0.3ms | ~7x | |
 | 6 | Nova fold (256c) | ~5.6ms | ~1ms | ~5x | GPU sparse matvec integrated |
+| 7 | GPU Radix Sort 2^22 | 6.4ms | ~1ms | ~6x | |
+| 8 | NTT Goldilocks 2^24 | 3.1ms | ~0.5ms | ~6x | |
+| 9 | NTT BabyBear 2^24 | 2.3ms | ~0.5ms | ~4-5x | |
+| 10 | Merkle Keccak 2^18 | 4.5ms | ~1ms | ~4x | |
+| 11 | Merkle Poseidon2 2^18 | 45ms | ~10ms | ~4x | |
+| 12 | GPU Sort 2^20 | 2.1ms | ~0.5ms | ~4x | |
+| 13 | KZG Commit (deg 256) | 0.3ms | ~0.1ms | ~3x | |
+| 14 | NTT BN254 2^24 | 110.9ms | ~40ms | ~3x | |
+| 15 | Circle STARK 2^14 | 17ms | ~6ms | ~3x | |
+| 16 | Poseidon2 GPU 2^14 | 2.3ms | ~0.8ms | ~3x | |
+| 17 | FRI Fold 2^22 | 7.52ms | ~3ms | ~2.5x | |
+| 18 | Keccak-256 GPU 2^18 | 1.4ms | ~0.6ms | ~2x | |
+| 19 | Blake3 batch GPU | 0.001 μs/hash | ~0.001 μs/hash | ~1x | Near optimal |
+| 20 | Groth16 Prove (256) | 14ms | ~14ms | ~1x | Near optimal |
+| 21 | BN254 Fr mul (C) | 16ns | ~16ns | ~1x | Near optimal (SIMD CIOS) |
+| 22 | Batch inverse (C) 100K | 1.6ms | ~1.6ms | ~1x | Near optimal (Montgomery's trick) |
