@@ -130,12 +130,16 @@ All benchmarks on Apple M3 Pro (6P+6E cores). Run `swift run -c release zkbench 
 
 ## GPU Additive FFT (GF(2^8))
 
-| Size | Elements | Time | Throughput |
-|------|----------|------|------------|
-| 2^16 | 65,536 | ~8ms | ~8 M elem/s |
-| 2^18 | 262,144 | ~9ms | ~30 M elem/s |
-| 2^20 | 1,048,576 | ~11ms | ~95 M elem/s |
-| 2^22 | 4,194,304 | ~10-12ms | ~340-380 M elem/s |
+| Size | Elements | Time | Throughput | Notes |
+|------|----------|------|------------|-------|
+| 2^16 | 65,536 | ~8ms | ~8 M elem/s | |
+| 2^18 | 262,144 | ~9ms | ~30 M elem/s | |
+| 2^20 | 1,048,576 | ~11ms | ~95 M elem/s | |
+| 2^22 | 4,194,304 | ~13ms | ~320 M elem/s | |
+
+**Optimization in progress**: Precomputed GF(2^8) multiplication LUT (256-entry) could reduce
+multiply from ~176 primitive ops to 1 table lookup. Target: 3-6x speedup (13ms → 2-4ms).
+Combined with SIMD shuffle: 6-10x total speedup potential.
 
 ## KZG Commitments (BN254 G1)
 
@@ -254,7 +258,9 @@ All benchmarks on Apple M3 Pro (6P+6E cores). Run `swift run -c release zkbench 
 | Primitive | Key Benchmark | Notes |
 |-----------|---------------|-------|
 | HyperNova fold | 0.09ms/fold (1000 steps) | Keccak256 transcript + C CIOS |
-| Supernova fold | 0.69ms/fold (16-step) | Multi-circuit IVC with pc routing |
+| Supernova fold | 0.67ms/fold (16-step) | Multi-circuit IVC with pc routing |
+| Nova fold (100-fold) | 0.60ms/fold | GPU folds + sparse matvec |
+| Nova fold (256c x 50) | 5.6ms/fold | GPU folds + sparse matvec |
 | Basefold open 2^18 | 61ms | Fold-by-4 + pipelined Merkle |
 | IPA prove n=256 | 11.8ms | C CIOS batch fold + Blake3 NEON |
 | Verkle Trees (CPU) | 3.8ms proof | C CIOS Pedersen+IPA |
@@ -265,10 +271,11 @@ All benchmarks on Apple M3 Pro (6P+6E cores). Run `swift run -c release zkbench 
 
 ## Theoretical Floor Analysis
 
-| Rank | Primitive | Current | Floor | Headroom |
-|------:|------------|--------:|------:|----------:|
-| 1 | GPU Additive FFT 2^22 | 10.98ms | ~0.5ms | ~22x |
-| 2 | MSM BN254 2^18 | 73ms | ~5ms | ~11x |
-| 3 | NTT BN254 2^22 | 26ms | ~3ms | ~9x |
-| 4 | secp256k1 MSM (GPU) | ~260ms | ~30ms | ~8x |
-| 5 | FRI Fold 2^20 | 2.1ms | ~0.3ms | ~7x |
+| Rank | Primitive | Current | Floor | Headroom | Status |
+|------:|------------|--------:|------:|----------:|--------|
+| 1 | GPU Additive FFT 2^22 | 13ms | ~0.5ms | ~26x | Optimization in progress (LUT) |
+| 2 | MSM BN254 2^18 | 73ms | ~5ms | ~11x | |
+| 3 | NTT BN254 2^22 | 26ms | ~3ms | ~9x | |
+| 4 | secp256k1 MSM (GPU) | ~260ms | ~30ms | ~8x | GPU sort + bucket-interleaved in progress |
+| 5 | FRI Fold 2^20 | 2.1ms | ~0.3ms | ~7x | |
+| 6 | Nova fold (256c) | ~5.6ms | ~1ms | ~5x | GPU sparse matvec integrated |
