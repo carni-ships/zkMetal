@@ -170,32 +170,37 @@ public class BlazeEngine {
     }
 
     private func setupKernels() throws {
-        // Compile GPU kernels for interleaved encoding
-        let library = try BlazeEngine.compileShaders(device: device)
-
-        if let fn = library.makeFunction(name: "blaze_interleaved_encode") {
-            interleavedEncodeFunction = try device.makeComputePipelineState(function: fn)
+        // Use ShaderCache for persistent pipeline caching
+        let cache = ShaderCache.shared
+        let shaderDir = BlazeEngine.findShaderDir()
+        let sourceFiles = [
+            shaderDir + "/fields/bn254_fr.metal",
+            shaderDir + "/fri/fri_kernels.metal",
+        ]
+        let kernelNames = [
+            "blaze_interleaved_encode",
+            "blaze_interleaved_decode",
+        ]
+        let preprocessor: ((String) -> String)? = { combined in
+            combined
+                .replacingOccurrences(of: "#ifndef BN254_FR_METAL", with: "")
+                .replacingOccurrences(of: "#define BN254_FR_METAL", with: "")
+                .replacingOccurrences(of: "#endif // BN254_FR_METAL", with: "")
+                .split(separator: "\n", omittingEmptySubsequences: false)
+                .filter { !$0.contains("#include") }
+                .joined(separator: "\n")
         }
-        if let fn = library.makeFunction(name: "blaze_interleaved_decode") {
-            interleavedDecodeFunction = try device.makeComputePipelineState(function: fn)
-        }
-    }
 
-    private static func compileShaders(device: MTLDevice) throws -> MTLLibrary {
-        let shaderDir = findShaderDir()
-        let frSource = try String(contentsOfFile: shaderDir + "/fields/bn254_fr.metal", encoding: .utf8)
-        let friSource = try String(contentsOfFile: shaderDir + "/fri/fri_kernels.metal", encoding: .utf8)
+        let pipelines = try cache.loadOrCompile(
+            module: "blaze",
+            device: device,
+            sourceFiles: sourceFiles,
+            kernelNames: kernelNames,
+            preprocessor: preprocessor
+        )
 
-        let cleanFRI = friSource.split(separator: "\n").filter { !$0.contains("#include") }.joined(separator: "\n")
-        let cleanFr = frSource
-            .replacingOccurrences(of: "#ifndef BN254_FR_METAL", with: "")
-            .replacingOccurrences(of: "#define BN254_FR_METAL", with: "")
-            .replacingOccurrences(of: "#endif // BN254_FR_METAL", with: "")
-
-        let combined = cleanFr + "\n" + cleanFRI
-        let options = MTLCompileOptions()
-        options.fastMathEnabled = true
-        return try device.makeLibrary(source: combined, options: options)
+        interleavedEncodeFunction = pipelines["blaze_interleaved_encode"]
+        interleavedDecodeFunction = pipelines["blaze_interleaved_decode"]
     }
 
     private static func findShaderDir() -> String {

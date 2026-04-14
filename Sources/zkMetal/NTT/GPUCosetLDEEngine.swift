@@ -51,43 +51,31 @@ public class GPUCosetLDEEngine {
         }
         self.commandQueue = queue
 
-        let library = try GPUCosetLDEEngine.compileShaders(device: device)
-
-        guard let zpCosetFr = library.makeFunction(name: "lde_zero_pad_coset_shift_fr"),
-              let zpCosetBb = library.makeFunction(name: "lde_zero_pad_coset_shift_bb"),
-              let batchZpCosetFr = library.makeFunction(name: "lde_batch_zero_pad_coset_shift_fr"),
-              let batchZpCosetBb = library.makeFunction(name: "lde_batch_zero_pad_coset_shift_bb"),
-              let zpFr = library.makeFunction(name: "lde_zero_pad_fr"),
-              let zpBb = library.makeFunction(name: "lde_zero_pad_bb"),
-              let csiFr = library.makeFunction(name: "lde_coset_shift_inplace_fr"),
-              let csiBb = library.makeFunction(name: "lde_coset_shift_inplace_bb") else {
-            throw MSMError.missingKernel
-        }
-
-        self.zeroPadCosetShiftFr = try device.makeComputePipelineState(function: zpCosetFr)
-        self.zeroPadCosetShiftBb = try device.makeComputePipelineState(function: zpCosetBb)
-        self.batchZeroPadCosetShiftFr = try device.makeComputePipelineState(function: batchZpCosetFr)
-        self.batchZeroPadCosetShiftBb = try device.makeComputePipelineState(function: batchZpCosetBb)
-        self.zeroPadFr = try device.makeComputePipelineState(function: zpFr)
-        self.zeroPadBb = try device.makeComputePipelineState(function: zpBb)
-        self.cosetShiftInplaceFr = try device.makeComputePipelineState(function: csiFr)
-        self.cosetShiftInplaceBb = try device.makeComputePipelineState(function: csiBb)
-    }
-
-    // MARK: - Shader compilation
-
-    private static func compileShaders(device: MTLDevice) throws -> MTLLibrary {
-        let shaderDir = findShaderDir()
-        let fieldFr = try String(contentsOfFile: shaderDir + "/fields/bn254_fr.metal", encoding: .utf8)
-        let fieldBb = try String(contentsOfFile: shaderDir + "/fields/babybear.metal", encoding: .utf8)
-        let fusedSrc = try String(contentsOfFile: shaderDir + "/ntt/coset_lde_fused.metal", encoding: .utf8)
-
-        func clean(_ src: String) -> String {
-            src.split(separator: "\n")
+        // Use ShaderCache for persistent pipeline caching
+        let cache = ShaderCache.shared
+        let shaderDir = GPUCosetLDEEngine.findShaderDir()
+        let sourceFiles = [
+            shaderDir + "/fields/bn254_fr.metal",
+            shaderDir + "/fields/babybear.metal",
+            shaderDir + "/ntt/coset_lde_fused.metal",
+        ]
+        let kernelNames = [
+            "lde_zero_pad_coset_shift_fr",
+            "lde_zero_pad_coset_shift_bb",
+            "lde_batch_zero_pad_coset_shift_fr",
+            "lde_batch_zero_pad_coset_shift_bb",
+            "lde_zero_pad_fr",
+            "lde_zero_pad_bb",
+            "lde_coset_shift_inplace_fr",
+            "lde_coset_shift_inplace_bb",
+        ]
+        let preprocessor: ((String) -> String)? = { combined in
+            combined
+                .split(separator: "\n", omittingEmptySubsequences: false)
                 .filter { line in
-                    if line.contains("#include") || line.contains("#ifndef") || line.contains("#endif") { return false }
-                    if line.contains("#define") {
-                        let trimmed = line.trimmingCharacters(in: .whitespaces)
+                    let trimmed = line.trimmingCharacters(in: .whitespaces)
+                    if trimmed.contains("#include") || trimmed.hasPrefix("#ifndef") || trimmed.hasPrefix("#endif") { return false }
+                    if trimmed.hasPrefix("#define") {
                         let parts = trimmed.split(separator: " ", maxSplits: 3)
                         return parts.count >= 3
                     }
@@ -96,10 +84,58 @@ public class GPUCosetLDEEngine {
                 .joined(separator: "\n")
         }
 
-        let combined = clean(fieldFr) + "\n" + clean(fieldBb) + "\n" + clean(fusedSrc)
-        let options = MTLCompileOptions()
-        options.fastMathEnabled = true
-        return try device.makeLibrary(source: combined, options: options)
+        let pipelines = try cache.loadOrCompile(
+            module: "coset_lde",
+            device: device,
+            sourceFiles: sourceFiles,
+            kernelNames: kernelNames,
+            preprocessor: preprocessor
+        )
+
+        guard let zpCosetFr = pipelines["lde_zero_pad_coset_shift_fr"],
+              let zpCosetBb = pipelines["lde_zero_pad_coset_shift_bb"],
+              let batchZpCosetFr = pipelines["lde_batch_zero_pad_coset_shift_fr"],
+              let batchZpCosetBb = pipelines["lde_batch_zero_pad_coset_shift_bb"],
+              let zpFr = pipelines["lde_zero_pad_fr"],
+              let zpBb = pipelines["lde_zero_pad_bb"],
+              let csiFr = pipelines["lde_coset_shift_inplace_fr"],
+              let csiBb = pipelines["lde_coset_shift_inplace_bb"] else {
+            throw MSMError.missingKernel
+        }
+
+        self.zeroPadCosetShiftFr = zpCosetFr
+        self.zeroPadCosetShiftBb = zpCosetBb
+        self.batchZeroPadCosetShiftFr = batchZpCosetFr
+        self.batchZeroPadCosetShiftBb = batchZpCosetBb
+        self.zeroPadFr = zpFr
+        self.zeroPadBb = zpBb
+        self.cosetShiftInplaceFr = csiFr
+        self.cosetShiftInplaceBb = csiBb
+    }
+
+    // MARK: - Shader compilation
+
+    private static func findShaderDir() -> String {
+        let execPath = CommandLine.arguments[0]
+        let execDir = (execPath as NSString).deletingLastPathComponent
+        for bundle in Bundle.allBundles {
+            if let url = bundle.url(forResource: "Shaders", withExtension: nil) {
+                let path = url.appendingPathComponent("fields/bn254_fr.metal").path
+                if FileManager.default.fileExists(atPath: path) {
+                    return url.path
+                }
+            }
+        }
+        let candidates = [
+            "\(execDir)/../Sources/Shaders",
+            "./Sources/Shaders",
+        ]
+        for path in candidates {
+            if FileManager.default.fileExists(atPath: "\(path)/fields/bn254_fr.metal") {
+                return path
+            }
+        }
+        return "./Sources/Shaders"
     }
 
     // MARK: - NTT engine accessors

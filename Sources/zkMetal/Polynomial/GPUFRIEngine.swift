@@ -60,48 +60,58 @@ public class GPUFRIEngine {
         }
         self.commandQueue = queue
 
-        let library = try GPUFRIEngine.compileShaders(device: device)
+        // Use ShaderCache for persistent pipeline caching
+        let cache = ShaderCache.shared
+        let shaderDir = GPUFRIEngine.findShaderDir()
+        let sourceFiles = [
+            shaderDir + "/fields/bn254_fr.metal",
+            shaderDir + "/fri/fri_query.metal",
+        ]
+        let kernelNames = [
+            "fri_fold_layer_bn254",
+            "fri_fold_layer_babybear",
+            "fri_fold_layer_m31",
+            "fri_batch_query_bn254",
+            "fri_batch_query_babybear",
+            "fri_batch_query_m31",
+        ]
+        let preprocessor: ((String) -> String)? = { combined in
+            // Strip #include and header guards; ShaderCache concatenates sources in order
+            combined
+                .replacingOccurrences(of: "#ifndef BN254_FR_METAL", with: "")
+                .replacingOccurrences(of: "#define BN254_FR_METAL", with: "")
+                .replacingOccurrences(of: "#endif // BN254_FR_METAL", with: "")
+                .split(separator: "\n", omittingEmptySubsequences: false)
+                .filter { !$0.contains("#include") }
+                .joined(separator: "\n")
+        }
 
-        guard let fn1 = library.makeFunction(name: "fri_fold_layer_bn254"),
-              let fn2 = library.makeFunction(name: "fri_fold_layer_babybear"),
-              let fn3 = library.makeFunction(name: "fri_fold_layer_m31"),
-              let fn4 = library.makeFunction(name: "fri_batch_query_bn254"),
-              let fn5 = library.makeFunction(name: "fri_batch_query_babybear"),
-              let fn6 = library.makeFunction(name: "fri_batch_query_m31") else {
+        let pipelines = try cache.loadOrCompile(
+            module: "fri_query",
+            device: device,
+            sourceFiles: sourceFiles,
+            kernelNames: kernelNames,
+            preprocessor: preprocessor
+        )
+
+        guard let fn1 = pipelines["fri_fold_layer_bn254"],
+              let fn2 = pipelines["fri_fold_layer_babybear"],
+              let fn3 = pipelines["fri_fold_layer_m31"],
+              let fn4 = pipelines["fri_batch_query_bn254"],
+              let fn5 = pipelines["fri_batch_query_babybear"],
+              let fn6 = pipelines["fri_batch_query_m31"] else {
             throw MSMError.missingKernel
         }
 
-        self.foldBn254 = try device.makeComputePipelineState(function: fn1)
-        self.foldBabyBear = try device.makeComputePipelineState(function: fn2)
-        self.foldM31 = try device.makeComputePipelineState(function: fn3)
-        self.queryBn254 = try device.makeComputePipelineState(function: fn4)
-        self.queryBabyBear = try device.makeComputePipelineState(function: fn5)
-        self.queryM31 = try device.makeComputePipelineState(function: fn6)
+        self.foldBn254 = fn1
+        self.foldBabyBear = fn2
+        self.foldM31 = fn3
+        self.queryBn254 = fn4
+        self.queryBabyBear = fn5
+        self.queryM31 = fn6
     }
 
     // MARK: - Shader compilation
-
-    private static func compileShaders(device: MTLDevice) throws -> MTLLibrary {
-        let shaderDir = findShaderDir()
-        let friSource = try String(contentsOfFile: shaderDir + "/fri/fri_query.metal", encoding: .utf8)
-        let fieldBn254 = try String(contentsOfFile: shaderDir + "/fields/bn254_fr.metal", encoding: .utf8)
-
-        // Strip #include directives from FRI source (we inline dependencies)
-        let cleanedFRI = friSource.split(separator: "\n")
-            .filter { !$0.contains("#include") }
-            .joined(separator: "\n")
-
-        // Strip include guards from field source but keep #include <metal_stdlib>
-        let cleanedBn254 = fieldBn254
-            .replacingOccurrences(of: "#ifndef BN254_FR_METAL", with: "")
-            .replacingOccurrences(of: "#define BN254_FR_METAL", with: "")
-            .replacingOccurrences(of: "#endif // BN254_FR_METAL", with: "")
-
-        let combined = cleanedBn254 + "\n" + cleanedFRI
-        let options = MTLCompileOptions()
-        options.fastMathEnabled = true
-        return try device.makeLibrary(source: combined, options: options)
-    }
 
     private static func findShaderDir() -> String {
         let execPath = CommandLine.arguments[0]

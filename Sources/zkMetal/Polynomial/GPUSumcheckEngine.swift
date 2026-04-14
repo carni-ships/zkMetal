@@ -65,61 +65,73 @@ public class GPUSumcheckEngine {
         }
         self.commandQueue = queue
 
-        let library = try GPUSumcheckEngine.compileShaders(device: device)
+        // Use ShaderCache for persistent pipeline caching
+        let cache = ShaderCache.shared
+        let shaderDir = GPUSumcheckEngine.findShaderDir()
+        let sourceFiles = [
+            shaderDir + "/fields/bn254_fr.metal",
+            shaderDir + "/fields/babybear.metal",
+            shaderDir + "/fields/goldilocks.metal",
+            shaderDir + "/sumcheck/sumcheck_reduce.metal",
+        ]
+        let kernelNames = [
+            "sumcheck_reduce_bn254",
+            "sumcheck_round_poly_bn254",
+            "sumcheck_fused_round_reduce_bn254",
+            "sumcheck_final_reduce_bn254",
+            "sumcheck_reduce_babybear",
+            "sumcheck_round_poly_babybear",
+            "sumcheck_reduce_goldilocks",
+            "sumcheck_round_poly_goldilocks",
+        ]
+        let preprocessor: ((String) -> String)? = { combined in
+            combined
+                // Strip include guards for all fields
+                .replacingOccurrences(of: "#ifndef BN254_FR_METAL", with: "")
+                .replacingOccurrences(of: "#define BN254_FR_METAL", with: "")
+                .replacingOccurrences(of: "#endif // BN254_FR_METAL", with: "")
+                .replacingOccurrences(of: "#ifndef BABYBEAR_METAL", with: "")
+                .replacingOccurrences(of: "#define BABYBEAR_METAL", with: "")
+                .replacingOccurrences(of: "#endif // BABYBEAR_METAL", with: "")
+                .replacingOccurrences(of: "#ifndef GOLDILOCKS_METAL", with: "")
+                .replacingOccurrences(of: "#define GOLDILOCKS_METAL", with: "")
+                .replacingOccurrences(of: "#endif // GOLDILOCKS_METAL", with: "")
+                // Strip #include lines
+                .split(separator: "\n", omittingEmptySubsequences: false)
+                .filter { !$0.contains("#include") }
+                .joined(separator: "\n")
+        }
 
-        guard let rBN = library.makeFunction(name: "sumcheck_reduce_bn254"),
-              let rpBN = library.makeFunction(name: "sumcheck_round_poly_bn254"),
-              let fBN = library.makeFunction(name: "sumcheck_fused_round_reduce_bn254"),
-              let frBN = library.makeFunction(name: "sumcheck_final_reduce_bn254"),
-              let rBB = library.makeFunction(name: "sumcheck_reduce_babybear"),
-              let rpBB = library.makeFunction(name: "sumcheck_round_poly_babybear"),
-              let rGL = library.makeFunction(name: "sumcheck_reduce_goldilocks"),
-              let rpGL = library.makeFunction(name: "sumcheck_round_poly_goldilocks") else {
+        let pipelines = try cache.loadOrCompile(
+            module: "sumcheck",
+            device: device,
+            sourceFiles: sourceFiles,
+            kernelNames: kernelNames,
+            preprocessor: preprocessor
+        )
+
+        guard let rBN = pipelines["sumcheck_reduce_bn254"],
+              let rpBN = pipelines["sumcheck_round_poly_bn254"],
+              let fBN = pipelines["sumcheck_fused_round_reduce_bn254"],
+              let frBN = pipelines["sumcheck_final_reduce_bn254"],
+              let rBB = pipelines["sumcheck_reduce_babybear"],
+              let rpBB = pipelines["sumcheck_round_poly_babybear"],
+              let rGL = pipelines["sumcheck_reduce_goldilocks"],
+              let rpGL = pipelines["sumcheck_round_poly_goldilocks"] else {
             throw MSMError.missingKernel
         }
 
-        self.reduceBN254 = try device.makeComputePipelineState(function: rBN)
-        self.roundPolyBN254 = try device.makeComputePipelineState(function: rpBN)
-        self.fusedBN254 = try device.makeComputePipelineState(function: fBN)
-        self.finalReduceBN254 = try device.makeComputePipelineState(function: frBN)
-        self.reduceBabyBear = try device.makeComputePipelineState(function: rBB)
-        self.roundPolyBabyBear = try device.makeComputePipelineState(function: rpBB)
-        self.reduceGoldilocks = try device.makeComputePipelineState(function: rGL)
-        self.roundPolyGoldilocks = try device.makeComputePipelineState(function: rpGL)
+        self.reduceBN254 = rBN
+        self.roundPolyBN254 = rpBN
+        self.fusedBN254 = fBN
+        self.finalReduceBN254 = frBN
+        self.reduceBabyBear = rBB
+        self.roundPolyBabyBear = rpBB
+        self.reduceGoldilocks = rGL
+        self.roundPolyGoldilocks = rpGL
     }
 
     // MARK: - Shader Compilation
-
-    private static func compileShaders(device: MTLDevice) throws -> MTLLibrary {
-        let shaderDir = findShaderDir()
-        let frSource = try String(contentsOfFile: shaderDir + "/fields/bn254_fr.metal", encoding: .utf8)
-        let cleanFr = frSource
-            .replacingOccurrences(of: "#ifndef BN254_FR_METAL", with: "")
-            .replacingOccurrences(of: "#define BN254_FR_METAL", with: "")
-            .replacingOccurrences(of: "#endif // BN254_FR_METAL", with: "")
-
-        let bbSource = try String(contentsOfFile: shaderDir + "/fields/babybear.metal", encoding: .utf8)
-        let cleanBb = bbSource
-            .replacingOccurrences(of: "#ifndef BABYBEAR_METAL", with: "")
-            .replacingOccurrences(of: "#define BABYBEAR_METAL", with: "")
-            .replacingOccurrences(of: "#endif // BABYBEAR_METAL", with: "")
-            .split(separator: "\n").filter { !$0.contains("#include") }.joined(separator: "\n")
-
-        let glSource = try String(contentsOfFile: shaderDir + "/fields/goldilocks.metal", encoding: .utf8)
-        let cleanGl = glSource
-            .replacingOccurrences(of: "#ifndef GOLDILOCKS_METAL", with: "")
-            .replacingOccurrences(of: "#define GOLDILOCKS_METAL", with: "")
-            .replacingOccurrences(of: "#endif // GOLDILOCKS_METAL", with: "")
-            .split(separator: "\n").filter { !$0.contains("#include") }.joined(separator: "\n")
-
-        let reduceSource = try String(contentsOfFile: shaderDir + "/sumcheck/sumcheck_reduce.metal", encoding: .utf8)
-        let cleanReduce = reduceSource.split(separator: "\n").filter { !$0.contains("#include") }.joined(separator: "\n")
-
-        let combined = cleanFr + "\n" + cleanBb + "\n" + cleanGl + "\n" + cleanReduce
-        let options = MTLCompileOptions()
-        options.fastMathEnabled = true
-        return try device.makeLibrary(source: combined, options: options)
-    }
 
     private static func findShaderDir() -> String {
         let execPath = CommandLine.arguments[0]

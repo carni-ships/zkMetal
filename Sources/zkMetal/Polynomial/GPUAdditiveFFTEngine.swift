@@ -54,15 +54,36 @@ public class GPUAdditiveFFTEngine {
         // Populate the 256x256 GF(2^8) multiplication LUT at init time.
         self.lutBuffer = GPUAdditiveFFTEngine.createLUTBuffer(device: device)
 
-        // Try to compile Metal shaders with USE_LUT=1; if this fails, GPU path is unavailable
-        if let library = try? GPUAdditiveFFTEngine.compileShaders(device: device, defines: ["USE_LUT"]) {
-            self.forwardFn = try? device.makeComputePipelineState(function: library.makeFunction(name: "additive_fft_gf8_forward")!)
-            self.forwardPairsFn = try? device.makeComputePipelineState(function: library.makeFunction(name: "additive_fft_gf8_forward_pairs")!)
+        // Compile Metal shaders with ShaderCache for persistent caching.
+        // Preprocessor adds USE_LUT=1 to source before compilation.
+        let cache = ShaderCache.shared
+        let shaderDir = GPUAdditiveFFTEngine.findShaderDir()
+        let sourceFiles = [shaderDir + "/additive/additive_fft_gf8.metal"]
+        let kernelNames = [
+            "additive_fft_gf8_forward",
+            "additive_fft_gf8_forward_pairs",
+            "additive_fft_gf8_inverse",
+            "additive_fft_gf8_forward_batch",
+            "gf28_pointwise_mul",
+            "additive_fft_gf8_forward_then_pointwise_mul",
+        ]
+        let preprocessor: ((String) -> String)? = { source in
+            "#define USE_LUT\n" + source
+        }
+        if let pipelines = try? cache.loadOrCompile(
+            module: "additive_fft_gf8",
+            device: device,
+            sourceFiles: sourceFiles,
+            kernelNames: kernelNames,
+            preprocessor: preprocessor
+        ) {
+            self.forwardFn = pipelines["additive_fft_gf8_forward"]
+            self.forwardPairsFn = pipelines["additive_fft_gf8_forward_pairs"]
             self.forwardShuffleFn = nil  // Shuffle kernel disabled — Metal simd_shuffle is intra-group only
-            self.inverseFn = try? device.makeComputePipelineState(function: library.makeFunction(name: "additive_fft_gf8_inverse")!)
-            self.forwardBatchFn = try? device.makeComputePipelineState(function: library.makeFunction(name: "additive_fft_gf8_forward_batch")!)
-            self.pointwiseMulFn = try? device.makeComputePipelineState(function: library.makeFunction(name: "gf28_pointwise_mul")!)
-            self.fusedForwardThenMulFn = try? device.makeComputePipelineState(function: library.makeFunction(name: "additive_fft_gf8_forward_then_pointwise_mul")!)
+            self.inverseFn = pipelines["additive_fft_gf8_inverse"]
+            self.forwardBatchFn = pipelines["additive_fft_gf8_forward_batch"]
+            self.pointwiseMulFn = pipelines["gf28_pointwise_mul"]
+            self.fusedForwardThenMulFn = pipelines["additive_fft_gf8_forward_then_pointwise_mul"]
         } else {
             self.forwardFn = nil
             self.forwardPairsFn = nil
@@ -76,19 +97,27 @@ public class GPUAdditiveFFTEngine {
 
     // MARK: - Shader Compilation
 
-    private static func compileShaders(device: MTLDevice, defines: [String] = []) throws -> MTLLibrary {
-        let shaderDir = findShaderDir()
-        let source = try String(contentsOfFile: shaderDir + "/additive/additive_fft_gf8.metal", encoding: .utf8)
-        let options = MTLCompileOptions()
-        options.fastMathEnabled = true
-        // Add preprocessor macros (e.g. "USE_LUT=1")
-        if !defines.isEmpty {
-            let macros = defines.joined(separator: ",")
-            // MTLCompileOptions doesn't have direct macro support, but we can prefix the source
-            let prefixedSource = defines.map { "#define \($0)\n" }.joined() + source
-            return try device.makeLibrary(source: prefixedSource, options: options)
+    private static func findShaderDir() -> String {
+        let execPath = CommandLine.arguments[0]
+        let execDir = (execPath as NSString).deletingLastPathComponent
+        for bundle in Bundle.allBundles {
+            if let url = bundle.url(forResource: "Shaders", withExtension: nil) {
+                let path = url.appendingPathComponent("fields/bn254_fr.metal").path
+                if FileManager.default.fileExists(atPath: path) {
+                    return url.path
+                }
+            }
         }
-        return try device.makeLibrary(source: source, options: options)
+        let candidates = [
+            "\(execDir)/../Sources/Shaders",
+            "./Sources/Shaders",
+        ]
+        for path in candidates {
+            if FileManager.default.fileExists(atPath: "\(path)/fields/bn254_fr.metal") {
+                return path
+            }
+        }
+        return "./Sources/Shaders"
     }
 
     // MARK: - LUT Population

@@ -75,53 +75,72 @@ public class GPUFFTEngine {
         self.commandQueue = queue
         self.tuning = TuningManager.shared.config(device: device)
 
-        let library = try GPUFFTEngine.compileShaders(device: device)
+        // Use ShaderCache for persistent pipeline caching
+        let cache = ShaderCache.shared
+        let shaderDir = findShaderDir()
+        let sourceFiles = [
+            shaderDir + "/fields/bn254_fr.metal",
+            shaderDir + "/ntt/fft_butterfly.metal",
+        ]
+        let kernelNames = [
+            "fft_dit_butterfly",
+            "fft_dif_butterfly",
+            "fft_stockham_radix2",
+            "fft_stockham_inv_radix2",
+            "fft_stockham_radix4",
+            "fft_stockham_split_radix",
+            "fft_stockham_fused",
+            "fft_stockham_inv_fused",
+            "fft_pointwise_mul",
+            "fft_scale",
+            "fft_bitrev_inplace",
+        ]
+        let preprocessor: ((String) -> String)? = { combined in
+            combined
+                .replacingOccurrences(of: "#ifndef BN254_FR_METAL", with: "")
+                .replacingOccurrences(of: "#define BN254_FR_METAL", with: "")
+                .replacingOccurrences(of: "#endif // BN254_FR_METAL", with: "")
+                .split(separator: "\n", omittingEmptySubsequences: false)
+                .filter { !$0.contains("#include") }
+                .joined(separator: "\n")
+        }
 
-        guard let ditBf = library.makeFunction(name: "fft_dit_butterfly"),
-              let difBf = library.makeFunction(name: "fft_dif_butterfly"),
-              let sr2 = library.makeFunction(name: "fft_stockham_radix2"),
-              let sir2 = library.makeFunction(name: "fft_stockham_inv_radix2"),
-              let sr4 = library.makeFunction(name: "fft_stockham_radix4"),
-              let spr = library.makeFunction(name: "fft_stockham_split_radix"),
-              let ff = library.makeFunction(name: "fft_stockham_fused"),
-              let fif = library.makeFunction(name: "fft_stockham_inv_fused"),
-              let pmul = library.makeFunction(name: "fft_pointwise_mul"),
-              let sc = library.makeFunction(name: "fft_scale"),
-              let br = library.makeFunction(name: "fft_bitrev_inplace") else {
+        let pipelines = try cache.loadOrCompile(
+            module: "fft_bn254",
+            device: device,
+            sourceFiles: sourceFiles,
+            kernelNames: kernelNames,
+            preprocessor: preprocessor
+        )
+
+        guard let ditBf = pipelines["fft_dit_butterfly"],
+              let difBf = pipelines["fft_dif_butterfly"],
+              let sr2 = pipelines["fft_stockham_radix2"],
+              let sir2 = pipelines["fft_stockham_inv_radix2"],
+              let sr4 = pipelines["fft_stockham_radix4"],
+              let spr = pipelines["fft_stockham_split_radix"],
+              let ff = pipelines["fft_stockham_fused"],
+              let fif = pipelines["fft_stockham_inv_fused"],
+              let pmul = pipelines["fft_pointwise_mul"],
+              let sc = pipelines["fft_scale"],
+              let br = pipelines["fft_bitrev_inplace"] else {
             throw MSMError.missingKernel
         }
 
-        self.ditButterflyFn = try device.makeComputePipelineState(function: ditBf)
-        self.difButterflyFn = try device.makeComputePipelineState(function: difBf)
-        self.stockhamR2Fn = try device.makeComputePipelineState(function: sr2)
-        self.stockhamInvR2Fn = try device.makeComputePipelineState(function: sir2)
-        self.stockhamR4Fn = try device.makeComputePipelineState(function: sr4)
-        self.splitRadixFn = try device.makeComputePipelineState(function: spr)
-        self.fusedFn = try device.makeComputePipelineState(function: ff)
-        self.fusedInvFn = try device.makeComputePipelineState(function: fif)
-        self.pointwiseMulFn = try device.makeComputePipelineState(function: pmul)
-        self.scaleFn = try device.makeComputePipelineState(function: sc)
-        self.bitrevFn = try device.makeComputePipelineState(function: br)
+        self.ditButterflyFn = ditBf
+        self.difButterflyFn = difBf
+        self.stockhamR2Fn = sr2
+        self.stockhamInvR2Fn = sir2
+        self.stockhamR4Fn = sr4
+        self.splitRadixFn = spr
+        self.fusedFn = ff
+        self.fusedInvFn = fif
+        self.pointwiseMulFn = pmul
+        self.scaleFn = sc
+        self.bitrevFn = br
     }
 
     // MARK: - Shader Compilation
-
-    private static func compileShaders(device: MTLDevice) throws -> MTLLibrary {
-        let shaderDir = findShaderDir()
-        let frSource = try String(contentsOfFile: shaderDir + "/fields/bn254_fr.metal", encoding: .utf8)
-        let fftSource = try String(contentsOfFile: shaderDir + "/ntt/fft_butterfly.metal", encoding: .utf8)
-
-        let cleanFFT = fftSource.split(separator: "\n").filter { !$0.contains("#include") }.joined(separator: "\n")
-        let frClean = frSource
-            .replacingOccurrences(of: "#ifndef BN254_FR_METAL", with: "")
-            .replacingOccurrences(of: "#define BN254_FR_METAL", with: "")
-            .replacingOccurrences(of: "#endif // BN254_FR_METAL", with: "")
-
-        let combined = frClean + "\n" + cleanFFT
-        let options = MTLCompileOptions()
-        options.fastMathEnabled = true
-        return try device.makeLibrary(source: combined, options: options)
-    }
 
     // MARK: - Twiddle Factor Caching
 

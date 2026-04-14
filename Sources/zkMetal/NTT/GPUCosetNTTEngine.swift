@@ -61,48 +61,34 @@ public class GPUCosetNTTEngine {
         }
         self.commandQueue = queue
 
-        let library = try GPUCosetNTTEngine.compileShaders(device: device)
-
-        guard let csbFr = library.makeFunction(name: "coset_shift_butterfly_fr"),
-              let csbBb = library.makeFunction(name: "coset_shift_butterfly_bb"),
-              let iusFr = library.makeFunction(name: "intt_unshift_scale_fr"),
-              let iusBb = library.makeFunction(name: "intt_unshift_scale_bb"),
-              let cspFr = library.makeFunction(name: "coset_shift_powers_fr"),
-              let cspBb = library.makeFunction(name: "coset_shift_powers_bb"),
-              let cupFr = library.makeFunction(name: "coset_unshift_powers_fr"),
-              let cupBb = library.makeFunction(name: "coset_unshift_powers_bb"),
-              let zpFr = library.makeFunction(name: "lde_zero_pad_coset_shift_fr"),
-              let zpBb = library.makeFunction(name: "lde_zero_pad_coset_shift_bb") else {
-            throw MSMError.missingKernel
-        }
-
-        self.cosetShiftButterflyFr = try device.makeComputePipelineState(function: csbFr)
-        self.cosetShiftButterflyBb = try device.makeComputePipelineState(function: csbBb)
-        self.inttUnshiftScaleFr = try device.makeComputePipelineState(function: iusFr)
-        self.inttUnshiftScaleBb = try device.makeComputePipelineState(function: iusBb)
-        self.cosetShiftPowersFr = try device.makeComputePipelineState(function: cspFr)
-        self.cosetShiftPowersBb = try device.makeComputePipelineState(function: cspBb)
-        self.cosetUnshiftPowersFr = try device.makeComputePipelineState(function: cupFr)
-        self.cosetUnshiftPowersBb = try device.makeComputePipelineState(function: cupBb)
-        self.zeroPadCosetShiftFr = try device.makeComputePipelineState(function: zpFr)
-        self.zeroPadCosetShiftBb = try device.makeComputePipelineState(function: zpBb)
-    }
-
-    // MARK: - Shader compilation
-
-    private static func compileShaders(device: MTLDevice) throws -> MTLLibrary {
-        let shaderDir = findShaderDir()
-        let fieldFr = try String(contentsOfFile: shaderDir + "/fields/bn254_fr.metal", encoding: .utf8)
-        let fieldBb = try String(contentsOfFile: shaderDir + "/fields/babybear.metal", encoding: .utf8)
-        let fusedSrc = try String(contentsOfFile: shaderDir + "/ntt/coset_ntt_fused.metal", encoding: .utf8)
-        let ldeFusedSrc = try String(contentsOfFile: shaderDir + "/ntt/coset_lde_fused.metal", encoding: .utf8)
-
-        func clean(_ src: String) -> String {
-            src.split(separator: "\n")
+        // Use ShaderCache for persistent pipeline caching
+        let cache = ShaderCache.shared
+        let shaderDir = GPUCosetNTTEngine.findShaderDir()
+        let sourceFiles = [
+            shaderDir + "/fields/bn254_fr.metal",
+            shaderDir + "/fields/babybear.metal",
+            shaderDir + "/ntt/coset_ntt_fused.metal",
+            shaderDir + "/ntt/coset_lde_fused.metal",
+        ]
+        let kernelNames = [
+            "coset_shift_butterfly_fr",
+            "coset_shift_butterfly_bb",
+            "intt_unshift_scale_fr",
+            "intt_unshift_scale_bb",
+            "coset_shift_powers_fr",
+            "coset_shift_powers_bb",
+            "coset_unshift_powers_fr",
+            "coset_unshift_powers_bb",
+            "lde_zero_pad_coset_shift_fr",
+            "lde_zero_pad_coset_shift_bb",
+        ]
+        let preprocessor: ((String) -> String)? = { combined in
+            combined
+                .split(separator: "\n", omittingEmptySubsequences: false)
                 .filter { line in
-                    if line.contains("#include") || line.contains("#ifndef") || line.contains("#endif") { return false }
-                    if line.contains("#define") {
-                        let trimmed = line.trimmingCharacters(in: .whitespaces)
+                    let trimmed = line.trimmingCharacters(in: .whitespaces)
+                    if trimmed.contains("#include") || trimmed.hasPrefix("#ifndef") || trimmed.hasPrefix("#endif") { return false }
+                    if trimmed.hasPrefix("#define") {
                         let parts = trimmed.split(separator: " ", maxSplits: 3)
                         return parts.count >= 3
                     }
@@ -111,11 +97,62 @@ public class GPUCosetNTTEngine {
                 .joined(separator: "\n")
         }
 
-        let combined = clean(fieldFr) + "\n" + clean(fieldBb) + "\n" +
-                        clean(fusedSrc) + "\n" + clean(ldeFusedSrc)
-        let options = MTLCompileOptions()
-        options.fastMathEnabled = true
-        return try device.makeLibrary(source: combined, options: options)
+        let pipelines = try cache.loadOrCompile(
+            module: "coset_ntt",
+            device: device,
+            sourceFiles: sourceFiles,
+            kernelNames: kernelNames,
+            preprocessor: preprocessor
+        )
+
+        guard let csbFr = pipelines["coset_shift_butterfly_fr"],
+              let csbBb = pipelines["coset_shift_butterfly_bb"],
+              let iusFr = pipelines["intt_unshift_scale_fr"],
+              let iusBb = pipelines["intt_unshift_scale_bb"],
+              let cspFr = pipelines["coset_shift_powers_fr"],
+              let cspBb = pipelines["coset_shift_powers_bb"],
+              let cupFr = pipelines["coset_unshift_powers_fr"],
+              let cupBb = pipelines["coset_unshift_powers_bb"],
+              let zpFr = pipelines["lde_zero_pad_coset_shift_fr"],
+              let zpBb = pipelines["lde_zero_pad_coset_shift_bb"] else {
+            throw MSMError.missingKernel
+        }
+
+        self.cosetShiftButterflyFr = csbFr
+        self.cosetShiftButterflyBb = csbBb
+        self.inttUnshiftScaleFr = iusFr
+        self.inttUnshiftScaleBb = iusBb
+        self.cosetShiftPowersFr = cspFr
+        self.cosetShiftPowersBb = cspBb
+        self.cosetUnshiftPowersFr = cupFr
+        self.cosetUnshiftPowersBb = cupBb
+        self.zeroPadCosetShiftFr = zpFr
+        self.zeroPadCosetShiftBb = zpBb
+    }
+
+    // MARK: - Shader compilation
+
+    private static func findShaderDir() -> String {
+        let execPath = CommandLine.arguments[0]
+        let execDir = (execPath as NSString).deletingLastPathComponent
+        for bundle in Bundle.allBundles {
+            if let url = bundle.url(forResource: "Shaders", withExtension: nil) {
+                let path = url.appendingPathComponent("fields/bn254_fr.metal").path
+                if FileManager.default.fileExists(atPath: path) {
+                    return url.path
+                }
+            }
+        }
+        let candidates = [
+            "\(execDir)/../Sources/Shaders",
+            "./Sources/Shaders",
+        ]
+        for path in candidates {
+            if FileManager.default.fileExists(atPath: "\(path)/fields/bn254_fr.metal") {
+                return path
+            }
+        }
+        return "./Sources/Shaders"
     }
 
     // MARK: - NTT engine accessors
