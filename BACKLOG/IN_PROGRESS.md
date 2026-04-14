@@ -46,8 +46,9 @@
 - CPU fallback for small matrices (<64 rows or <256 non-zeros)
 
 ### GPU Additive FFT (GF2^8)
-- Status: In Progress (Optimization 1: Precomputed LUT)
-- Current: 13ms for 2^22, Target: 2-4ms (LUT gives 5-10x multiply speedup)
+- Status: In Progress (forward_pairs kernel added)
+- Current: ~11-14ms for 2^22 with high variance, Target: ~0.5ms
+- forward_pairs kernel (n/2 threads) eliminates thread divergence
 
 ## Remaining Folding Opportunities
 
