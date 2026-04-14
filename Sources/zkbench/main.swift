@@ -257,6 +257,8 @@ if cmd == "calibrate" {
     runPastaTest()
 } else if cmd == "pastamsm" || cmd == "pasta-msm" {
     runPastaMSMBench()
+} else if cmd == "pasta_poseidon" || cmd == "pp" {
+    runPastaPoseidonBench()
 } else if cmd == "binius" || cmd == "binary" || cmd == "bt" {
     runBiniusBench()
 } else if cmd == "blaze" {

@@ -63,11 +63,15 @@ All benchmarks on Apple M3 Pro (6P+6E cores). Run `swift run -c release zkbench 
 | Poseidon2 | 2^12 | 523ms | 19ms (C CIOS) | 2.3ms | **8x** |
 | Poseidon2 | 2^14 | 2.0s | 75ms (C CIOS) | 2.3ms | **33x** |
 | Poseidon2 | 2^16 | 8.0s | 302ms (C CIOS) | 8.5ms | **36x** |
-| Pasta Poseidon | 2^16 | 16.1s | 1.1s (C CIOS) | 117ms (~0.6M hash/s) | **9x** |
-| Pasta Poseidon | 2^18 | -- | 4.2s (C CIOS) | 212ms (~0.6M hash/s) | **20x** |
+| Pasta Poseidon | 2^16 | 16.1s | 1.0s (C CIOS) | ~303ms (~216K hash/s) | **3.3x** |
+| Pasta Poseidon | 2^18 | -- | 4.1s (C CIOS) | ~1150ms (~228K hash/s) | **3.6x** |
 | Keccak-256 | 2^14 | 100ms | 23ms (parallel) | 0.20ms | **500x** |
 | Keccak-256 | 2^16 | 387ms | 89ms (parallel) | 0.45ms | **860x** |
 | Keccak-256 | 2^18 | 1.6s | 360ms (parallel) | 1.4ms | **1143x** |
+
+**Notes:**
+- **Pasta Poseidon** uses 55 full rounds (Mina Kimchi variant) vs Poseidon2's partial rounds optimization. The 55-round sequential dependency chain limits GPU utilization to ~30% of peak FLOPS, yielding modest 3.5x GPU speedup vs 36x+ for Poseidon2.
+- **Poseidon2** uses Hadamard/Fast partial rounds (8 full + 22 partial + 8 full) achieving much better GPU efficiency.
 
 ## Merkle Trees
 
@@ -186,6 +190,20 @@ First-run compiles and caches; subsequent runs load from cache (near-instant).
 
 **Note**: ShaderCache now integrated into all major GPU engines. First-run JIT compilation
 overhead is amortized across runs. Cache invalidates on source file hash change.
+
+## Priority Optimization Targets
+
+**Focus areas for largest absolute time savings** (ordered by potential impact):
+
+| Priority | Primitive | Size | Current | Target | Notes |
+|----------|----------|------|---------|--------|-------|
+| 1 | Pasta Poseidon | 2^16-2^18 | 303-1150ms | TBD | 55-round chain limits GPU utilization (~3.5x CPU) |
+| 2 | Merkle Poseidon2 | 2^20 | 129ms | TBD | 45ms at 2^18, room exists |
+| 3 | BN254 NTT | 2^24 | 110ms | ~40ms | ~3x headroom |
+| 4 | FRI commit | 2^20 | 121-392ms | TBD | Fold-by-N tradeoffs |
+| 5 | MSM BN254 | 2^20 | 175ms | ~100ms | Karatsuba done, ~1.8x headroom |
+
+Even small improvements here yield large absolute gains (e.g., 10% on 200ms = 20ms saved).
 
 ## KZG Commitments (BN254 G1)
 

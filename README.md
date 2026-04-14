@@ -1,5 +1,7 @@
 # zkMetal
 
+> **⚠️ Experimental Software** — This library is under active development. Expect breaking changes, incomplete implementations, and undocumented behavior. API stability is not guaranteed. Use at your own risk.
+
 GPU-accelerated zero-knowledge proof library for Apple Silicon. Metal compute shaders + C/NEON field arithmetic + Swift orchestration.
 
 **~211 primitives** across 18 fields and 10 elliptic curves. 573 source files, 107 Metal shaders, 33 C/NEON files, 244 test files.
