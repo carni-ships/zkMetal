@@ -10,7 +10,7 @@
 | 4. Bucket-Interleaved Layout | Medium | Medium | Low | ✅ Complete |
 | 5. GPU Fused Sumcheck Round | Medium | Medium | Low | ✅ Complete |
 | 6. GPU CSR Sparse Matvec | **Highest** | Very High | Medium | In Progress (3-4 wks) |
-| 7. GPU Additive FFT (GF2^8) | High | Medium | Low | In Progress |
+| 7. GPU Additive FFT (GF2^8) | High | Medium | High | LUT approach failed, needs investigation |
 | 8. Precomputed Window Tables | High | High | Medium | Rejected (memory) |
 | 9. GLV + Batch Small | Unknown | Medium | Medium | Uncertain |
 
