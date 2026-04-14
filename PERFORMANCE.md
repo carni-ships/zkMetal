@@ -135,11 +135,11 @@ All benchmarks on Apple M3 Pro (6P+6E cores). Run `swift run -c release zkbench 
 | 2^16 | 65,536 | ~14ms | ~4.6 M elem/s | |
 | 2^18 | 262,144 | ~16ms | ~16.6 M elem/s | |
 | 2^20 | 1,048,576 | ~13ms | ~83 M elem/s | |
-| 2^22 | 4,194,304 | ~14ms | ~300 M elem/s | |
+| 2^22 | 4,194,304 | ~11-14ms | ~300-360 M elem/s | forward_pairs kernel (n/2 threads) |
 
-**Optimization attempted but regressed**: Tried precomputed LUT approach but removing `[[restrict]]`
-from LUT pointer hurt performance. Reverted to original. Theoretical floor: ~0.5ms (26x headroom).
-Need to investigate why LUT approach regressed before retrying.
+**Optimization status**: forward_pairs kernel eliminates thread divergence by using n/2 threads
+(one per butterfly pair). LUT approach regressed when `[[restrict]]` was removed from LUT pointer.
+Theoretical floor: ~0.5ms (26x headroom). High variance observed (~3ms stddev at 2^22).
 
 ## KZG Commitments (BN254 G1)
 
@@ -273,7 +273,7 @@ Need to investigate why LUT approach regressed before retrying.
 
 | Rank | Primitive | Current | Floor | Headroom | Status |
 |------:|------------|--------:|------:|----------:|--------|
-| 1 | GPU Additive FFT 2^22 | ~14ms | ~0.5ms | ~28x | LUT approach regressed - investigating |
+| 1 | GPU Additive FFT 2^22 | ~11-14ms | ~0.5ms | ~26-28x | forward_pairs kernel (n/2 threads) |
 | 2 | MSM BN254 2^18 | 73ms | ~5ms | ~11x | |
 | 3 | NTT BN254 2^22 | 26ms | ~3ms | ~9x | |
 | 4 | secp256k1 MSM (GPU) | ~260ms | ~30ms | ~8x | GPU sort + bucket-interleaved in progress |
