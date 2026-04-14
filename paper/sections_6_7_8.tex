@@ -58,11 +58,11 @@ ICICLE-Metal's $\sim$85\,ms per-call overhead is a constant factor, but even sub
 Size & zkMetal & ICICLE & zkMetal & ICICLE \\
      & BN254   & BN254  & BabyBear & BabyBear \\
 \midrule
-$2^{16}$ & \textbf{0.76\,ms} & 89\,ms & \textbf{0.18\,ms} & 86\,ms \\
-$2^{18}$ & \textbf{1.6\,ms}  & 108\,ms & \textbf{0.26\,ms} & 92\,ms \\
-$2^{20}$ & \textbf{6.1\,ms}  & 194\,ms & \textbf{0.95\,ms} & 108\,ms \\
-$2^{22}$ & \textbf{26\,ms}   & 915\,ms & \textbf{2.8\,ms}  & 181\,ms \\
-$2^{24}$ & \textbf{116\,ms}  & 3892\,ms & \textbf{2.0\,ms} & 709\,ms \\
+$2^{16}$ & \textbf{0.85\,ms} & 89\,ms & \textbf{0.26\,ms} & 86\,ms \\
+$2^{18}$ & \textbf{1.72\,ms}  & 108\,ms & \textbf{0.54\,ms} & 92\,ms \\
+$2^{20}$ & \textbf{6.06\,ms}  & 194\,ms & \textbf{0.79\,ms} & 108\,ms \\
+$2^{22}$ & \textbf{26.0\,ms}   & 915\,ms & \textbf{3.0\,ms}  & 181\,ms \\
+$2^{24}$ & \textbf{110.9\,ms}  & 3892\,ms & \textbf{2.3\,ms} & 709\,ms \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -98,8 +98,8 @@ Lasso & $2^{18}$ & 56\,ms & 31\,ms \\
 \paragraph{Cross-curve MSM.}
 Table~\ref{tab:cross-curve-msm} characterizes MSM across seven curves at $2^{18}$.
 BN254 is fastest (45\,ms) due to combined GLV endomorphism and signed-digit optimization.
-BLS12-377 (205\,ms) pays a 4.6$\times$ penalty from wider limbs (12$\times$32-bit vs.\ 8$\times$32-bit for BN254).
-secp256k1 (113\,ms) cannot use GLV due to the scheduling pathology (\S\ref{sec:pathology}) and relies on signed-digit only.
+BLS12-377 (119\,ms) pays a 2.6$\times$ penalty from wider limbs (12$\times$32-bit vs.\ 8$\times$32-bit for BN254).
+secp256k1 (200\,ms) cannot use GLV due to the scheduling pathology (\S\ref{sec:pathology}) and relies on signed-digit only.
 Pallas and Vesta, as a cycle pair, achieve nearly identical performance (66 and 65\,ms), validating their suitability for recursive proof composition.
 
 \begin{table}[t]
@@ -114,8 +114,8 @@ Curve & Limbs & $2^{16}$ & $2^{18}$ \\
 BN254 & 8$\times$32 & 27\,ms & 45\,ms \\
 Pallas & 8$\times$32 & 39\,ms & 66\,ms \\
 Vesta & 8$\times$32 & 39\,ms & 65\,ms \\
-secp256k1 & 8$\times$32 & 24\,ms & 113\,ms \\
-BLS12-377 & 12$\times$32 & 176\,ms & 205\,ms \\
+secp256k1 & 8$\times$32 & 72\,ms & 200\,ms \\
+BLS12-377 & 12$\times$32 & 55\,ms & 119\,ms \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -140,7 +140,7 @@ We identify three regimes:
 
 \emph{Near-optimal ($<$2$\times$ headroom):}
 Seven primitives operate within 2$\times$ of their theoretical floors.
-BabyBear NTT at $2^{24}$ (1.2$\times$) is essentially memory-bandwidth-limited: 16.8\,M elements $\times$ 4~bytes at 150~GB/s yields a 1.7\,ms floor against the measured 2.0\,ms.
+BabyBear NTT at $2^{24}$ (1.3$\times$) is essentially memory-bandwidth-limited: 16.8\,M elements $\times$ 4~bytes at 150~GB/s yields a 1.7\,ms floor against the measured 2.3\,ms.
 HyperNova (1.3$\times$), Circle NTT (1.3$\times$), Groth16 (1.4$\times$), and KZG commit (1.4$\times$) are similarly mature.
 These primitives share a common trait: regular, predictable memory access patterns or small element sizes that pack efficiently into cache lines.
 
@@ -167,7 +167,7 @@ Primitive & Current & Floor & Head- & Bottleneck \\
           &         &       & room  &            \\
 \midrule
 \multicolumn{5}{l}{\emph{Near-optimal ($<$2$\times$)}} \\
-BabyBear NTT $2^{24}$ & 2.0\,ms & 1.7\,ms & 1.2$\times$ & Bandwidth \\
+BabyBear NTT $2^{24}$ & 2.3\,ms & 1.7\,ms & 1.3$\times$ & Bandwidth \\
 Circle NTT $2^{20}$ & 4.0\,ms & 3.0\,ms & 1.3$\times$ & Compute $\approx$ BW \\
 HyperNova fold & 0.09\,ms & 0.07\,ms & 1.3$\times$ & C CIOS floor \\
 KZG commit $2^{10}$ & 0.7\,ms & 0.5\,ms & 1.4$\times$ & Cached affine \\
@@ -180,11 +180,11 @@ Circle STARK $2^{14}$ & 21\,ms & 10\,ms & 2$\times$ & Batched CBs \\
 Radix sort $2^{20}$ & 2.1\,ms & 1\,ms & 2$\times$ & Histogram \\
 ECDSA batch 64 & 1.7\,ms & 0.5\,ms & 3$\times$ & C CIOS Fr \\
 Plonk 1024 & 49\,ms & 15\,ms & 3$\times$ & Poly ops \\
-secp256k1 MSM $2^{18}$ & 113\,ms & 30\,ms & 4$\times$ & No GLV \\
+secp256k1 MSM $2^{18}$ & 200\,ms & 30\,ms & 7$\times$ & No GLV \\
 Poseidon2 $2^{16}$ & 8.1\,ms & 1.8\,ms & 4.5$\times$ & Sequential rounds \\
+BLS12-377 MSM $2^{18}$ & 119\,ms & 60\,ms & 2$\times$ & 12-limb Fq \\
 \midrule
 \multicolumn{5}{l}{\emph{Significant ($>$5$\times$)}} \\
-BLS12-377 MSM $2^{18}$ & 205\,ms & 35\,ms & 6$\times$ & 12-limb Fq \\
 Basefold $2^{18}$ & 144\,ms & 20\,ms & 7$\times$ & 18 fold rounds \\
 FRI fold $2^{20}$ & 1.96\,ms & 0.3\,ms & 7$\times$ & Bandwidth \\
 NTT BN254 $2^{22}$ & 26\,ms & 2.9\,ms & 9$\times$ & Strided BW \\

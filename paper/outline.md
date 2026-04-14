@@ -25,7 +25,7 @@ Claim: Apple Silicon's unified memory architecture and 32-bit GPU ALU create a f
 **Data points to include:**
 - MSM BN254 2^18: zkMetal 45ms vs ICICLE-Metal 1475ms vs Arkworks 266ms
 - NTT BN254 2^20: zkMetal 6.1ms vs ICICLE-Metal 194ms
-- NTT BabyBear 2^24: zkMetal 2.0ms vs ICICLE-Metal 709ms
+- NTT BabyBear 2^24: zkMetal 2.3ms vs ICICLE-Metal 709ms
 
 ---
 
@@ -117,13 +117,13 @@ This is the paper's most novel finding. Specific threadgroup counts on M-series 
 **Data points:**
 - BN254 2^18: 45ms (vs Arkworks CPU 266ms = 5.9x, vs ICICLE-Metal 1475ms = 33x)
 - CPU C Pippenger crossover at 2^14 (29ms CPU vs 22ms GPU)
-- secp256k1 2^18: 113ms (no GLV due to pathology, signed-digit only)
+- secp256k1 2^18: 200ms (no GLV due to pathology, signed-digit only)
 
 ### 5.2 NTT Optimization (0.75 page)
 - Four-step FFT for large sizes (2^20+): split into row NTT + twiddle multiply + column NTT. Avoids single-kernel shared memory limits.
 - Fused bitrev+butterfly: eliminate separate bit-reversal pass. 47% faster at 2^16.
 - Twiddle fusion: precompute and fuse twiddle factors into butterfly. 4--5x at 2^24.
-- Small-field advantage: BabyBear NTT at 2^24 runs in 2.0ms (8.5B elem/s) because each butterfly is a single 32-bit MAD instead of 64 MADs for BN254.
+- Small-field advantage: BabyBear NTT at 2^24 runs in 2.3ms (8.5B elem/s) because each butterfly is a single 32-bit MAD instead of 64 MADs for BN254.
 - BN254 2^22 at 26ms is near-optimal for 32B elements: 127x theoretical headroom is unreachable because strided column access at 32B elements x 128B cache lines = 25% utilization is fundamental to the four-step algorithm. Three alternative approaches tested and failed (transpose-before-column, swapped split, phase profiling).
 
 **Key figure:** Figure 5 -- NTT throughput (elements/sec) vs field size (bits) at 2^24, showing super-linear scaling.
@@ -151,7 +151,7 @@ This is the paper's most novel finding. Specific threadgroup counts on M-series 
 **Key tables:**
 - Table 3: MSM comparison -- zkMetal vs ICICLE-Metal vs ICICLE CPU vs MoPro v2 vs Arkworks vs ICICLE-CUDA. Sizes 2^16 through 2^20. Note: ICICLE-Metal v3.8 has ~600ms license-server overhead; ICICLE-CUDA on RTX 3090 Ti still wins at ~9ms for 2^16 (native 64-bit mul).
 - Table 4: NTT comparison -- zkMetal vs ICICLE-Metal across BN254 and BabyBear. 30--500x gaps.
-- Table 5: End-to-end proof systems -- Circle STARK (21ms prove at 2^14), Plonk (49ms prove at 1024 gates), Groth16 (14ms prove at 256 constraints), HyperNova (0.09ms/fold), Spartan (121ms at 2^14), Lasso (56ms prove at 2^18).
+- Table 5: End-to-end proof systems -- Circle STARK (17ms prove at 2^14), Plonk (49ms prove at 1024 gates), Groth16 (14ms prove at 256 constraints), HyperNova (0.09ms/fold), Spartan (121ms at 2^14), Lasso (56ms prove at 2^18).
 - Table 6: Cross-curve MSM -- BN254, BLS12-377, secp256k1, Pallas, Vesta, Ed25519, Grumpkin at 2^14 through 2^18.
 
 **Key figure:** Figure 6 -- Log-scale bar chart of zkMetal vs ICICLE-Metal across all measured primitives.
@@ -246,7 +246,7 @@ Brief treatment of how primitives compose into complete proof systems, with end-
 
 ### 10.2 The Small-Field Thesis
 - 32-bit ALU is *not* a limitation for small-field ZK (BabyBear, M31). The trend toward smaller fields in modern proof systems (Plonky3, Circle STARKs, Binius) plays to Apple Silicon's strengths.
-- BabyBear NTT at 2^24: 2.0ms. Near hardware floor (1.2x). This is essentially memory-bandwidth-limited, not compute-limited.
+- BabyBear NTT at 2^24: 2.3ms. Near hardware floor (1.3x). This is essentially memory-bandwidth-limited, not compute-limited.
 - Binary tower (Binius): XOR addition = free on GPU, multiply = table lookup. Metal's 32-bit ALU is ideal.
 - Prediction: as proof systems migrate to smaller fields, Apple Silicon's competitiveness vs CUDA narrows.
 

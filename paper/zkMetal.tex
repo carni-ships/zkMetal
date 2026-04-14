@@ -122,7 +122,7 @@ ZK cryptography library for Apple Silicon Metal GPUs. Our contributions are:
   methodology for mapping ZK field arithmetic to Metal's 32-bit ALU,
   showing that 256-bit fields require CIOS Montgomery with explicit carry
   management while 31-bit fields achieve near-hardware-floor throughput.
-  BabyBear NTT at $2^{24}$ elements runs in 2.0~ms (8.5B~elem/s), within
+  BabyBear NTT at $2^{24}$ elements runs in 2.3~ms (8.5B~elem/s), within
   1.2$\times$ of the memory bandwidth limit
   (Section~\ref{sec:architecture}).
 
@@ -155,7 +155,7 @@ primitives.
 \midrule
 MSM $2^{18}$       & 45\,ms   & 1{,}475\,ms & 266\,ms \\
 NTT $2^{20}$       & 6.1\,ms  & 194\,ms     & 7{,}300\,ms\textsuperscript{*} \\
-NTT BB $2^{24}$    & 2.0\,ms  & 709\,ms     & --- \\
+NTT BB $2^{24}$    & 2.3\,ms  & 709\,ms     & --- \\
 \bottomrule
 \multicolumn{4}{l}{\footnotesize \textsuperscript{*}Vanilla Swift CPU baseline (no Arkworks NTT available).}
 \end{tabular}

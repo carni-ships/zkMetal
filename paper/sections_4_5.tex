@@ -342,6 +342,25 @@ exceeding the benefit), swapped row/column split dimensions, and individual
 phase profiling. All three failed to improve over the baseline
 (\S\ref{sec:dead-ends}).
 
+\subsection{GPU Additive FFT (Binary Tower Fields)}
+\label{sec:additive-fft}
+
+Beyond multiplicative NTTs over prime fields, \sys implements GPU-accelerated
+additive FFTs over $\mathrm{GF}(2^8)$ for binary tower field arithmetic
+(Binius).  Additive FFTs differ fundamentally from multiplicative NTTs: the
+butterfly operation is $((x, y), (x + y, y \cdot \lambda))$ where
+$\lambda$ is a trace-compatible element, and the Cooley--Tukey decomposition
+uses the trace to pair elements rather than roots of unity.
+
+The GPU additive FFT kernel achieves approximately $300$--$360$M elements/s at
+$2^{22}$ elements (11--14\,ms), using a \texttt{forward\_pairs} kernel that
+launches $n/2$ threads---one thread per butterfly pair.  This eliminates the
+SIMD divergence inherent in iterative butterfly approaches where adjacent
+threads may take different butterfly paths depending on the bit-reversal index.
+At $2^{22}$ the theoretical floor is approximately 0.5\,ms, leaving
+$26\times$ headroom for further optimization.  High timing variance is
+observed at large sizes (${\sim}$3\,ms standard deviation at $2^{22}$).
+
 \subsection{C CIOS CPU Acceleration}
 \label{sec:ccios}
 

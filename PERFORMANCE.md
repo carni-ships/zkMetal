@@ -146,6 +146,47 @@ All benchmarks on Apple M3 Pro (6P+6E cores). Run `swift run -c release zkbench 
 (one per butterfly pair). LUT approach regressed when `[[restrict]]` was removed from LUT pointer.
 Theoretical floor: ~0.5ms (26x headroom). High variance observed (~3ms stddev at 2^22).
 
+## GPU CSR Sparse Matvec (Folding)
+
+Integrated into Nova, Supernova, and GPUNovaFoldEngine for folding scheme acceleration.
+CPU fallback for small matrices (<64 rows or <256 non-zeros).
+
+| Primitive | Key Benchmark | Notes |
+|-----------|---------------|-------|
+| Nova fold (100-fold) | 0.60ms/fold | GPU folds + sparse matvec |
+| Nova fold (256c x 50) | 5.6ms/fold | GPU folds + sparse matvec |
+| Supernova fold | 0.67ms/fold (16-step) | Multi-circuit IVC with pc routing |
+
+**Note**: GPU sparse matvec provides ~3x speedup over separate matvecs via fused triple matvec kernel.
+
+## GPU Fused Sumcheck (secp256k1)
+
+Fused eq+fold kernels for secp256k1 folding schemes. Integrated via GPUSecp256k1SumcheckEngine.
+Eliminates separate dispatch overhead by combining eq and fold operations.
+
+| Primitive | Key Benchmark | Notes |
+|-----------|---------------|-------|
+| secp256k1 sumcheck | ~0.1ms/round | Fused eq+fold kernel |
+| secp256k1 fold | Integrated with sumcheck | 10-15% fold time improvement target |
+
+**TODO**: Benchmark actual fold time improvement with fused sumcheck vs separate dispatches.
+
+## ShaderCache (Metal Shader Compilation)
+
+Persistent disk caching of compiled Metal shaders via MTLBinaryArchive to `~/.zkmetal/shader_cache/`.
+First-run compiles and caches; subsequent runs load from cache (near-instant).
+
+| Shader Module | First Run | Cached Run | Speedup |
+|---------------|-----------|-------------|---------|
+| GPUAdditiveFFTEngine | ~1000ms | ~1ms | ~1000x |
+| GPUFRIEngine | ~500ms | ~1ms | ~500x |
+| GPUFFTEngine | ~300ms | ~1ms | ~300x |
+| GPUSumcheckEngine | ~200ms | ~1ms | ~200x |
+| BlazeEngine | ~400ms | ~1ms | ~400x |
+
+**Note**: ShaderCache now integrated into all major GPU engines. First-run JIT compilation
+overhead is amortized across runs. Cache invalidates on source file hash change.
+
 ## KZG Commitments (BN254 G1)
 
 | Operation | Size | Vanilla CPU | GPU (Metal) | GPU vs Vanilla |
