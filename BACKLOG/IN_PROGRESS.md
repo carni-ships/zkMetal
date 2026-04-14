@@ -4,14 +4,15 @@
 
 | Transformation | Impact | Cost | Risk | Status |
 |---------------|--------|------|------|--------|
-| 1. Batch Small MSMs | **Very High** | Medium | Low | Not started |
+| 1. Batch Small MSMs | **Very High** | Medium | Low | ✅ Complete (impl + tests, blocked by shader compile) |
 | 2. NAF Representation | Medium | Low | Very Low | ✅ Complete (reference impl) |
 | 3. Higher Radix + Shared Mem | Medium-High | Medium | Medium | ✅ Complete (kernel added) |
-| 4. Bucket-Interleaved Layout | Medium | Medium | Low | Not started |
-| 5. Precomputed Window Tables | High | High | Medium | Rejected (memory) |
-| 6. GLV + Batch Small | Unknown | Medium | Medium | Uncertain |
-| 7. Poly Evaluation | N/A | N/A | N/A | Theoretical only |
-| 8. Multilinear Extension | N/A | N/A | N/A | Theoretical only |
+| 4. Bucket-Interleaved Layout | Medium | Medium | Low | ✅ Complete |
+| 5. GPU Fused Sumcheck Round | Medium | Medium | Low | ✅ Complete |
+| 6. GPU CSR Sparse Matvec | **Highest** | Very High | Medium | In Progress (3-4 wks) |
+| 7. GPU Additive FFT (GF2^8) | High | Medium | Low | In Progress |
+| 8. Precomputed Window Tables | High | High | Medium | Rejected (memory) |
+| 9. GLV + Batch Small | Unknown | Medium | Medium | Uncertain |
 
 ## Current Folding State
 
