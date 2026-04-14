@@ -20,7 +20,7 @@ GPU-accelerated zero-knowledge proof library for Apple Silicon. Metal compute sh
   - Core: [MSM](#msm-bn254-g1) | [NTT](#ntt) | [Hashing](#hashing) | [Merkle Trees](#merkle-trees) | [Radix Sort](#gpu-radix-sort)
   - Polynomial: [FRI](#fri-folding-bn254-fr) | [Sumcheck](#sumcheck-bn254-fr) | [Polynomial Ops](#polynomial-ops-bn254-fr)
   - Commitments: [KZG](#kzg-commitments-bn254-g1) | [Batch KZG](#batch-kzg-bn254-g1) | [Basefold](#basefold-pcs-bn254-fr)
-  - Proof Systems: [Circle STARK](#circle-stark-mersenne31) | [Plonk](#plonk-bn254-kzg) | [Groth16](#groth16-bn254) | [GKR](#gkr-bn254-fr-layered-circuits)
+  - Proof Systems: [Circle STARK](#circle-stark-mersenne31) | [Plonk](#plonk-bn254-kzg) | [Groth16](#groth16-bn254) | [GKR](#gkr-bn254-fr-layered-circuits) | [Recursive SNARK](#recursive-snark-composition)
   - Consolidated: [Other Curve MSM](#other-curve-msm) | [CPU Optimizations](#cpu-optimizations) | [Supporting Primitives](#supporting-primitives) | [Advanced Protocols](#advanced-protocols) | [Application Primitives](#application-primitives)
 - [Theoretical Performance Analysis](#theoretical-performance-analysis)
 - [Supported Fields](#supported-fields)
@@ -111,6 +111,39 @@ GPU-accelerated zero-knowledge proof library for Apple Silicon. Metal compute sh
 | **HyperNova** | GPU | CCS folding scheme for incremental verifiable computation |
 | **Protogalaxy** | GPU/CPU | Plonk-native folding with O(k log k) per step, decider |
 | **Proof Aggregation** | GPU | SnarkPack-style multi-proof batch aggregation |
+
+### Recursive SNARK Composition
+
+Generic recursive proof composition where the outer proof is always Groth16 (BN254), but the inner proof can be any system. Uses `VerifierCircuitProtocol` to encode any verifier as R1CS constraints.
+
+| Encoder | Inner System | Constraint Count | Description |
+|---------|-------------|------------------|-------------|
+| **Plonk** | Plonk (BN254) | ~200K | KZG openings, permutation check, gate constraints |
+| **Halo2** | Halo2 (→Plonk) | ~300K | Compiled to Plonk via Halo2Backend |
+| **Plonky2** | Plonky2 (Goldilocks) | ~100K | FRI-based, Goldilocks fits natively in BN254 Fr |
+| **IPA** | IPA (Pasta) | ~165K | Commitment folding via double-and-add, Pasta cycle |
+
+**Key insight**: Pallas Fp = Vesta Fr, enabling efficient cross-curve recursion. Pallas point coordinates are native field elements in a Vesta circuit.
+
+```swift
+import zkMetal
+
+// Create a recursive prover for any proof system
+let prover = try makeRecursiveProver(forPlonk: ())
+
+// Or explicitly specify the encoder
+let encoder = PlonkVerifierCircuitEncoder()
+let recursiveProver = try UniversalRecursiveProver(encoder: encoder)
+
+// Prove validity of an inner proof by producing an outer Groth16 proof
+let recursiveProof = try recursiveProver.prove(
+    proof: plonkProof,
+    vk: plonkVK,
+    publicInputs: pubInputs
+)
+```
+
+**Files**: `Sources/zkMetal/Recursion/VerifierCircuitEncoders/`
 
 ### Curves & Signatures
 
