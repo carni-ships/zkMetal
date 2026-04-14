@@ -317,3 +317,50 @@ MSM(Σ a_i P_i) = <∇f(0), Σ P_i> where f(t_1,...,t_n) = Σ a_i · t_i
 | 6. GLV + Batch Small | Unknown | Medium | Medium | Uncertain |
 | 7. Poly Evaluation | N/A | N/A | N/A | Theoretical only |
 | 8. Multilinear Extension | N/A | N/A | N/A | Theoretical only |
+
+---
+
+## Folding GPU Acceleration — Nova / Supernova / HyperNova (2026-04-14)
+
+Research by agents investigating GPU acceleration for Nova variants. See session notes for full analysis.
+
+### Current State
+
+| Variant | GPU Status | Benchmark |
+|---------|-----------|-----------|
+| Nova | GPU folds via GPUNovaFoldEngine | ~0.66ms/fold (1-constraint), ~5.9ms/fold (256-constraint) |
+| HyperNova | CPU only (NEON multi-threaded) | 0.09ms/fold (1000 steps) |
+| Supernova | CPU only (NEON multi-threaded) | ~0.7ms/fold |
+
+### Nova GPU Analysis (GPUNovaFoldEngine)
+
+**Hotspots for 256-constraint, 50-fold** (~5.9ms/fold):
+- Pedersen commits (2x): ~2-3ms (CPU MSM for n=256 < gpuThreshold=2048)
+- Sparse matvecs (6x): ~1-2ms (C dispatch_apply, parallelized)
+- NEON batch ops + Fiat-Shamir + EC ops: ~1-2ms
+
+**Key finding**: gpuThreshold=2048 is too high; GPU MSM should help for n=256 but threshold prevents it.
+
+### Supernova GPU Opportunities
+
+| Idea | Impact | Effort | Notes |
+|------|--------|--------|-------|
+| GPU CSR sparse matvec | **Highest** | Very High (3-4 wks) | Main bottleneck - 6 matvecs per fold |
+| GPU cross-term T (port from Nova) | High | Low (1 wk) | NEON pattern already exists |
+| GPU Grumpkin MSM | High | High (2-3 wks) | No existing GPU MSM for Grumpkin |
+
+### HyperNova GPU Opportunities
+
+| Idea | Impact | Effort | Notes |
+|------|--------|--------|-------|
+| GPU cross-term kernel | **High** | Medium (1 wk) | O(q*m) per fold, highly parallel |
+| GPU batched sparse matvec | High | Medium-High (1 wk) | For multi-fold with N instances |
+| GPU fused sumcheck round | Medium | Medium (3-4 days) | Fuses eq-weighting with fold |
+| GPU MLE batch eval | Low-Medium | Low | Already have bn254_sparse_matvec_mle |
+
+### Recommended Priority
+
+1. **GPU cross-term for Supernova** — port existing GPUNovaFoldEngine NEON pattern (1 week, low risk)
+2. **GPU cross-term for HyperNova** — same port pattern (1 week, low risk)
+3. **Profile with larger circuits** — validate hotspots before investing in high-effort kernels
+4. **Fuse Pedersen commits in fold** — fold T and W commits into one MSM

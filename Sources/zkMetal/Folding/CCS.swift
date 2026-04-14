@@ -58,6 +58,75 @@ public struct SparseMatrix {
         return result
     }
 
+    /// Triple matrix-vector multiply: resultA = A*z, resultB = B*z, resultC = C*z
+    /// All three matrices MUST share the same sparsity pattern (rowPtr, colIdx).
+    /// This is ~2x faster than calling mulVec three times for structured-sparse matrices.
+    public func mulVecTriple(
+        _ z: [Fr],
+        _ M_B: SparseMatrix,
+        _ M_C: SparseMatrix
+    ) -> ([Fr], [Fr], [Fr]) {
+        precondition(z.count == cols, "Vector length \(z.count) != matrix cols \(cols)")
+        precondition(rows == M_B.rows && rows == M_C.rows, "Matrix row counts must match")
+        precondition(cols == M_B.cols && cols == M_C.cols, "Matrix col counts must match")
+
+        var resultA = [Fr](repeating: .zero, count: rows)
+        var resultB = [Fr](repeating: .zero, count: rows)
+        var resultC = [Fr](repeating: .zero, count: rows)
+        let nRows = Int32(rows)
+
+        // Convert indices to Int32 for C interop
+        let rowPtr32 = rowPtr.map { Int32($0) }
+        let colIdx32 = colIdx.map { Int32($0) }
+        precondition(rowPtr.elementsEqual(M_B.rowPtr) && rowPtr.elementsEqual(M_C.rowPtr),
+                     "matrices must share same rowPtr")
+        precondition(colIdx.elementsEqual(M_B.colIdx) && colIdx.elementsEqual(M_C.colIdx),
+                     "matrices must share same colIdx")
+
+        let rowPtrB32 = M_B.rowPtr.map { Int32($0) }
+        let colIdxB32 = M_B.colIdx.map { Int32($0) }
+
+        rowPtr32.withUnsafeBufferPointer { rpBuf in
+            colIdx32.withUnsafeBufferPointer { ciBuf in
+                values.withUnsafeBufferPointer { valBufA in
+                    M_B.values.withUnsafeBufferPointer { valBufB in
+                        M_C.values.withUnsafeBufferPointer { valBufC in
+                            z.withUnsafeBufferPointer { zBuf in
+                                resultA.withUnsafeMutableBufferPointer { resABuf in
+                                    resultB.withUnsafeMutableBufferPointer { resBBuf in
+                                        resultC.withUnsafeMutableBufferPointer { resCBuf in
+                                            valBufA.baseAddress!.withMemoryRebound(to: UInt64.self, capacity: values.count * 4) { vPtrA in
+                                                valBufB.baseAddress!.withMemoryRebound(to: UInt64.self, capacity: M_B.values.count * 4) { vPtrB in
+                                                    valBufC.baseAddress!.withMemoryRebound(to: UInt64.self, capacity: M_C.values.count * 4) { vPtrC in
+                                                        zBuf.baseAddress!.withMemoryRebound(to: UInt64.self, capacity: z.count * 4) { zPtr in
+                                                            resABuf.baseAddress!.withMemoryRebound(to: UInt64.self, capacity: rows * 4) { rPtrA in
+                                                                resBBuf.baseAddress!.withMemoryRebound(to: UInt64.self, capacity: rows * 4) { rPtrB in
+                                                                    resCBuf.baseAddress!.withMemoryRebound(to: UInt64.self, capacity: rows * 4) { rPtrC in
+                                                                        ccs_sparse_matvec_triple(
+                                                                            rPtrA, rPtrB, rPtrC,
+                                                                            rpBuf.baseAddress!, ciBuf.baseAddress!,
+                                                                            vPtrA, vPtrB, vPtrC,
+                                                                            zPtr,
+                                                                            nRows)
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return (resultA, resultB, resultC)
+    }
+
     /// Create an identity matrix of given size.
     public static func identity(_ n: Int) -> SparseMatrix {
         var rowPtr = [Int](repeating: 0, count: n + 1)

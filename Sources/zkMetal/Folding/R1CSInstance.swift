@@ -41,6 +41,15 @@ public struct NovaR1CSShape {
 
     /// Number of witness elements: n - 1 - l
     public var numWitness: Int { numVariables - 1 - numPublicInputs }
+
+    /// Whether A, B, C share the same sparsity pattern (rowPtr, colIdx).
+    /// When true, fused matvec gives ~2x speedup. When false, falls back to separate calls.
+    public var matricesSharePattern: Bool {
+        A.rowPtr.elementsEqual(B.rowPtr) &&
+        A.rowPtr.elementsEqual(C.rowPtr) &&
+        A.colIdx.elementsEqual(B.colIdx) &&
+        A.colIdx.elementsEqual(C.colIdx)
+    }
 }
 
 // MARK: - R1CS Instance (public part)
@@ -78,6 +87,13 @@ extension NovaR1CSShape {
         z.append(contentsOf: instance.x)
         z.append(contentsOf: witness.W)
         return z
+    }
+
+    /// Fused triple matrix-vector multiply: computes A*z, B*z, C*z in one pass.
+    /// Requires all three matrices to share the same sparsity pattern.
+    /// ~2x faster than three separate mulVec calls for structured-sparse matrices.
+    public func mulVecABC(_ z: [Fr]) -> (az: [Fr], bz: [Fr], cz: [Fr]) {
+        return A.mulVecTriple(z, B, C)
     }
 
     /// Build relaxed z = (u, x, W) for a relaxed instance.

@@ -826,7 +826,7 @@ public class PedersenEngine {
 
     // MARK: - GPU Engine Access
 
-    private static func getBN254MSM() -> MetalMSM? {
+    static func getBN254MSM() -> MetalMSM? {
         if _bn254MSM == nil { _bn254MSM = try? MetalMSM() }
         return _bn254MSM
     }

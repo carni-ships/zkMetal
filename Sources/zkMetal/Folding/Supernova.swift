@@ -219,6 +219,128 @@ public class SupernovaProver {
         return T
     }
 
+    /// GPU threshold: vectors shorter than this use CPU path.
+    public var gpuThreshold: Int = 4
+
+    /// Compute the cross-term T using GPU (NEON batch operations) when m >= gpuThreshold.
+    ///
+    /// Same formula as computeCrossTerm but uses NEON-accelerated batch operations:
+    ///   T = az1 .* bz2 + az2 .* bz1 - u1*cz2 - cz1
+    public func computeCrossTermGPU(
+        running: SupernovaLCCCS,
+        runningWitness: [Fr],
+        newCircuitIdx: Int,
+        newPublicInput: [Fr],
+        newWitness: [Fr]
+    ) -> [Fr] {
+        let shapeRunning = shapes[running.pc]
+        let shapeNew = shapes[newCircuitIdx]
+
+        let z1 = buildRelaxedZ(u: running.u, x: running.x, witness: runningWitness,
+                                shape: shapeRunning)
+        let z2 = buildFreshZ(x: newPublicInput, witness: newWitness, shape: shapeNew)
+
+        // Matrix-vector products for running (relaxed) circuit
+        let Az1 = shapeRunning.A.mulVec(z1)
+        let Bz1 = shapeRunning.B.mulVec(z1)
+        let Cz1 = shapeRunning.C.mulVec(z1)
+
+        // Matrix-vector products for new (fresh) circuit
+        let Az2 = shapeNew.A.mulVec(z2)
+        let Bz2 = shapeNew.B.mulVec(z2)
+        let Cz2 = shapeNew.C.mulVec(z2)
+
+        let m = max(shapeRunning.numConstraints, shapeNew.numConstraints)
+
+        // If vectors are already the right size, use them directly
+        // Otherwise pad to size m
+        func padToSize(_ arr: [Fr], _ size: Int) -> [Fr] {
+            if arr.count >= size { return arr }
+            var padded = arr
+            padded.append(contentsOf: [Fr](repeating: .zero, count: size - arr.count))
+            return padded
+        }
+
+        let paddedAz1 = padToSize(Az1, m)
+        let paddedBz1 = padToSize(Bz1, m)
+        let paddedCz1 = padToSize(Cz1, m)
+        let paddedAz2 = padToSize(Az2, m)
+        let paddedBz2 = padToSize(Bz2, m)
+        let paddedCz2 = padToSize(Cz2, m)
+
+        var T = [Fr](repeating: .zero, count: m)
+        let u1 = running.u
+
+        // T = az1 .* bz2
+        paddedAz1.withUnsafeBytes { az1Buf in
+        paddedBz2.withUnsafeBytes { bz2Buf in
+        T.withUnsafeMutableBytes { tBuf in
+            bn254_fr_batch_mul_neon(
+                tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                az1Buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                bz2Buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                Int32(m))
+        }}}
+
+        // tmp = az2 .* bz1
+        var tmp = [Fr](repeating: .zero, count: m)
+        paddedAz2.withUnsafeBytes { az2Buf in
+        paddedBz1.withUnsafeBytes { bz1Buf in
+        tmp.withUnsafeMutableBytes { tmpBuf in
+            bn254_fr_batch_mul_neon(
+                tmpBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                az2Buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                bz1Buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                Int32(m))
+        }}}
+
+        // T = T + tmp
+        T.withUnsafeMutableBytes { tBuf in
+        tmp.withUnsafeBytes { tmpBuf in
+            let tPtr = tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+            bn254_fr_batch_add_neon(
+                tPtr,
+                tPtr,
+                tmpBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                Int32(m))
+        }}
+
+        // tmp = u1 * cz2
+        withUnsafeBytes(of: u1) { u1Buf in
+        paddedCz2.withUnsafeBytes { cz2Buf in
+        tmp.withUnsafeMutableBytes { tmpBuf in
+            bn254_fr_batch_mul_scalar_neon(
+                tmpBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                cz2Buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                u1Buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                Int32(m))
+        }}}
+
+        // T = T - tmp
+        T.withUnsafeMutableBytes { tBuf in
+        tmp.withUnsafeBytes { tmpBuf in
+            let tPtr = tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+            bn254_fr_batch_sub_neon(
+                tPtr,
+                tPtr,
+                tmpBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                Int32(m))
+        }}
+
+        // T = T - cz1
+        T.withUnsafeMutableBytes { tBuf in
+        paddedCz1.withUnsafeBytes { cz1Buf in
+            let tPtr = tBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+            bn254_fr_batch_sub_neon(
+                tPtr,
+                tPtr,
+                cz1Buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                Int32(m))
+        }}
+
+        return T
+    }
+
     // MARK: - Fold
 
     /// Fold a new instance into the running accumulator.
@@ -237,13 +359,27 @@ public class SupernovaProver {
         newPublicInput: [Fr],
         newWitness: [Fr]
     ) -> (SupernovaLCCCS, [Fr], [Fr], SupernovaFoldProof) {
-        // Step 1: Compute cross-term T
-        let T = computeCrossTerm(
-            running: running,
-            runningWitness: runningWitness,
-            newCircuitIdx: newCircuitIdx,
-            newPublicInput: newPublicInput,
-            newWitness: newWitness)
+        let shapeRunning = shapes[running.pc]
+        let shapeNew = shapes[newCircuitIdx]
+        let m = max(shapeRunning.numConstraints, shapeNew.numConstraints)
+
+        // Step 1: Compute cross-term T (GPU if large enough, CPU otherwise)
+        let T: [Fr]
+        if m >= gpuThreshold {
+            T = computeCrossTermGPU(
+                running: running,
+                runningWitness: runningWitness,
+                newCircuitIdx: newCircuitIdx,
+                newPublicInput: newPublicInput,
+                newWitness: newWitness)
+        } else {
+            T = computeCrossTerm(
+                running: running,
+                runningWitness: runningWitness,
+                newCircuitIdx: newCircuitIdx,
+                newPublicInput: newPublicInput,
+                newWitness: newWitness)
+        }
 
         // Step 2: Commit to T
         let commitT = pp.commit(witness: T)

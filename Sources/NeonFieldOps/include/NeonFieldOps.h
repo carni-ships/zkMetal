@@ -758,6 +758,15 @@ void ccs_sparse_matvec(uint64_t *result,
                        const uint64_t *values, const uint64_t *z,
                        int nRows);
 
+/// Fused triple sparse matvec: computes A*z, B*z, C*z in a single pass.
+/// All three matrices MUST share the same rowPtr and colIdx sparsity pattern.
+/// This reduces memory bandwidth by reading the sparsity pattern once instead of 3x.
+void ccs_sparse_matvec_triple(uint64_t *resultA, uint64_t *resultB, uint64_t *resultC,
+                              const int *rowPtr, const int *colIdx,
+                              const uint64_t *valsA, const uint64_t *valsB, const uint64_t *valsC,
+                              const uint64_t *z,
+                              int nRows);
+
 /// Fused hadamard product + coefficient-weighted accumulation for CCS.
 /// acc[i] += sum_j coeff_j * product_k matResultPtrs[j*maxDegree+k][i].
 /// matResultPtrs: flat array of pointers to m-element Fr vectors.

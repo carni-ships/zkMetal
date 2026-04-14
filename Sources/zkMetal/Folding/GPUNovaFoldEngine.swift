@@ -130,12 +130,25 @@ public class GPUNovaFoldEngine {
             witness: NovaR1CSWitness(W: runningWitness.W))
         let z2 = shape.buildZ(instance: newInstance, witness: newWitness)
 
-        let az1 = shape.A.mulVec(z1)
-        let bz1 = shape.B.mulVec(z1)
-        let cz1 = shape.C.mulVec(z1)
-        let az2 = shape.A.mulVec(z2)
-        let bz2 = shape.B.mulVec(z2)
-        let cz2 = shape.C.mulVec(z2)
+        // Fused matvec when matrices share sparsity pattern (~2x faster for structured-sparse)
+        let az1: [Fr]
+        let bz1: [Fr]
+        let cz1: [Fr]
+        let az2: [Fr]
+        let bz2: [Fr]
+        let cz2: [Fr]
+        if shape.matricesSharePattern {
+            let (a1, b1, c1) = shape.mulVecABC(z1)
+            let (a2, b2, c2) = shape.mulVecABC(z2)
+            (az1, bz1, cz1, az2, bz2, cz2) = (a1, b1, c1, a2, b2, c2)
+        } else {
+            az1 = shape.A.mulVec(z1)
+            bz1 = shape.B.mulVec(z1)
+            cz1 = shape.C.mulVec(z1)
+            az2 = shape.A.mulVec(z2)
+            bz2 = shape.B.mulVec(z2)
+            cz2 = shape.C.mulVec(z2)
+        }
 
         let m = shape.numConstraints
         var T = [Fr](repeating: .zero, count: m)
@@ -257,6 +270,34 @@ public class GPUNovaFoldEngine {
         return result
     }
 
+    // MARK: - Fused Pedersen Commitment
+
+    /// Compute two Pedersen commitments (commitT and commitW) in a single MSM when possible.
+    ///
+    /// When numWitness == numConstraints, we can batch both commitments into one GPU
+    /// multi-MSM call, which is more efficient than two separate calls.
+    public func commitCombined(T: [Fr], W: [Fr]) -> (commitT: PointProjective, commitW: PointProjective) {
+        let nT = T.count
+        let nW = W.count
+
+        // Fast path: when dimensions match, use batched GPU multi-MSM
+        if nW == nT && nW > PedersenEngine.gpuThreshold {
+            if let engine = PedersenEngine.getBN254MSM() {
+                let gens = Array(pp.generators.prefix(nW))
+                let frVectors: [[Fr]] = [W, T]
+
+                if let results = try? multiMSM(engine: engine, points: gens, frScalarSets: frVectors) {
+                    return (commitT: results[1], commitW: results[0])
+                }
+            }
+        }
+
+        // Fallback: separate commits
+        let commitT = ppE.commit(witness: T)
+        let commitW = pp.commit(witness: W)
+        return (commitT: commitT, commitW: commitW)
+    }
+
     // MARK: - Fold Step
 
     /// Fold a fresh R1CS instance into the running relaxed instance.
@@ -287,8 +328,8 @@ public class GPUNovaFoldEngine {
             newInstance: newInstance,
             newWitness: newWitness)
 
-        // Step 2: Commit to T
-        let commitT = ppE.commit(witness: T)
+        // Step 2: Fused commit to T and W (batched MSM when dimensions match)
+        let (commitT, commitW2) = commitCombined(T: T, W: newWitness.W)
 
         // Step 3: Derive challenge r via Fiat-Shamir
         let r = deriveChallenge(
@@ -297,7 +338,6 @@ public class GPUNovaFoldEngine {
             commitT: commitT)
 
         // Step 4: Fold commitments
-        let commitW2 = pp.commit(witness: newWitness.W)
         let foldedCommitW = pointAdd(running.commitW,
                                       cPointScalarMul(commitW2, r))
         let foldedCommitE = pointAdd(running.commitE,
@@ -344,14 +384,14 @@ public class GPUNovaFoldEngine {
             newInstance: newInstance,
             newWitness: newWitness)
 
-        let commitT = ppE.commit(witness: T)
+        // Fused commit to T and W (batched MSM when dimensions match)
+        let (commitT, commitW2) = commitCombined(T: T, W: newWitness.W)
 
         let r = deriveChallenge(
             runningInstance: runningInstance,
             newInstance: newInstance,
             commitT: commitT)
 
-        let commitW2 = pp.commit(witness: newWitness.W)
         let foldedCommitW = pointAdd(runningInstance.commitW,
                                       cPointScalarMul(commitW2, r))
         let foldedCommitE = pointAdd(runningInstance.commitE,

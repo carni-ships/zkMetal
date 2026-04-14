@@ -1,4 +1,5 @@
 // GPU Nova Fold Engine Tests — folding correctness, multi-step IVC, accumulator checks
+import Foundation
 import zkMetal
 
 // MARK: - Test Helpers
@@ -267,5 +268,169 @@ public func runGPUNovaFoldTests() {
         let result = engine.gpuFieldInnerProduct(a, b)
         let expected = frFromInt(112)
         expect(frEq(result, expected), "GPU inner product should compute 2*7+3*11+5*13 = 112")
+    }
+
+    // =========================================================================
+    // Test 11: Benchmark — 100-step IVC chain with squaring circuit
+    // =========================================================================
+    do {
+        let shape = makeSquaringR1CS()
+        let engine = GPUNovaFoldEngine(shape: shape)
+
+        // Build 100 step pairs
+        var steps: [(NovaR1CSInput, NovaR1CSWitness)] = []
+        for i: UInt64 in 1...100 {
+            steps.append(makeSquaringPair(i))
+        }
+
+        let t0 = CFAbsoluteTimeGetCurrent()
+        let (finalInst, finalWit) = engine.ivcChain(steps: steps)
+        let foldTime = CFAbsoluteTimeGetCurrent() - t0
+
+        let sat = shape.satisfiesRelaxed(instance: finalInst, witness: finalWit)
+        expect(sat, "100-step IVC chain should satisfy relaxed R1CS")
+
+        print(String(format: "  GPU Nova 100-fold: %.2fms total (%.3fms/fold)",
+                     foldTime * 1000, foldTime * 1000 / 100.0))
+    }
+
+    // =========================================================================
+    // Test 12: Benchmark with larger circuit (multi-constraint)
+    // =========================================================================
+    do {
+        // Build a circuit with 256 constraints
+        let m = 256, n = 514, numPublic = 257
+        var aBuilder = SparseMatrixBuilder(rows: m, cols: n)
+        var bBuilder = SparseMatrixBuilder(rows: m, cols: n)
+        var cBuilder = SparseMatrixBuilder(rows: m, cols: n)
+
+        for i in 0..<m {
+            aBuilder.set(row: i, col: 258 + i, value: Fr.one)
+            bBuilder.set(row: i, col: 258 + i, value: Fr.one)
+            cBuilder.set(row: i, col: 2 + i, value: Fr.one)
+        }
+
+        let shape = NovaR1CSShape(
+            numConstraints: m, numVariables: n, numPublicInputs: numPublic,
+            A: aBuilder.build(), B: bBuilder.build(), C: cBuilder.build())
+
+        let engine = GPUNovaFoldEngine(shape: shape)
+
+        func makeLargePair(i: UInt64) -> (NovaR1CSInput, NovaR1CSWitness) {
+            var pubOutputs = [Fr](repeating: .zero, count: m)
+            var witness = [Fr](repeating: .zero, count: m)
+            for j in 0..<m {
+                let val = frFromInt(UInt64(j + 1))
+                pubOutputs[j] = frMul(val, val)
+                witness[j] = val
+            }
+            return (NovaR1CSInput(x: [frFromInt(i)] + pubOutputs), NovaR1CSWitness(W: witness))
+        }
+
+        var steps: [(NovaR1CSInput, NovaR1CSWitness)] = []
+        for i: UInt64 in 1...50 {
+            steps.append(makeLargePair(i: i))
+        }
+
+        // Warmup
+        engine.initialize(instance: steps[0].0, witness: steps[0].1)
+        _ = engine.foldStep(newInstance: steps[1].0, newWitness: steps[1].1)
+        engine.reset()
+
+        // Timed run
+        var totalT = 0.0
+        let iterations = 3
+        for _ in 0..<iterations {
+            engine.initialize(instance: steps[0].0, witness: steps[0].1)
+            let t0 = CFAbsoluteTimeGetCurrent()
+            for i in 1..<steps.count {
+                _ = engine.foldStep(newInstance: steps[i].0, newWitness: steps[i].1)
+            }
+            totalT += CFAbsoluteTimeGetCurrent() - t0
+            engine.reset()
+        }
+        let avgTime = totalT / Double(iterations)
+
+        print(String(format: "  GPU Nova 256c x 50-fold: %.2fms avg (%.3fms/fold)",
+                     avgTime * 1000, avgTime * 1000 / 50.0))
+    }
+
+    // =========================================================================
+    // Test 13: Analyze GPU threshold for Pedersen commit
+    // =========================================================================
+    do {
+        // Check what gpuThreshold is
+        print("  Pedersen GPU threshold: \(PedersenEngine.gpuThreshold) (256-elem commit uses CPU path)")
+    }
+
+    // =========================================================================
+    // Test 14: Scaling benchmark — sweep constraint count to find bottlenecks
+    // =========================================================================
+    do {
+        print("  --- Nova Fold Scaling Analysis ---")
+
+        // Sweep different constraint sizes
+        let sizes = [1, 64, 256, 1024, 4096]
+        let folds = 20
+
+        for m in sizes {
+            // Build circuit with m constraints, 2m variables (diagonal squaring)
+            let n = 2 * m + 2  // [1, x, y0.., w0..]
+            let numPublic = m + 1
+            var aBuilder = SparseMatrixBuilder(rows: m, cols: n)
+            var bBuilder = SparseMatrixBuilder(rows: m, cols: n)
+            var cBuilder = SparseMatrixBuilder(rows: m, cols: n)
+
+            for i in 0..<m {
+                aBuilder.set(row: i, col: 2 + m + i, value: Fr.one)  // w[i]
+                bBuilder.set(row: i, col: 2 + m + i, value: Fr.one)  // w[i]
+                cBuilder.set(row: i, col: 2 + i, value: Fr.one)      // y[i]
+            }
+
+            let shape = NovaR1CSShape(
+                numConstraints: m, numVariables: n, numPublicInputs: numPublic,
+                A: aBuilder.build(), B: bBuilder.build(), C: cBuilder.build())
+
+            let engine = GPUNovaFoldEngine(shape: shape)
+
+            func makePair(i: UInt64) -> (NovaR1CSInput, NovaR1CSWitness) {
+                var pubOutputs = [Fr](repeating: .zero, count: m)
+                var witness = [Fr](repeating: .zero, count: m)
+                for j in 0..<m {
+                    let val = frFromInt(UInt64(j + 1))
+                    pubOutputs[j] = frMul(val, val)
+                    witness[j] = val
+                }
+                return (NovaR1CSInput(x: [frFromInt(i)] + pubOutputs), NovaR1CSWitness(W: witness))
+            }
+
+            // Build steps
+            var steps: [(NovaR1CSInput, NovaR1CSWitness)] = []
+            for i: UInt64 in 1...UInt64(folds) {
+                steps.append(makePair(i: i))
+            }
+
+            // Warmup
+            engine.initialize(instance: steps[0].0, witness: steps[0].1)
+            _ = engine.foldStep(newInstance: steps[1].0, newWitness: steps[1].1)
+            engine.reset()
+
+            // Timed
+            var totalT = 0.0
+            let iterations = 3
+            for _ in 0..<iterations {
+                engine.initialize(instance: steps[0].0, witness: steps[0].1)
+                let t0 = CFAbsoluteTimeGetCurrent()
+                for i in 1..<steps.count {
+                    _ = engine.foldStep(newInstance: steps[i].0, newWitness: steps[i].1)
+                }
+                totalT += CFAbsoluteTimeGetCurrent() - t0
+                engine.reset()
+            }
+            let avgTime = totalT / Double(iterations)
+
+            print(String(format: "  m=%5d: %.2fms/%d-folds (%.3fms/fold)  witness=%d",
+                         m, avgTime * 1000, folds, avgTime * 1000 / Double(folds), m))
+        }
     }
 }

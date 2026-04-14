@@ -592,8 +592,85 @@ public class HyperNovaEngine {
         return SumcheckFoldProof(roundPolys: roundPolys, finalEval: finalEval)
     }
 
+    /// NEON batch cross-term computation for a single CCS pair.
+    /// crossTermEvals[i] += rhoTimesC * (m0z1[i]*m1z2[i] + m0z2[i]*m1z1[i])
+    /// Uses NEON batch operations for large m (m >= 256).
+    private func computeCrossTermGPU(
+        crossTermEvals: inout [Fr],
+        m0z1: [Fr], m0z2: [Fr],
+        m1z1: [Fr], m1z2: [Fr],
+        rhoTimesC: Fr,
+        limit: Int)
+    {
+        guard limit >= 4 else {
+            // Scalar fallback for small sizes
+            for i in 0..<limit {
+                let cross = frAdd(frMul(m0z1[i], m1z2[i]), frMul(m0z2[i], m1z1[i]))
+                crossTermEvals[i] = frAdd(crossTermEvals[i], frMul(rhoTimesC, cross))
+            }
+            return
+        }
+
+        // tmp1 = m0z1 .* m1z2
+        var tmp1 = [Fr](repeating: .zero, count: limit)
+        m0z1.withUnsafeBytes { m0z1Buf in
+        m1z2.withUnsafeBytes { m1z2Buf in
+        tmp1.withUnsafeMutableBytes { tmp1Buf in
+            bn254_fr_batch_mul_neon(
+                tmp1Buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                m0z1Buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                m1z2Buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                Int32(limit))
+        }}}
+
+        // tmp2 = m0z2 .* m1z1
+        var tmp2 = [Fr](repeating: .zero, count: limit)
+        m0z2.withUnsafeBytes { m0z2Buf in
+        m1z1.withUnsafeBytes { m1z1Buf in
+        tmp2.withUnsafeMutableBytes { tmp2Buf in
+            bn254_fr_batch_mul_neon(
+                tmp2Buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                m0z2Buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                m1z1Buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                Int32(limit))
+        }}}
+
+        // tmp1 = tmp1 + tmp2 = m0z1.*m1z2 + m0z2.*m1z1
+        tmp1.withUnsafeMutableBytes { t1Buf in
+        tmp2.withUnsafeBytes { t2Buf in
+            let t1Ptr = t1Buf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+            bn254_fr_batch_add_neon(
+                t1Ptr,
+                t1Ptr,
+                t2Buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                Int32(limit))
+        }}
+
+        // tmp1 = rhoTimesC * tmp1
+        tmp1.withUnsafeMutableBytes { t1Buf in
+        withUnsafeBytes(of: rhoTimesC) { rhoBuf in
+            bn254_fr_batch_mul_scalar_neon(
+                t1Buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                t1Buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                rhoBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                Int32(limit))
+        }}
+
+        // crossTermEvals += tmp1
+        crossTermEvals.withUnsafeMutableBytes { cBuf in
+        tmp1.withUnsafeBytes { t1Buf in
+            let cPtr = cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self)
+            bn254_fr_batch_add_neon(
+                cPtr,
+                cPtr,
+                t1Buf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                Int32(limit))
+        }}
+    }
+
     /// Cross-term sumcheck using pre-computed matvec results (avoids recomputation).
     /// mvZ1[i] = M_i * z1, mvZ2[i] = M_i * z2.
+    /// Uses NEON batch operations when m >= 256.
     func computeCrossTermSumcheckCached(
         mvZ1: [[Fr]], mvZ2: [[Fr]], rho: Fr,
         r: [Fr], transcript: Transcript) -> SumcheckFoldProof
@@ -601,6 +678,10 @@ public class HyperNovaEngine {
         let numRounds = logM
         let size = 1 << logM
         var crossTermEvals = [Fr](repeating: .zero, count: size)
+        let limit = min(ccs.m, size)
+
+        // Use NEON batch operations when m is large enough
+        let useGPU = limit >= 256
 
         for j in 0..<ccs.q {
             let sj = ccs.multisets[j]
@@ -612,10 +693,19 @@ public class HyperNovaEngine {
                 let m1z1 = mvZ1[sj[1]]
                 let m1z2 = mvZ2[sj[1]]
                 let rhoTimesC = frMul(rho, ccs.coefficients[j])
-                let limit = min(ccs.m, size)
-                for i in 0..<limit {
-                    let cross = frAdd(frMul(m0z1[i], m1z2[i]), frMul(m0z2[i], m1z1[i]))
-                    crossTermEvals[i] = frAdd(crossTermEvals[i], frMul(rhoTimesC, cross))
+
+                if useGPU {
+                    computeCrossTermGPU(
+                        crossTermEvals: &crossTermEvals,
+                        m0z1: m0z1, m0z2: m0z2,
+                        m1z1: m1z1, m1z2: m1z2,
+                        rhoTimesC: rhoTimesC,
+                        limit: limit)
+                } else {
+                    for i in 0..<limit {
+                        let cross = frAdd(frMul(m0z1[i], m1z2[i]), frMul(m0z2[i], m1z1[i]))
+                        crossTermEvals[i] = frAdd(crossTermEvals[i], frMul(rhoTimesC, cross))
+                    }
                 }
             }
         }
