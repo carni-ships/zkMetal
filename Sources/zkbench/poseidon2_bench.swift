@@ -1,6 +1,7 @@
 // Poseidon2 Benchmark and correctness test
 import zkMetal
 import Foundation
+import Metal
 
 public func runPoseidon2Bench() {
     print("=== Poseidon2 Benchmark (BN254 Fr, t=3) ===")
@@ -110,6 +111,120 @@ public func runPoseidon2Bench() {
             let hashPerSec = Double(n) / (median / 1000)
             print(String(format: "  GPU batch 2^%-2d = %6d: %7.2f ms (%8.0f hash/s, %.1f µs/hash)",
                         logN, n, median, hashPerSec, median / Double(n) * 1000))
+        }
+
+        // RC prefetch benchmark: batchPermute vs batchPermuteRcp
+        print("\n  === RC Prefetch Benchmark (batchPermute vs batchPermuteRcp) ===")
+        let permSizes = [64, 256, 1024]
+        for n in permSizes {
+            // Generate n states (3 elements each)
+            var input = [Fr](repeating: Fr.zero, count: n * 3)
+            var rng: UInt64 = 0x12345678
+            for i in 0..<(n * 3) {
+                rng = rng &* 6364136223846793005 &+ 1442695040888963407
+                input[i] = frFromInt(rng >> 32)
+            }
+
+            // Warmup
+            let _ = try engine.batchPermute(input)
+            let _ = try engine.batchPermuteRcp(input)
+
+            // Timed (5 iterations each)
+            var timesStd = [Double]()
+            var timesRcp = [Double]()
+            for _ in 0..<5 {
+                var t0 = CFAbsoluteTimeGetCurrent()
+                let _ = try engine.batchPermute(input)
+                timesStd.append((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+
+                t0 = CFAbsoluteTimeGetCurrent()
+                let _ = try engine.batchPermuteRcp(input)
+                timesRcp.append((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+            }
+            timesStd.sort()
+            timesRcp.sort()
+            let medianStd = timesStd[2]
+            let medianRcp = timesRcp[2]
+
+            // Correctness check
+            let resultStd = try engine.batchPermute(input)
+            let resultRcp = try engine.batchPermuteRcp(input)
+            var correct = true
+            for i in 0..<(n * 3) {
+                if frToInt(resultStd[i]) != frToInt(resultRcp[i]) {
+                    correct = false
+                    print("  [FAIL] Mismatch at index \(i)")
+                    break
+                }
+            }
+
+            let speedup = medianStd / medianRcp
+            let usPerPerm = medianRcp / Double(n) * 1000
+            print(String(format: "  n=%4d: std=%7.3fms  rcp=%7.3fms  speedup=%.2fx  (%.2f µs/perm)%@",
+                        n, medianStd, medianRcp, speedup, usPerPerm, correct ? " [pass]" : " [FAIL]"))
+        }
+
+        // RC prefetch benchmark: hashPairs vs hashPairsRcp
+        print("\n  === RC Prefetch Benchmark (hashPairs vs hashPairsRcp) ===")
+        for n in permSizes {
+            // Generate n pairs (2 elements each)
+            var input = [Fr](repeating: Fr.zero, count: n * 2)
+            var rng: UInt64 = 0xDEADBEEF
+            for i in 0..<(n * 2) {
+                rng = rng &* 6364136223846793005 &+ 1442695040888963407
+                input[i] = frFromInt(rng >> 32)
+            }
+
+            // Warmup
+            let _ = try engine.hashPairs(input)
+            let _ = try engine.hashPairsRcp(input)
+
+            // Timed (5 iterations each)
+            var timesStd = [Double]()
+            var timesRcp = [Double]()
+            for _ in 0..<5 {
+                var t0 = CFAbsoluteTimeGetCurrent()
+                let _ = try engine.hashPairs(input)
+                timesStd.append((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+
+                t0 = CFAbsoluteTimeGetCurrent()
+                let _ = try engine.hashPairsRcp(input)
+                timesRcp.append((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+            }
+            timesStd.sort()
+            timesRcp.sort()
+            let medianStd = timesStd[2]
+            let medianRcp = timesRcp[2]
+
+            // Correctness check
+            let resultStd = try engine.hashPairs(input)
+            let resultRcp = try engine.hashPairsRcp(input)
+            var correct = true
+            for i in 0..<n {
+                if frToInt(resultStd[i]) != frToInt(resultRcp[i]) {
+                    correct = false
+                    print("  [FAIL] Mismatch at index \(i)")
+                    break
+                }
+            }
+
+            let speedup = medianStd / medianRcp
+            let usPerHash = medianRcp / Double(n) * 1000
+            print(String(format: "  n=%4d: std=%7.3fms  rcp=%7.3fms  speedup=%.2fx  (%.2f µs/hash)%@",
+                        n, medianStd, medianRcp, speedup, usPerHash, correct ? " [pass]" : " [FAIL]"))
+        }
+
+        // Helper to create MTLBuffer from array
+        func makeBuffer(from arr: [Fr]) -> MTLBuffer {
+            let stride = MemoryLayout<Fr>.stride
+            let buf = engine.device.makeBuffer(length: arr.count * stride, options: .storageModeShared)!
+            arr.withUnsafeBytes { src in
+                memcpy(buf.contents(), src.baseAddress!, arr.count * stride)
+            }
+            return buf
+        }
+        func makeBuffer(count: Int) -> MTLBuffer {
+            return engine.device.makeBuffer(length: count * MemoryLayout<Fr>.stride, options: .storageModeShared)!
         }
 
     } catch {
