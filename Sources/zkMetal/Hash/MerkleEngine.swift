@@ -261,24 +261,15 @@ public class Poseidon2MerkleEngine {
                                   rootsBuffer: buf, rootsOffset: rootsOffset,
                                   numSubtrees: numSubtrees)
 
-        // Phase 2: Level-by-level for upper tree
-        var levelStart = n
-        var levelSize = numSubtrees
-
-        while levelSize > 1 {
-            enc.memoryBarrier(scope: .buffers)
-            let parentCount = levelSize / 2
-            let inputOffset = levelStart * stride
-            let outputOffset = (levelStart + levelSize) * stride
-
-            engine.encodeHashPairs(encoder: enc, buffer: buf,
-                                   inputOffset: inputOffset,
-                                   outputOffset: outputOffset,
-                                   count: parentCount)
-
-            levelStart += levelSize
-            levelSize = parentCount
-        }
+        // Phase 2: Fused upper tree — all remaining levels in one kernel dispatch
+        // This eliminates 9 memory barriers and 9 dispatch overheads vs level-by-level
+        let upperLevels = Int(log2(Double(numSubtrees)))  // e.g., 10 for 1024 subtrees
+        let finalRootOffset = (n + 2 * numSubtrees - 2) * stride
+        enc.memoryBarrier(scope: .buffers)
+        engine.encodeMerkleFusedUpper(encoder: enc,
+                                      inputBuffer: buf, inputOffset: rootsOffset,
+                                      outputBuffer: buf, outputOffset: finalRootOffset,
+                                      numLevels: upperLevels)
         enc.endEncoding()
 
         cmdBuf.commit()
@@ -287,7 +278,7 @@ public class Poseidon2MerkleEngine {
             throw MSMError.gpuError(error.localizedDescription)
         }
 
-        let ptr = buf.contents().advanced(by: levelStart * stride).bindMemory(to: Fr.self, capacity: 1)
+        let ptr = buf.contents().advanced(by: finalRootOffset).bindMemory(to: Fr.self, capacity: 1)
         return ptr.pointee
     }
 }

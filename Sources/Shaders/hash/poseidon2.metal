@@ -380,6 +380,62 @@ kernel void poseidon2_merkle_fused_full(
 // tree[i] is the node value. Children of tree[i] are tree[2*i] and tree[2*i+1].
 // Each thread reads its two children, hashes them, and writes the parent in-place.
 // This avoids CPU gather/scatter for scattered updates (e.g., random leaf modifications).
+// Fused upper Merkle tree: reduces num_leaves to 1 root in one threadgroup.
+// Uses stride-2 loading so thread t reads elements (t, t+1) in first iteration,
+// then pairs are reduced in subsequent iterations.
+// This eliminates per-level dispatch overhead for the upper tree levels.
+// num_levels = log2(num_leaves), max 10 (num_leaves <= 1024).
+kernel void poseidon2_merkle_fused_upper(
+    device const Fr* input         [[buffer(0)]],    // num_leaves elements
+    device Fr* output             [[buffer(1)]],     // single root output
+    constant Fr* rc               [[buffer(2)]],
+    constant uint& num_levels     [[buffer(3)]],      // log2(num_leaves), e.g. 10 for 1024 leaves
+    uint tid                      [[thread_index_in_threadgroup]],
+    uint tg_size                  [[threads_per_threadgroup]]
+) {
+    threadgroup Fr shared_data[MERKLE_SUBTREE_SIZE];
+
+    // Stride-2 loading: each thread loads 2 consecutive elements
+    // For 1024 elements with 512 threads: thread t loads elements (2t, 2t+1)
+    // This correctly pairs elements for binary Merkle reduction
+    uint elements_per_thread = 2;
+    uint load_stride = 1;  // stride-1 for consecutive elements
+
+    // Load with stride 1: each thread loads 2 consecutive elements
+    uint base_idx = tid;
+    if (base_idx < (1u << num_levels)) {
+        shared_data[base_idx] = input[base_idx];
+    }
+    if (base_idx + tg_size < (1u << num_levels)) {
+        shared_data[base_idx + tg_size] = input[base_idx + tg_size];
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Reduce level by level
+    // At each level, pairs are (2t, 2t+1) in shared memory
+    uint active = 1u << num_levels;  // e.g., 1024 at level 0
+    for (uint level = 0; level < num_levels; level++) {
+        uint pairs = active >> 1;  // e.g., 512 at level 0
+        if (tid < pairs) {
+            Fr a = shared_data[tid * 2];
+            Fr b = shared_data[tid * 2 + 1];
+            shared_data[tid] = p2_hash_pair(a, b, rc);
+        }
+        active = pairs;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    // Final root is at shared_data[0]
+    if (tid == 0) {
+        output[0] = shared_data[0];
+    }
+}
+
+// Scattered incremental Merkle update: each thread hashes one parent node in a 1-indexed heap.
+// dirty_indices[gid] = parent node index in the heap (1-indexed).
+// tree[i] is the node value. Children of tree[i] are tree[2*i] and tree[2*i+1].
+// Each thread reads its two children, hashes them, and writes the parent in-place.
+// This avoids CPU gather/scatter for scattered updates (e.g., random leaf modifications).
 kernel void poseidon2_merkle_update_scattered(
     device Fr* tree                [[buffer(0)]],    // 1-indexed heap: tree[1]=root, tree[cap..2*cap-1]=leaves
     constant Fr* rc               [[buffer(1)]],

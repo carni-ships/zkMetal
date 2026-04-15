@@ -12,6 +12,7 @@ public class Poseidon2Engine {
     let merkleFusedFunction: MTLComputePipelineState
     let merkleFusedFullFunction: MTLComputePipelineState
     let merkleFusedBatchFunction: MTLComputePipelineState
+    let merkleFusedUpperFunction: MTLComputePipelineState
     let merkleUpdateScatteredFunction: MTLComputePipelineState
     public let rcBuffer: MTLBuffer  // round constants in Montgomery form
 
@@ -40,6 +41,7 @@ public class Poseidon2Engine {
               let merkleFusedFn = library.makeFunction(name: "poseidon2_merkle_fused"),
               let merkleFusedFullFn = library.makeFunction(name: "poseidon2_merkle_fused_full"),
               let merkleFusedBatchFn = library.makeFunction(name: "poseidon2_merkle_fused_batch"),
+              let merkleFusedUpperFn = library.makeFunction(name: "poseidon2_merkle_fused_upper"),
               let merkleUpdateScatteredFn = library.makeFunction(name: "poseidon2_merkle_update_scattered") else {
             throw MSMError.missingKernel
         }
@@ -50,6 +52,7 @@ public class Poseidon2Engine {
         self.merkleFusedFunction = try device.makeComputePipelineState(function: merkleFusedFn)
         self.merkleFusedFullFunction = try device.makeComputePipelineState(function: merkleFusedFullFn)
         self.merkleFusedBatchFunction = try device.makeComputePipelineState(function: merkleFusedBatchFn)
+        self.merkleFusedUpperFunction = try device.makeComputePipelineState(function: merkleFusedUpperFn)
         self.merkleUpdateScatteredFunction = try device.makeComputePipelineState(function: merkleUpdateScatteredFn)
 
         // Create round constants buffer (64 rounds * 3 elements = 192 Fr values)
@@ -257,6 +260,25 @@ public class Poseidon2Engine {
         // Max threadgroup size is 512 (half of 1024 max subtree)
         let tg = min(512, Int(merkleFusedBatchFunction.maxTotalThreadsPerThreadgroup))
         encoder.dispatchThreadgroups(MTLSize(width: numTrees, height: 1, depth: 1),
+                                      threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+    }
+
+    /// Encode fused upper Merkle kernel: reduces numLeaves to 1 root in one dispatch.
+    /// Uses stride-2 loading for correct binary pairing.
+    /// numLeaves must be power of 2, max 1024 (log2 = 10).
+    public func encodeMerkleFusedUpper(encoder: MTLComputeCommandEncoder,
+                                       inputBuffer: MTLBuffer, inputOffset: Int,
+                                       outputBuffer: MTLBuffer, outputOffset: Int,
+                                       numLevels: Int) {
+        encoder.setComputePipelineState(merkleFusedUpperFunction)
+        encoder.setBuffer(inputBuffer, offset: inputOffset, index: 0)
+        encoder.setBuffer(outputBuffer, offset: outputOffset, index: 1)
+        encoder.setBuffer(rcBuffer, offset: 0, index: 2)
+        var levels = UInt32(numLevels)
+        encoder.setBytes(&levels, length: 4, index: 3)
+        // Threadgroup size is the max for this kernel (512 threads, handles up to 1024 elements)
+        let tg = min(512, Int(merkleFusedUpperFunction.maxTotalThreadsPerThreadgroup))
+        encoder.dispatchThreadgroups(MTLSize(width: 1, height: 1, depth: 1),
                                       threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
     }
 
