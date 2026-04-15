@@ -10,7 +10,7 @@ public func runPastaPoseidonBench() {
         let engine = try PastaPoseidonEngine()
         let zero = PallasFp.zero
 
-        print("\n--- Pallas Hash Pairs (GPU) ---")
+        print("\n--- Pallas Hash Pairs (GPU, baseline) ---")
         let sizes = [1024, 4096, 16384, 65536, 131072, 262144]
         for size in sizes {
             var input = [PallasFp]()
@@ -32,6 +32,32 @@ public func runPastaPoseidonBench() {
             let median = times[runs / 2]
             let hashesPerSec = Double(size) / (median / 1000)
             print(String(format: "  n=%-7d  %7.2fms  %9.0f hashes/sec", size, median, hashesPerSec))
+        }
+
+        // Test batched kernel with different batch sizes at 65536
+        print("\n--- Pallas Hash Pairs Batched (GPU, batch size sweep) ---")
+        let batchSizes = [1, 2, 4, 8, 16]
+        let testSize = 65536
+        var testInput = [PallasFp]()
+        testInput.reserveCapacity(testSize * 2)
+        for _ in 0..<(testSize * 2) { testInput.append(zero) }
+
+        for batchSize in batchSizes {
+            // Warmup
+            _ = try engine.pallasHashPairsBatched(testInput, batchSize: batchSize)
+
+            // Benchmark
+            let runs = 5
+            var times = [Double]()
+            for _ in 0..<runs {
+                let t0 = CFAbsoluteTimeGetCurrent()
+                _ = try engine.pallasHashPairsBatched(testInput, batchSize: batchSize)
+                times.append((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+            }
+            times.sort()
+            let median = times[runs / 2]
+            let hashesPerSec = Double(testSize) / (median / 1000)
+            print(String(format: "  batchSize=%-2d  %7.2fms  %9.0f hashes/sec", batchSize, median, hashesPerSec))
         }
 
         print("\n--- Pallas Batch Permute (GPU) ---")

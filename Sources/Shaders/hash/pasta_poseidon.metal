@@ -187,6 +187,25 @@ kernel void pallas_poseidon_hash_pairs(
     output[gid] = pallas_pos_hash_pair(input[gid * 2], input[gid * 2 + 1]);
 }
 
+// Batched version: each thread processes 'batchSize' hashes
+// Better GPU utilization when hash computation dominates memory latency
+kernel void pallas_poseidon_hash_pairs_batched(
+    device const PallasFp* input   [[buffer(0)]],
+    device PallasFp* output        [[buffer(1)]],
+    constant uint& count           [[buffer(2)]],       // total hashes
+    constant uint& batchSize       [[buffer(3)]],      // hashes per thread
+    uint gid                       [[thread_position_in_grid]]
+) {
+    uint baseHash = gid * batchSize;
+    uint endHash = baseHash + batchSize;
+    if (baseHash >= count) return;
+    if (endHash > count) endHash = count;
+
+    for (uint h = baseHash; h < endHash; h++) {
+        output[h] = pallas_pos_hash_pair(input[h * 2], input[h * 2 + 1]);
+    }
+}
+
 kernel void pallas_poseidon_sponge(
     device const PallasFp* inputs  [[buffer(0)]],
     device PallasFp* output        [[buffer(1)]],

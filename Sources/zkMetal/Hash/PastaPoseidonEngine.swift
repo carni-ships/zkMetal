@@ -11,6 +11,7 @@ public class PastaPoseidonEngine {
     // Pallas kernels
     let pallasPermuteFunction: MTLComputePipelineState
     let pallasHashPairsFunction: MTLComputePipelineState
+    let pallasHashPairsBatchedFunction: MTLComputePipelineState
     let pallasSpongeFunction: MTLComputePipelineState
 
     // Vesta kernels
@@ -33,6 +34,7 @@ public class PastaPoseidonEngine {
 
         guard let pallasPerm = library.makeFunction(name: "pallas_poseidon_permute_kernel"),
               let pallasHP = library.makeFunction(name: "pallas_poseidon_hash_pairs"),
+              let pallasHPBatched = library.makeFunction(name: "pallas_poseidon_hash_pairs_batched"),
               let pallasSp = library.makeFunction(name: "pallas_poseidon_sponge"),
               let vestaPerm = library.makeFunction(name: "vesta_poseidon_permute_kernel"),
               let vestaHP = library.makeFunction(name: "vesta_poseidon_hash_pairs"),
@@ -42,6 +44,7 @@ public class PastaPoseidonEngine {
 
         self.pallasPermuteFunction = try device.makeComputePipelineState(function: pallasPerm)
         self.pallasHashPairsFunction = try device.makeComputePipelineState(function: pallasHP)
+        self.pallasHashPairsBatchedFunction = try device.makeComputePipelineState(function: pallasHPBatched)
         self.pallasSpongeFunction = try device.makeComputePipelineState(function: pallasSp)
         self.vestaPermuteFunction = try device.makeComputePipelineState(function: vestaPerm)
         self.vestaHashPairsFunction = try device.makeComputePipelineState(function: vestaHP)
@@ -104,6 +107,53 @@ public class PastaPoseidonEngine {
         enc.setBytes(&count, length: 4, index: 2)
         let tg = min(tuning.hashThreadgroupSize, Int(pallasHashPairsFunction.maxTotalThreadsPerThreadgroup))
         enc.dispatchThreads(MTLSize(width: n, height: 1, depth: 1),
+                           threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+        enc.endEncoding()
+
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+        if let error = cmdBuf.error {
+            throw MSMError.gpuError(error.localizedDescription)
+        }
+
+        let ptr = outBuf.contents().bindMemory(to: PallasFp.self, capacity: n)
+        return Array(UnsafeBufferPointer(start: ptr, count: n))
+    }
+
+    /// Batch hash pairs with each thread processing multiple hashes.
+    /// batchSize: number of hashes each thread processes (default 1 = same as pallasHashPairs)
+    /// Higher values can improve GPU utilization for large batches.
+    public func pallasHashPairsBatched(_ input: [PallasFp], batchSize: Int = 2) throws -> [PallasFp] {
+        precondition(input.count % 2 == 0, "Input must have even number of elements")
+        let n = input.count / 2
+        let stride = MemoryLayout<PallasFp>.stride
+
+        guard let inBuf = device.makeBuffer(length: input.count * stride, options: .storageModeShared),
+              let outBuf = device.makeBuffer(length: n * stride, options: .storageModeShared) else {
+            throw MSMError.gpuError("Failed to allocate buffers")
+        }
+
+        input.withUnsafeBytes { src in
+            memcpy(inBuf.contents(), src.baseAddress!, input.count * stride)
+        }
+
+        guard let cmdBuf = commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
+        }
+
+        let enc = cmdBuf.makeComputeCommandEncoder()!
+        enc.setComputePipelineState(pallasHashPairsBatchedFunction)
+        enc.setBuffer(inBuf, offset: 0, index: 0)
+        enc.setBuffer(outBuf, offset: 0, index: 1)
+        var count = UInt32(n)
+        enc.setBytes(&count, length: 4, index: 2)
+        var batch = UInt32(batchSize)
+        enc.setBytes(&batch, length: 4, index: 3)
+
+        // Grid size = ceil(n / batchSize)
+        let gridSize = (n + batchSize - 1) / batchSize
+        let tg = min(tuning.hashThreadgroupSize, Int(pallasHashPairsBatchedFunction.maxTotalThreadsPerThreadgroup))
+        enc.dispatchThreads(MTLSize(width: gridSize, height: 1, depth: 1),
                            threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
         enc.endEncoding()
 
