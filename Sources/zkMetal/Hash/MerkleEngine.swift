@@ -17,6 +17,11 @@ public class Poseidon2MerkleEngine {
     /// Expose engine for advanced encoding
     public var p2Engine: Poseidon2Engine { engine }
 
+    /// Threshold for switching to multi-pair-per-thread kernel.
+    /// When pair count < this threshold, better GPU utilization is achieved
+    /// by having each thread process multiple pairs sequentially.
+    private static let multiPairThreshold = 1024
+
     public init() throws {
         self.engine = try Poseidon2Engine()
     }
@@ -63,10 +68,17 @@ public class Poseidon2MerkleEngine {
                 let parentCount = levelSize / 2
                 let inputOffset = treeOffset + levelStart * stride
                 let outputOffset = treeOffset + (levelStart + levelSize) * stride
-                engine.encodeHashPairs(encoder: encoder, buffer: treeBuf,
-                                       inputOffset: inputOffset,
-                                       outputOffset: outputOffset,
-                                       count: parentCount)
+                if parentCount < Self.multiPairThreshold {
+                    engine.encodeHashPairsMulti(encoder: encoder, buffer: treeBuf,
+                                               inputOffset: inputOffset,
+                                               outputOffset: outputOffset,
+                                               count: parentCount)
+                } else {
+                    engine.encodeHashPairs(encoder: encoder, buffer: treeBuf,
+                                          inputOffset: inputOffset,
+                                          outputOffset: outputOffset,
+                                          count: parentCount)
+                }
                 levelStart += levelSize
                 levelSize = parentCount
             }
@@ -78,10 +90,17 @@ public class Poseidon2MerkleEngine {
                 let parentCount = levelSize / 2
                 let inputOffset = treeOffset + levelStart * stride
                 let outputOffset = treeOffset + (levelStart + levelSize) * stride
-                engine.encodeHashPairs(encoder: encoder, buffer: treeBuf,
-                                       inputOffset: inputOffset,
-                                       outputOffset: outputOffset,
-                                       count: parentCount)
+                if parentCount < Self.multiPairThreshold {
+                    engine.encodeHashPairsMulti(encoder: encoder, buffer: treeBuf,
+                                               inputOffset: inputOffset,
+                                               outputOffset: outputOffset,
+                                               count: parentCount)
+                } else {
+                    engine.encodeHashPairs(encoder: encoder, buffer: treeBuf,
+                                          inputOffset: inputOffset,
+                                          outputOffset: outputOffset,
+                                          count: parentCount)
+                }
                 levelStart += levelSize
                 levelSize = parentCount
                 if levelSize > 1 { encoder.memoryBarrier(scope: .buffers) }
@@ -169,10 +188,17 @@ public class Poseidon2MerkleEngine {
                 let inputOffset = levelStart * stride
                 let outputOffset = (levelStart + levelSize) * stride
 
-                engine.encodeHashPairs(encoder: enc, buffer: treeBuf,
-                                       inputOffset: inputOffset,
-                                       outputOffset: outputOffset,
-                                       count: parentCount)
+                if parentCount < Self.multiPairThreshold {
+                    engine.encodeHashPairsMulti(encoder: enc, buffer: treeBuf,
+                                               inputOffset: inputOffset,
+                                               outputOffset: outputOffset,
+                                               count: parentCount)
+                } else {
+                    engine.encodeHashPairs(encoder: enc, buffer: treeBuf,
+                                          inputOffset: inputOffset,
+                                          outputOffset: outputOffset,
+                                          count: parentCount)
+                }
 
                 levelStart += levelSize
                 levelSize = parentCount
@@ -187,10 +213,17 @@ public class Poseidon2MerkleEngine {
                 let inputOffset = levelStart * stride
                 let outputOffset = (levelStart + levelSize) * stride
 
-                engine.encodeHashPairs(encoder: enc, buffer: treeBuf,
-                                       inputOffset: inputOffset,
-                                       outputOffset: outputOffset,
-                                       count: parentCount)
+                if parentCount < Self.multiPairThreshold {
+                    engine.encodeHashPairsMulti(encoder: enc, buffer: treeBuf,
+                                               inputOffset: inputOffset,
+                                               outputOffset: outputOffset,
+                                               count: parentCount)
+                } else {
+                    engine.encodeHashPairs(encoder: enc, buffer: treeBuf,
+                                          inputOffset: inputOffset,
+                                          outputOffset: outputOffset,
+                                          count: parentCount)
+                }
 
                 levelStart += levelSize
                 levelSize = parentCount
@@ -271,10 +304,17 @@ public class Poseidon2MerkleEngine {
             let inputOffset = levelStart * stride
             let outputOffset = (levelStart + levelSize) * stride
 
-            engine.encodeHashPairs(encoder: enc, buffer: buf,
-                                   inputOffset: inputOffset,
-                                   outputOffset: outputOffset,
-                                   count: parentCount)
+            if parentCount < Self.multiPairThreshold {
+                engine.encodeHashPairsMulti(encoder: enc, buffer: buf,
+                                           inputOffset: inputOffset,
+                                           outputOffset: outputOffset,
+                                           count: parentCount)
+            } else {
+                engine.encodeHashPairs(encoder: enc, buffer: buf,
+                                      inputOffset: inputOffset,
+                                      outputOffset: outputOffset,
+                                      count: parentCount)
+            }
 
             levelStart += levelSize
             levelSize = parentCount

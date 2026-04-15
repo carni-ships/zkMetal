@@ -8,6 +8,7 @@ public class Poseidon2Engine {
     public let commandQueue: MTLCommandQueue
     let permuteFunction: MTLComputePipelineState
     let hashPairsFunction: MTLComputePipelineState
+    let hashPairsMultiFunction: MTLComputePipelineState  // multi-pair-per-thread variant
     let merkleFusedFunction: MTLComputePipelineState
     let merkleFusedFullFunction: MTLComputePipelineState
     let merkleFusedBatchFunction: MTLComputePipelineState
@@ -36,6 +37,7 @@ public class Poseidon2Engine {
 
         guard let permuteFn = library.makeFunction(name: "poseidon2_permute"),
               let hashPairsFn = library.makeFunction(name: "poseidon2_hash_pairs"),
+              let hashPairsMultiFn = library.makeFunction(name: "poseidon2_hash_pairs_multi"),
               let merkleFusedFn = library.makeFunction(name: "poseidon2_merkle_fused"),
               let merkleFusedFullFn = library.makeFunction(name: "poseidon2_merkle_fused_full"),
               let merkleFusedBatchFn = library.makeFunction(name: "poseidon2_merkle_fused_batch"),
@@ -46,6 +48,7 @@ public class Poseidon2Engine {
 
         self.permuteFunction = try device.makeComputePipelineState(function: permuteFn)
         self.hashPairsFunction = try device.makeComputePipelineState(function: hashPairsFn)
+        self.hashPairsMultiFunction = try device.makeComputePipelineState(function: hashPairsMultiFn)
         self.merkleFusedFunction = try device.makeComputePipelineState(function: merkleFusedFn)
         self.merkleFusedFullFunction = try device.makeComputePipelineState(function: merkleFusedFullFn)
         self.merkleFusedBatchFunction = try device.makeComputePipelineState(function: merkleFusedBatchFn)
@@ -186,6 +189,27 @@ public class Poseidon2Engine {
         let tg = min(tuning.hashThreadgroupSize, Int(hashPairsFunction.maxTotalThreadsPerThreadgroup))
         encoder.dispatchThreads(MTLSize(width: count, height: 1, depth: 1),
                                threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+    }
+
+    /// Encode multi-pair-per-thread dispatch for small pair counts.
+    /// Use when count < hashThreadgroupSize to improve GPU utilization.
+    public func encodeHashPairsMulti(encoder: MTLComputeCommandEncoder,
+                                      buffer: MTLBuffer, inputOffset: Int,
+                                      outputOffset: Int, count: Int) {
+        encoder.setComputePipelineState(hashPairsMultiFunction)
+        encoder.setBuffer(buffer, offset: inputOffset, index: 0)
+        encoder.setBuffer(buffer, offset: outputOffset, index: 1)
+        encoder.setBuffer(rcBuffer, offset: 0, index: 2)
+        var n = UInt32(count)
+        encoder.setBytes(&n, length: 4, index: 3)
+        // Use a single threadgroup with min(count, tgSize) threads
+        let tgSize = min(tuning.hashThreadgroupSize, Int(hashPairsMultiFunction.maxTotalThreadsPerThreadgroup))
+        let numThreads = min(count, tgSize)
+        let pairsPerThread = (count + numThreads - 1) / numThreads  // ceil
+        var ppt = UInt32(pairsPerThread)
+        encoder.setBytes(&ppt, length: 4, index: 4)
+        encoder.dispatchThreads(MTLSize(width: numThreads, height: 1, depth: 1),
+                               threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
     }
 
     /// Encode hash quadruples dispatch into an existing compute encoder (for 4-ary Merkle).

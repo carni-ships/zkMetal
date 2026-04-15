@@ -159,6 +159,63 @@ kernel void poseidon2_hash_pairs(
     output[gid] = fr_reduce(s0);
 }
 
+// Multi-pair-per-thread: each thread processes multiple pairs sequentially.
+// Used when pair count < threadgroup size to improve GPU utilization.
+kernel void poseidon2_hash_pairs_multi(
+    device const Fr* input        [[buffer(0)]],
+    device Fr* output             [[buffer(1)]],
+    constant Fr* rc               [[buffer(2)]],    // constant address space for uniform broadcast
+    constant uint& count          [[buffer(3)]],     // total number of pairs
+    constant uint& pairs_per_thread [[buffer(4)]],   // pairs to process per thread
+    uint gid                      [[thread_position_in_grid]]
+) {
+    uint start_pair = gid * pairs_per_thread;
+    uint end_pair = min(start_pair + pairs_per_thread, count);
+    if (start_pair >= count) return;
+
+    for (uint p = start_pair; p < end_pair; p++) {
+        Fr s0 = input[p * 2];
+        Fr s1 = input[p * 2 + 1];
+        Fr s2 = fr_zero();
+
+        p2_external_layer(s0, s1, s2);
+
+        #pragma unroll
+        for (uint r = 0; r < 4; r++) {
+            uint rc_base = r * 3;
+            s0 = fr_add_lazy(s0, rc[rc_base]);
+            s1 = fr_add_lazy(s1, rc[rc_base + 1]);
+            s2 = fr_add_lazy(s2, rc[rc_base + 2]);
+            s0 = p2_sbox(s0);
+            s1 = p2_sbox(s1);
+            s2 = p2_sbox(s2);
+            p2_external_layer(s0, s1, s2);
+        }
+
+        s0 = fr_reduce(s0); s1 = fr_reduce(s1); s2 = fr_reduce(s2);
+
+        for (uint r = 4; r < 60; r++) {
+            s0 = fr_add_lazy(s0, rc[r * 3]);
+            s0 = p2_sbox(s0);
+            p2_internal_layer(s0, s1, s2);
+        }
+
+        #pragma unroll
+        for (uint r = 60; r < 64; r++) {
+            uint rc_base = r * 3;
+            s0 = fr_add_lazy(s0, rc[rc_base]);
+            s1 = fr_add_lazy(s1, rc[rc_base + 1]);
+            s2 = fr_add_lazy(s2, rc[rc_base + 2]);
+            s0 = p2_sbox(s0);
+            s1 = p2_sbox(s1);
+            s2 = p2_sbox(s2);
+            p2_external_layer(s0, s1, s2);
+        }
+
+        output[p] = fr_reduce(s0);
+    }
+}
+
 // Inline Poseidon2 hash of a pair (a, b) → Fr result
 // Used in fused Merkle tree kernel to avoid function call overhead
 Fr p2_hash_pair(Fr a, Fr b, constant Fr* rc) {
