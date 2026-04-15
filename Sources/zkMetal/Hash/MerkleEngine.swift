@@ -308,7 +308,7 @@ public class Poseidon24aryMerkleEngine {
 
     /// Compute total number of nodes in a 4-ary Merkle tree.
     /// For n leaves (power of 2), returns the total node count including leaves.
-    private static func treeNodeCount(_ n: Int) -> Int {
+    public static func treeNodeCount(_ n: Int) -> Int {
         var total = n
         var levelSize = n
         while levelSize > 1 {

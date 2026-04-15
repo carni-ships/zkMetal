@@ -355,5 +355,303 @@ public func runMerkleBench() {
         print("  [FAIL] Blake3 Merkle: \(error)")
     }
 
+    // ============================================================
+    // PHASE-LEVEL PROFILING: Poseidon2 Merkle at 2^20
+    // ============================================================
+    print("")
+    print("=== Poseidon2 Merkle Phase Profile (2^20 = 1,048,576 leaves) ===")
+
+    do {
+        let p2Engine = try Poseidon2Engine()
+        let _ = try Poseidon2MerkleEngine()
+        let n = 1 << 20
+        let subtreeSize = Poseidon2Engine.merkleSubtreeSize  // 1024
+        let numSubtrees = n / subtreeSize  // 1024
+        let stride = MemoryLayout<Fr>.stride
+
+        var leaves = [Fr](repeating: Fr.zero, count: n)
+        for i in 0..<n { leaves[i] = frFromInt(UInt64(i + 1)) }
+
+        // --- Measure: merkleRoot (root-only, no full tree copy) ---
+        // This uses fused subtrees + upper level-by-level
+
+        // Allocate buffer (reused across runs)
+        let upperTreeSize = 2 * numSubtrees - 1
+        let totalBufSize = (n + upperTreeSize) * stride
+        guard let buf = p2Engine.device.makeBuffer(length: totalBufSize, options: .storageModeShared) else {
+            throw MSMError.gpuError("Failed to allocate profile buffer")
+        }
+
+        // Warmup
+        _ = leaves.withUnsafeBytes { src in memcpy(buf.contents(), src.baseAddress!, n * stride) }
+        guard let cmdBuf = p2Engine.commandQueue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
+        let enc = cmdBuf.makeComputeCommandEncoder()!
+        let rootsOffset = n * stride
+        p2Engine.encodeMerkleFused(encoder: enc, leavesBuffer: buf, leavesOffset: 0,
+                                   rootsBuffer: buf, rootsOffset: rootsOffset, numSubtrees: numSubtrees)
+        enc.endEncoding()
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+
+        // Time individual phases (GPU execution only, not including CPU-side orchestration)
+        var phaseMemcpy = [Double]()
+        var phaseGPUExec = [Double]()
+        var phaseCopyBack = [Double]()
+        var phaseTotal = [Double]()
+
+        for _ in 0..<5 {
+            // Phase 1: memcpy leaves to GPU
+            let t0 = CFAbsoluteTimeGetCurrent()
+            _ = leaves.withUnsafeBytes { src in memcpy(buf.contents(), src.baseAddress!, n * stride) }
+            let memcpyEnd = CFAbsoluteTimeGetCurrent()
+            phaseMemcpy.append((memcpyEnd - t0) * 1000)
+
+            // Phase 2+3: GPU kernels (fused subtrees + upper level-by-level in one CB)
+            guard let cb = p2Engine.commandQueue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
+            let encoder = cb.makeComputeCommandEncoder()!
+
+            p2Engine.encodeMerkleFused(encoder: encoder, leavesBuffer: buf, leavesOffset: 0,
+                                       rootsBuffer: buf, rootsOffset: rootsOffset, numSubtrees: numSubtrees)
+            encoder.memoryBarrier(scope: .buffers)
+
+            var levelStart = n
+            var levelSize = numSubtrees
+            while levelSize > 1 {
+                let parentCount = levelSize / 2
+                let inputOffset = levelStart * stride
+                let outputOffset = (levelStart + levelSize) * stride
+                p2Engine.encodeHashPairs(encoder: encoder, buffer: buf,
+                                          inputOffset: inputOffset, outputOffset: outputOffset, count: parentCount)
+                levelStart += levelSize
+                levelSize = parentCount
+                if levelSize > 1 { encoder.memoryBarrier(scope: .buffers) }
+            }
+            encoder.endEncoding()
+            let gpuStart = CFAbsoluteTimeGetCurrent()
+            cb.commit()
+            cb.waitUntilCompleted()
+            let gpuEnd = CFAbsoluteTimeGetCurrent()
+            phaseGPUExec.append((gpuEnd - gpuStart) * 1000)
+
+            // Phase 4: Copy back root only (minimal)
+            let t3 = CFAbsoluteTimeGetCurrent()
+            let ptr = buf.contents().advanced(by: levelStart * stride).bindMemory(to: Fr.self, capacity: 1)
+            _ = ptr.pointee
+            phaseCopyBack.append((CFAbsoluteTimeGetCurrent() - t3) * 1000)
+            phaseTotal.append((gpuEnd - t0) * 1000)
+        }
+
+        phaseMemcpy.sort(); phaseGPUExec.sort(); phaseCopyBack.sort(); phaseTotal.sort()
+        let memcpyMs = phaseMemcpy[2]
+        let gpuExecMs = phaseGPUExec[2]
+        let copyBackMs = phaseCopyBack[2]
+        let totalMs = phaseTotal[2]
+
+        print(String(format: "  memcpy (leaves->GPU):     %7.2f ms  (%.1f%%)", memcpyMs, 100*memcpyMs/totalMs))
+        print(String(format: "  GPU kernels (fused+upper):%7.2f ms  (%.1f%%)", gpuExecMs, 100*gpuExecMs/totalMs))
+        print(String(format: "  copy back (GPU->CPU):     %7.2f ms  (%.1f%%)", copyBackMs, 100*copyBackMs/totalMs))
+        print(String(format:  "  TOTAL:                   %7.2f ms", totalMs))
+
+        // Breakdown of fused vs upper
+        print("")
+        print(String(format: "  Upper level count: %d (log2(%d) - %d = %d binary levels above subtrees)",
+                    Int(log2(Double(numSubtrees))), n, subtreeSize, Int(log2(Double(numSubtrees)))))
+
+        // Now time full buildTree phases separately
+        print("")
+        print("  --- Full buildTree phase profile ---")
+
+        let treeSize = 2 * n - 1
+        guard let treeBuf = p2Engine.device.makeBuffer(length: treeSize * stride, options: .storageModeShared) else {
+            throw MSMError.gpuError("Failed to allocate tree buffer")
+        }
+
+        var phaseBuildMemcpy = [Double]()
+        var phaseBuildFusedFull = [Double]()
+        var phaseBuildCopyBack = [Double]()
+        var phaseBuildTotal = [Double]()
+
+        for _ in 0..<5 {
+            let t0 = CFAbsoluteTimeGetCurrent()
+            _ = leaves.withUnsafeBytes { src in memcpy(treeBuf.contents(), src.baseAddress!, n * stride) }
+            let memcpyEnd = CFAbsoluteTimeGetCurrent()
+            phaseBuildMemcpy.append((memcpyEnd - t0) * 1000)
+
+            guard let cb = p2Engine.commandQueue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
+            let encoder = cb.makeComputeCommandEncoder()!
+
+            // Phase 1: Fused full kernel setup
+            let numFusedLevels = 10
+            var levelOffsets = [UInt32]()
+            levelOffsets.reserveCapacity(numFusedLevels)
+            var off = n
+            var width = n / 2
+            for _ in 0..<numFusedLevels {
+                levelOffsets.append(UInt32(off))
+                off += width
+                width /= 2
+            }
+            guard let levelOffsetsBuf = p2Engine.device.makeBuffer(length: levelOffsets.count * 4, options: .storageModeShared) else {
+                throw MSMError.gpuError("Failed to allocate level offsets buffer")
+            }
+            _ = levelOffsets.withUnsafeBytes { src in memcpy(levelOffsetsBuf.contents(), src.baseAddress!, src.count) }
+
+            p2Engine.encodeMerkleFusedFull(encoder: encoder, leavesBuffer: treeBuf, leavesOffset: 0,
+                                            treeBuffer: treeBuf, treeOffset: 0,
+                                            levelOffsetsBuffer: levelOffsetsBuf, numSubtrees: numSubtrees)
+
+            // Phase 2: Upper levels
+            var levelStart = Int(levelOffsets[numFusedLevels - 1])
+            var levelSize = numSubtrees
+            while levelSize > 1 {
+                encoder.memoryBarrier(scope: .buffers)
+                let parentCount = levelSize / 2
+                let inputOffset = levelStart * stride
+                let outputOffset = (levelStart + levelSize) * stride
+                p2Engine.encodeHashPairs(encoder: encoder, buffer: treeBuf,
+                                          inputOffset: inputOffset, outputOffset: outputOffset, count: parentCount)
+                levelStart += levelSize
+                levelSize = parentCount
+            }
+
+            encoder.endEncoding()
+            let gpuStart = CFAbsoluteTimeGetCurrent()
+            cb.commit()
+            cb.waitUntilCompleted()
+            let gpuEnd = CFAbsoluteTimeGetCurrent()
+            phaseBuildFusedFull.append((gpuEnd - gpuStart) * 1000)
+
+            let t3 = CFAbsoluteTimeGetCurrent()
+            let treePtr = treeBuf.contents().bindMemory(to: Fr.self, capacity: treeSize)
+            let _ = Array(UnsafeBufferPointer(start: treePtr, count: treeSize))
+            phaseBuildCopyBack.append((CFAbsoluteTimeGetCurrent() - t3) * 1000)
+            phaseBuildTotal.append((gpuEnd - t0) * 1000)
+        }
+
+        phaseBuildMemcpy.sort(); phaseBuildFusedFull.sort()
+        phaseBuildCopyBack.sort(); phaseBuildTotal.sort()
+
+        print(String(format: "  memcpy (leaves->GPU):     %7.2f ms  (%.1f%%)",
+                    phaseBuildMemcpy[2], 100*phaseBuildMemcpy[2]/phaseBuildTotal[2]))
+        print(String(format: "  GPU kernels (fused+upper): %7.2f ms  (%.1f%%)",
+                    phaseBuildFusedFull[2], 100*phaseBuildFusedFull[2]/phaseBuildTotal[2]))
+        print(String(format: "  copy back (full tree):    %7.2f ms  (%.1f%%)",
+                    phaseBuildCopyBack[2], 100*phaseBuildCopyBack[2]/phaseBuildTotal[2]))
+        print(String(format: "  TOTAL:                    %7.2f ms", phaseBuildTotal[2]))
+
+    } catch {
+        print("  [FAIL] Phase profiling: \(error)")
+    }
+
+    // ============================================================
+    // PHASE-LEVEL PROFILING: Poseidon2 4-ary Merkle at 2^20
+    // ============================================================
+    print("")
+    print("=== Poseidon2 4-ary Merkle Phase Profile (2^20 leaves) ===")
+
+    do {
+        let p2Engine = try Poseidon2Engine()
+        let _ = try Poseidon24aryMerkleEngine()
+        let n = 1 << 20
+        let stride = MemoryLayout<Fr>.stride
+        let treeNodeCount = Poseidon24aryMerkleEngine.treeNodeCount(n)
+
+        var leaves = [Fr](repeating: Fr.zero, count: n)
+        for i in 0..<n { leaves[i] = frFromInt(UInt64(i + 1)) }
+
+        let bufSize = treeNodeCount * stride
+        guard let buf = p2Engine.device.makeBuffer(length: bufSize, options: .storageModeShared) else {
+            throw MSMError.gpuError("Failed to allocate 4ary buffer")
+        }
+
+        // Warmup
+        _ = leaves.withUnsafeBytes { src in memcpy(buf.contents(), src.baseAddress!, n * stride) }
+        guard let cb = p2Engine.commandQueue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
+        let enc = cb.makeComputeCommandEncoder()!
+        var levelStart = 0
+        var levelSize = n
+        while levelSize > 1 {
+            let outputOffset = (levelStart + levelSize) * stride
+            if levelSize >= 4 {
+                let parentCount = levelSize / 4
+                let inputOffset = levelStart * stride
+                p2Engine.encodeHashQuad(encoder: enc, buffer: buf, inputOffset: inputOffset, outputOffset: outputOffset, count: parentCount)
+                levelStart += levelSize
+                levelSize = parentCount
+            } else {
+                let parentCount = levelSize / 2
+                let inputOffset = levelStart * stride
+                p2Engine.encodeHashPairs(encoder: enc, buffer: buf, inputOffset: inputOffset, outputOffset: outputOffset, count: parentCount)
+                levelStart += levelSize
+                levelSize = parentCount
+            }
+            if levelSize > 1 { enc.memoryBarrier(scope: .buffers) }
+        }
+        enc.endEncoding()
+        cb.commit()
+        cb.waitUntilCompleted()
+
+        var phaseMemcpy = [Double]()
+        var phaseHash = [Double]()
+        var phaseCopyBack = [Double]()
+        var phaseTotal = [Double]()
+
+        for _ in 0..<5 {
+            let t0 = CFAbsoluteTimeGetCurrent()
+            _ = leaves.withUnsafeBytes { src in memcpy(buf.contents(), src.baseAddress!, n * stride) }
+            phaseMemcpy.append((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+
+            guard let cmdBuf = p2Engine.commandQueue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
+            let encoder = cmdBuf.makeComputeCommandEncoder()!
+
+            levelStart = 0
+            levelSize = n
+            while levelSize > 1 {
+                let outputOffset = (levelStart + levelSize) * stride
+                if levelSize >= 4 {
+                    let parentCount = levelSize / 4
+                    let inputOffset = levelStart * stride
+                    p2Engine.encodeHashQuad(encoder: encoder, buffer: buf, inputOffset: inputOffset, outputOffset: outputOffset, count: parentCount)
+                    levelStart += levelSize
+                    levelSize = parentCount
+                } else {
+                    let parentCount = levelSize / 2
+                    let inputOffset = levelStart * stride
+                    p2Engine.encodeHashPairs(encoder: encoder, buffer: buf, inputOffset: inputOffset, outputOffset: outputOffset, count: parentCount)
+                    levelStart += levelSize
+                    levelSize = parentCount
+                }
+                if levelSize > 1 { encoder.memoryBarrier(scope: .buffers) }
+            }
+
+            encoder.endEncoding()
+            let gpuStart = CFAbsoluteTimeGetCurrent()
+            cmdBuf.commit()
+            cmdBuf.waitUntilCompleted()
+            let gpuEnd = CFAbsoluteTimeGetCurrent()
+            phaseHash.append((gpuEnd - gpuStart) * 1000)
+
+            let t2 = CFAbsoluteTimeGetCurrent()
+            let ptr = buf.contents().bindMemory(to: Fr.self, capacity: treeNodeCount)
+            let _: [Fr] = Array(UnsafeBufferPointer(start: ptr, count: treeNodeCount))
+            phaseCopyBack.append((CFAbsoluteTimeGetCurrent() - t2) * 1000)
+            phaseTotal.append((gpuEnd - t0) * 1000)
+        }
+
+        phaseMemcpy.sort(); phaseHash.sort(); phaseCopyBack.sort(); phaseTotal.sort()
+        let memcpyMs = phaseMemcpy[2]
+        let hashMs = phaseHash[2]
+        let copyBackMs = phaseCopyBack[2]
+        let totalMs = phaseTotal[2]
+
+        print(String(format: "  memcpy (leaves->GPU):     %7.2f ms  (%.1f%%)", memcpyMs, 100*memcpyMs/totalMs))
+        print(String(format: "  4-ary hash levels:        %7.2f ms  (%.1f%%)", hashMs, 100*hashMs/totalMs))
+        print(String(format: "  copy back (GPU->CPU):     %7.2f ms  (%.1f%%)", copyBackMs, 100*copyBackMs/totalMs))
+        print(String(format: "  TOTAL:                   %7.2f ms", totalMs))
+
+    } catch {
+        print("  [FAIL] 4-ary phase profiling: \(error)")
+    }
+
     print("\nMerkle benchmark complete.")
 }
