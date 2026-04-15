@@ -311,4 +311,97 @@ public class Poseidon2M31Engine {
         encoder.dispatchThreads(MTLSize(width: count, height: 1, depth: 1),
                                threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
     }
+
+    /// Build multiple Merkle trees in a single GPU dispatch.
+    /// Each tree is built from its leaves; all trees must have power-of-2 leaves.
+    ///
+    /// This is significantly faster than building trees one-by-one when you have
+    /// many columns (e.g., 180 columns in EVMAIR).
+    ///
+    /// - Parameter treesLeaves: Array of leaf arrays, one per tree
+    /// - Returns: Array of root arrays (8 M31 elements per tree)
+    public func buildTreesBatch(treesLeaves: [[M31]]) throws -> [[M31]] {
+        let nodeSize = Poseidon2M31Engine.nodeSize
+        let subtreeMax = Poseidon2M31Engine.merkleSubtreeSize
+
+        // Validate and compute dimensions
+        var numLevelsPerTree = [UInt32]()
+        var totalLeaves = 0
+        for leaves in treesLeaves {
+            precondition(leaves.count % nodeSize == 0, "Leaves must be multiple of 8 M31 elements")
+            let numLeaves = leaves.count / nodeSize
+            precondition(numLeaves > 0 && (numLeaves & (numLeaves - 1)) == 0, "Number of leaves must be power of 2")
+            precondition(numLeaves <= subtreeMax, "Tree too large: \(numLeaves) > \(subtreeMax)")
+            numLevelsPerTree.append(UInt32(numLeaves.trailingZeroBitCount))
+            totalLeaves += leaves.count
+        }
+
+        let numTrees = treesLeaves.count
+        let stride = MemoryLayout<UInt32>.stride
+
+        // Flatten all leaves into single buffer
+        guard let allLeavesBuf = device.makeBuffer(length: totalLeaves * stride, options: .storageModeShared) else {
+            throw MSMError.gpuError("Failed to allocate leaves buffer")
+        }
+        var offset = 0
+        for leaves in treesLeaves {
+            let leafBytes = leaves.count * stride
+            leaves.withUnsafeBytes { src in
+                memcpy(allLeavesBuf.contents().advanced(by: offset), src.baseAddress!, leafBytes)
+            }
+            offset += leafBytes
+        }
+
+        // Allocate output roots buffer (nodeSize M31 per tree)
+        guard let rootsBuf = device.makeBuffer(length: numTrees * nodeSize * stride, options: .storageModeShared) else {
+            throw MSMError.gpuError("Failed to allocate roots buffer")
+        }
+
+        // Build tree_params: [leaf_offset, num_levels] per tree
+        var treeParams = [UInt32]()
+        var leafOffset = 0
+        for (i, leaves) in treesLeaves.enumerated() {
+            treeParams.append(UInt32(leafOffset / nodeSize))  // offset in M31 elements
+            treeParams.append(numLevelsPerTree[i])
+            leafOffset += leaves.count
+        }
+
+        guard let paramsBuf = device.makeBuffer(length: treeParams.count * stride, options: .storageModeShared) else {
+            throw MSMError.gpuError("Failed to allocate params buffer")
+        }
+        treeParams.withUnsafeBytes { src in
+            memcpy(paramsBuf.contents(), src.baseAddress!, treeParams.count * stride)
+        }
+
+        // GPU dispatch
+        guard let cmdBuf = commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
+        }
+        let enc = cmdBuf.makeComputeCommandEncoder()!
+        enc.setComputePipelineState(merkleFusedBatchFunction)
+        enc.setBuffer(allLeavesBuf, offset: 0, index: 0)
+        enc.setBuffer(rootsBuf, offset: 0, index: 1)
+        enc.setBuffer(rcBuffer, offset: 0, index: 2)
+        enc.setBuffer(paramsBuf, offset: 0, index: 3)
+        enc.dispatchThreadgroups(MTLSize(width: numTrees, height: 1, depth: 1),
+                               threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
+        enc.endEncoding()
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+        if let error = cmdBuf.error {
+            throw MSMError.gpuError(error.localizedDescription)
+        }
+
+        // Read roots back
+        let rootsPtr = rootsBuf.contents().bindMemory(to: UInt32.self, capacity: numTrees * nodeSize)
+        var result = [[M31]]()
+        for i in 0..<numTrees {
+            var root = [M31]()
+            for j in 0..<nodeSize {
+                root.append(M31(v: rootsPtr[i * nodeSize + j]))
+            }
+            result.append(root)
+        }
+        return result
+    }
 }

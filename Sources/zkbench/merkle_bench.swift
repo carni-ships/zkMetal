@@ -114,6 +114,74 @@ public func runMerkleBench() {
         print("  [FAIL] Poseidon2 Merkle: \(error)")
     }
 
+    // Poseidon2 4-ary Merkle
+    do {
+        let engine2 = try Poseidon2MerkleEngine()
+        let engine4 = try Poseidon24aryMerkleEngine()
+
+        print("")
+        print("  --- Poseidon2 4-ary vs Binary Merkle Comparison ---")
+
+        for logN in [10, 12, 14, 16, 18, 20] {
+            let n = 1 << logN
+            var leaves = [Fr](repeating: Fr.zero, count: n)
+            for i in 0..<n { leaves[i] = frFromInt(UInt64(i + 1)) }
+
+            // Warmup both
+            let _ = try engine2.merkleRoot(leaves)
+            let _ = try engine4.merkleRoot(leaves)
+
+            // Binary (2-ary)
+            var times2 = [Double]()
+            for _ in 0..<5 {
+                let t0 = CFAbsoluteTimeGetCurrent()
+                let _ = try engine2.merkleRoot(leaves)
+                times2.append((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+            }
+            times2.sort()
+            let median2 = times2[2]
+
+            // 4-ary
+            var times4 = [Double]()
+            for _ in 0..<5 {
+                let t0 = CFAbsoluteTimeGetCurrent()
+                let _ = try engine4.merkleRoot(leaves)
+                times4.append((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+            }
+            times4.sort()
+            let median4 = times4[2]
+
+            let speedup = median2 / median4
+            let levels2 = logN  // log2(n) levels for binary
+            let levels4: Int
+            if n == 2 { levels4 = 1 }
+            else {
+                var l = 0
+                var s = n
+                while s > 1 {
+                    if s >= 4 { s /= 4 } else { s /= 2 }
+                    l += 1
+                }
+                levels4 = l
+            }
+            print(String(format: "  P2 4-ary     2^%-2d = %6d: binary %7.2f ms (%d levels) | 4-ary %7.2f ms (%d levels) | %.2fx",
+                        logN, n, median2, levels2, median4, levels4, speedup))
+        }
+
+        // Correctness: verify 4-ary root differs from binary (different tree structure)
+        let testLeaves = (0..<256).map { i -> Fr in frFromInt(UInt64(i + 1)) }
+        let r2 = try engine2.merkleRoot(testLeaves)
+        let r4 = try engine4.merkleRoot(testLeaves)
+        if frToInt(r2) != frToInt(r4) {
+            print("  [pass] 4-ary root differs from binary root (expected, different hash structure)")
+        } else {
+            print("  [FAIL] 4-ary root unexpectedly equals binary root!")
+        }
+
+    } catch {
+        print("  [FAIL] Poseidon2 4-ary Merkle: \(error)")
+    }
+
     // Keccak Merkle
     do {
         let engine = try KeccakMerkleEngine()

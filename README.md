@@ -182,11 +182,11 @@ C Pippenger uses multi-threaded bucket accumulation with `__uint128_t` CIOS Mont
 
 | Points | zkMetal (M3 Pro)&#185; | ICICLE-Metal (M3 Pro)&#185; | ICICLE CPU (M3 Pro)&#185; | ICICLE-Metal (M3 Air)&#178; | MoPro v2 (M3 Air)&#178; | Arkworks CPU (M3 Air)&#178; | ICICLE CUDA&#179; |
 |--------|---------|-------------|-----------|-------------|-----------|-----------|-----------|
-| 2^16 | **27ms** | 1,083ms | 114ms | -- | 253ms | 69ms | ~9ms |
-| 2^18 | **45ms** | 1,475ms | 556ms | 149ms | 678ms | 266ms | -- |
-| 2^20 | **119ms** | 2,590ms | 2,349ms | 421ms | 1,702ms | 592ms | -- |
+| 2^16 | **~252ms** | 1,083ms | 114ms | -- | 253ms | 69ms | ~9ms |
+| 2^18 | **~450ms** | 1,475ms | 556ms | 149ms | 678ms | 266ms | -- |
+| 2^20 | **~900ms** | 2,590ms | 2,349ms | 421ms | 1,702ms | 592ms | -- |
 
-&#185; Measured locally. ICICLE-Metal v3.8.0 has ~600ms constant overhead per call (license server).
+&#185; Measured locally with GLV disabled (GLV causes regression on M3 Pro). ICICLE-Metal v3.8.0 has ~600ms constant overhead per call (license server).
 &#178; Reported by [MoPro blog](https://zkmopro.org/blog/metal-msm-v2/) -- different hardware/methodology.
 &#179; [Ingonyama](https://github.com/ingonyama-zk/icicle) on RTX 3090 Ti (native 64-bit integer multiply).
 
@@ -198,7 +198,7 @@ C Pippenger uses multi-threaded bucket accumulation with `__uint128_t` CIOS Mont
 |------|-------------------|----------------------|--------------------|--------------------|
 | 2^16 | 0.47ms | 1.4ms | 0.14ms | 0.18ms |
 | 2^18 | 1.6ms | 2.1ms | 0.19ms | 0.26ms |
-| 2^20 | 6.1ms | 5.8ms | 0.81ms | 0.95ms |
+| 2^20 | ~87ms¹ | 5.8ms | 0.81ms | 0.95ms |
 | 2^22 | 26ms | 25ms | 4.2ms | 2.8ms |
 | 2^24 | 116ms | 110ms | 3.0ms | 2.0ms |
 
@@ -211,7 +211,7 @@ BabyBear at 2^24: **8.5B elements/sec** (native 32-bit arithmetic). Goldilocks: 
 | 2^14 | 79ms | 2.6ms | **30x** | 0.45ms | **176x** |
 | 2^16 | 369ms | 12ms | **30x** | 0.76ms | **483x** |
 | 2^18 | 1.6s | 55ms | **30x** | 2.2ms | **749x** |
-| 2^20 | 7.3s | 246ms | **30x** | 6.1ms | **1198x** |
+| 2^20 | 7.3s | 246ms | **30x** | ~87ms | **84x** |
 
 **Comparison to ICICLE-Metal v3.8 NTT (measured locally, M3 Pro):**
 
@@ -219,11 +219,12 @@ BabyBear at 2^24: **8.5B elements/sec** (native 32-bit arithmetic). Goldilocks: 
 |------|------------|-------------|----------------|----------------|
 | 2^16 | **0.76ms** | 89ms | **0.18ms** | 86ms |
 | 2^18 | **1.6ms** | 108ms | **0.26ms** | 92ms |
-| 2^20 | **6.1ms** | 194ms | **0.95ms** | 108ms |
+| 2^20 | **~87ms** | 194ms | **0.95ms** | 108ms |
 | 2^22 | **26ms** | 915ms | **2.8ms** | 181ms |
 | 2^24 | **116ms** | 3,892ms | **2.0ms** | 709ms |
 
 &#185; ICICLE-Metal has ~85ms per-call overhead. zkMetal is **30-90x faster** on BN254 and **90-500x faster** on BabyBear.
+&#178; BN254 NTT at 2^20 measures ~87ms on M3 Pro (not 6.1ms as previously documented). The 6.1ms figure appears to be from a pre-production implementation and is stale.
 
 ### Hashing
 

@@ -159,6 +159,64 @@ kernel void poseidon2_hash_pairs(
     output[gid] = fr_reduce(s0);
 }
 
+// Forward declaration for p2_hash_quad (defined later in this file)
+Fr p2_hash_quad(Fr a, Fr b, Fr c, Fr d, constant Fr* rc);
+
+// Standalone 4-to-1 Poseidon2 hash kernel for 4-ary Merkle trees.
+// Each thread reads 4 consecutive Fr elements and outputs 1 hash.
+kernel void poseidon2_hash_quad(
+    device const Fr* input          [[buffer(0)]],    // 4*count Fr elements
+    device Fr* output               [[buffer(1)]],     // count Fr elements
+    constant Fr* rc                 [[buffer(2)]],
+    constant uint& count             [[buffer(3)]],     // number of quad hashes
+    uint gid                        [[thread_position_in_grid]]
+) {
+    if (gid >= count) return;
+    uint base = gid * 4;
+    Fr a = input[base];
+    Fr b = input[base + 1];
+    Fr c = input[base + 2];
+    Fr d = input[base + 3];
+    output[gid] = p2_hash_quad(a, b, c, d, rc);
+}
+
+// Inline Poseidon2 hash of 4 elements (a, b, c, d) → Fr result
+// Used in 4-ary Merkle tree to halve tree depth
+Fr p2_hash_quad(Fr a, Fr b, Fr c, Fr d, constant Fr* rc) {
+    // Absorb 4 elements into Poseidon2 sponge: state = [a, b, c, d]
+    Fr s0 = a, s1 = b, s2 = c;
+
+    p2_external_layer(s0, s1, s2);
+
+    #pragma unroll
+    for (uint r = 0; r < 4; r++) {
+        uint rc_base = r * 3;
+        s0 = fr_add_lazy(s0, rc[rc_base]);
+        s1 = fr_add_lazy(s1, rc[rc_base + 1]);
+        s2 = fr_add_lazy(s2, rc[rc_base + 2]);
+        s0 = p2_sbox(s0); s1 = p2_sbox(s1); s2 = p2_sbox(s2);
+        p2_external_layer(s0, s1, s2);
+    }
+    s0 = fr_reduce(s0); s1 = fr_reduce(s1); s2 = fr_reduce(s2);
+    for (uint r = 4; r < 60; r++) {
+        s0 = fr_add_lazy(s0, rc[r * 3]);
+        s0 = p2_sbox(s0);
+        p2_internal_layer(s0, s1, s2);
+    }
+    // Now absorb d after rounds 0-59
+    s0 = fr_add(s0, d);
+    #pragma unroll
+    for (uint r = 60; r < 64; r++) {
+        uint rc_base = r * 3;
+        s0 = fr_add_lazy(s0, rc[rc_base]);
+        s1 = fr_add_lazy(s1, rc[rc_base + 1]);
+        s2 = fr_add_lazy(s2, rc[rc_base + 2]);
+        s0 = p2_sbox(s0); s1 = p2_sbox(s1); s2 = p2_sbox(s2);
+        p2_external_layer(s0, s1, s2);
+    }
+    return fr_reduce(s0);
+}
+
 // Inline Poseidon2 hash of a pair (a, b) → Fr result
 // Used in fused Merkle tree kernel to avoid function call overhead
 Fr p2_hash_pair(Fr a, Fr b, constant Fr* rc) {

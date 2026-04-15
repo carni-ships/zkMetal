@@ -8,6 +8,7 @@ public class Poseidon2Engine {
     public let commandQueue: MTLCommandQueue
     let permuteFunction: MTLComputePipelineState
     let hashPairsFunction: MTLComputePipelineState
+    let hashQuadFunction: MTLComputePipelineState
     let merkleFusedFunction: MTLComputePipelineState
     let merkleFusedFullFunction: MTLComputePipelineState
     let merkleFusedBatchFunction: MTLComputePipelineState
@@ -35,6 +36,7 @@ public class Poseidon2Engine {
 
         guard let permuteFn = library.makeFunction(name: "poseidon2_permute"),
               let hashPairsFn = library.makeFunction(name: "poseidon2_hash_pairs"),
+              let hashQuadFn = library.makeFunction(name: "poseidon2_hash_quad"),
               let merkleFusedFn = library.makeFunction(name: "poseidon2_merkle_fused"),
               let merkleFusedFullFn = library.makeFunction(name: "poseidon2_merkle_fused_full"),
               let merkleFusedBatchFn = library.makeFunction(name: "poseidon2_merkle_fused_batch"),
@@ -44,6 +46,7 @@ public class Poseidon2Engine {
 
         self.permuteFunction = try device.makeComputePipelineState(function: permuteFn)
         self.hashPairsFunction = try device.makeComputePipelineState(function: hashPairsFn)
+        self.hashQuadFunction = try device.makeComputePipelineState(function: hashQuadFn)
         self.merkleFusedFunction = try device.makeComputePipelineState(function: merkleFusedFn)
         self.merkleFusedFullFunction = try device.makeComputePipelineState(function: merkleFusedFullFn)
         self.merkleFusedBatchFunction = try device.makeComputePipelineState(function: merkleFusedBatchFn)
@@ -181,6 +184,23 @@ public class Poseidon2Engine {
         var n = UInt32(count)
         encoder.setBytes(&n, length: 4, index: 3)
         let tg = min(tuning.hashThreadgroupSize, Int(hashPairsFunction.maxTotalThreadsPerThreadgroup))
+        encoder.dispatchThreads(MTLSize(width: count, height: 1, depth: 1),
+                               threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+    }
+
+    /// Encode hash quadruples dispatch into an existing compute encoder (for 4-ary Merkle).
+    /// Input buffer at inputOffset contains 4*count Fr elements; output at outputOffset receives count Fr elements.
+    /// Uses p2_hash_quad to hash 4 elements at once, halving depth vs 2-ary.
+    public func encodeHashQuad(encoder: MTLComputeCommandEncoder,
+                               buffer: MTLBuffer, inputOffset: Int,
+                               outputOffset: Int, count: Int) {
+        encoder.setComputePipelineState(hashQuadFunction)
+        encoder.setBuffer(buffer, offset: inputOffset, index: 0)
+        encoder.setBuffer(buffer, offset: outputOffset, index: 1)
+        encoder.setBuffer(rcBuffer, offset: 0, index: 2)
+        var n = UInt32(count)
+        encoder.setBytes(&n, length: 4, index: 3)
+        let tg = min(tuning.hashThreadgroupSize, Int(hashQuadFunction.maxTotalThreadsPerThreadgroup))
         encoder.dispatchThreads(MTLSize(width: count, height: 1, depth: 1),
                                threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
     }

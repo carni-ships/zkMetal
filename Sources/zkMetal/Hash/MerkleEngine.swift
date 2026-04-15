@@ -292,6 +292,131 @@ public class Poseidon2MerkleEngine {
     }
 }
 
+// MARK: - Poseidon2 4-ary Merkle Tree
+//
+// Node count for n leaves (power of 2):
+//   n + n/4 + n/16 + ... + 1 (or +2 if binary top level needed) = ~n * 4/3
+public class Poseidon24aryMerkleEngine {
+    public static let version = "poseidon24ary-merkle-v1"
+    private let engine: Poseidon2Engine
+    private var cachedTreeBuf: MTLBuffer?
+    private var cachedTreeBufSize: Int = 0
+
+    public init() throws {
+        self.engine = try Poseidon2Engine()
+    }
+
+    /// Compute total number of nodes in a 4-ary Merkle tree.
+    /// For n leaves (power of 2), returns the total node count including leaves.
+    private static func treeNodeCount(_ n: Int) -> Int {
+        var total = n
+        var levelSize = n
+        while levelSize > 1 {
+            if levelSize >= 4 {
+                levelSize /= 4
+            } else {
+                // levelSize == 2: binary pair at top
+                levelSize /= 2
+            }
+            total += levelSize
+        }
+        return total
+    }
+
+    /// Build a 4-ary Merkle tree from Fr field elements using Poseidon2 4-way hash.
+    /// Returns flat [Fr] buffer with all tree nodes. Root is the last element.
+    ///
+    /// For n = power of 4 (e.g. 2^20 = 4^10): all levels are 4-ary (10 levels vs 20 binary).
+    /// For n = 2^odd (not power of 4): first level(s) use binary until we reach a power of 4.
+    public func buildTree(_ leaves: [Fr]) throws -> [Fr] {
+        let n = leaves.count
+        precondition(n > 0 && (n & (n - 1)) == 0, "Leaf count must be power of 2")
+
+        let treeSize = Poseidon24aryMerkleEngine.treeNodeCount(n)
+        let stride = MemoryLayout<Fr>.stride
+        let bufSize = treeSize * stride
+
+        if bufSize > cachedTreeBufSize {
+            guard let buf = engine.device.makeBuffer(length: bufSize, options: .storageModeShared) else {
+                throw MSMError.gpuError("Failed to allocate 4-ary Merkle buffer")
+            }
+            cachedTreeBuf = buf
+            cachedTreeBufSize = bufSize
+        }
+        let treeBuf = cachedTreeBuf!
+
+        // Copy leaves to GPU buffer
+        leaves.withUnsafeBytes { src in
+            memcpy(treeBuf.contents(), src.baseAddress!, n * stride)
+        }
+
+        guard let cmdBuf = engine.commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
+        }
+
+        let enc = cmdBuf.makeComputeCommandEncoder()!
+
+        var levelStart = 0
+        var levelSize = n
+
+        while levelSize > 1 {
+            let outputOffset = (levelStart + levelSize) * stride
+
+            if levelSize >= 4 {
+                // 4-ary: hash groups of 4 children into 1 parent
+                let parentCount = levelSize / 4
+                let inputOffset = levelStart * stride
+                engine.encodeHashQuad(encoder: enc, buffer: treeBuf,
+                                      inputOffset: inputOffset,
+                                      outputOffset: outputOffset,
+                                      count: parentCount)
+                levelStart += levelSize
+                levelSize = parentCount
+            } else {
+                // levelSize == 2: binary hash (fallback for non-power-of-4 top levels)
+                let parentCount = levelSize / 2
+                let inputOffset = levelStart * stride
+                engine.encodeHashPairs(encoder: enc, buffer: treeBuf,
+                                       inputOffset: inputOffset,
+                                       outputOffset: outputOffset,
+                                       count: parentCount)
+                levelStart += levelSize
+                levelSize = parentCount
+            }
+
+            if levelSize > 1 {
+                enc.memoryBarrier(scope: .buffers)
+            }
+        }
+        enc.endEncoding()
+
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+        if let error = cmdBuf.error {
+            throw MSMError.gpuError(error.localizedDescription)
+        }
+
+        let ptr = treeBuf.contents().bindMemory(to: Fr.self, capacity: treeSize)
+        return Array(UnsafeBufferPointer(start: ptr, count: treeSize))
+    }
+
+    /// Get the Merkle root from Fr leaves using 4-ary tree.
+    public func merkleRoot(_ leaves: [Fr]) throws -> Fr {
+        let tree = try buildTree(leaves)
+        return tree.last!
+    }
+
+    /// Access a specific node from a flat tree buffer returned by buildTree.
+    public static func node(_ tree: [Fr], at index: Int) -> Fr {
+        return tree[index]
+    }
+
+    /// Compute the root node index in the flat tree layout.
+    public static func rootIndex(leafCount n: Int) -> Int {
+        return treeNodeCount(n) - 1
+    }
+}
+
 // MARK: - Keccak Merkle Tree
 
 public class KeccakMerkleEngine {

@@ -279,7 +279,7 @@ public class MetalMSM {
         cpuPositionsPtr?.deallocate()
     }
 
-    public var useGLV = true
+    public var useGLV = false  // GLV regresses on M3 GPU: decompose ~58 muls/scalar adds more overhead than 2x scalar savings. Same empirical result as secp256k1 (disabled in c5ebfebb).
     public var profileMSM = false
 
     public func msm(points: [PointAffine], scalars: [[UInt32]]) throws -> PointProjective {
