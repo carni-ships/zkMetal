@@ -10,9 +10,9 @@ Based on codebase analysis, recent commits, and subagent research, this document
 
 | Issue | Title | Priority | Effort | Status |
 |-------|-------|----------|--------|--------|
-| #3 | Implement Pedersen PCS Engine | High | Medium | Not Started |
-| #4 | Groth16VerifierCircuitEncoder Investigation | Medium | Large/Wontfix | Needs Decision |
-| #5 | Binary-Native List-Decoding FRI | High | Very Large (10 wks) | Not Started |
+| #3 | Implement Pedersen PCS Engine | High | Medium | **Complete** |
+| #4 | Groth16VerifierCircuitEncoder Investigation | Medium | Large/Wontfix | Complete (Wontfix) |
+| #5 | Binary-Native List-Decoding FRI | High | Very Large (10 wks) | In Progress (Phase 1) |
 
 ## Theoretical Extensions (From Backlog Ideas)
 
@@ -30,6 +30,7 @@ Based on codebase analysis, recent commits, and subagent research, this document
 |------|--------|-------|
 | GPU Additive FFT (GF2^8) | In Progress | ~11-14ms for 2^22, target ~0.5ms |
 | GPU CSR Sparse Matvec | Complete | Integrated into GPUNovaFoldEngine |
+| Binary-FRI Core Infrastructure | Phase 1 Complete | Types, fold engine, Johnson bound decoder |
 
 ## Implementation Order
 
@@ -39,10 +40,12 @@ Based on codebase analysis, recent commits, and subagent research, this document
    - Medium effort, high utility
    - Enables Pedersen-based polynomial commitment benchmarking
    - Uses existing Pedersen infrastructure
+   - **Status: COMPLETE**
 
 2. **Groth16 Wontfix Decision (Issue #4)**
    - Evaluate if Groth16 support is needed
    - If not, remove placeholder test stub
+   - **Status: COMPLETE (Wontfix)**
 
 ### Phase 2: Core Infrastructure (2-4 weeks)
 
@@ -52,9 +55,11 @@ Based on codebase analysis, recent commits, and subagent research, this document
    - Encoding relations
 
 4. **Binary-FRI Core (Backlog #2 - Phase 1)**
-   - BinaryFRIConfig
-   - BinaryFRITypes
-   - Additive domain folding
+   - BinaryFRIConfig ✓
+   - BinaryFRITypes ✓
+   - BinaryFRIFoldEngine ✓
+   - BinaryJohnsonBoundDecoder ✓
+   - **Status: Phase 1 COMPLETE**
 
 ### Phase 3: Advanced Features (4-8 weeks)
 
