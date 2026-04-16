@@ -59,6 +59,8 @@ Based on codebase analysis, recent commits, and subagent research, this document
    - BinaryFRITypes ✓
    - BinaryFRIFoldEngine ✓
    - BinaryJohnsonBoundDecoder ✓
+   - BinaryFRICoCurvilinear ✓
+   - BinaryProximityGap ✓
    - **Status: Phase 1 COMPLETE**
 
 ### Phase 3: Advanced Features (4-8 weeks)
