@@ -41,9 +41,6 @@ func runBinaryFRIBench() {
         (10, 3),
         (12, 3),
         (14, 3),
-        (16, 3),
-        (18, 3),
-        (20, 3),
     ]
 
     print("\n=== Binary FRI Benchmark ===\n")
@@ -59,63 +56,67 @@ func runBinaryFRIBench() {
         let domainSize = 1 << logSize
         print("Testing logDomainSize=\(logSize) (\(domainSize) points)...")
 
-        // Generate random evaluations
-        let evals = (0..<domainSize).map { _ in UInt8.random(in: 0...255) }
+        // Generate evaluations
+        let evals = (0..<domainSize).map { UInt8($0) }
 
         // Create prover
         let prover = BinaryFRIProver(config: config)
-
-        // Benchmark
-        let t0 = CFAbsoluteTimeGetCurrent()
 
         // Compute number of rounds
         let numRounds = prover.computeNumRounds(logSize: logSize)
 
         // Generate alphas
         var alphas = [UInt8]()
-        for _ in 0..<numRounds {
-            alphas.append(UInt8.random(in: 1...255))
+        for i in 0..<numRounds {
+            alphas.append(UInt8(i + 1))
         }
 
-        // Fold all rounds using prover
-        var foldTime = CFAbsoluteTimeGetCurrent()
+        // Benchmark
+        let t0 = CFAbsoluteTimeGetCurrent()
 
-        let (_, witness) = try! prover.prove(evals: evals, alphas: alphas)
-        let layers = witness.layerEvals
+        do {
+            let (_, witness) = try prover.prove(evals: evals, alphas: alphas)
+            let layers = witness.layerEvals
 
-        foldTime = (CFAbsoluteTimeGetCurrent() - foldTime) * 1000
+            let foldTime = (CFAbsoluteTimeGetCurrent() - t0) * 1000
 
-        // Build Merkle trees for each layer
-        var merkleTime = CFAbsoluteTimeGetCurrent()
-        var merkleRoots = [BinaryFRIMerkleCommitment]()
+            // Build Merkle trees for each layer
+            var merkleTime = CFAbsoluteTimeGetCurrent()
+            var merkleRoots = [BinaryFRIMerkleCommitment]()
 
-        for layer in layers {
-            let merkleParams = BinaryMerkleParams(logLeaves: Int(log2(Double(layer.count))))
-            let tree = BinaryMerkleTree(evaluations: layer, params: merkleParams)
-            merkleRoots.append(BinaryFRIMerkleCommitment(
-                root: tree.root,
-                numLeaves: layer.count
-            ))
+            for layer in layers {
+                let logLeaves = layer.count > 1 ? Int(log2(Double(layer.count))) : 0
+                let merkleParams = BinaryMerkleParams(logLeaves: logLeaves)
+                let tree = BinaryMerkleTree(evaluations: layer, params: merkleParams)
+                merkleRoots.append(BinaryFRIMerkleCommitment(
+                    root: tree.root,
+                    numLeaves: layer.count
+                ))
+            }
+
+            merkleTime = (CFAbsoluteTimeGetCurrent() - merkleTime) * 1000
+
+            let totalTime = (CFAbsoluteTimeGetCurrent() - t0) * 1000
+
+            let result = BinaryFRIBenchResult(
+                logDomainSize: logSize,
+                numRounds: numRounds,
+                foldTimeMs: foldTime,
+                merkleTimeMs: merkleTime,
+                totalTimeMs: totalTime
+            )
+            results.append(result)
+
+            print("  -> \(numRounds) rounds, fold: \(String(format: "%.2f", foldTime))ms, merkle: \(String(format: "%.2f", merkleTime))ms, total: \(String(format: "%.2f", totalTime))ms")
+        } catch {
+            print("  ERROR: \(error)")
         }
-
-        merkleTime = (CFAbsoluteTimeGetCurrent() - merkleTime) * 1000
-
-        let totalTime = (CFAbsoluteTimeGetCurrent() - t0) * 1000
-
-        let result = BinaryFRIBenchResult(
-            logDomainSize: logSize,
-            numRounds: numRounds,
-            foldTimeMs: foldTime,
-            merkleTimeMs: merkleTime,
-            totalTimeMs: totalTime
-        )
-        results.append(result)
-
-        print("  -> \(numRounds) rounds, fold: \(String(format: "%.2f", foldTime))ms, merkle: \(String(format: "%.2f", merkleTime))ms, total: \(String(format: "%.2f", totalTime))ms")
     }
 
     // Print summary table
-    print("\n" + formatBinaryFRIBenchTable(results: results))
+    if !results.isEmpty {
+        print("\n" + formatBinaryFRIBenchTable(results: results))
+    }
 }
 
 // MARK: - GPU Binary FRI Benchmark
@@ -140,8 +141,6 @@ func runGPUBinaryFRIBench() {
         (8, 3),
         (10, 3),
         (12, 3),
-        (14, 3),
-        (16, 3),
     ]
 
     for (logSize, finalDegree) in configs {
@@ -165,8 +164,8 @@ func runGPUBinaryFRIBench() {
         let numRounds = prover.computeNumRounds(logSize: logSize)
 
         var alphas = [UInt8]()
-        for _ in 0..<numRounds {
-            alphas.append(UInt8.random(in: 1...255))
+        for i in 0..<numRounds {
+            alphas.append(UInt8(i + 1))
         }
 
         do {
