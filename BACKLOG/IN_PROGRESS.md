@@ -50,6 +50,17 @@
 - Current: ~11-14ms for 2^22 with high variance, Target: ~0.5ms
 - forward_pairs kernel (n/2 threads) eliminates thread divergence
 
+### Remaining GPU Additive FFT Optimizations (NOT YET TRIED)
+| Idea | Impact | Status |
+|------|--------|--------|
+| Threadgroup-Local LUT Replication | High | Not tried |
+| Vectorized Loads/Stores (half4/uchar4) | Medium | Not tried |
+| Threadgroup Memory for Butterfly Exchange | Medium | Not tried |
+| Batch Multiple FFTs | High | Kernel exists, not optimized |
+| Fused FFT + Commitment | High | Not tried |
+| LUT as Metal Function Constant | Medium | Not tried |
+| Double/Pipelined Buffering | Medium | Not tried |
+
 ## Remaining Folding Opportunities
 
 | Idea | Impact | Effort | Status |
