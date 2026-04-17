@@ -23,13 +23,12 @@
 
 import Foundation
 
-// Re-export all MetaField components
-@_exported import struct zkMetal.BinaryTower128
-@_exported import struct zkMetal.Fr
-
 // MARK: - Public Types
 
+/// Type alias for tower field (currently BinaryTower128)
 public typealias TowerField = BinaryTower128
+
+/// Type alias for prime field (currently BN254 Fr)
 public typealias PrimeField = Fr
 
 // MARK: - Version

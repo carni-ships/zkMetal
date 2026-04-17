@@ -42,21 +42,21 @@ public protocol FieldSwitchGate {
 
     /// Convert tower element to prime representation.
     /// This is the "down" conversion in the meta-field lattice.
-    func toPrime() -> Prime
+    mutating func toPrime() -> Prime
 
     /// Convert prime element to tower representation.
     /// This is the "up" conversion in the meta-field lattice.
-    func toTower() -> Prime
+    mutating func toTower() -> Tower
 
     // MARK: - Conversion with Constraint Counting
 
     /// Convert tower to prime with constraint count estimation.
     /// Returns (primeValue, estimatedConstraints)
-    func toPrimeConstrained() -> (Prime, Int)
+    mutating func toPrimeConstrained() -> (Prime, Int)
 
     /// Convert prime to tower with constraint count estimation.
     /// Returns (towerValue, estimatedConstraints)
-    func toTowerConstrained() -> (Tower, Int)
+    mutating func toTowerConstrained() -> (Tower, Int)
 
     // MARK: - Batch Conversions
 
@@ -105,7 +105,7 @@ public struct BN254FieldSwitchGate: FieldSwitchGate {
         self.activeRep = .prime
     }
 
-    public func toPrime() -> Fr {
+    public mutating func toPrime() -> Fr {
         if activeRep == .tower {
             prime = BN254MetaFieldPair.towerToPrime(tower)
             activeRep = .both
@@ -113,7 +113,7 @@ public struct BN254FieldSwitchGate: FieldSwitchGate {
         return prime
     }
 
-    public func toTower() -> BinaryTower128 {
+    public mutating func toTower() -> BinaryTower128 {
         if activeRep == .prime {
             tower = BN254MetaFieldPair.primeToTower(prime)
             activeRep = .both
@@ -121,14 +121,14 @@ public struct BN254FieldSwitchGate: FieldSwitchGate {
         return tower
     }
 
-    public func toPrimeConstrained() -> (Fr, Int) {
+    public mutating func toPrimeConstrained() -> (Fr, Int) {
         // BN254 to BN254 conversion (same field) - no constraints needed
         // The tower representation is just a different encoding
         let p = toPrime()
         return (p, 0)
     }
 
-    public func toTowerConstrained() -> (BinaryTower128, Int) {
+    public mutating func toTowerConstrained() -> (BinaryTower128, Int) {
         let t = toTower()
         return (t, 0)
     }
@@ -195,48 +195,6 @@ public struct ConversionConfig {
         useCaching: true,
         cacheSize: 1024
     )
-}
-
-// MARK: - Conversion Cache
-
-/// Cache for frequently used conversions
-public final class ConversionCache<T: Hashable, U> {
-    private var towerToPrime: [T: U] = [:]
-    private var primeToTower: [U: T] = [:]
-    private let maxSize: Int
-    private let lock = NSLock()
-
-    public init(maxSize: Int = 256) {
-        self.maxSize = maxSize
-    }
-
-    public func lookupTowerToPrime(_ tower: T) -> U? {
-        lock.lock()
-        defer { lock.unlock() }
-        return towerToPrime[tower]
-    }
-
-    public func lookupPrimeToTower(_ prime: U) -> T? {
-        lock.lock()
-        defer { lock.unlock() }
-        return primeToTower[prime]
-    }
-
-    public func store(_ tower: T, prime: U) {
-        lock.lock()
-        defer { lock.unlock() }
-        if towerToPrime.count >= maxSize {
-            // Simple eviction: clear half
-            let keysToRemove = Array(towerToPrime.keys.prefix(maxSize / 2))
-            for key in keysToRemove {
-                if let p = towerToPrime.removeValue(forKey: key) {
-                    primeToTower.removeValue(forKey: p)
-                }
-            }
-        }
-        towerToPrime[tower] = prime
-        primeToTower[prime] = tower
-    }
 }
 
 // MARK: - Gate Evaluation Context

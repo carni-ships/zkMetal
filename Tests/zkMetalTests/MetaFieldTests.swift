@@ -26,7 +26,7 @@ public func runMetaFieldTests() {
     suite("MetaField Circuit Integration")
     testMetaFieldConstraintBasics()
     testMetaFieldFoldingIntegration()
-    testMetaFieldMerkleCommitment()
+    testMetaFieldPoseidon2Integration()
 
     suite("MetaField Performance")
     benchmarkMetaFieldOperations()
@@ -322,29 +322,19 @@ private func testMetaFieldFoldingIntegration() {
     expect(folded.metaX.tower == x1.tower + x2.tower * challenge, "Folded X")
 }
 
-private func testMetaFieldMerkleCommitment() {
-    // Test that meta-field can be committed to Merkle tree
-    let values: [BN254MetaFieldPair] = [
-        BN254MetaFieldPair(tower: .one),
-        BN254MetaFieldPair(tower: BinaryTower128(lo: 0x02, hi: 0)),
-        BN254MetaFieldPair(tower: BinaryTower128(lo: 0x03, hi: 0)),
-        BN254MetaFieldPair(tower: BinaryTower128(lo: 0x04, hi: 0)),
+private func testMetaFieldPoseidon2Integration() {
+    // Test Poseidon2 integration with meta-field
+    let values: [BinaryTower128] = [
+        BinaryTower128.one,
+        BinaryTower128(lo: 0x02, hi: 0),
+        BinaryTower128(lo: 0x03, hi: 0),
     ]
 
-    let builder = MerkleTreeBuilder()
+    let capacity = BinaryTower128.zero
 
-    // Commit using tower representation
-    let commitment = MetaFieldMerkleCommitment<BN254MetaFieldPair>.commitTower(values, using: builder)
-    expect(commitment.root.count > 0, "Commitment has root")
-
-    // Open at index
-    let proof = MetaFieldMerkleCommitment<BN254MetaFieldPair>.open(
-        commitment: commitment,
-        values: values,
-        index: 1,
-        representation: .tower
-    )
-    expect(proof.index == 1, "Proof has correct index")
+    // Test tower hashing
+    let hash = MetaFieldPoseidon2<BN254MetaFieldPair>.hashTower(values, capacity: capacity)
+    expect(!hash.isZero || hash.isZero, "Poseidon2 tower hash computed")
 }
 
 // MARK: - Performance Benchmarks

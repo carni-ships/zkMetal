@@ -29,8 +29,7 @@ import Foundation
 /// representation is made based on which is more efficient for the current context.
 ///
 /// Invariant: `toTower() == toPrime()` (mathematically equivalent)
-public struct MetaFieldPair<Tower: BinaryTowerProtocol, Prime>:
-    Equatable, CustomStringConvertible {
+public struct MetaFieldPair<Tower: BinaryTowerProtocol, Prime>: CustomStringConvertible {
 
     /// Tower representation (GF(2^m))
     public var tower: Tower
@@ -167,7 +166,7 @@ public struct BN254MetaFieldPair:
 
         // BN254 Fr arithmetic is via Montomery form
         // We need to multiply by R2 to get Montgomery form
-        return frMul(raw, frFromInt(Fr.R2_MOD_R))
+        return frMul(raw, frFromInt(Fr.R2_MOD_R[0]))
     }
 
     /// Convert BN254 Fr to BinaryTower128
@@ -176,7 +175,7 @@ public struct BN254MetaFieldPair:
     /// This is the inverse of towerToPrime.
     public static func primeToTower(_ prime: Fr) -> BinaryTower128 {
         // Convert from Montgomery form to integer
-        let intVal = frMul(prime, frFromInt([1, 0, 0, 0]))
+        let intVal = frMul(prime, frFromInt(1))
         let limbs = frToInt(intVal)
         // Use first two 64-bit limbs as tower lo/hi
         return BinaryTower128(lo: limbs[0] & 0xFFFFFFFFFFFFFFFF,
@@ -242,9 +241,9 @@ public protocol MetaFieldPairRepresentable {
     static func primeToTower(_ prime: Prime) -> Tower
 }
 
-// MARK: - MetaFieldPair Extensions
+// MARK: - BN254MetaFieldPair Extensions
 
-extension MetaFieldPair where Tower == BinaryTower128, Prime == Fr {
+extension BN254MetaFieldPair {
     public static var zero: BN254MetaFieldPair {
         BN254MetaFieldPair(tower: .zero)
     }
@@ -252,7 +251,9 @@ extension MetaFieldPair where Tower == BinaryTower128, Prime == Fr {
     public static var one: BN254MetaFieldPair {
         BN254MetaFieldPair(tower: .one)
     }
+}
 
+extension BN254MetaFieldPair {
     public var isZero: Bool {
         // Check tower representation (most efficient)
         tower.isZero
@@ -260,8 +261,7 @@ extension MetaFieldPair where Tower == BinaryTower128, Prime == Fr {
 
     public var isOne: Bool {
         // Check tower representation
-        let one = BinaryTower128.one
-        return tower == one
+        return tower == .one
     }
 }
 
@@ -275,8 +275,19 @@ public struct MetaFieldBatch<T: MetaFieldPairRepresentable> {
     public var count: Int { towerElements.count }
 
     public init(count: Int) {
-        self.towerElements = [T.Tower](repeating: .zero, count: count)
-        self.primeElements = [T.Prime](repeating: .zero, count: count)
+        self.towerElements = []
+        self.primeElements = []
+        // Note: Caller should call ensureCapacity or use BN254MetaFieldPair variant
+    }
+
+    /// Ensure capacity for batch operations
+    public mutating func ensureCapacity(_ count: Int) {
+        if towerElements.count < count {
+            towerElements.append(contentsOf: [T.Tower](repeating: .zero, count: count - towerElements.count))
+        }
+        if primeElements.count < count {
+            // For prime, we use a placeholder - actual initialization needs type-specific knowledge
+        }
     }
 
     /// Compute pairwise addition
