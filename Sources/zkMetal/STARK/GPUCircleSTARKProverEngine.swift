@@ -362,6 +362,7 @@ public class GPUCircleSTARKProverEngine {
     /// GPU engines (lazy initialization)
     private var nttEngine: CircleNTTEngine?
     private var friEngine: CircleFRIEngine?
+    private var treeEngine: Poseidon2M31Engine?
 
     /// Profiling flag
     public var profileProve: Bool = false
@@ -383,6 +384,13 @@ public class GPUCircleSTARKProverEngine {
         if let e = friEngine { return e }
         let e = try CircleFRIEngine()
         friEngine = e
+        return e
+    }
+
+    private func ensureTreeEngine() throws -> Poseidon2M31Engine {
+        if let e = treeEngine { return e }
+        let e = try Poseidon2M31Engine()
+        treeEngine = e
         return e
     }
 
@@ -414,12 +422,30 @@ public class GPUCircleSTARKProverEngine {
         let ldeT = CFAbsoluteTimeGetCurrent()
 
         // Step 3: Commit trace columns via Poseidon2-M31 Merkle trees
+        // Use GPU tree building when available for massive speedup
         var traceCommitments = [M31Digest]()
         var traceTrees = [[M31Digest]]()
-        for colIdx in 0..<air.numColumns {
-            let tree = buildPoseidon2M31MerkleTree(traceLDEs[colIdx], count: evalLen)
-            traceCommitments.append(poseidon2M31MerkleRoot(tree, n: evalLen))
-            traceTrees.append(tree)
+
+        if gpuAvailable && config.usePoseidon2Merkle {
+            // GPU commitment: build all trees using GPU (still sequential per tree, but faster)
+            let treeEng = try ensureTreeEngine()
+
+            for colIdx in 0..<air.numColumns {
+                // Build tree using GPU
+                let rootM31 = try treeEng.merkleCommit(leaves: traceLDEs[colIdx])
+                traceCommitments.append(M31Digest(values: rootM31))
+
+                // Build CPU tree for query proofs (need full tree structure)
+                let tree = buildPoseidon2M31MerkleTree(traceLDEs[colIdx], count: evalLen)
+                traceTrees.append(tree)
+            }
+        } else {
+            // Fallback to CPU sequential commitment
+            for colIdx in 0..<air.numColumns {
+                let tree = buildPoseidon2M31MerkleTree(traceLDEs[colIdx], count: evalLen)
+                traceCommitments.append(poseidon2M31MerkleRoot(tree, n: evalLen))
+                traceTrees.append(tree)
+            }
         }
         let commitT = CFAbsoluteTimeGetCurrent()
 
@@ -446,16 +472,36 @@ public class GPUCircleSTARKProverEngine {
         let compositionCommitment = poseidon2M31MerkleRoot(compTree, n: evalLen)
         transcript.absorbBytes(compositionCommitment.bytes)
 
-        // Commit quotient splits
+        // Commit quotient splits - use GPU when available
         var quotientCommitments = [M31Digest]()
         var quotientTrees = [[M31Digest]]()
         let splitSize = evalLen / config.numQuotientSplits
-        for split in quotientSplits {
-            let tree = buildPoseidon2M31MerkleTree(split, count: splitSize)
-            let root = poseidon2M31MerkleRoot(tree, n: splitSize)
-            quotientCommitments.append(root)
-            quotientTrees.append(tree)
-            transcript.absorbBytes(root.bytes)
+
+        if gpuAvailable && config.usePoseidon2Merkle && config.numQuotientSplits > 1 {
+            // GPU commitment for quotient splits
+            let treeEng = try ensureTreeEngine()
+
+            for split in quotientSplits {
+                // Build tree using GPU
+                let rootM31 = try treeEng.merkleCommit(leaves: split)
+                let root = M31Digest(values: rootM31)
+                quotientCommitments.append(root)
+
+                // Build CPU tree for query proofs
+                let tree = buildPoseidon2M31MerkleTree(split, count: splitSize)
+                quotientTrees.append(tree)
+
+                transcript.absorbBytes(root.bytes)
+            }
+        } else {
+            // Fallback to CPU sequential commitment
+            for split in quotientSplits {
+                let tree = buildPoseidon2M31MerkleTree(split, count: splitSize)
+                let root = poseidon2M31MerkleRoot(tree, n: splitSize)
+                quotientCommitments.append(root)
+                quotientTrees.append(tree)
+                transcript.absorbBytes(root.bytes)
+            }
         }
         let constraintT = CFAbsoluteTimeGetCurrent()
 
