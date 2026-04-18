@@ -329,6 +329,8 @@ if cmd == "calibrate" {
     MetalProfilingBench.main()
 } else if cmd == "batch" || cmd == "batching" {
     BatchingBench.main()
+} else if cmd == "ntt-profile" || cmd == "profile-ntt" {
+    NTTProfilingBench.main()
 } else if cmd == "all" {
     try runMSMBench()
     runNTTBench()
