@@ -21,6 +21,7 @@ public class GPUAdditiveFFTEngine {
     public let commandQueue: MTLCommandQueue
     public let forwardFn: MTLComputePipelineState?
     public let forwardPairsFn: MTLComputePipelineState?  // All-threads-active variant
+    public let forwardPairsTgFn: MTLComputePipelineState?  // Threadgroup-local basis caching
     public let forwardShuffleFn: MTLComputePipelineState?
     let inverseFn: MTLComputePipelineState?
     let forwardBatchFn: MTLComputePipelineState?
@@ -62,6 +63,7 @@ public class GPUAdditiveFFTEngine {
         let kernelNames = [
             "additive_fft_gf8_forward",
             "additive_fft_gf8_forward_pairs",
+            "additive_fft_gf8_forward_pairs_tg",
             "additive_fft_gf8_inverse",
             "additive_fft_gf8_forward_batch",
             "gf28_pointwise_mul",
@@ -79,6 +81,7 @@ public class GPUAdditiveFFTEngine {
         ) {
             self.forwardFn = pipelines["additive_fft_gf8_forward"]
             self.forwardPairsFn = pipelines["additive_fft_gf8_forward_pairs"]
+            self.forwardPairsTgFn = pipelines["additive_fft_gf8_forward_pairs_tg"]
             self.forwardShuffleFn = nil  // Shuffle kernel disabled — Metal simd_shuffle is intra-group only
             self.inverseFn = pipelines["additive_fft_gf8_inverse"]
             self.forwardBatchFn = pipelines["additive_fft_gf8_forward_batch"]
@@ -87,6 +90,7 @@ public class GPUAdditiveFFTEngine {
         } else {
             self.forwardFn = nil
             self.forwardPairsFn = nil
+            self.forwardPairsTgFn = nil
             self.forwardShuffleFn = nil
             self.inverseFn = nil
             self.forwardBatchFn = nil
@@ -246,6 +250,64 @@ public class GPUAdditiveFFTEngine {
 
         guard let fn = forwardPairsFn else {
             throw MSMError.gpuError("Forward pairs pipeline not available (Metal shader compilation failed)")
+        }
+
+        guard let cmdBuf = commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
+        }
+
+        var nVal = UInt32(n)
+        var kVal = UInt32(k)
+
+        let enc = cmdBuf.makeComputeCommandEncoder()!
+        enc.setComputePipelineState(fn)
+        enc.setBuffer(lutBuffer, offset: 0, index: 0)
+        enc.setBuffer(dataBuf, offset: 0, index: 1)
+        enc.setBuffer(basisBuf, offset: 0, index: 2)
+        enc.setBytes(&nVal, length: 4, index: 3)
+        enc.setBytes(&kVal, length: 4, index: 4)
+        let tg = min(tuning.nttThreadgroupSize, Int(fn.maxTotalThreadsPerThreadgroup))
+        // n/2 threads since each thread handles one butterfly pair
+        let nPairs = n / 2
+        enc.dispatchThreads(MTLSize(width: nPairs, height: 1, depth: 1),
+                           threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+        enc.endEncoding()
+
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+        if let error = cmdBuf.error {
+            throw MSMError.gpuError(error.localizedDescription)
+        }
+
+        let ptr = dataBuf.contents().bindMemory(to: UInt8.self, capacity: n)
+        return Array(UnsafeBufferPointer(start: ptr, count: n))
+    }
+
+    /// Forward additive FFT using n/2 threads with threadgroup-local basis caching.
+    /// OPTIMIZATION: Basis array (k elements) is loaded into threadgroup memory ONCE
+    /// at kernel start, then reused for all depths. This eliminates k global memory
+    /// reads per threadgroup.
+    public func forwardPairsTg(data: [UInt8], n: Int, k: Int, basis: [UInt8]) throws -> [UInt8] {
+        precondition(data.count == n, "Data must have exactly n elements")
+        precondition(basis.count == k, "Basis must have exactly k elements")
+        precondition(n == (1 << k), "n must equal 2^k")
+
+        // CPU fallback for small transforms
+        if k <= GPUAdditiveFFTEngine.cpuFallbackLogN {
+            return try GPUAdditiveFFTEngine.cpuForward(data: data, n: n, k: k, basis: basis)
+        }
+
+        let dataBuf = getOrCreateDataBuffer(elementCount: n)
+        data.withUnsafeBytes { src in
+            memcpy(dataBuf.contents(), src.baseAddress!, n)
+        }
+
+        guard let basisBuf = createUInt8Buffer(basis) else {
+            throw MSMError.gpuError("Failed to allocate basis buffer")
+        }
+
+        guard let fn = forwardPairsTgFn else {
+            throw MSMError.gpuError("Forward pairs TG pipeline not available (Metal shader compilation failed)")
         }
 
         guard let cmdBuf = commandQueue.makeCommandBuffer() else {
