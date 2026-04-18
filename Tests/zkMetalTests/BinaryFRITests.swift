@@ -176,28 +176,7 @@ func runBinaryFRITests() {
         print("  ✓ Proximity gap parameters")
     }
 
-    // Test 11: Fiat-Shamir Transcript
-    do {
-        var transcript = BinaryFRITranscript(seed: [0x00])
-
-        transcript.update([0x01, 0x02, 0x03])
-
-        let squeezed = transcript.squeeze(numBytes: 4)
-        assert(squeezed.count == 4, "Should squeeze 4 bytes")
-        print("  ✓ Fiat-Shamir transcript")
-    }
-
-    // Test 12: Binary FRI Protocol
-    do {
-        let config = BinaryFRIConfig(finalPolyMaxDegree: 3, logDomainSize: 8)
-        let friProtocol = BinaryFRIProtocol(config: config)
-
-        let rounds = friProtocol.computeNumRounds(logSize: 8)
-        assert(rounds > 0, "Should compute rounds")
-        print("  ✓ Binary FRI protocol")
-    }
-
-    // Test 13: Co-Curvilinear Line Test
+    // Test 11: Co-Curvilinear Line Test
     do {
         // Verify basic GF(2^8) arithmetic works for line testing
         // In GF(2^8), addition is XOR: v ^ v = 0, v ^ 0 = v

@@ -1456,11 +1456,3 @@ public struct SecurityAssumption {
         case high
     }
 }
-
-// Supported curves for Pedersen analysis
-public enum PedersenCurve {
-    case bn254
-    case pallas
-    case vesta
-    case bls12_381
-}
