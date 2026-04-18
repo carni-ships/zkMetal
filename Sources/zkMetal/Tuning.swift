@@ -107,11 +107,12 @@ public class TuningManager {
 
         // NTT four-step threshold: on devices with fewer GPU cores, four-step overhead
         // may not pay off until later. Use core heuristic.
+        // Increased from 10 to 22 due to four-step overhead for BN254 (32-byte elements)
         let maxThreads = device.maxThreadsPerThreadgroup.width
         if maxThreads >= 1024 {
-            config.nttFourStepThreshold = 10  // high-end: four-step at >=2^20
+            config.nttFourStepThreshold = 22  // high-end: four-step at >=2^22 (was 10)
         } else {
-            config.nttFourStepThreshold = 12  // lower-end: delay four-step
+            config.nttFourStepThreshold = 24  // lower-end: delay four-step even more
         }
 
         // MSM window bits: larger GPUs benefit from wider windows
