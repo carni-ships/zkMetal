@@ -389,3 +389,151 @@ public final class FRIUnifiedPCS: PCSProtocol {
         return friValid && rootMatch
     }
 }
+
+// MARK: - Pedersen Adapter
+
+/// Wraps PedersenVectorCommitEngine as a PCSProtocol / PCSBatchProtocol conformer.
+///
+/// Uses Pedersen-style generators (iterated hash-double derivation) with IPA-style
+/// inner product proofs for opening. This makes Pedersen benchmarkable while using
+/// the same proof structure as IPA.
+///
+/// Commitment = PointProjective (BN254 G1 point)
+/// Opening    = IPAProof (inner product proof)
+/// Params     = PedersenPCSParams (generators + Q + blinding)
+///
+/// Note: This is essentially IPA with Pedersen-style generator derivation.
+/// The proof system is the same; only the generator structure differs.
+public struct PedersenPCSParams {
+    /// Pedersen generators G_1, ..., G_n (derived via iterated hash-double)
+    public let generators: [PointAffine]
+    /// Inner product binding point Q
+    public let Q: PointAffine
+    /// Blinding generator H
+    public let blinding: PointAffine
+
+    public init(generators: [PointAffine], Q: PointAffine, blinding: PointAffine) {
+        self.generators = generators
+        self.Q = Q
+        self.blinding = blinding
+    }
+}
+
+public final class PedersenUnifiedPCS: PCSBatchProtocol {
+    public typealias Commitment = PointProjective
+    public typealias Opening = IPAProof
+    public typealias Params = PedersenPCSParams
+
+    private let pedersenEngine = PedersenVectorCommitEngine()
+
+    public init() {}
+
+    public func setup(maxDegree: Int) throws -> PedersenPCSParams {
+        // Round up to next power of 2 for IPA
+        var size = 1
+        while size <= maxDegree { size *= 2 }
+
+        // Use PedersenVectorCommitEngine to generate n+1 generators (last one is Q)
+        // This follows the IPA pattern: generators = [G_1, ..., G_n], Q = G_{n+1}
+        let pedersenParams = pedersenEngine.setup(n: size + 1)
+
+        return PedersenPCSParams(
+            generators: Array(pedersenParams.generators.prefix(size)),
+            Q: pedersenParams.generators[size],
+            blinding: pedersenParams.blinding
+        )
+    }
+
+    public func commit(poly: [Fr], params: PedersenPCSParams) throws -> PointProjective {
+        let engine = try IPAEngine(generators: params.generators, Q: params.Q)
+        let padded = padToPowerOf2(poly, size: params.generators.count)
+        return try engine.commit(padded)
+    }
+
+    public func open(poly: [Fr], point: Fr, params: PedersenPCSParams) throws -> IPAProof {
+        let engine = try IPAEngine(generators: params.generators, Q: params.Q)
+        let n = params.generators.count
+        let padded = padToPowerOf2(poly, size: n)
+
+        // b = [1, z, z^2, ..., z^{n-1}] — evaluation basis
+        let b = evaluationBasis(point: point, size: n)
+
+        return try engine.createProof(a: padded, b: b)
+    }
+
+    public func verify(commitment: PointProjective, point: Fr, evaluation: Fr,
+                      opening: IPAProof, params: PedersenPCSParams) -> Bool {
+        let engine: IPAEngine
+        do { engine = try IPAEngine(generators: params.generators, Q: params.Q) } catch { return false }
+        let n = params.generators.count
+        let b = evaluationBasis(point: point, size: n)
+
+        return engine.verify(commitment: commitment, b: b,
+                            innerProductValue: evaluation, proof: opening)
+    }
+
+    // MARK: - Batch operations
+
+    public func batchCommit(polys: [[Fr]], params: PedersenPCSParams) throws -> [PointProjective] {
+        try polys.map { try commit(poly: $0, params: params) }
+    }
+
+    public func batchOpen(polys: [[Fr]], point: Fr, params: PedersenPCSParams) throws -> IPAProof {
+        // Combine polynomials with deterministic gamma, then open the combination
+        let gamma = frFromInt(13)
+        let maxDeg = polys.map { $0.count }.max() ?? 0
+        var combined = [Fr](repeating: Fr.zero, count: maxDeg)
+        var gammaPow = Fr.one
+        for poly in polys {
+            poly.withUnsafeBytes { pBuf in
+                combined.withUnsafeMutableBytes { cBuf in
+                    withUnsafeBytes(of: gammaPow) { gBuf in
+                        bn254_fr_batch_mac_neon(
+                            cBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            pBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            gBuf.baseAddress!.assumingMemoryBound(to: UInt64.self),
+                            Int32(poly.count))
+                    }
+                }
+            }
+            gammaPow = frMul(gammaPow, gamma)
+        }
+        return try open(poly: combined, point: point, params: params)
+    }
+
+    public func batchVerify(commitments: [PointProjective], point: Fr, evaluations: [Fr],
+                            opening: IPAProof, params: PedersenPCSParams) -> Bool {
+        // Combine commitments and evaluations with the same gamma
+        let gamma = frFromInt(13)
+        var combinedCommitment = pointIdentity()
+        var combinedEval = Fr.zero
+        var gammaPow = Fr.one
+        for i in 0..<commitments.count {
+            combinedCommitment = pointAdd(combinedCommitment, cPointScalarMul(commitments[i], gammaPow))
+            combinedEval = frAdd(combinedEval, frMul(gammaPow, evaluations[i]))
+            gammaPow = frMul(gammaPow, gamma)
+        }
+        return verify(commitment: combinedCommitment, point: point,
+                      evaluation: combinedEval, opening: opening, params: params)
+    }
+
+    // MARK: - Helpers
+
+    /// Build the evaluation basis vector [1, z, z^2, ..., z^{n-1}].
+    private func evaluationBasis(point: Fr, size: Int) -> [Fr] {
+        var b = [Fr](repeating: Fr.zero, count: size)
+        b[0] = Fr.one
+        for i in 1..<size {
+            b[i] = frMul(b[i - 1], point)
+        }
+        return b
+    }
+
+    /// Pad a coefficient vector to the given power-of-2 size with zeros.
+    private func padToPowerOf2(_ poly: [Fr], size: Int) -> [Fr] {
+        if poly.count == size { return poly }
+        var padded = poly
+        padded.append(contentsOf: [Fr](repeating: Fr.zero, count: size - poly.count))
+        return padded
+    }
+}

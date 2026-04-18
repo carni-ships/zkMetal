@@ -372,37 +372,81 @@ static void bit_reverse_permute256(uint64_t *data, int logN) {
     }
 }
 
-// Forward NTT for BN254 Fr
-// data: array of n elements, each 4×64-bit limbs in Montgomery form
-// Single NTT butterfly block (DIT): process one block at base offset
-static inline void ntt_dit_block(uint64_t *data, const uint64_t *tw,
-                                  int base, int halfBlock, int twOffset)
+#define NTT_PARALLEL_THRESHOLD 4096
+
+// Chunked parallel DIT stage - processes multiple blocks per thread to reduce dispatch overhead
+static void ntt_dit_stage_chunked(uint64_t *data, const uint64_t *tw,
+                                  int halfBlock, int blockSize, int nBlocks, int twOffset,
+                                  int nChunks, int chunkSize)
 {
-    // j==0: twiddle==1, skip Montgomery mul
-    {
-        uint64_t *u = &data[base * 4];
-        uint64_t *vp = &data[(base + halfBlock) * 4];
-        uint64_t sum[4], diff[4];
-        mont_add_4limb(u, vp, BN254_FR_P, sum);
-        mont_sub_4limb(u, vp, BN254_FR_P, diff);
-        memcpy(u, sum, 32);
-        memcpy(vp, diff, 32);
-    }
-    for (int j = 1; j < halfBlock; j++) {
-        uint64_t *u = &data[(base + j) * 4];
-        uint64_t *vp = &data[(base + j + halfBlock) * 4];
-        const uint64_t *twj = &tw[(twOffset + j) * 4];
-        uint64_t v[4];
-        mont_mul_4limb(twj, vp, BN254_FR_P, BN254_FR_INV, v);
-        uint64_t sum[4], diff[4];
-        mont_add_4limb(u, v, BN254_FR_P, sum);
-        mont_sub_4limb(u, v, BN254_FR_P, diff);
-        memcpy(u, sum, 32);
-        memcpy(vp, diff, 32);
-    }
+    dispatch_apply(nChunks, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+        ^(size_t idx) {
+            int start = (int)idx * chunkSize;
+            int end = ((int)idx == nChunks - 1) ? nBlocks : start + chunkSize;
+            for (int bk = start; bk < end; bk++) {
+                int base = bk * blockSize;
+                // j==0: twiddle==1, skip Montgomery mul
+                {
+                    uint64_t *u = &data[base * 4];
+                    uint64_t *vp = &data[(base + halfBlock) * 4];
+                    uint64_t sum[4], diff[4];
+                    mont_add_4limb(u, vp, BN254_FR_P, sum);
+                    mont_sub_4limb(u, vp, BN254_FR_P, diff);
+                    // In-place update
+                    u[0] = sum[0]; u[1] = sum[1]; u[2] = sum[2]; u[3] = sum[3];
+                    vp[0] = diff[0]; vp[1] = diff[1]; vp[2] = diff[2]; vp[3] = diff[3];
+                }
+                // Prefetch next block's data
+                if (bk + 1 < end) {
+                    int nextBase = (bk + 1) * blockSize;
+                    __builtin_prefetch(&data[(nextBase + halfBlock) * 4], 0, 1);
+                }
+                for (int j = 1; j < halfBlock; j++) {
+                    uint64_t *u = &data[(base + j) * 4];
+                    uint64_t *vp = &data[(base + j + halfBlock) * 4];
+                    const uint64_t *twj = &tw[(twOffset + j) * 4];
+                    uint64_t v[4];
+                    mont_mul_4limb(twj, vp, BN254_FR_P, BN254_FR_INV, v);
+                    uint64_t sum[4], diff[4];
+                    mont_add_4limb(u, v, BN254_FR_P, sum);
+                    mont_sub_4limb(u, v, BN254_FR_P, diff);
+                    u[0] = sum[0]; u[1] = sum[1]; u[2] = sum[2]; u[3] = sum[3];
+                    vp[0] = diff[0]; vp[1] = diff[1]; vp[2] = diff[2]; vp[3] = diff[3];
+                }
+            }
+        });
 }
 
-#define NTT_PARALLEL_THRESHOLD 4096
+// Serial DIT stage - for small nBlocks
+static void ntt_dit_stage_serial(uint64_t *data, const uint64_t *tw,
+                                 int halfBlock, int blockSize, int nBlocks, int twOffset)
+{
+    for (int bk = 0; bk < nBlocks; bk++) {
+        int base = bk * blockSize;
+        // j==0: twiddle==1, skip Montgomery mul
+        {
+            uint64_t *u = &data[base * 4];
+            uint64_t *vp = &data[(base + halfBlock) * 4];
+            uint64_t sum[4], diff[4];
+            mont_add_4limb(u, vp, BN254_FR_P, sum);
+            mont_sub_4limb(u, vp, BN254_FR_P, diff);
+            u[0] = sum[0]; u[1] = sum[1]; u[2] = sum[2]; u[3] = sum[3];
+            vp[0] = diff[0]; vp[1] = diff[1]; vp[2] = diff[2]; vp[3] = diff[3];
+        }
+        for (int j = 1; j < halfBlock; j++) {
+            uint64_t *u = &data[(base + j) * 4];
+            uint64_t *vp = &data[(base + j + halfBlock) * 4];
+            const uint64_t *twj = &tw[(twOffset + j) * 4];
+            uint64_t v[4];
+            mont_mul_4limb(twj, vp, BN254_FR_P, BN254_FR_INV, v);
+            uint64_t sum[4], diff[4];
+            mont_add_4limb(u, v, BN254_FR_P, sum);
+            mont_sub_4limb(u, v, BN254_FR_P, diff);
+            u[0] = sum[0]; u[1] = sum[1]; u[2] = sum[2]; u[3] = sum[3];
+            vp[0] = diff[0]; vp[1] = diff[1]; vp[2] = diff[2]; vp[3] = diff[3];
+        }
+    }
+}
 
 void bn254_fr_ntt(uint64_t *data, int logN) {
     if (logN <= 0) return;
@@ -420,50 +464,97 @@ void bn254_fr_ntt(uint64_t *data, int logN) {
         int twOffset = halfBlock - 1;
 
         if (n >= NTT_PARALLEL_THRESHOLD && nBlocks >= 4) {
-            // Parallel: dispatch blocks across threads
-            int nb = nBlocks, bs = blockSize, hb = halfBlock, two = twOffset;
-            uint64_t *d = data;
-            const uint64_t *t = tw;
-            dispatch_apply(nb, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
-                ^(size_t idx) {
-                    int base = (int)idx * bs;
-                    ntt_dit_block(d, t, base, hb, two);
-                });
+            // Chunked parallel: fixed nChunks to reduce dispatch overhead
+            int nChunks = 8;
+            if (nBlocks < nChunks * 64) nChunks = 4;
+            int chunkSize = nBlocks / nChunks;
+            ntt_dit_stage_chunked(data, tw, halfBlock, blockSize, nBlocks, twOffset, nChunks, chunkSize);
         } else {
-            for (int bk = 0; bk < nBlocks; bk++) {
-                int base = bk * blockSize;
-                ntt_dit_block(data, tw, base, halfBlock, twOffset);
-            }
+            ntt_dit_stage_serial(data, tw, halfBlock, blockSize, nBlocks, twOffset);
         }
     }
 }
 
-// Single INTT butterfly block (DIF): process one block at base offset
-static inline void intt_dif_block(uint64_t *data, const uint64_t *tw,
-                                   int base, int halfBlock, int twOffset)
+// Chunked parallel DIF stage for INTT
+static void intt_dif_stage_chunked(uint64_t *data, const uint64_t *tw,
+                                  int halfBlock, int blockSize, int nBlocks, int twOffset,
+                                  int nChunks, int chunkSize)
 {
-    // j==0: twiddle==1, skip Montgomery mul
-    {
-        uint64_t *ap = &data[base * 4];
-        uint64_t *bp = &data[(base + halfBlock) * 4];
-        uint64_t a[4], b[4];
-        memcpy(a, ap, 32); memcpy(b, bp, 32);
-        uint64_t sum[4], diff[4];
-        mont_add_4limb(a, b, BN254_FR_P, sum);
-        mont_sub_4limb(a, b, BN254_FR_P, diff);
-        memcpy(ap, sum, 32); memcpy(bp, diff, 32);
-    }
-    for (int j = 1; j < halfBlock; j++) {
-        uint64_t *ap = &data[(base + j) * 4];
-        uint64_t *bp = &data[(base + j + halfBlock) * 4];
-        const uint64_t *twj = &tw[(twOffset + j) * 4];
-        uint64_t a[4], b[4];
-        memcpy(a, ap, 32); memcpy(b, bp, 32);
-        uint64_t sum[4], diff[4], prod[4];
-        mont_add_4limb(a, b, BN254_FR_P, sum);
-        mont_sub_4limb(a, b, BN254_FR_P, diff);
-        mont_mul_4limb(diff, twj, BN254_FR_P, BN254_FR_INV, prod);
-        memcpy(ap, sum, 32); memcpy(bp, prod, 32);
+    dispatch_apply(nChunks, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+        ^(size_t idx) {
+            int start = (int)idx * chunkSize;
+            int end = ((int)idx == nChunks - 1) ? nBlocks : start + chunkSize;
+            for (int bk = start; bk < end; bk++) {
+                int base = bk * blockSize;
+                // j==0: twiddle==1, skip Montgomery mul
+                {
+                    uint64_t *ap = &data[base * 4];
+                    uint64_t *bp = &data[(base + halfBlock) * 4];
+                    uint64_t a[4], b[4];
+                    a[0] = ap[0]; a[1] = ap[1]; a[2] = ap[2]; a[3] = ap[3];
+                    b[0] = bp[0]; b[1] = bp[1]; b[2] = bp[2]; b[3] = bp[3];
+                    uint64_t sum[4], diff[4];
+                    mont_add_4limb(a, b, BN254_FR_P, sum);
+                    mont_sub_4limb(a, b, BN254_FR_P, diff);
+                    ap[0] = sum[0]; ap[1] = sum[1]; ap[2] = sum[2]; ap[3] = sum[3];
+                    bp[0] = diff[0]; bp[1] = diff[1]; bp[2] = diff[2]; bp[3] = diff[3];
+                }
+                // Prefetch next block
+                if (bk + 1 < end) {
+                    int nextBase = (bk + 1) * blockSize;
+                    __builtin_prefetch(&data[(nextBase + halfBlock) * 4], 0, 1);
+                }
+                for (int j = 1; j < halfBlock; j++) {
+                    uint64_t *ap = &data[(base + j) * 4];
+                    uint64_t *bp = &data[(base + j + halfBlock) * 4];
+                    const uint64_t *twj = &tw[(twOffset + j) * 4];
+                    uint64_t a[4], b[4];
+                    a[0] = ap[0]; a[1] = ap[1]; a[2] = ap[2]; a[3] = ap[3];
+                    b[0] = bp[0]; b[1] = bp[1]; b[2] = bp[2]; b[3] = bp[3];
+                    uint64_t sum[4], diff[4], prod[4];
+                    mont_add_4limb(a, b, BN254_FR_P, sum);
+                    mont_sub_4limb(a, b, BN254_FR_P, diff);
+                    mont_mul_4limb(diff, twj, BN254_FR_P, BN254_FR_INV, prod);
+                    ap[0] = sum[0]; ap[1] = sum[1]; ap[2] = sum[2]; ap[3] = sum[3];
+                    bp[0] = prod[0]; bp[1] = prod[1]; bp[2] = prod[2]; bp[3] = prod[3];
+                }
+            }
+        });
+}
+
+// Serial DIF stage for INTT
+static void intt_dif_stage_serial(uint64_t *data, const uint64_t *tw,
+                                 int halfBlock, int blockSize, int nBlocks, int twOffset)
+{
+    for (int bk = 0; bk < nBlocks; bk++) {
+        int base = bk * blockSize;
+        // j==0: twiddle==1, skip Montgomery mul
+        {
+            uint64_t *ap = &data[base * 4];
+            uint64_t *bp = &data[(base + halfBlock) * 4];
+            uint64_t a[4], b[4];
+            a[0] = ap[0]; a[1] = ap[1]; a[2] = ap[2]; a[3] = ap[3];
+            b[0] = bp[0]; b[1] = bp[1]; b[2] = bp[2]; b[3] = bp[3];
+            uint64_t sum[4], diff[4];
+            mont_add_4limb(a, b, BN254_FR_P, sum);
+            mont_sub_4limb(a, b, BN254_FR_P, diff);
+            ap[0] = sum[0]; ap[1] = sum[1]; ap[2] = sum[2]; ap[3] = sum[3];
+            bp[0] = diff[0]; bp[1] = diff[1]; bp[2] = diff[2]; bp[3] = diff[3];
+        }
+        for (int j = 1; j < halfBlock; j++) {
+            uint64_t *ap = &data[(base + j) * 4];
+            uint64_t *bp = &data[(base + j + halfBlock) * 4];
+            const uint64_t *twj = &tw[(twOffset + j) * 4];
+            uint64_t a[4], b[4];
+            a[0] = ap[0]; a[1] = ap[1]; a[2] = ap[2]; a[3] = ap[3];
+            b[0] = bp[0]; b[1] = bp[1]; b[2] = bp[2]; b[3] = bp[3];
+            uint64_t sum[4], diff[4], prod[4];
+            mont_add_4limb(a, b, BN254_FR_P, sum);
+            mont_sub_4limb(a, b, BN254_FR_P, diff);
+            mont_mul_4limb(diff, twj, BN254_FR_P, BN254_FR_INV, prod);
+            ap[0] = sum[0]; ap[1] = sum[1]; ap[2] = sum[2]; ap[3] = sum[3];
+            bp[0] = prod[0]; bp[1] = prod[1]; bp[2] = prod[2]; bp[3] = prod[3];
+        }
     }
 }
 
@@ -484,19 +575,12 @@ void bn254_fr_intt(uint64_t *data, int logN) {
         int twOffset = halfBlock - 1;
 
         if (n >= NTT_PARALLEL_THRESHOLD && nBlocks >= 4) {
-            int nb = nBlocks, bs = blockSize, hb = halfBlock, two = twOffset;
-            uint64_t *d = data;
-            const uint64_t *t = tw;
-            dispatch_apply(nb, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
-                ^(size_t idx) {
-                    int base = (int)idx * bs;
-                    intt_dif_block(d, t, base, hb, two);
-                });
+            int nChunks = 8;
+            if (nBlocks < nChunks * 64) nChunks = 4;
+            int chunkSize = nBlocks / nChunks;
+            intt_dif_stage_chunked(data, tw, halfBlock, blockSize, nBlocks, twOffset, nChunks, chunkSize);
         } else {
-            for (int bk = 0; bk < nBlocks; bk++) {
-                int base = bk * blockSize;
-                intt_dif_block(data, tw, base, halfBlock, twOffset);
-            }
+            intt_dif_stage_serial(data, tw, halfBlock, blockSize, nBlocks, twOffset);
         }
     }
 

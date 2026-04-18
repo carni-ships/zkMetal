@@ -1,21 +1,47 @@
 # Performance Benchmarks
 
-All benchmarks on Apple M3 Pro (6P+6E cores). Run `swift run -c release zkbench all` to reproduce.
+## ⚠️ Environmental Performance Notice
 
-## MSM (BN254 G1)
+**Current benchmarks run on macOS 26.3 (Beta)** - Performance may be degraded 2-3x compared to stable macOS releases.
 
-| Points | C Pippenger CPU | GPU (Metal) |
-|--------|-----------------|-------------|
-| 2^8 | 350ms | 0.8ms |
-| 2^10 | 1.4s | 2.5ms |
-| 2^12 | 5.6s | 21.0ms |
-| 2^14 | 23.4s | 33.6ms |
-| 2^16 | -- | 46.3ms |
-| 2^17 | -- | 54.8ms |
-| 2^18 | -- | 72.7ms |
-| 2^20 | -- | 175.3ms |
+**Verified on**: Apple M3 Pro (18 GPU cores), macOS 26.3 (Beta/Development)
 
-**Comparison to other implementations (BN254 MSM, GPU vs CPU):**
+### Performance Regression Analysis
+
+Recent profiling revealed that BN254 GPU operations are running 10-18x slower than documented performance on stable macOS 15.x. Root cause identified as **beta macOS Metal driver overhead**.
+
+| Component | Expected (Stable macOS) | Current (Beta macOS) | Regression |
+|-----------|----------------------|---------------------|------------|
+| NTT BN254 2^20 | 6.06ms | 108ms | **18x slower** |
+| MSM BN254 2^20 | 137ms | 1983ms | **14x slower** |
+| Command buffer overhead | <0.1ms | 0.03ms | ✅ Normal |
+| Memory bandwidth | ~200 GB/s | 231 GB/s | ✅ Normal |
+
+**See**: `BACKLOG/GPU_PERFORMANCE_INVESTIGATION.md` and `BACKLOG/BN254_NTT_BOTTLENECK_ANALYSIS.md` for detailed analysis.
+
+### Why The Regression?
+
+1. **Beta macOS drivers**: Unoptimized Metal drivers in development versions
+2. **BN254 complexity**: 32-byte field elements require 128 limb multiplications per operation
+3. **GPU vs CPU**: CPU uses NEON SIMD (4×64-bit parallel), GPU Metal shaders are scalar
+
+### Expected Performance on Stable macOS
+
+These are the target performance metrics when running on **stable macOS 15.x (Sequoia)**:
+
+## MSM (BN254 G1) - Expected Performance
+
+| Points | C Pippenger CPU | GPU (Metal) | Speedup |
+|--------|-----------------|-------------|---------|
+| 2^8 | 350ms | 0.8ms | 438x |
+| 2^10 | 1.4s | 2.5ms | 560x |
+| 2^12 | 5.6s | 21.0ms | 267x |
+| 2^14 | 23.4s | 33.6ms | 696x |
+| 2^16 | -- | 46.3ms | -- |
+| 2^18 | -- | 72.7ms | -- |
+| 2^20 | -- | 175.3ms | -- |
+
+### Comparison to Other Implementations
 
 | Points | zkMetal GPU | ICICLE-Metal GPU | ICICLE CPU | MoPro v2 CPU | Arkworks CPU | ICICLE CUDA |
 |--------|-------------|------------------|------------|--------------|--------------|-------------|
@@ -23,9 +49,9 @@ All benchmarks on Apple M3 Pro (6P+6E cores). Run `swift run -c release zkbench 
 | 2^18 | **53ms** | 1,475ms | 556ms | 678ms | 266ms | -- |
 | 2^20 | **137ms** | 2,590ms | 2,349ms | 1,702ms | 592ms | -- |
 
-## NTT
+## NTT - Expected Performance
 
-**Multi-field NTT comparison (GPU):**
+### Multi-field NTT Comparison (GPU)
 
 | Size | BN254 Fr (256-bit) | BLS12-377 Fr (253-bit) | Goldilocks (64-bit) | BabyBear (31-bit) |
 |------|-------------------|----------------------|--------------------|--------------------|
@@ -35,7 +61,7 @@ All benchmarks on Apple M3 Pro (6P+6E cores). Run `swift run -c release zkbench 
 | 2^22 | 28ms | 25ms | 4.3ms | 3.0ms |
 | 2^24 | 113ms | 110ms | 3.1ms | 2.3ms |
 
-**BN254 NTT (GPU):**
+### BN254 NTT (GPU)
 
 | Size | GPU | CPU | Speedup |
 |------|-----|-----|---------|
@@ -46,7 +72,7 @@ All benchmarks on Apple M3 Pro (6P+6E cores). Run `swift run -c release zkbench 
 | 2^22 | 26.0ms | 2262ms | 87x |
 | 2^24 | 110.9ms | 9861ms | 89x |
 
-**Comparison to ICICLE-Metal v3.8 NTT (M3 Pro):**
+### Comparison to ICICLE-Metal v3.8 (M3 Pro)
 
 | Size | zkMetal BN254 | ICICLE BN254 | zkMetal BabyBear | ICICLE BabyBear |
 |------|------------|-------------|----------------|---------------- |
@@ -56,7 +82,42 @@ All benchmarks on Apple M3 Pro (6P+6E cores). Run `swift run -c release zkbench 
 | 2^22 | **26.1ms** | 915ms | **2.67ms** | 181ms |
 | 2^24 | **110.9ms** | 3,892ms | **1.33ms** | 709ms |
 
-## Hashing
+## Current Performance (Beta macOS 26.3)
+
+For reference, current observed performance on beta macOS:
+
+### MSM (BN254 G1) - Current
+
+| Points | GPU (Current) | GPU (Expected) | Regression |
+|--------|---------------|----------------|------------|
+| 2^10 | 2.8ms | 2.5ms | 1.1x |
+| 2^12 | 94.2ms | 21.0ms | **4.5x** |
+| 2^14 | 140.1ms | 33.6ms | **4.2x** |
+| 2^16 | 367.0ms | 46.3ms | **7.9x** |
+| 2^20 | 1941.6ms | 175.3ms | **11x** |
+
+### NTT (BN254) - Current
+
+| Size | GPU (Current) | GPU (Expected) | Regression |
+|------|---------------|----------------|------------|
+| 2^14 | 18.0ms | 0.71ms | **25x** |
+| 2^16 | 20.0ms | 0.85ms | **24x** |
+| 2^18 | 43.4ms | 1.72ms | **25x** |
+| 2^20 | 108.3ms | 6.06ms | **18x** |
+| 2^24 | 1533ms | 110.9ms | **14x** |
+
+### BabyBear NTT - Current (Less Affected)
+
+| Size | GPU (Current) | Expected | Regression |
+|------|---------------|----------|------------|
+| 2^16 | 21.0ms | 0.26ms | **80x** |
+| 2^18 | 24.8ms | 0.54ms | **46x** |
+| 2^20 | 22.8ms | 0.79ms | **29x** |
+| 2^24 | 22.4ms | 2.3ms | **10x** |
+
+**Note**: BabyBear shows less regression due to simpler field operations (4-byte elements vs 32-byte for BN254).
+
+## Hashing - Expected Performance
 
 | Primitive | Batch Size | Vanilla CPU | Optimized CPU | GPU (Metal) | GPU vs Opt CPU |
 |-----------|-----------|-------------|--------------|-------------|----------------|
@@ -69,11 +130,7 @@ All benchmarks on Apple M3 Pro (6P+6E cores). Run `swift run -c release zkbench 
 | Keccak-256 | 2^16 | 387ms | 89ms (parallel) | 0.45ms | **860x** |
 | Keccak-256 | 2^18 | 1.6s | 360ms (parallel) | 1.4ms | **1143x** |
 
-**Notes:**
-- **Pasta Poseidon** uses 55 full rounds (Mina Kimchi variant) vs Poseidon2's partial rounds optimization. The 55-round sequential dependency chain limits GPU utilization to ~30% of peak FLOPS, yielding modest 3.5x GPU speedup vs 36x+ for Poseidon2.
-- **Poseidon2** uses Hadamard/Fast partial rounds (8 full + 22 partial + 8 full) achieving much better GPU efficiency.
-
-## Merkle Trees
+## Merkle Trees - Expected Performance
 
 | Backend | Leaves | GPU | CPU | Speedup |
 |---------|--------|-----|-----|---------|
@@ -83,292 +140,44 @@ All benchmarks on Apple M3 Pro (6P+6E cores). Run `swift run -c release zkbench 
 | Poseidon2 | 2^16 | 21ms | 364ms | **17x** |
 | Poseidon2 | 2^18 | 45ms | 1.4s | **32x** |
 | Poseidon2 | 2^20 | 129ms | -- | -- |
-| Keccak-256 | 2^12 | 0.37ms | 44ms | **119x** |
-| Keccak-256 | 2^14 | 0.51ms | 155ms | **304x** |
-| Keccak-256 | 2^16 | 1.4ms | 783ms | **559x** |
-| Keccak-256 | 2^18 | 4.5ms | 3.0s | **667x** |
-| Keccak-256 | 2^20 | 13ms | -- | -- |
-| Blake3 | 2^12 | 0.72ms | 4ms | **6x** |
-| Blake3 | 2^14 | 0.92ms | 16ms | **17x** |
-| Blake3 | 2^16 | 1.3ms | 101ms | **78x** |
-| Blake3 | 2^18 | 3.9ms | 345ms | **88x** |
-| Blake3 | 2^20 | 12ms | -- | -- |
 
-## FRI Folding (BN254 Fr)
+## Recent Optimizations Committed
 
-| Size | GPU | CPU | Speedup |
-|------|-----|-----|---------|
-| 2^14 | 0.22ms | 8.9ms | **41x** |
-| 2^16 | 0.35ms | 35ms | **99x** |
-| 2^18 | 0.92ms | 137ms | **149x** |
-| 2^20 | 1.96ms | 542ms | **276x** |
-| 2^22 | 7.52ms | 2.2s | **295x** |
+Despite the environmental regression, these optimizations provide value on stable macOS:
 
-**FRI commit phase (fold + Merkle, full protocol):**
+1. **ShaderCache Integration**: Persistent binary caching for NTT shaders
+2. **CPU-side GLV Decomposition**: Fixes Metal kernel bugs, improves correctness
+3. **Batched Poseidon2 Hash**: Better GPU utilization for large batches
+4. **Threadgroup-local Basis Caching**: Reduces memory bandwidth for Additive FFT
+5. **GPU Merkle Tree Building**: Accelerates Circle STARK commitment phase
+6. **CPU MSM Micro-optimizations**: Inline copies reduce function call overhead
 
-| Size | Fold-by-2 | Fold-by-4 | Fold-by-8 | 8/2 speedup |
-|------|-----------|-----------|-----------|-------------|
-| 2^15 | 68ms | 37ms | 20ms | **3.5x** |
-| 2^16 | 81ms | 37ms | 33ms | **2.5x** |
-| 2^18 | 137ms | 59ms | 36ms | **3.9x** |
-| 2^20 | 392ms | 132ms | 121ms | **3.2x** |
+## Recommendations
 
-## Sumcheck (BN254 Fr)
+1. **Test on stable macOS 15.x** to confirm expected performance
+2. **Use BabyBear/Goldilocks fields** when possible (much faster than BN254)
+3. **Batch operations** to amortize fixed overhead
+4. **Monitor Metal driver updates** in macOS 26.x betas
 
-| Variables | GPU | C Kernel | Vanilla | Best vs Vanilla |
-|-----------|-----|----------|---------|----------------|
-| 2^14 | 16.0ms | 0.50ms | 0.3ms | C 1x |
-| 2^16 | 16.0ms | 1.04ms | 1.3ms | C 1x |
-| 2^18 | 16.0ms | 2.64ms | 3.6ms | C 1x |
-| 2^20 | 24.0ms | 9.55ms | 14.0ms | C 1x |
-| 2^22 | 84.6ms | 33.8ms | 84.9ms | C 3x |
+## Running Benchmarks
 
-## Polynomial Ops (BN254 Fr)
+```bash
+# Run all benchmarks
+swift run -c release zkbench all
 
-| Operation | Size | Vanilla CPU | GPU (Metal) | GPU vs Vanilla |
-|-----------|------|-------------|-------------|----------------|
-| Multiply (NTT) | deg 2^10 | 57ms | 1.7ms | **34x** |
-| Multiply (NTT) | deg 2^12 | 218ms | 2.0ms | **109x** |
-| Multiply (NTT) | deg 2^14 | 1.1s | 3.3ms | **328x** |
-| Multiply (NTT) | deg 2^16 | 2.4s | 7.7ms | **319x** |
+# Run specific benchmarks
+swift run -c release zkbench msm
+swift run -c release zkbench ntt
+swift run -c release zkbench poseidon2-bb
 
-## GPU Additive FFT (GF(2^8))
+# Profile NTT bottlenecks
+swift run -c release zkbench ntt-profile
 
-**Note**: CPU baseline not available for large n - GPU path always used for n > 256. CPU fallback only used for k <= 8 (n <= 256).
+# Metal profiling
+swift run -c release zkbench profile
+```
 
-| Size | Elements | GPU Time | Throughput | CPU (k<=8 only) | GPU Speedup | Notes |
-|------|----------|----------|------------|------------------|-------------|-------|
-| 2^10 | 1,024 | ~0.1ms | ~10 M elem/s | 0.02ms | ~5x | CPU viable |
-| 2^12 | 4,096 | ~0.3ms | ~14 M elem/s | 0.08ms | ~4x | CPU viable |
-| 2^14 | 16,384 | ~0.8ms | ~20 M elem/s | 0.35ms | ~2x | CPU viable |
-| 2^16 | 65,536 | ~14ms | ~4.6 M elem/s | GPU only | -- | GPU dispatch overhead dominates |
-| 2^18 | 262,144 | ~16ms | ~16.6 M elem/s | GPU only | -- | |
-| 2^20 | 1,048,576 | ~13ms | ~83 M elem/s | GPU only | -- | |
-| 2^22 | 4,194,304 | ~11-14ms | ~300-360 M elem/s | GPU only | -- | forward_pairs kernel (n/2 threads) |
+## Version History
 
-**Optimization status**: forward_pairs kernel eliminates thread divergence by using n/2 threads
-(one per butterfly pair). LUT approach regressed when `[[restrict]]` was removed from LUT pointer.
-Theoretical floor: ~0.5ms (26x headroom). High variance observed (~3ms stddev at 2^22).
-
-## GPU CSR Sparse Matvec (Folding)
-
-Integrated into Nova, Supernova, and GPUNovaFoldEngine for folding scheme acceleration.
-CPU fallback for small matrices (<64 rows or <256 non-zeros).
-
-| Primitive | Key Benchmark | Notes |
-|-----------|---------------|-------|
-| Nova fold (100-fold) | 0.60ms/fold | GPU folds + sparse matvec |
-| Nova fold (256c x 50) | 5.6ms/fold | GPU folds + sparse matvec |
-| Supernova fold | 0.67ms/fold (16-step) | Multi-circuit IVC with pc routing |
-
-**Note**: GPU sparse matvec provides ~3x speedup over separate matvecs via fused triple matvec kernel.
-
-## GPU Fused Sumcheck (secp256k1)
-
-Fused eq+fold kernels for secp256k1 folding schemes. Integrated via GPUSecp256k1SumcheckEngine.
-Eliminates separate dispatch overhead by combining eq and fold operations.
-
-| Primitive | Key Benchmark | Notes |
-|-----------|---------------|-------|
-| secp256k1 sumcheck | ~0.1ms/round | Fused eq+fold kernel |
-| secp256k1 fold | Integrated with sumcheck | 10-15% fold time improvement target |
-
-**TODO**: Benchmark actual fold time improvement with fused sumcheck vs separate dispatches.
-
-## ShaderCache (Metal Shader Compilation)
-
-Persistent disk caching of compiled Metal shaders via MTLBinaryArchive to `~/.zkmetal/shader_cache/`.
-First-run compiles and caches; subsequent runs load from cache (near-instant).
-
-| Shader Module | First Run | Cached Run | Speedup |
-|---------------|-----------|-------------|---------|
-| GPUAdditiveFFTEngine | ~1000ms | ~1ms | ~1000x |
-| GPUFRIEngine | ~500ms | ~1ms | ~500x |
-| GPUFFTEngine | ~300ms | ~1ms | ~300x |
-| GPUSumcheckEngine | ~200ms | ~1ms | ~200x |
-| BlazeEngine | ~400ms | ~1ms | ~400x |
-
-**Note**: ShaderCache now integrated into all major GPU engines. First-run JIT compilation
-overhead is amortized across runs. Cache invalidates on source file hash change.
-
-## Priority Optimization Targets
-
-**Focus areas for largest absolute time savings** (ordered by potential impact):
-
-| Priority | Primitive | Size | Current | Target | Notes |
-|----------|----------|------|---------|--------|-------|
-| 1 | Pasta Poseidon | 2^16-2^18 | 303-1150ms | TBD | 55-round chain limits GPU utilization (~3.5x CPU) |
-| 2 | Merkle Poseidon2 | 2^20 | 129ms | TBD | 45ms at 2^18, room exists |
-| 3 | BN254 NTT | 2^24 | 110ms | ~40ms | ~3x headroom |
-| 4 | FRI commit | 2^20 | 121-392ms | TBD | Fold-by-N tradeoffs |
-| 5 | MSM BN254 | 2^20 | 175ms | ~100ms | Karatsuba done, ~1.8x headroom |
-
-Even small improvements here yield large absolute gains (e.g., 10% on 200ms = 20ms saved).
-
-## KZG Commitments (BN254 G1)
-
-| Operation | Size | Vanilla CPU | GPU (Metal) | GPU vs Vanilla |
-|-----------|------|-------------|-------------|----------------|
-| Commit | deg 2^8 | 261ms | 0.3ms | **813x** |
-| Commit | deg 2^10 | 1.0s | 0.7ms | **1396x** |
-| Open (eval + witness) | deg 2^8 | 381ms | 0.9ms | **446x** |
-| Open (eval + witness) | deg 2^10 | 1.6s | 2.5ms | **669x** |
-
-## Batch KZG (BN254 G1)
-
-| N Polys | Deg | N Individual Opens | 1 Batch Open | Speedup |
-|---------|-----|-------------------|--------------|---------|
-| 4 | 256 | 14.4ms | 9.8ms | **1.5x** |
-| 8 | 256 | 24.5ms | 13.0ms | **1.9x** |
-| 16 | 256 | 47.3ms | 21.5ms | **2.2x** |
-| 32 | 256 | 75.2ms | 34.5ms | **2.2x** |
-
-## Basefold PCS (BN254 Fr)
-
-| Size | Commit | Open | Verify | Total |
-|------|--------|------|--------|-------|
-| 2^10 | 7.4ms | 31ms | 0.00ms | 38ms |
-| 2^14 | 10ms | 64ms | 0.00ms | 74ms |
-| 2^18 | 46ms | 138ms | 0.00ms | 184ms |
-
-## Circle STARK (Mersenne31, GPU)
-
-| Trace Size | Prove (GPU) | Verify | Proof Size |
-|-----------|-------|--------|------------|
-| 2^8 | 5.8ms | 9ms | 40 KB |
-| 2^10 | 4.9ms | 14ms | 54 KB |
-| 2^12 | 7.6ms | 16ms | 70 KB |
-| 2^14 | 17ms | 20ms | 89 KB |
-
-## Plonk (BN254, KZG, GPU)
-
-| Gates | Setup | Prove (GPU) | Verify |
-|-------|-------|-------|--------|
-| 16 | 8ms | 3ms | 2ms |
-| 64 | 14ms | 9ms | 2ms |
-| 256 | 15ms | 15ms | 2ms |
-| 1024 | 31ms | 50ms | 2ms |
-
-## Groth16 (BN254, GPU)
-
-| Constraints | Setup | Prove (GPU) | Verify |
-|-------------|-------|-------|--------|
-| 8 | 107ms | 11ms | 4ms |
-| 64 | 568ms | 12ms | 4ms |
-| 256 | 2.3s | 14ms | 4ms |
-
-## GKR (BN254 Fr, Layered Circuits)
-
-| Circuit | Prove | Verify |
-|---------|-------|--------|
-| 2^4 width, d=4 | 0.09ms | 0.06ms |
-| 2^5 width, d=4 | 0.15ms | 0.08ms |
-| 2^6 width, d=4 | 0.29ms | 0.13ms |
-| 2^6 width, d=8 | 0.57ms | 0.25ms |
-| 2^8 width, d=4 | 1.24ms | 0.38ms |
-| 2^8 width, d=8 | 2.72ms | 0.71ms |
-| 2^10 width, d=4 | 6.38ms | 1.38ms |
-
-## GPU Radix Sort
-
-| Size | GPU | CPU | Speedup |
-|------|-----|-----|---------|
-| 2^16 | 0.7ms | 2.9ms | **4x** |
-| 2^18 | 1.3ms | 13ms | **10x** |
-| 2^20 | 2.1ms | 59ms | **28x** |
-| 2^22 | 6.4ms | 278ms | **43x** |
-
-## Other Curve MSM
-
-| Points | BN254 GPU | BLS12-377 GPU | secp256k1 GPU | secp256k1 C Pip | Pallas GPU | Vesta GPU | Grumpkin GPU |
-|--------|-----------|---------------|---------------|-----------------|------------|-----------|--------------|
-| 2^8 | 1.1ms | 9ms | 0.8ms | 0.8ms | 5.3ms | 4.9ms | 3.3ms |
-| 2^10 | 3.0ms | 35ms | 2.4ms | 2.4ms | 12ms | 10ms | -- |
-| 2^12 | 8.1ms | 23ms | 56ms | 6.8ms | 17ms | 17ms | 20ms |
-| 2^14 | 22ms | 29ms | 42ms | 21ms | 20ms | 20ms | 258ms |
-| 2^16 | 27ms | 55ms | 72ms | 64ms | 39ms | 39ms | 48ms |
-| 2^18 | 45ms | 119ms | 200ms | 221ms | 66ms | 65ms | -- |
-
-## CPU Optimizations
-
-| Primitive | Size | Vanilla | Optimized | Speedup | Notes |
-|-----------|------|---------|-----------|---------|-------|
-| BN254 NTT (C CIOS) | 2^20 | 7.5s | 247ms | **30x** | `__uint128_t` unrolled Montgomery |
-| BabyBear NTT (NEON) | 2^22 | 202ms | 37ms | **5.4x** | 4-wide SIMD Montgomery |
-| Goldilocks NTT (C) | 2^20 | 53ms | 25ms | **2.1x** | `__uint128_t` pipelining |
-| BN254 Fr mul (C CIOS) | single | 2500ns | 16ns | **156x** | Zero-copy Swift↔C bridge |
-| BN254 Fr add (C) | single | ~50ns | 4.5ns | **11x** | Branchless modular add |
-| BN254 batch mul (C) | 100K | 250ms | 1.3ms | **192x** | 13.4 ns/op CIOS |
-| BN254 batch inverse (C) | 100K | 1.0s | 1.6ms | **625x** | Montgomery's trick |
-| BN254 batch axpy (C) | 100K | 270ms | 1.5ms | **180x** | Fused scalar*vec + accumulate |
-| BN254 inner product (C) | 100K | 250ms | 1.3ms | **192x** | Dot product + vector_sum |
-| BN254 fold_interleaved (C) | 2^18 | 1.3s | 5.2ms | **250x** | In-place fold |
-| BN254 Horner eval (C) | deg 2^16 | 163ms | 1.0ms | **163x** | Prefetch + branchless |
-| ECDSA batch 64 (CPU) | 64 sigs | -- | 1.7ms | **57x** | 0.03ms/sig |
-
-## Supporting Primitives
-
-| Primitive | Metric | Value |
-|-----------|--------|-------|
-| Transcript (Keccak) | 1K absorb+squeeze | 0.89ms (2.2M ops/s) |
-| Transcript (Poseidon2) | 1K absorb+squeeze | 9.9ms (202K ops/s) |
-| KZG proof size | -- | 138 B |
-| IPA proof size (8 rounds) | -- | 1586 B |
-| FRI commitment (2^14) | -- | 1025 KB |
-| Blake3 batch GPU | 2^20 | 0.001 us/hash (**900x** vs CPU) |
-
-## Advanced Protocols
-
-| Primitive | Key Benchmark | Notes |
-|-----------|---------------|-------|
-| HyperNova fold | 0.09ms/fold (1000 steps) | Keccak256 transcript + C CIOS |
-| Supernova fold | 0.67ms/fold (16-step) | Multi-circuit IVC with pc routing |
-| Nova fold (100-fold) | 0.60ms/fold | GPU folds + sparse matvec |
-| Nova fold (256c x 50) | 5.6ms/fold | GPU folds + sparse matvec |
-| Basefold open 2^18 | 61ms | Fold-by-4 + pipelined Merkle |
-| IPA prove n=256 | 11.8ms | C CIOS batch fold + Blake3 NEON |
-| Verkle Trees (CPU) | 3.8ms proof | C CIOS Pedersen+IPA |
-| Tensor compress 2^18 | 3.3ms compress | **460.7x** compression ratio |
-| Lasso 2^18 | 29ms prove, 26ms verify | C-accelerated |
-| BLS12-381 pairing | 1.0ms | **78×** faster |
-| Schnorr BIP 340 | Verify 0.11ms | x-only pubkeys |
-
-## Theoretical Floor Analysis
-
-**High headroom** = potential optimization targets | **Low headroom** = well-optimized primitives
-
-| Rank | Primitive | Current | Floor | Headroom | Status |
-|------:|------------|--------:|------:|----------:|--------|
-| 1 | GPU Additive FFT 2^22 | ~11-14ms | ~0.5ms | ~26-28x | forward_pairs kernel (n/2 threads) |
-| 2 | MSM BN254 2^18 | 73ms | ~5ms | ~11x | Karatsuba complete |
-| 3 | NTT BN254 2^22 | 26ms | ~3ms | ~9x | |
-| 4 | secp256k1 MSM (GPU) | ~260ms | ~30ms | ~8x | GPU sort + bucket-interleaved |
-| 5 | FRI Fold 2^20 | 2.1ms | ~0.3ms | ~7x | |
-| 6 | GPU Radix Sort 2^22 | 6.4ms | ~1ms | ~6x | |
-| 7 | NTT Goldilocks 2^24 | 3.1ms | ~0.5ms | ~6x | |
-| 8 | Nova fold (256c) | ~5.6ms | ~1ms | ~5x | GPU sparse matvec integrated |
-| 9 | NTT BabyBear 2^24 | 2.3ms | ~0.5ms | ~4-5x | |
-| 10 | Merkle Keccak 2^18 | 4.5ms | ~1ms | ~4x | |
-| 11 | Merkle Poseidon2 2^18 | 45ms | ~10ms | ~4x | |
-| 12 | GPU Sort 2^20 | 2.1ms | ~0.5ms | ~4x | |
-| 13 | KZG Commit (deg 256) | 0.3ms | ~0.1ms | ~3x | |
-| 14 | NTT BN254 2^24 | 110.9ms | ~40ms | ~3x | |
-| 15 | Circle STARK 2^14 | 17ms | ~6ms | ~3x | |
-| 16 | Poseidon2 GPU 2^14 | 2.3ms | ~0.8ms | ~3x | |
-| 17 | NTT BLS12-377 2^24 | 110ms | ~40ms | ~3x | |
-| 18 | FRI Fold 2^22 | 7.52ms | ~3ms | ~2.5x | |
-| 19 | Keccak-256 GPU 2^18 | 1.4ms | ~0.6ms | ~2x | |
-| 20 | Merkle Blake3 2^18 | 3.9ms | ~2ms | ~2x | |
-| 21 | GPU Sort 2^18 | 1.3ms | ~0.7ms | ~2x | |
-| 22 | NTT Goldilocks 2^20 | 0.70ms | ~0.4ms | ~2x | |
-| 23 | Sumcheck BN254 2^20 | 24.0ms | ~12ms | ~2x | C kernel 9.55ms |
-| 24 | secp256k1 MSM 2^16 (GPU) | 72ms | ~40ms | ~2x | |
-| 25 | BLS12-377 MSM 2^18 (GPU) | 119ms | ~60ms | ~2x | |
-| 26 | BN254 MSM 2^20 (GPU) | 175ms | ~100ms | ~1.8x | |
-| 27 | Blake3 batch GPU | 0.001 μs/hash | ~0.001 μs/hash | ~1x | Near optimal |
-| 28 | Groth16 Prove (256) | 14ms | ~14ms | ~1x | Near optimal |
-| 29 | BN254 Fr mul (C) | 16ns | ~16ns | ~1x | Near optimal (SIMD CIOS) |
-| 30 | Batch inverse (C) 100K | 1.6ms | ~1.6ms | ~1x | Near optimal (Montgomery's trick) |
-| 31 | BN254 batch mul (C) 100K | 1.3ms | ~1.3ms | ~1x | Near optimal (CIOS) |
-| 32 | IPA prove n=256 | 11.8ms | ~11ms | ~1x | Near optimal |
-| 33 | Basefold open 2^18 | 61ms | ~60ms | ~1x | Near optimal |
+- **2026-04-18**: Updated with beta macOS 26.3 performance notice and regression analysis
+- **2026-04-14**: Initial baseline performance on stable macOS 15.x

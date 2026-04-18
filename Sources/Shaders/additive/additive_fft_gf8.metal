@@ -234,6 +234,129 @@ kernel void additive_fft_gf8_forward_pairs(
 }
 #endif
 
+// Forward additive FFT with threadgroup-local basis caching.
+// OPTIMIZATION: Basis array (k elements, max 22) is loaded into threadgroup
+// memory ONCE at kernel start, then reused for all depths. This eliminates
+// k global memory reads per threadgroup.
+//
+// Threadgroup memory usage: k bytes for basis (max 22 bytes)
+// Threadgroup size: any valid size (uses thread 0 for basis loading)
+//
+// buffer(0): 256x256 GF(2^8) LUT
+// buffer(1): data array (modified in-place)
+// buffer(2): basis elements (loaded into threadgroup memory)
+// buffer(3): n (total elements)
+// buffer(4): k (log₂(n))
+#ifdef USE_LUT
+kernel void additive_fft_gf8_forward_pairs_tg(
+    device const uint8_t* lut  [[buffer(0)]],
+    device uint8_t* data       [[buffer(1)]],
+    constant uint8_t* basis   [[buffer(2)]],
+    constant uint32_t& n       [[buffer(3)]],
+    constant uint32_t& k       [[buffer(4)]],
+    uint gid                  [[thread_position_in_grid]],
+    uint tid                  [[thread_position_in_threadgroup]],
+    uint tgroup_id            [[threadgroup_position_in_grid]]
+) {
+    uint nPairs = n >> 1;
+    if (gid >= nPairs) return;
+
+    // Load basis into threadgroup memory (only thread 0 does this)
+    // Max k elements, max 22 bytes - well within threadgroup memory limits
+    uint kVal = k;
+    threadgroup uint8_t tg_basis[22];  // k is at most 22 for n=4M
+    if (tid == 0) {
+        for (uint i = 0; i < kVal; i++) {
+            tg_basis[i] = basis[i];
+        }
+    }
+    // Wait for thread 0 to finish loading basis
+    threadgroup_barrier(mem_flags::mem_none);
+
+    // All threads in the threadgroup now use threadgroup-local basis
+    for (uint depth = 0; depth < k; depth++) {
+        uint block_size = n >> depth;
+        uint halfSize = block_size >> 1;
+        uint block_idx = gid / halfSize;
+        uint t = gid % halfSize;
+        uint lo_idx = block_idx * block_size + t;
+        uint hi_idx = lo_idx + halfSize;
+
+        uint8_t lo_val = data[lo_idx];
+        uint8_t hi_val = data[hi_idx];
+        uint8_t s = tg_basis[depth];  // Use threadgroup-local basis!
+
+        uint8_t twisted = lo_val ^ gf28_mul(lut, s, hi_val);
+        uint8_t propagated = lo_val ^ hi_val;
+
+        data[lo_idx] = twisted;
+        data[hi_idx] = propagated;
+    }
+}
+#else
+kernel void additive_fft_gf8_forward_pairs_tg(
+    device uint8_t* data       [[buffer(1)]],
+    constant uint8_t* basis   [[buffer(2)]],
+    constant uint32_t& n       [[buffer(3)]],
+    constant uint32_t& k       [[buffer(4)]],
+    uint gid                  [[thread_position_in_grid]],
+    uint tid                  [[thread_position_in_threadgroup]],
+    uint tgroup_id            [[threadgroup_position_in_grid]]
+) {
+    uint nPairs = n >> 1;
+    if (gid >= nPairs) return;
+
+    uint kVal = k;
+    threadgroup uint8_t tg_basis[22];
+    if (tid == 0) {
+        for (uint i = 0; i < kVal; i++) {
+            tg_basis[i] = basis[i];
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_none);
+
+    for (uint depth = 0; depth < k; depth++) {
+        uint block_size = n >> depth;
+        uint halfSize = block_size >> 1;
+        uint block_idx = gid / halfSize;
+        uint t = gid % halfSize;
+        uint lo_idx = block_idx * block_size + t;
+        uint hi_idx = lo_idx + halfSize;
+
+        uint8_t lo_val = data[lo_idx];
+        uint8_t hi_val = data[hi_idx];
+        uint8_t s = tg_basis[depth];
+
+        // Shift-XOR multiply
+        uint16_t p = 0;
+        p ^= ((uint16_t)(s & 1)  ) * ((uint16_t)(hi_val)       );
+        p ^= ((uint16_t)(s & 2)  ) * ((uint16_t)(hi_val << 1) );
+        p ^= ((uint16_t)(s & 4)  ) * ((uint16_t)(hi_val << 2) );
+        p ^= ((uint16_t)(s & 8)  ) * ((uint16_t)(hi_val << 3) );
+        p ^= ((uint16_t)(s & 16) ) * ((uint16_t)(hi_val << 4) );
+        p ^= ((uint16_t)(s & 32) ) * ((uint16_t)(hi_val << 5) );
+        p ^= ((uint16_t)(s & 64) ) * ((uint16_t)(hi_val << 6) );
+        p ^= ((uint16_t)(s & 128)) * ((uint16_t)(hi_val << 7) );
+        uint16_t h = p >> 8;
+        if (h & 0x01) p ^= 0x11B << 0;
+        if (h & 0x02) p ^= 0x11B << 1;
+        if (h & 0x04) p ^= 0x11B << 2;
+        if (h & 0x08) p ^= 0x11B << 3;
+        if (h & 0x10) p ^= 0x11B << 4;
+        if (h & 0x20) p ^= 0x11B << 5;
+        if (h & 0x40) p ^= 0x11B << 6;
+        if (h & 0x80) p ^= 0x11B << 7;
+        uint8_t product = (uint8_t)(p & 0xFF);
+
+        uint8_t twisted = lo_val ^ product;
+        uint8_t propagated = lo_val ^ hi_val;
+
+        data[lo_idx] = twisted;
+        data[hi_idx] = propagated;
+    }
+}
+#endif
+
 // Inverse additive FFT over GF(2^8).
 // Fused: processes all k levels in one dispatch.
 // DIT: small stride first (reverse of forward).

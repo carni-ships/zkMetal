@@ -31,8 +31,7 @@ public enum PCSScheme: String, CaseIterable, Sendable, Hashable {
     /// Whether the scheme is currently implemented and benchmarkable.
     public var isImplemented: Bool {
         switch self {
-        case .kzg, .ipa, .basefold, .fri, .zeromorph, .brakedown, .stir, .whir: return true
-        case .pedersen: return false
+        case .kzg, .ipa, .basefold, .fri, .zeromorph, .brakedown, .stir, .whir, .pedersen: return true
         }
     }
 
@@ -62,7 +61,7 @@ public enum PCSScheme: String, CaseIterable, Sendable, Hashable {
         case .brakedown: return "Linear-code, transparent, linear-time prover, large proofs"
         case .stir:      return "Hash-based, transparent, domain-shifted FRI, O(log^2 n) queries"
         case .whir:      return "Hash-based, transparent, weighted-hash FRI, O(log^2 n) queries"
-        case .pedersen:  return "Discrete-log commitment (no opening proof), transparent"
+        case .pedersen:  return "Discrete-log, transparent, log-size proofs, O(n) verify"
         }
     }
 
@@ -213,8 +212,7 @@ public class PCSComparisonEngine {
         case .brakedown: return benchmarkBrakedown(logDegree: logDegree, rng: &rng)
         case .stir:      return benchmarkSTIR(logDegree: logDegree, rng: &rng)
         case .whir:      return benchmarkWHIR(logDegree: logDegree, rng: &rng)
-        case .pedersen:
-            return nil  // Pedersen has no opening proof
+        case .pedersen:  return benchmarkPedersen(logDegree: logDegree, rng: &rng)
         }
     }
 
@@ -403,6 +401,71 @@ public class PCSComparisonEngine {
         } catch {
             return nil
         }
+    }
+
+    // MARK: - Pedersen Benchmark
+
+    private func benchmarkPedersen(logDegree: Int, rng: inout DetRNG) -> PCSBenchResult? {
+        let n = 1 << logDegree
+
+        do {
+            let pedersenPCS = PedersenUnifiedPCS()
+
+            // Setup
+            let setupStart = CFAbsoluteTimeGetCurrent()
+            let params = try pedersenPCS.setup(maxDegree: n)
+            let setupMs = (CFAbsoluteTimeGetCurrent() - setupStart) * 1000
+
+            let coeffs = rng.frArray(n)
+            let z = rng.nextFr()
+
+            // Warmup
+            let _ = try pedersenPCS.commit(poly: coeffs, params: params)
+            let _ = try pedersenPCS.open(poly: coeffs, point: z, params: params)
+
+            // Commit
+            let commitMs = medianTime(iterations) {
+                try! pedersenPCS.commit(poly: coeffs, params: params)
+            }
+
+            // Open
+            let openMs = medianTime(min(iterations, 3)) {
+                try! pedersenPCS.open(poly: coeffs, point: z, params: params)
+            }
+
+            // Verify
+            let commitment = try pedersenPCS.commit(poly: coeffs, params: params)
+            let proof = try pedersenPCS.open(poly: coeffs, point: z, params: params)
+            let eval = evaluatePolyHorner(coeffs, at: z)
+
+            let verifyMs = medianTime(iterations) {
+                let _ = pedersenPCS.verify(commitment: commitment, point: z,
+                                          evaluation: eval, opening: proof, params: params)
+            }
+
+            // Proof size: logN L points + logN R points + 1 Fr scalar (same as IPA)
+            let proofSize = logDegree * 2 * 64 + 32
+            let setupSize = (n + 1) * 64  // n generators + Q + blinding
+
+            return PCSBenchResult(
+                scheme: .pedersen, logDegree: logDegree,
+                setupTimeMs: setupMs, commitTimeMs: commitMs,
+                openTimeMs: openMs, verifyTimeMs: verifyMs,
+                proofSizeBytes: proofSize, setupSizeBytes: setupSize,
+                requiresTrustedSetup: false
+            )
+        } catch {
+            return nil
+        }
+    }
+
+    /// Evaluate polynomial using Horner's method: p(x) = sum(coeffs[i] * x^i)
+    private func evaluatePolyHorner(_ coeffs: [Fr], at x: Fr) -> Fr {
+        var result = Fr.zero
+        for i in stride(from: coeffs.count - 1, through: 0, by: -1) {
+            result = frAdd(frMul(result, x), coeffs[i])
+        }
+        return result
     }
 
     // MARK: - Basefold Benchmark

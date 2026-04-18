@@ -401,15 +401,29 @@ kernel void signed_digit_extract(
     constant uint& n_points             [[buffer(2)]],
     constant uint& window_bits          [[buffer(3)]],
     constant uint& n_windows            [[buffer(4)]],
+    constant uint& scalar_bits           [[buffer(5)]],  // 128 for GLV k1/k2, 256 for full scalar
+    constant uint& glv_n                [[buffer(6)]],  // n (original point count) if GLV mode, 0 otherwise
     uint gid                            [[thread_position_in_grid]]
 ) {
     if (gid >= n_points) return;
 
-    const device uint* sp = scalars + gid * 8;
+    // In GLV mode (glv_n > 0):
+    // - Points [0, glv_n) use k1 scalars stored at [0, glv_n*8)
+    // - Points [glv_n, 2*glv_n) use k2 scalars stored at [glv_n*8, 2*glv_n*8)
+    // We need to map the point index to the correct scalar index
+    uint scalar_idx = gid;
+    uint k2_offset = 0u;
+    if (glv_n > 0u && gid >= glv_n) {
+        scalar_idx = gid - glv_n;  // Map second half to k2 scalars
+        k2_offset = glv_n * 8u;    // Skip past k1 scalars to reach k2 region
+    }
+
+    const device uint* sp = scalars + scalar_idx * 8 + k2_offset;
     uint mask = (1u << window_bits) - 1u;
     uint half_bk = 1u << (window_bits - 1u);
     uint full_bk = 1u << window_bits;
     uint carry = 0;
+    uint max_limbs = (scalar_bits + 31u) / 32u;  // 4 for 128-bit, 8 for 256-bit
 
     for (uint w = 0; w < n_windows; w++) {
         uint bit_off = w * window_bits;
@@ -417,9 +431,9 @@ kernel void signed_digit_extract(
         uint bit_pos = bit_off % 32u;
 
         uint idx = 0;
-        if (limb_idx < 8u) {
+        if (limb_idx < max_limbs) {
             idx = sp[limb_idx] >> bit_pos;
-            if (bit_pos + window_bits > 32u && limb_idx + 1u < 8u) {
+            if (bit_pos + window_bits > 32u && limb_idx + 1u < max_limbs) {
                 idx |= sp[limb_idx + 1u] << (32u - bit_pos);
             }
             idx &= mask;

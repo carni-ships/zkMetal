@@ -156,6 +156,33 @@ public func runPoseidon2BabyBearBench() {
                         logN, n, median, hashPerSec, median / Double(n) * 1000))
         }
 
+        // GPU batched hash pairs benchmark (each thread processes multiple pairs)
+        print("\n  --- GPU Hash Pairs (Batched) ---")
+        for logN in [12, 14, 16, 18, 20] {
+            let n = 1 << logN
+            var input = [Bb](repeating: Bb.zero, count: n * 2 * nodeSize)
+            rng = 0xDEAD_BEEF
+            for i in 0..<input.count {
+                rng = rng &* 6364136223846793005 &+ 1442695040888963407
+                input[i] = Bb(v: UInt32(truncatingIfNeeded: rng >> 33) % Bb.P)
+            }
+
+            // Warmup
+            let _ = try engine.hashPairsBatched(input, batchSize: 4)
+
+            var times = [Double]()
+            for _ in 0..<5 {
+                let t0 = CFAbsoluteTimeGetCurrent()
+                let _ = try engine.hashPairsBatched(input, batchSize: 4)
+                times.append((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+            }
+            times.sort()
+            let median = times[2]
+            let hashPerSec = Double(n) / (median / 1000)
+            print(String(format: "  GPU hash 2^%-2d = %7d pairs (batch=4): %7.2f ms (%8.0f hash/s, %.2f us/hash)",
+                        logN, n, median, hashPerSec, median / Double(n) * 1000))
+        }
+
         // GPU Merkle tree benchmark
         print("\n  --- GPU Merkle Tree ---")
         for logN in [12, 14, 16, 18, 20] {

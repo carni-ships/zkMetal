@@ -192,6 +192,75 @@ private func benchIPA(logN: Int, rng: inout SimpleRNG) -> PCSResult? {
     }
 }
 
+private func benchPedersen(logN: Int, rng: inout SimpleRNG) -> PCSResult? {
+    let n = 1 << logN
+    // Pedersen generator setup is O(n), cap at 2^14 for reasonable time
+    guard logN <= 14 else { return nil }
+
+    do {
+        let pedersenPCS = PedersenUnifiedPCS()
+        let params = try pedersenPCS.setup(maxDegree: n)
+
+        let coeffs = rng.frArray(n)
+        let z = rng.nextFr()
+
+        // Warmup
+        let _ = try pedersenPCS.commit(poly: coeffs, params: params)
+        let _ = try pedersenPCS.open(poly: coeffs, point: z, params: params)
+
+        // Commit
+        var commitTimes = [Double]()
+        for _ in 0..<5 {
+            let t = CFAbsoluteTimeGetCurrent()
+            let _ = try pedersenPCS.commit(poly: coeffs, params: params)
+            commitTimes.append((CFAbsoluteTimeGetCurrent() - t) * 1000)
+        }
+
+        // Open
+        var openTimes = [Double]()
+        for _ in 0..<3 {
+            let t = CFAbsoluteTimeGetCurrent()
+            let _ = try pedersenPCS.open(poly: coeffs, point: z, params: params)
+            openTimes.append((CFAbsoluteTimeGetCurrent() - t) * 1000)
+        }
+
+        // Verify
+        let commitment = try pedersenPCS.commit(poly: coeffs, params: params)
+        let proof = try pedersenPCS.open(poly: coeffs, point: z, params: params)
+        // Evaluate polynomial at z using Horner's method
+        var eval = Fr.zero
+        for i in stride(from: coeffs.count - 1, through: 0, by: -1) {
+            eval = frAdd(frMul(eval, z), coeffs[i])
+        }
+        var verifyTimes = [Double]()
+        for _ in 0..<5 {
+            let t = CFAbsoluteTimeGetCurrent()
+            let _ = pedersenPCS.verify(commitment: commitment, point: z, evaluation: eval, opening: proof, params: params)
+            verifyTimes.append((CFAbsoluteTimeGetCurrent() - t) * 1000)
+        }
+
+        // Proof size: log(n) L points + log(n) R points + 1 Fr scalar (same as IPA)
+        let rounds = logN
+        let proofSize = rounds * 2 * 64 + 32
+        // Setup size: n generators + Q + blinding (all affine points)
+        let setupSize = (n + 1) * 64
+
+        return PCSResult(
+            scheme: "Pedersen",
+            logN: logN,
+            commitMs: median(commitTimes),
+            openMs: median(openTimes),
+            verifyMs: median(verifyTimes),
+            proofSizeBytes: proofSize,
+            setupType: "transparent",
+            setupSizeBytes: setupSize
+        )
+    } catch {
+        fputs("  Pedersen error (2^\(logN)): \(error)\n", stderr)
+        return nil
+    }
+}
+
 private func benchBasefold(logN: Int, rng: inout SimpleRNG) -> PCSResult? {
     let n = 1 << logN
 
@@ -483,7 +552,7 @@ private func printGroupedTables(_ results: [PCSResult]) {
 
 public func runPCSComparisonBench() {
     fputs("=== PCS Comparison Benchmark ===\n", stderr)
-    fputs("Comparing: KZG, IPA, Basefold, Zeromorph, FRI\n", stderr)
+    fputs("Comparing: KZG, IPA, Pedersen, Basefold, Zeromorph, FRI\n", stderr)
 
     let logSizes = [10, 14, 18]
     var allResults = [PCSResult]()
@@ -508,6 +577,15 @@ public func runPCSComparisonBench() {
             fputs(" done\n", stderr)
         } else {
             fputs(" skipped (generator limit)\n", stderr)
+        }
+
+        // Pedersen — transparent, log-size proofs (same as IPA but different generators)
+        fputs("  Pedersen...", stderr)
+        if let r = benchPedersen(logN: logN, rng: &rng) {
+            allResults.append(r)
+            fputs(" done\n", stderr)
+        } else {
+            fputs(" skipped\n", stderr)
         }
 
         // Basefold — transparent, hash-based, multilinear
@@ -554,6 +632,7 @@ public func runPCSComparisonBench() {
     fputs("\n--- Tradeoff Summary ---\n", stderr)
     fputs("  KZG:       Constant-size proofs (96 B), fast verify (2 pairings), requires trusted setup\n", stderr)
     fputs("  IPA:       No trusted setup, log-size proofs, slower verify (O(n) group ops)\n", stderr)
+    fputs("  Pedersen:  Same as IPA but with Pedersen-style generators (transparent)\n", stderr)
     fputs("  Basefold:  Transparent, hash-based, multilinear-native, large proofs\n", stderr)
     fputs("  Zeromorph: Multilinear over KZG, compact proofs, requires trusted setup + pairings\n", stderr)
     fputs("  FRI:       Transparent, hash-based, post-quantum candidate, large proofs\n", stderr)

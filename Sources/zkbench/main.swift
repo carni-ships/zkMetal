@@ -211,6 +211,10 @@ if cmd == "calibrate" {
     runCQLookupBench()
 } else if cmd == "sparse" || cmd == "sparse-sumcheck" {
     runSparseSumcheckBench()
+} else if cmd == "amortized" || cmd == "amortized-sumcheck" {
+    runAmortizedSumcheckBench()
+} else if cmd == "amortized-correctness" {
+    runAmortizedSumcheckCorrectness()
 } else if cmd == "batch-field" || cmd == "bf" {
     runBatchFieldBench()
 } else if cmd == "witness" || cmd == "trace" {
@@ -233,6 +237,8 @@ if cmd == "calibrate" {
     runCircleSTARKFusedRoundBench()
 } else if cmd == "circle-fri" || cmd == "cfri" {
     runCircleFRIBench()
+} else if cmd == "p1" || cmd == "p1stark" || cmd == "p1rational" {
+    runP1Bench()
 } else if cmd == "transcript" || cmd == "ts" {
     runTranscriptBench()
 } else if cmd == "batch-transcript" || cmd == "bts" {
@@ -319,6 +325,12 @@ if cmd == "calibrate" {
     runJoltBench()
 } else if cmd == "msm" {
     try runMSMBench()
+} else if cmd == "profile" || cmd == "profiling" {
+    MetalProfilingBench.main()
+} else if cmd == "batch" || cmd == "batching" {
+    BatchingBench.main()
+} else if cmd == "ntt-profile" || cmd == "profile-ntt" {
+    NTTProfilingBench.main()
 } else if cmd == "all" {
     try runMSMBench()
     runNTTBench()
@@ -354,6 +366,9 @@ if cmd == "calibrate" {
     // runMarlinBench()
     // fputs("stub\n", stderr)
     runErasureBench()
+} else if cmd == "msm-debug" {
+    // runMSMDebugTest()  // TODO: Fix build issue
+    print("MSM debug test disabled due to build issue")
 } else {
     try runMSMBench()
 }

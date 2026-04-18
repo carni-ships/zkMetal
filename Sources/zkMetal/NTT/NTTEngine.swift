@@ -72,107 +72,147 @@ public class NTTEngine {
         }
         self.commandQueue = queue
 
-        let library = try NTTEngine.compileShaders(device: device)
+        let shaderDir = findShaderDir()
+        let sourceFiles = [
+            shaderDir + "/fields/bn254_fr.metal",
+            shaderDir + "/ntt/ntt_kernels.metal"
+        ]
 
-        guard let butterflyFn = library.makeFunction(name: "ntt_butterfly"),
-              let butterflyRadix4Fn = library.makeFunction(name: "ntt_butterfly_radix4"),
-              let invButterflyFn = library.makeFunction(name: "intt_butterfly"),
-              let invButterflyRadix4Fn = library.makeFunction(name: "intt_butterfly_radix4"),
-              let butterflyFusedFn = library.makeFunction(name: "ntt_butterfly_fused"),
-              let invButterflyFusedFn = library.makeFunction(name: "intt_butterfly_fused"),
-              let scaleFn = library.makeFunction(name: "ntt_scale"),
-              let bitrevFn = library.makeFunction(name: "ntt_bitrev"),
-              let bitrevInplaceFn = library.makeFunction(name: "ntt_bitrev_inplace"),
-              let bitrevScaleFn = library.makeFunction(name: "ntt_bitrev_scale"),
-              let columnFusedFn = library.makeFunction(name: "ntt_column_fused"),
-              let rowFusedFn = library.makeFunction(name: "ntt_row_fused"),
-              let twiddleMultiplyFn = library.makeFunction(name: "ntt_twiddle_multiply"),
-              let transposeFn = library.makeFunction(name: "ntt_transpose"),
-              let invColumnFusedFn = library.makeFunction(name: "intt_column_fused"),
-              let invColumnFusedTwiddleFn = library.makeFunction(name: "intt_column_fused_twiddle"),
-              let invRowFusedFn = library.makeFunction(name: "intt_row_fused"),
-              let rowFusedTwiddleFn = library.makeFunction(name: "ntt_row_fused_twiddle"),
-              let rowFusedTwiddleTransposeFn = library.makeFunction(name: "ntt_row_fused_twiddle_transpose"),
-              let butterflyFusedBitrevFn = library.makeFunction(name: "ntt_butterfly_fused_bitrev"),
-              let columnFusedSubblockFn = library.makeFunction(name: "ntt_column_fused_subblock"),
-              let columnButterflyFn = library.makeFunction(name: "ntt_column_butterfly"),
-              let columnButterflyRadix4Fn = library.makeFunction(name: "ntt_column_butterfly_radix4"),
-              let transposeRectFn = library.makeFunction(name: "ntt_transpose_rect"),
-              let transposeOutOfPlaceFn = library.makeFunction(name: "ntt_transpose_outofplace"),
-              let invColumnButterflyFn = library.makeFunction(name: "intt_column_butterfly"),
-              let invColumnButterflyRadix4Fn = library.makeFunction(name: "intt_column_butterfly_radix4"),
-              let invColumnFusedSubblockTwiddleFn = library.makeFunction(name: "intt_column_fused_subblock"),
-              let invRowFusedTwiddleFn = library.makeFunction(name: "intt_row_fused_twiddle"),
-              let rowSubblockFusedFn = library.makeFunction(name: "ntt_row_subblock_fused"),
-              let rowButterflyFn = library.makeFunction(name: "ntt_row_butterfly"),
-              let rowButterflyRadix4Fn = library.makeFunction(name: "ntt_row_butterfly_radix4"),
-              let invRowSubblockFusedFn = library.makeFunction(name: "intt_row_subblock_fused"),
-              let invRowButterflyFn = library.makeFunction(name: "intt_row_butterfly"),
-              let invRowButterflyRadix4Fn = library.makeFunction(name: "intt_row_butterfly_radix4") else {
+        let kernelNames = [
+            "ntt_butterfly",
+            "ntt_butterfly_radix4",
+            "intt_butterfly",
+            "intt_butterfly_radix4",
+            "ntt_butterfly_fused",
+            "intt_butterfly_fused",
+            "ntt_scale",
+            "ntt_bitrev",
+            "ntt_bitrev_inplace",
+            "ntt_bitrev_scale",
+            "ntt_column_fused",
+            "ntt_row_fused",
+            "ntt_twiddle_multiply",
+            "ntt_transpose",
+            "intt_column_fused",
+            "intt_column_fused_twiddle",
+            "intt_row_fused",
+            "ntt_row_fused_twiddle",
+            "ntt_row_fused_twiddle_transpose",
+            "ntt_butterfly_fused_bitrev",
+            "ntt_column_fused_subblock",
+            "ntt_column_butterfly",
+            "ntt_column_butterfly_radix4",
+            "ntt_transpose_rect",
+            "ntt_transpose_outofplace",
+            "intt_column_butterfly",
+            "intt_column_butterfly_radix4",
+            "intt_column_fused_subblock",
+            "intt_row_fused_twiddle",
+            "ntt_row_subblock_fused",
+            "ntt_row_butterfly",
+            "ntt_row_butterfly_radix4",
+            "intt_row_subblock_fused",
+            "intt_row_butterfly",
+            "intt_row_butterfly_radix4"
+        ]
+
+        let pipelines = try ShaderCache.shared.loadOrCompile(
+            module: "ntt_bn254",
+            device: device,
+            sourceFiles: sourceFiles,
+            kernelNames: kernelNames,
+            preprocessor: NTTEngine.preprocessShaders
+        )
+
+        guard let butterfly = pipelines["ntt_butterfly"],
+              let butterflyRadix4 = pipelines["ntt_butterfly_radix4"],
+              let invButterfly = pipelines["intt_butterfly"],
+              let invButterflyRadix4 = pipelines["intt_butterfly_radix4"],
+              let butterflyFused = pipelines["ntt_butterfly_fused"],
+              let invButterflyFused = pipelines["intt_butterfly_fused"],
+              let scale = pipelines["ntt_scale"],
+              let bitrev = pipelines["ntt_bitrev"],
+              let bitrevInplace = pipelines["ntt_bitrev_inplace"],
+              let bitrevScale = pipelines["ntt_bitrev_scale"],
+              let columnFused = pipelines["ntt_column_fused"],
+              let rowFused = pipelines["ntt_row_fused"],
+              let twiddleMultiply = pipelines["ntt_twiddle_multiply"],
+              let transpose = pipelines["ntt_transpose"],
+              let invColumnFused = pipelines["intt_column_fused"],
+              let invColumnFusedTwiddle = pipelines["intt_column_fused_twiddle"],
+              let invRowFused = pipelines["intt_row_fused"],
+              let rowFusedTwiddle = pipelines["ntt_row_fused_twiddle"],
+              let rowFusedTwiddleTranspose = pipelines["ntt_row_fused_twiddle_transpose"],
+              let butterflyFusedBitrev = pipelines["ntt_butterfly_fused_bitrev"],
+              let columnFusedSubblock = pipelines["ntt_column_fused_subblock"],
+              let columnButterfly = pipelines["ntt_column_butterfly"],
+              let columnButterflyRadix4 = pipelines["ntt_column_butterfly_radix4"],
+              let transposeRect = pipelines["ntt_transpose_rect"],
+              let transposeOutOfPlace = pipelines["ntt_transpose_outofplace"],
+              let invColumnButterfly = pipelines["intt_column_butterfly"],
+              let invColumnButterflyRadix4 = pipelines["intt_column_butterfly_radix4"],
+              let invColumnFusedSubblock = pipelines["intt_column_fused_subblock"],
+              let invRowFusedTwiddle = pipelines["intt_row_fused_twiddle"],
+              let rowSubblockFused = pipelines["ntt_row_subblock_fused"],
+              let rowButterfly = pipelines["ntt_row_butterfly"],
+              let rowButterflyRadix4 = pipelines["ntt_row_butterfly_radix4"],
+              let invRowSubblockFused = pipelines["intt_row_subblock_fused"],
+              let invRowButterfly = pipelines["intt_row_butterfly"],
+              let invRowButterflyRadix4 = pipelines["intt_row_butterfly_radix4"] else {
             throw MSMError.missingKernel
         }
 
-        self.butterflyFunction = try device.makeComputePipelineState(function: butterflyFn)
-        self.butterflyRadix4Function = try device.makeComputePipelineState(function: butterflyRadix4Fn)
-        self.invButterflyFunction = try device.makeComputePipelineState(function: invButterflyFn)
-        self.invButterflyRadix4Function = try device.makeComputePipelineState(function: invButterflyRadix4Fn)
-        self.butterflyFusedFunction = try device.makeComputePipelineState(function: butterflyFusedFn)
-        self.invButterflyFusedFunction = try device.makeComputePipelineState(function: invButterflyFusedFn)
-        self.scaleFunction = try device.makeComputePipelineState(function: scaleFn)
-        self.bitrevFunction = try device.makeComputePipelineState(function: bitrevFn)
-        self.bitrevInplaceFunction = try device.makeComputePipelineState(function: bitrevInplaceFn)
-        self.bitrevScaleFunction = try device.makeComputePipelineState(function: bitrevScaleFn)
-        self.columnFusedFunction = try device.makeComputePipelineState(function: columnFusedFn)
-        self.rowFusedFunction = try device.makeComputePipelineState(function: rowFusedFn)
-        self.twiddleMultiplyFunction = try device.makeComputePipelineState(function: twiddleMultiplyFn)
-        self.transposeFunction = try device.makeComputePipelineState(function: transposeFn)
-        self.invColumnFusedFunction = try device.makeComputePipelineState(function: invColumnFusedFn)
-        self.invColumnFusedTwiddleFunction = try device.makeComputePipelineState(function: invColumnFusedTwiddleFn)
-        self.invRowFusedFunction = try device.makeComputePipelineState(function: invRowFusedFn)
-        self.rowFusedTwiddleFunction = try device.makeComputePipelineState(function: rowFusedTwiddleFn)
-        self.rowFusedTwiddleTransposeFunction = try device.makeComputePipelineState(function: rowFusedTwiddleTransposeFn)
-        self.butterflyFusedBitrevFunction = try device.makeComputePipelineState(function: butterflyFusedBitrevFn)
-        self.columnFusedSubblockFunction = try device.makeComputePipelineState(function: columnFusedSubblockFn)
-        self.columnButterflyFunction = try device.makeComputePipelineState(function: columnButterflyFn)
-        self.columnButterflyRadix4Function = try device.makeComputePipelineState(function: columnButterflyRadix4Fn)
-        self.transposeRectFunction = try device.makeComputePipelineState(function: transposeRectFn)
-        self.transposeOutOfPlaceFunction = try device.makeComputePipelineState(function: transposeOutOfPlaceFn)
-        self.invColumnButterflyFunction = try device.makeComputePipelineState(function: invColumnButterflyFn)
-        self.invColumnButterflyRadix4Function = try device.makeComputePipelineState(function: invColumnButterflyRadix4Fn)
-        self.invColumnFusedSubblockFunction = try device.makeComputePipelineState(function: invColumnFusedSubblockTwiddleFn)
-        self.invRowFusedTwiddleFunction = try device.makeComputePipelineState(function: invRowFusedTwiddleFn)
-        self.rowSubblockFusedFunction = try device.makeComputePipelineState(function: rowSubblockFusedFn)
-        self.rowButterflyFunction = try device.makeComputePipelineState(function: rowButterflyFn)
-        self.rowButterflyRadix4Function = try device.makeComputePipelineState(function: rowButterflyRadix4Fn)
-        self.invRowSubblockFusedFunction = try device.makeComputePipelineState(function: invRowSubblockFusedFn)
-        self.invRowButterflyFunction = try device.makeComputePipelineState(function: invRowButterflyFn)
-        self.invRowButterflyRadix4Function = try device.makeComputePipelineState(function: invRowButterflyRadix4Fn)
+        self.butterflyFunction = butterfly
+        self.butterflyRadix4Function = butterflyRadix4
+        self.invButterflyFunction = invButterfly
+        self.invButterflyRadix4Function = invButterflyRadix4
+        self.butterflyFusedFunction = butterflyFused
+        self.invButterflyFusedFunction = invButterflyFused
+        self.scaleFunction = scale
+        self.bitrevFunction = bitrev
+        self.bitrevInplaceFunction = bitrevInplace
+        self.bitrevScaleFunction = bitrevScale
+        self.columnFusedFunction = columnFused
+        self.rowFusedFunction = rowFused
+        self.twiddleMultiplyFunction = twiddleMultiply
+        self.transposeFunction = transpose
+        self.invColumnFusedFunction = invColumnFused
+        self.invColumnFusedTwiddleFunction = invColumnFusedTwiddle
+        self.invRowFusedFunction = invRowFused
+        self.rowFusedTwiddleFunction = rowFusedTwiddle
+        self.rowFusedTwiddleTransposeFunction = rowFusedTwiddleTranspose
+        self.butterflyFusedBitrevFunction = butterflyFusedBitrev
+        self.columnFusedSubblockFunction = columnFusedSubblock
+        self.columnButterflyFunction = columnButterfly
+        self.columnButterflyRadix4Function = columnButterflyRadix4
+        self.transposeRectFunction = transposeRect
+        self.transposeOutOfPlaceFunction = transposeOutOfPlace
+        self.invColumnButterflyFunction = invColumnButterfly
+        self.invColumnButterflyRadix4Function = invColumnButterflyRadix4
+        self.invColumnFusedSubblockFunction = invColumnFusedSubblock
+        self.invRowFusedTwiddleFunction = invRowFusedTwiddle
+        self.rowSubblockFusedFunction = rowSubblockFused
+        self.rowButterflyFunction = rowButterfly
+        self.rowButterflyRadix4Function = rowButterflyRadix4
+        self.invRowSubblockFusedFunction = invRowSubblockFused
+        self.invRowButterflyFunction = invRowButterfly
+        self.invRowButterflyRadix4Function = invRowButterflyRadix4
         self.tuning = TuningManager.shared.config(device: device)
     }
 
-    /// Compile NTT shaders by resolving #include directives.
-    private static func compileShaders(device: MTLDevice) throws -> MTLLibrary {
-        // Find shader source directory
-        let shaderDir = findShaderDir()
-
-        // Read and concatenate shader files (resolving includes)
-        let frSource = try String(contentsOfFile: shaderDir + "/fields/bn254_fr.metal", encoding: .utf8)
-        let nttSource = try String(contentsOfFile: shaderDir + "/ntt/ntt_kernels.metal", encoding: .utf8)
-
-        // Remove #include directives from ntt source (already concatenated)
-        let cleanNTT = nttSource.split(separator: "\n").filter { !$0.contains("#include") }.joined(separator: "\n")
+    /// Preprocessor for NTT shaders - removes #include directives and header guards.
+    private static func preprocessShaders(_ combined: String) -> String {
+        let lines = combined.split(separator: "\n")
+            .filter { !$0.contains("#include") }
+        var result = lines.joined(separator: "\n")
 
         // Remove duplicate header guards
-        let frClean = frSource
+        result = result
             .replacingOccurrences(of: "#ifndef BN254_FR_METAL", with: "")
             .replacingOccurrences(of: "#define BN254_FR_METAL", with: "")
             .replacingOccurrences(of: "#endif // BN254_FR_METAL", with: "")
 
-        let combined = frClean + "\n" + cleanNTT
-
-        let options = MTLCompileOptions()
-        options.fastMathEnabled = true
-        return try device.makeLibrary(source: combined, options: options)
+        return result
     }
 
     /// Get or grow scratch buffer for fused-bitrev kernel.

@@ -311,6 +311,8 @@ public class MetalMSM {
         var glvK1MetalBuf: MTLBuffer? = nil
         var glvK2Offset: Int = 0
 
+        // Use CPU-side GLV decomposition (verified correct) instead of Metal kernel (has bugs).
+        // This provides correct GLV acceleration without the Metal kernel bugs.
         if useGLV && n >= 256 {
             let scalarByteCount = n * 8 * MemoryLayout<UInt32>.stride
             // Reuse cached GLV buffers when possible
@@ -406,18 +408,22 @@ public class MetalMSM {
 
             let enc = cmdBuf.makeComputeCommandEncoder()!
 
-            // Step 1: GLV decompose (scalars → k1/k2 + neg flags)
-            enc.setComputePipelineState(glvDecomposeFunction)
-            enc.setBuffer(glvScalarInBuf, offset: 0, index: 0)
-            enc.setBuffer(glvK1MetalBuf, offset: 0, index: 1)
-            enc.setBuffer(glvK1MetalBuf, offset: glvK2Offset, index: 2)
-            enc.setBuffer(neg1Buf, offset: 0, index: 3)
-            enc.setBuffer(neg2Buf, offset: 0, index: 4)
-            var nVal0 = UInt32(glvN)
-            enc.setBytes(&nVal0, length: 4, index: 5)
-            let tg0 = min(glvDecomposeFunction.maxTotalThreadsPerThreadgroup, tuning.msmThreadgroupSize)
-            enc.dispatchThreads(MTLSize(width: glvN, height: 1, depth: 1),
-                              threadsPerThreadgroup: MTLSize(width: tg0, height: 1, depth: 1))
+            // Step 1: GLV decompose using CPU (Metal kernel has bugs, CPU is verified correct)
+            // Compute on CPU and copy results to Metal buffers
+            guard let k1MetalBuf = glvK1MetalBuf,
+                  let scalarInBuf = glvScalarInBuf else {
+                throw MSMError.gpuError("GLV buffers not initialized")
+            }
+            let k1Ptr = k1MetalBuf.contents().bindMemory(to: UInt32.self, capacity: glvN * 8)
+            let k2Ptr = k1MetalBuf.contents().bindMemory(to: UInt32.self, capacity: glvN * 8).advanced(by: glvN * 8)
+            let neg1Ptr = neg1Buf!.contents().bindMemory(to: UInt8.self, capacity: glvN)
+            let neg2Ptr = neg2Buf!.contents().bindMemory(to: UInt8.self, capacity: glvN)
+            let scalarPtr = scalarInBuf.contents().bindMemory(to: UInt32.self, capacity: glvN * 8)
+            for i in 0..<glvN {
+                let (neg1, neg2) = glvDecompose(scalarPtr.advanced(by: i * 8), k1Out: k1Ptr.advanced(by: i * 8), k2Out: k2Ptr.advanced(by: i * 8))
+                neg1Ptr[i] = neg1 ? 1 : 0
+                neg2Ptr[i] = neg2 ? 1 : 0
+            }
             enc.memoryBarrier(scope: .buffers)
 
             // Step 2: Endomorphism (apply neg flags, compute beta*x for second half)
@@ -443,6 +449,10 @@ public class MetalMSM {
                 enc.setBytes(&wbVal, length: 4, index: 3)
                 var nwVal = UInt32(nWindows)
                 enc.setBytes(&nwVal, length: 4, index: 4)
+                var scalarBitsVal = UInt32(scalarBits)
+                enc.setBytes(&scalarBitsVal, length: 4, index: 5)
+                var glvNVal = UInt32(glvN)  // Pass original n for GLV mode detection
+                enc.setBytes(&glvNVal, length: 4, index: 6)
                 let tg2 = min(signedDigitFunction.maxTotalThreadsPerThreadgroup, tuning.msmThreadgroupSize)
                 enc.dispatchThreads(MTLSize(width: effectiveN, height: 1, depth: 1),
                                     threadsPerThreadgroup: MTLSize(width: tg2, height: 1, depth: 1))

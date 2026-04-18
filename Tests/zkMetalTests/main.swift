@@ -250,6 +250,7 @@ let allTests: [(String, () -> Void)] = [
     ("blaze", runBlazeTests),
     ("basefoldbench", runBasefoldBenchmark),
     ("pastanttbench", runPastaNTTBenchmark),
+    ("binaryfri", runBinaryFRITests),
 ]
 
 // Parse CLI arguments for test filtering
