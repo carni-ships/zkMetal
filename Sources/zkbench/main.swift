@@ -325,6 +325,10 @@ if cmd == "calibrate" {
     runJoltBench()
 } else if cmd == "msm" {
     try runMSMBench()
+} else if cmd == "profile" || cmd == "profiling" {
+    MetalProfilingBench.main()
+} else if cmd == "batch" || cmd == "batching" {
+    BatchingBench.main()
 } else if cmd == "all" {
     try runMSMBench()
     runNTTBench()
