@@ -118,6 +118,12 @@ mod ffi {
         pub fn zkmetal_bn254_ntt_auto(data: *mut u8, log_n: u32) -> i32;
         pub fn zkmetal_bn254_intt_auto(data: *mut u8, log_n: u32) -> i32;
 
+        // -- Pasta NTT (CPU-based, Pallas/Vesta Fr) --
+        pub fn zkmetal_pallas_ntt_auto(data: *mut u8, log_n: u32) -> i32;
+        pub fn zkmetal_pallas_intt_auto(data: *mut u8, log_n: u32) -> i32;
+        pub fn zkmetal_vesta_ntt_auto(data: *mut u8, log_n: u32) -> i32;
+        pub fn zkmetal_vesta_intt_auto(data: *mut u8, log_n: u32) -> i32;
+
         // -- Poseidon2 --
         pub fn zkmetal_bn254_poseidon2_hash_pairs(
             engine: *mut std::ffi::c_void,
@@ -356,6 +362,46 @@ impl NttEngine {
 impl Drop for NttEngine {
     fn drop(&mut self) {
         unsafe { ffi::zkmetal_ntt_engine_destroy(self.raw) }
+    }
+}
+
+/// Pasta NTT engine (CPU-based, Pallas/Vesta Fr).
+/// Note: Pasta NTT uses CPU kernels, not GPU. This struct is provided for API symmetry
+/// with BN254 NTT but does not hold a native engine handle since the underlying
+/// pasta_ntt.c functions are stateless convenience wrappers.
+pub struct PastaNttEngine {
+    _private: (),
+}
+
+unsafe impl Send for PastaNttEngine {}
+
+impl PastaNttEngine {
+    pub fn new() -> Self {
+        Self { _private: () }
+    }
+
+    /// Forward NTT on Pallas Fr (in-place). `data` must be `2^log_n * 32` bytes.
+    pub fn pallas_ntt(&self, data: &mut [u8], log_n: u32) -> Result<()> {
+        assert_eq!(data.len(), (1usize << log_n) * 32);
+        check_status(unsafe { ffi::zkmetal_pallas_ntt_auto(data.as_mut_ptr(), log_n) })
+    }
+
+    /// Inverse NTT on Pallas Fr (in-place).
+    pub fn pallas_intt(&self, data: &mut [u8], log_n: u32) -> Result<()> {
+        assert_eq!(data.len(), (1usize << log_n) * 32);
+        check_status(unsafe { ffi::zkmetal_pallas_intt_auto(data.as_mut_ptr(), log_n) })
+    }
+
+    /// Forward NTT on Vesta Fr (in-place).
+    pub fn vesta_ntt(&self, data: &mut [u8], log_n: u32) -> Result<()> {
+        assert_eq!(data.len(), (1usize << log_n) * 32);
+        check_status(unsafe { ffi::zkmetal_vesta_ntt_auto(data.as_mut_ptr(), log_n) })
+    }
+
+    /// Inverse NTT on Vesta Fr (in-place).
+    pub fn vesta_intt(&self, data: &mut [u8], log_n: u32) -> Result<()> {
+        assert_eq!(data.len(), (1usize << log_n) * 32);
+        check_status(unsafe { ffi::zkmetal_vesta_intt_auto(data.as_mut_ptr(), log_n) })
     }
 }
 
@@ -664,6 +710,31 @@ pub fn bn254_ntt_auto(data: &mut [u8], log_n: u32) -> Result<()> {
 pub fn bn254_intt_auto(data: &mut [u8], log_n: u32) -> Result<()> {
     assert_eq!(data.len(), (1usize << log_n) * 32);
     check_status(unsafe { ffi::zkmetal_bn254_intt_auto(data.as_mut_ptr(), log_n) })
+}
+
+/// Convenience forward NTT on Pallas Fr (in-place). `data` must be `2^log_n * 32` bytes.
+/// Pasta NTT is CPU-based (from pasta_ntt.c).
+pub fn pallas_ntt_auto(data: &mut [u8], log_n: u32) -> Result<()> {
+    assert_eq!(data.len(), (1usize << log_n) * 32);
+    check_status(unsafe { ffi::zkmetal_pallas_ntt_auto(data.as_mut_ptr(), log_n) })
+}
+
+/// Convenience inverse NTT on Pallas Fr (in-place).
+pub fn pallas_intt_auto(data: &mut [u8], log_n: u32) -> Result<()> {
+    assert_eq!(data.len(), (1usize << log_n) * 32);
+    check_status(unsafe { ffi::zkmetal_pallas_intt_auto(data.as_mut_ptr(), log_n) })
+}
+
+/// Convenience forward NTT on Vesta Fr (in-place).
+pub fn vesta_ntt_auto(data: &mut [u8], log_n: u32) -> Result<()> {
+    assert_eq!(data.len(), (1usize << log_n) * 32);
+    check_status(unsafe { ffi::zkmetal_vesta_ntt_auto(data.as_mut_ptr(), log_n) })
+}
+
+/// Convenience inverse NTT on Vesta Fr (in-place).
+pub fn vesta_intt_auto(data: &mut [u8], log_n: u32) -> Result<()> {
+    assert_eq!(data.len(), (1usize << log_n) * 32);
+    check_status(unsafe { ffi::zkmetal_vesta_intt_auto(data.as_mut_ptr(), log_n) })
 }
 
 /// Convenience Poseidon2 batch hash pairs.
