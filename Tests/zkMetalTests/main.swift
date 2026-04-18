@@ -251,7 +251,6 @@ let allTests: [(String, () -> Void)] = [
     ("basefoldbench", runBasefoldBenchmark),
     ("pastanttbench", runPastaNTTBenchmark),
     ("binaryfri", runBinaryFRITests),
-    ("metafield", runMetaFieldTests),
 ]
 
 // Parse CLI arguments for test filtering

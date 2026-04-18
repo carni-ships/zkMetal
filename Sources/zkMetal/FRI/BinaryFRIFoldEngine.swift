@@ -351,124 +351,18 @@ public struct BinaryFRIFoldEngine<B: BinaryTowerProtocol> {
     }
 }
 
-// MARK: - Binary FRI Prover Engine
+// MARK: - Merkle Tree Builder
 
-/// Prover-side engine for binary FRI proofs.
-public struct BinaryFRIProverEngine<B: BinaryTowerProtocol> {
-
-    public let config: BinaryFRIConfig
-    public let foldEngine: BinaryFRIFoldEngine<B>
-    public let merkleTreeBuilder: MerkleTreeBuilder
-
-    public init(config: BinaryFRIConfig) {
-        self.config = config
-        self.foldEngine = BinaryFRIFoldEngine(config: config)
-        self.merkleTreeBuilder = MerkleTreeBuilder()
-    }
-
-    /// Generate a proof for the given polynomial evaluations.
-    ///
-    /// - Parameters:
-    ///   - evals: Polynomial evaluations at domain points
-    ///   - alphas: Fiat-Shamir challenges (derived from previous rounds)
-    /// - Returns: FRI proof containing all folded layers and Merkle roots
-    public func prove(evals: [B], alphas: [B]) throws -> BinaryFRICommitment<B> {
-        var engine = self.foldEngine
-        var current = evals
-        var layers = [evals]
-        var merkleRoots = [B]()
-
-        let numRounds = engine.computeNumRounds(initialSize: evals.count)
-
-        for round in 0..<numRounds {
-            // Build Merkle tree for current layer
-            let root = try merkleTreeBuilder.buildRoot(values: current)
-            merkleRoots.append(root)
-
-            // Determine arity for this round
-            let arity = engine.determineArity(round: round,
-                                              remainingRounds: numRounds - round)
-
-            // Fold the layer
-            if arity > 1 {
-                current = engine.foldRoundArity(evals: current,
-                                                alpha: alphas[round],
-                                                arity: arity)
-            } else {
-                current = engine.foldRound(evals: current, alpha: alphas[round])
-            }
-            layers.append(current)
-        }
-
-        // Final constant value
-        let finalValue = current.first ?? .zero
-
-        return BinaryFRICommitment(
-            layers: layers,
-            roots: merkleRoots,
-            alphas: Array(alphas.prefix(numRounds)),
-            finalValue: finalValue,
-            logN: config.logDomainSize,
-            config: config
-        )
-    }
-}
-
-// MARK: - Binary FRI Verifier Engine
-
-/// Verifier-side engine for binary FRI verification.
-public struct BinaryFRIVerifierEngine<B: BinaryTowerProtocol> {
-
-    public let config: BinaryFRIConfig
-
-    /// Verify a binary FRI proof.
-    ///
-    /// - Parameters:
-    ///   - commitment: The FRI commitment
-    ///   - proof: Query proof containing authentication paths
-    /// - Returns: True if verification succeeds
-    public func verify(commitment: BinaryFRICommitment<B>, proof: BinaryFRIQueryProof<B>) -> Bool {
-        // Verify each layer fold
-        for (round, layerEval) in proof.layerEvals.enumerated() {
-            let alpha = commitment.alphas[round]
-            let f0 = layerEval.0
-            let f1 = layerEval.1
-            let folded = proof.merklePaths[round].first ?? layerEval.0
-
-            // Check fold equation
-            let engine = BinaryFRIFoldEngine<B>(config: config)
-            if !engine.verifyFold(f0: f0, f1: f1, folded: folded, alpha: alpha, x: .zero) {
-                return false
-            }
-        }
-
-        // Verify final value matches
-        let expectedFinal = proof.layerEvals.last?.0 ?? commitment.finalValue
-        return expectedFinal == commitment.finalValue
-    }
-
-    /// Quick check: verify the final polynomial degree is within bounds.
-    public func checkFinalDegree(commitment: BinaryFRICommitment<B>) -> Bool {
-        // The final layer should have size <= finalPolyMaxDegree + 1
-        guard let lastLayer = commitment.layers.last else { return false }
-        let logFinalSize = Int(log2(Double(lastLayer.count)))
-        return logFinalSize <= config.finalPolyMaxDegree
-    }
-}
-
-// MARK: - Merkle Tree Builder (Placeholder)
-
-/// Placeholder Merkle tree builder for binary field elements.
-/// In practice, would use Poseidon2 hashing over binary field.
+/// Merkle tree builder for commitments in binary FRI.
+/// Uses simple XOR-based hashing as placeholder (production would use Poseidon2).
 public struct MerkleTreeBuilder {
     public init() {}
 
     public func buildRoot<B: BinaryTowerProtocol>(values: [B]) throws -> B {
-        // Placeholder: in real implementation, build Merkle tree with Poseidon2
-        // For now, return hash of all values
+        // Simple XOR-based hash as placeholder (addition in GF(2^m) is XOR)
         var hash = B.zero
         for value in values {
-            hash = hash + value // Simple XOR-like combination
+            hash = hash + value
         }
         return hash
     }
