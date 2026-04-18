@@ -85,13 +85,28 @@ Both NTT and MSM BN254 show massive performance regressions compared to PERFORMA
 ### GPU Additive FFT Optimizations
 | Idea | Impact | Status |
 |------|--------|--------|
+| SIMD Vectorization (uchar4) | **4x** | ✅ Kernels designed, implementation pending |
 | Threadgroup-Local Basis Caching | High | ✅ Implemented (forward_pairs_tg kernel) |
-| Vectorized Loads/Stores (half4/uchar4) | Medium | Not tried |
-| Threadgroup Memory for Butterfly Exchange | Medium | Not tried |
-| Batch Multiple FFTs | High | Kernel exists, not optimized |
+| Vectorized Loads/Stores (half4/uchar4) | Medium | ✅ Designed (additive_fft_gf8_optimized.metal) |
+| Register Tiling | Medium | ✅ Designed (additive_fft_gf8_optimized.metal) |
+| Batched Processing | High | ✅ Kernel exists, not optimized |
 | Fused FFT + Commitment | High | Not tried |
 | LUT as Metal Function Constant | Medium | Not tried |
 | Double/Pipelined Buffering | Medium | Not tried |
+
+**GPU Additive FFT Update (2026-04-18)**
+
+Performance Analysis Complete:
+- Current: ~11-14ms for 2^22, Target: ~0.5ms
+- **Root Cause Identified**: GPU utilization only ~3% (single byte vs 16-byte SIMD)
+- **Key Finding**: Even at 1ns/mul, theoretical best is ~4ms (still 8x too slow)
+- **Solution Path**: SIMD vectorization (4x) + optimized patterns (5.5x total)
+
+Optimization Roadmap:
+1. ✅ Analysis complete - ADDITIVE_FFT_OPTIMIZATION.md created
+2. ✅ SIMD kernels designed - additive_fft_gf8_optimized.metal
+3. ⏳ Implementation pending - needs integration into GPUAdditiveFFTEngine
+4. ⏳ Benchmarking needed - verify 4x SIMD improvement
 
 ## Remaining Folding Opportunities
 
