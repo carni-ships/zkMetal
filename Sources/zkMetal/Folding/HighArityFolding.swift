@@ -712,7 +712,7 @@ public struct HighArityFoldVerifier {
         for i in 0..<maxPubLen {
             let x0 = i < running.x.count ? running.x[i] : Fr.zero
             var expected = x0
-            for (j, (_, input)) in newBatch.enumerated() {
+            for (j, (input, _)) in newBatch.enumerated() {
                 let x_j = i < input.x.count ? input.x[j] : Fr.zero
                 expected = frAdd(expected, frMul(challenges[j], x_j))
             }

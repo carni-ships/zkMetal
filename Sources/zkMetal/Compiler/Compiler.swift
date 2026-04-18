@@ -27,10 +27,7 @@
 
 // MARK: - Module Exports
 
-@_exported import Foundation
-
-// Re-export key types for convenience
-public typealias TowerLevel = TowerLevel
+import Foundation
 
 // MARK: - Version
 

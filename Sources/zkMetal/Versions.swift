@@ -57,6 +57,7 @@ public enum Versions {
     public static let nttBLS12377    = PrimitiveVersion(version: "1.0.0", updated: "2026-04-02")
     public static let nttStark252    = PrimitiveVersion(version: "1.0.0", updated: "2026-04-04")
     public static let circleNTT      = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
+    public static let p1NTT         = PrimitiveVersion(version: "0.1.0", updated: "2026-04-17")  // P^1 Rational Function NTT prototype
     public static let rnsNTT         = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let mersenne31     = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
 
@@ -69,9 +70,11 @@ public enum Versions {
     public static let poly           = PrimitiveVersion(version: "1.0.0", updated: "2026-04-01")
     public static let basefold       = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let circleFRI      = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
+    public static let p1FRI         = PrimitiveVersion(version: "0.1.0", updated: "2026-04-17")  // P^1 Rational Function FRI prototype
     public static let univariateSumcheck = PrimitiveVersion(version: "1.1.0", updated: "2026-04-04")
     public static let blaze         = PrimitiveVersion(version: "1.0.0", updated: "2026-04-10")  // Interleaved RAA codes
     public static let additiveFFT   = PrimitiveVersion(version: "1.0.0", updated: "2026-04-12")  // GPU GF(2^8) Cantor FFT
+    public static let constraintPacking = PrimitiveVersion(version: "1.0.0", updated: "2026-04-16")  // Packed constraints + amortized sumcheck
 
     // --- BLS12-381 ---
     public static let bls12381       = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
@@ -82,6 +85,8 @@ public enum Versions {
     public static let zeromorph      = PrimitiveVersion(version: "2.0.0", updated: "2026-04-05")
     public static let pedersenCommit = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let gpuVectorCommit = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let hybridPCS      = PrimitiveVersion(version: "1.0.0", updated: "2026-04-16")
+    public static let streamingPCS   = PrimitiveVersion(version: "1.0.0", updated: "2026-04-16")  // O(N) time, O(B) space
 
     // --- GKR ---
     public static let gkr            = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
@@ -89,6 +94,9 @@ public enum Versions {
     public static let structuredGKR  = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let grandProductGKR = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let memoryChecking  = PrimitiveVersion(version: "1.1.0", updated: "2026-04-05")
+    public static let gkrBinaryMultiplication = PrimitiveVersion(version: "1.0.0", updated: "2026-04-16")
+    public static let gkrTowerProtocol = PrimitiveVersion(version: "1.0.0", updated: "2026-04-16")
+    public static let gkrZeroCheckPIOP = PrimitiveVersion(version: "1.0.0", updated: "2026-04-16")
 
     // --- Other ---
     public static let ecdsa          = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
@@ -108,6 +116,7 @@ public enum Versions {
     public static let circleSTARK    = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let babyBearSTARK  = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let folding        = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
+    public static let gpuHighArityFold = PrimitiveVersion(version: "1.0.0", updated: "2026-04-16")
     public static let brakedown      = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let binaryTower    = PrimitiveVersion(version: "2.0.0", updated: "2026-04-05")
     public static let latticeNTT     = PrimitiveVersion(version: "1.1.0", updated: "2026-04-05")
@@ -300,6 +309,14 @@ public enum Versions {
     public static let gpuBiniusPoly = PrimitiveVersion(version: "1.0.0", updated: "2026-04-06")
     public static let gpuProofBatchAggregation = PrimitiveVersion(version: "1.0.0", updated: "2026-04-06")
 
+    // --- DAG Parallelization ---
+    public static let dagParallelization = PrimitiveVersion(version: "1.0.0", updated: "2026-04-16")  // Algebraic DAG scheduling + bit-sliced SIMD
+    public static let dagDependencyGraph = PrimitiveVersion(version: "1.0.0", updated: "2026-04-16")   // CircuitDAG construction
+    public static let dagBitSlicedExec = PrimitiveVersion(version: "1.0.0", updated: "2026-04-16")   // 512-bit register bit-slicing
+    public static let dagDynamicLevel = PrimitiveVersion(version: "1.0.0", updated: "2026-04-16")     // Dynamic tower level switching
+    public static let dagParallelSchedule = PrimitiveVersion(version: "1.0.0", updated: "2026-04-16") // CPU/GPU core scheduling
+    public static let dagGPUExecutor = PrimitiveVersion(version: "1.0.0", updated: "2026-04-16")      // GPU kernel generation
+
     /// Print all primitive versions
     public static func printAll() {
         let entries: [(String, PrimitiveVersion)] = [
@@ -343,11 +360,14 @@ public enum Versions {
             ("STIR",              stir),
             ("Sumcheck",          sumcheck),
             ("Univ. Sumcheck",   univariateSumcheck),
+            ("Constraint Pack",   constraintPacking),
             ("Polynomial Ops",    poly),
             ("KZG",               kzg),
             ("IPA",               ipa),
             ("Zeromorph",         zeromorph),
             ("GPU Vec Commit",   gpuVectorCommit),
+            ("Hybrid PCS",       hybridPCS),
+            ("Streaming PCS",     streamingPCS),  // O(N) time, O(B) space
             ("ECDSA",             ecdsa),
             ("Radix Sort",        radixSort),
             ("Verkle Tree",       verkle),
@@ -369,6 +389,9 @@ public enum Versions {
             ("Circle FRI",       circleFRI),
             ("HyperNova Fold",   folding),
             ("GKR",              gkr),
+            ("GKR Binary Mul",   gkrBinaryMultiplication),
+            ("GKR Tower Proto",  gkrTowerProtocol),
+            ("GKR ZeroCheck",    gkrZeroCheckPIOP),
             ("Spartan",          spartan),
             ("Reed-Solomon",     reedSolomon),
             ("Lattice NTT",      latticeNTT),
@@ -508,6 +531,13 @@ public enum Versions {
             ("GPU Binius Poly",  gpuBiniusPoly),
             ("GPU Additive FFT", additiveFFT),
             ("GPU Proof Agg",    gpuProofBatchAggregation),
+            // --- DAG Parallelization ---
+            ("DAG Parallel",     dagParallelization),
+            ("DAG DepGraph",     dagDependencyGraph),
+            ("DAG BitSlice",     dagBitSlicedExec),
+            ("DAG Dyn Level",    dagDynamicLevel),
+            ("DAG Sched",        dagParallelSchedule),
+            ("DAG GPU Exec",     dagGPUExecutor),
         ]
         print("=== zkMetal Primitive Versions ===")
         for (name, v) in entries {

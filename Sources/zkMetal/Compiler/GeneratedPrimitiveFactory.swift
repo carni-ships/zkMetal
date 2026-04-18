@@ -59,7 +59,7 @@ public final class GeneratedPrimitiveFactory {
     public let optimizer = OptimizationAnalyzer()
 
     /// Registered templates
-    private var templates: [String: PrimitiveTemplate.Type] = [:]
+    var templates: [String: PrimitiveTemplate.Type] = [:]
 
     public init() {
         // Register all built-in templates
