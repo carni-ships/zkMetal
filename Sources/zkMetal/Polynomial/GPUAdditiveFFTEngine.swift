@@ -22,6 +22,8 @@ public class GPUAdditiveFFTEngine {
     public let forwardFn: MTLComputePipelineState?
     public let forwardPairsFn: MTLComputePipelineState?  // All-threads-active variant
     public let forwardPairsTgFn: MTLComputePipelineState?  // Threadgroup-local basis caching
+    public let forwardSimdFn: MTLComputePipelineState?  // SIMD-optimized variant (uchar4)
+    public let forwardRegisterTileFn: MTLComputePipelineState?  // Register tiling variant
     public let forwardShuffleFn: MTLComputePipelineState?
     let inverseFn: MTLComputePipelineState?
     let forwardBatchFn: MTLComputePipelineState?
@@ -39,6 +41,17 @@ public class GPUAdditiveFFTEngine {
 
     /// CPU fallback threshold (use CPU for small transforms where GPU overhead dominates).
     private static let cpuFallbackLogN = 8   // n <= 256: CPU NEON faster than GPU dispatch
+
+    /// Which kernel variant to use (can be changed for benchmarking)
+    public var kernelVariant: KernelVariant = .pairs
+
+    public enum KernelVariant {
+        case standard           // Original n-thread kernel
+        case pairs             // n/2-thread kernel (all threads active)
+        case threadgroupCache  // n/2-thread with threadgroup-local basis
+        case simd              // n/4-thread SIMD kernel (experimental)
+        case registerTiling    // Optimized register usage (experimental)
+    }
 
     public init() throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
