@@ -657,17 +657,21 @@ static void *window_worker(void *arg) {
         pt_set_id(buckets + b * 12);
 
     // Phase 1: Bucket accumulation (mixed affine addition)
+    // Optimized: use inline copy instead of memcpy
     for (int i = 0; i < nn; i++) {
         uint32_t digit = extract_window(task->scalars + i * 8, w, wb);
         if (digit != 0) {
+            uint64_t *bucket = buckets + digit * 12;
             uint64_t tmp[12];
-            pt_add_mixed(buckets + digit * 12, task->points + i * 8, tmp);
-            memcpy(buckets + digit * 12, tmp, 96);
+            pt_add_mixed(bucket, task->points + i * 8, tmp);
+            // Inline copy: 12 uint64_t = 96 bytes
+            bucket[0] = tmp[0]; bucket[1] = tmp[1]; bucket[2] = tmp[2]; bucket[3] = tmp[3];
+            bucket[4] = tmp[4]; bucket[5] = tmp[5]; bucket[6] = tmp[6]; bucket[7] = tmp[7];
+            bucket[8] = tmp[8]; bucket[9] = tmp[9]; bucket[10] = tmp[10]; bucket[11] = tmp[11];
         }
     }
 
     // Phase 2: Batch convert buckets to affine (Montgomery's trick)
-    // Only convert buckets 1..nb (skip bucket 0)
     uint64_t *bucket_aff = (uint64_t *)malloc((size_t)nb * 64);
     batch_to_affine(buckets + 12, bucket_aff, nb);
 
@@ -677,21 +681,30 @@ static void *window_worker(void *arg) {
     pt_set_id(window_sum);
 
     for (int j = nb - 1; j >= 0; j--) {
-        // bucket_aff[j] corresponds to original bucket j+1
-        if (!(bucket_aff[j*8] == 0 && bucket_aff[j*8+1] == 0 &&
-              bucket_aff[j*8+2] == 0 && bucket_aff[j*8+3] == 0 &&
-              bucket_aff[j*8+4] == 0 && bucket_aff[j*8+5] == 0 &&
-              bucket_aff[j*8+6] == 0 && bucket_aff[j*8+7] == 0)) {
+        uint64_t *aff = bucket_aff + j * 8;
+        // Check if affine point is non-identity
+        if (!(aff[0] == 0 && aff[1] == 0 && aff[2] == 0 && aff[3] == 0 &&
+              aff[4] == 0 && aff[5] == 0 && aff[6] == 0 && aff[7] == 0)) {
             uint64_t tmp[12];
-            pt_add_mixed(running, bucket_aff + j * 8, tmp);
-            memcpy(running, tmp, 96);
+            pt_add_mixed(running, aff, tmp);
+            running[0] = tmp[0]; running[1] = tmp[1]; running[2] = tmp[2]; running[3] = tmp[3];
+            running[4] = tmp[4]; running[5] = tmp[5]; running[6] = tmp[6]; running[7] = tmp[7];
+            running[8] = tmp[8]; running[9] = tmp[9]; running[10] = tmp[10]; running[11] = tmp[11];
         }
         uint64_t tmp[12];
         pt_add(window_sum, running, tmp);
-        memcpy(window_sum, tmp, 96);
+        window_sum[0] = tmp[0]; window_sum[1] = tmp[1]; window_sum[2] = tmp[2]; window_sum[3] = tmp[3];
+        window_sum[4] = tmp[4]; window_sum[5] = tmp[5]; window_sum[6] = tmp[6]; window_sum[7] = tmp[7];
+        window_sum[8] = tmp[8]; window_sum[9] = tmp[9]; window_sum[10] = tmp[10]; window_sum[11] = tmp[11];
     }
 
-    memcpy(task->result, window_sum, 96);
+    // Inline copy to result
+    task->result[0] = window_sum[0]; task->result[1] = window_sum[1];
+    task->result[2] = window_sum[2]; task->result[3] = window_sum[3];
+    task->result[4] = window_sum[4]; task->result[5] = window_sum[5];
+    task->result[6] = window_sum[6]; task->result[7] = window_sum[7];
+    task->result[8] = window_sum[8]; task->result[9] = window_sum[9];
+    task->result[10] = window_sum[10]; task->result[11] = window_sum[11];
     free(buckets);
     free(bucket_aff);
     return NULL;
@@ -1172,15 +1185,24 @@ void bn254_pippenger_msm(
         });
 
     // Horner combination: result = Σ windowResults[w] × 2^(w × wb)
-    memcpy(result, tasks[num_windows - 1].result, 96);
+    // Optimized: inline copies instead of memcpy
+    const uint64_t *last = tasks[num_windows - 1].result;
+    result[0] = last[0]; result[1] = last[1]; result[2] = last[2]; result[3] = last[3];
+    result[4] = last[4]; result[5] = last[5]; result[6] = last[6]; result[7] = last[7];
+    result[8] = last[8]; result[9] = last[9]; result[10] = last[10]; result[11] = last[11];
+
+    uint64_t tmp[12];
     for (int w = num_windows - 2; w >= 0; w--) {
-        uint64_t tmp[12];
         for (int s = 0; s < wb; s++) {
             pt_dbl(result, tmp);
-            memcpy(result, tmp, 96);
+            result[0] = tmp[0]; result[1] = tmp[1]; result[2] = tmp[2]; result[3] = tmp[3];
+            result[4] = tmp[4]; result[5] = tmp[5]; result[6] = tmp[6]; result[7] = tmp[7];
+            result[8] = tmp[8]; result[9] = tmp[9]; result[10] = tmp[10]; result[11] = tmp[11];
         }
         pt_add(result, tasks[w].result, tmp);
-        memcpy(result, tmp, 96);
+        result[0] = tmp[0]; result[1] = tmp[1]; result[2] = tmp[2]; result[3] = tmp[3];
+        result[4] = tmp[4]; result[5] = tmp[5]; result[6] = tmp[6]; result[7] = tmp[7];
+        result[8] = tmp[8]; result[9] = tmp[9]; result[10] = tmp[10]; result[11] = tmp[11];
     }
 
     free(tasks);
