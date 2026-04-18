@@ -2,6 +2,7 @@
 // d=7 (x^7 S-box), rounds_f=8 (4+4), rounds_p=13
 // Parameters match SP1/Plonky3 exactly for full compatibility.
 // Each thread computes one independent Poseidon2 permutation.
+// Batched version: each thread processes 'batchSize' permutations sequentially.
 
 #include "../fields/babybear.metal"
 
@@ -115,7 +116,8 @@ void p2bb_permute(thread Bb *s, constant uint *rc) {
         p2bb_external_layer(s);
     }
 
-    // Partial rounds (4..16)
+    // Partial rounds (4..16) — #pragma unroll for better instruction scheduling
+    #pragma unroll
     for (uint r = P2BB_RF_HALF; r < P2BB_RF_HALF + P2BB_RP; r++) {
         s[0] = bb_add(s[0], Bb{rc[r * P2BB_T]});
         s[0] = p2bb_sbox(s[0]);
@@ -178,6 +180,37 @@ kernel void poseidon2_bb_hash_pairs(
     uint out_base = gid * P2BB_RATE;
     for (uint i = 0; i < P2BB_RATE; i++) {
         output[out_base + i] = s[i].v;
+    }
+}
+
+// Batched 2-to-1 compression: each thread processes 'batchSize' hash pairs
+// Improves GPU utilization when pair count is small relative to GPU core count
+kernel void poseidon2_bb_hash_pairs_batched(
+    device const uint* input        [[buffer(0)]],
+    device uint* output             [[buffer(1)]],
+    constant uint* rc               [[buffer(2)]],
+    constant uint& count            [[buffer(3)]],       // total number of hash pairs
+    constant uint& batchSize        [[buffer(4)]],      // pairs per thread
+    uint gid                        [[thread_position_in_grid]]
+) {
+    uint basePair = gid * batchSize;
+    uint endPair = basePair + batchSize;
+    if (basePair >= count) return;
+    if (endPair > count) endPair = count;
+
+    for (uint p = basePair; p < endPair; p++) {
+        Bb s[P2BB_T];
+        uint in_base = p * P2BB_T;
+        for (uint i = 0; i < P2BB_T; i++) {
+            s[i] = Bb{input[in_base + i]};
+        }
+
+        p2bb_permute(s, rc);
+
+        uint out_base = p * P2BB_RATE;
+        for (uint i = 0; i < P2BB_RATE; i++) {
+            output[out_base + i] = s[i].v;
+        }
     }
 }
 
