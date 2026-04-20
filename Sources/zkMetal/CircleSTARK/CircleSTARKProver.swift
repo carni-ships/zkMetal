@@ -35,6 +35,12 @@ public struct CircleFRIProofData {
     public let finalValue: M31
     /// Query indices used
     public let queryIndices: [Int]
+
+    public init(rounds: [CircleFRIRound], finalValue: M31, queryIndices: [Int]) {
+        self.rounds = rounds
+        self.finalValue = finalValue
+        self.queryIndices = queryIndices
+    }
 }
 
 /// One round of Circle FRI

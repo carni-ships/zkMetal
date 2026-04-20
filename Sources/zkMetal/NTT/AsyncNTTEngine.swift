@@ -50,7 +50,7 @@ public class AsyncNTTEngine {
             }
 
             // Set shared event to signal when this command buffer completes
-            cmdBuf.encode(signal: sharedEvent, value: currentValue, at: MTLCommandBufferStatus.enqueued)
+            cmdBuf.encodeSignalEvent(sharedEvent, value: currentValue)
 
             var nVal = n
             var logNVal = UInt32(logN)
@@ -104,7 +104,7 @@ public class AsyncNTTEngine {
         }
 
         // Set shared event
-        cmdBuf.encode(signal: sharedEvent, value: currentValue, at: .enqueued)
+        cmdBuf.encodeSignalEvent(sharedEvent, value: currentValue)
 
         do {
             // Encode all NTT operations into this single command buffer

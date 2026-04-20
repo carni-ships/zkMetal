@@ -225,7 +225,7 @@ public class NTTEngine {
     }
 
     /// Get or create twiddle factor buffer for given logN.
-    private func getTwiddles(logN: Int) -> MTLBuffer {
+    func getTwiddles(logN: Int) -> MTLBuffer {
         if let cached = twiddleCache[logN] { return cached }
         let twiddles = precomputeTwiddles(logN: logN)
         let buf = createFrBuffer(twiddles)!
@@ -264,7 +264,7 @@ public class NTTEngine {
 
     // Max elements per threadgroup for fused kernel (1024 Fr * 32 bytes = 32KB shared mem)
     private static let maxFusedElements = 1024
-    private static let maxFusedLogN = 10  // log2(1024)
+    static let maxFusedLogN = 10  // log2(1024)
 
     // Use four-step when global stages > threshold (tuned per device)
     // Also requires logN <= 2*maxFusedLogN so both sub-FFTs fit in shared memory
