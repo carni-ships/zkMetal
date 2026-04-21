@@ -326,11 +326,14 @@ if cmd == "calibrate" {
 } else if cmd == "msm" {
     try runMSMBench()
 } else if cmd == "profile" || cmd == "profiling" {
-    MetalProfilingBench.main()
+    // MetalProfilingBench.main() // TODO: missing implementation
+    print("Error: MetalProfilingBench not implemented")
 } else if cmd == "batch" || cmd == "batching" {
-    BatchingBench.main()
+    // BatchingBench.main() // TODO: missing implementation
+    print("Error: BatchingBench not implemented")
 } else if cmd == "ntt-profile" || cmd == "profile-ntt" {
-    NTTProfilingBench.main()
+    // NTTProfilingBench.main() // TODO: missing implementation
+    print("Error: NTTProfilingBench not implemented")
 } else if cmd == "all" {
     try runMSMBench()
     runNTTBench()
