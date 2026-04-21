@@ -173,6 +173,40 @@ swift run -c release zkbench poseidon2-bb
 # Profile NTT bottlenecks
 swift run -c release zkbench ntt-profile
 
+# Run P^1 Rational Function STARKs benchmark
+swift run -c release zkbench p1
+```
+
+## P^1 Rational Function STARKs (Prototype)
+
+Prototype implementation using Mersenne31 field with standard radix-2 FFT on multiplicative coset domain.
+
+**Note**: M31 has limited 2-adicity (p-1 = 2^31 - 2 = 2 × (2^30 - 1)). The implementation uses a sign-pair domain (±t) workaround for FRI folding.
+
+### P^1 NTT (GPU)
+
+| Size | Time |
+|------|------|
+| 2^10 | 0.17ms |
+| 2^12 | 0.36ms |
+| 2^14 | 0.21ms |
+| 2^16 | 0.35ms |
+| 2^18 | 1.23ms |
+| 2^20 | 3.70ms |
+
+### P^1 FRI Commit Phase (GPU)
+
+Optimized with inv2t caching (65x speedup over naive recomputation).
+
+| Size | Commit Time |
+|------|-----------|
+| 2^14 | 1.9ms |
+| 2^16 | 8.0ms |
+| 2^18 | 21.9ms |
+| 2^20 | 83.4ms |
+
+**Key optimization**: Precompute all inv2t arrays for all FRI rounds upfront with GPU buffer caching.
+
 # Metal profiling
 swift run -c release zkbench profile
 ```
