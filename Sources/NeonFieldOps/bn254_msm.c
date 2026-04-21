@@ -602,6 +602,10 @@ static void batch_to_affine(const uint64_t *proj, uint64_t *aff, int n) {
 // Scalar window extraction
 // ============================================================
 
+// BN254 scalar field: 254 bits
+// We mask out bits beyond 254 to avoid garbage in the top window
+static const int BN254_SCALAR_BITS = 254;
+
 static inline uint32_t extract_window(const uint32_t *scalar, int window_idx, int window_bits) {
     int bit_offset = window_idx * window_bits;
     int word_idx = bit_offset / 32;
@@ -611,7 +615,20 @@ static inline uint32_t extract_window(const uint32_t *scalar, int window_idx, in
     if (word_idx + 1 < 8)
         word |= ((uint64_t)scalar[word_idx + 1]) << 32;
 
-    return (uint32_t)((word >> bit_in_word) & ((1u << window_bits) - 1));
+    uint32_t digit = (uint32_t)((word >> bit_in_word) & ((1u << window_bits) - 1));
+
+    // Mask out bits beyond the scalar width (254 bits)
+    // This prevents garbage in the top window from causing out-of-bounds bucket access
+    if (bit_offset + window_bits > BN254_SCALAR_BITS) {
+        int valid_bits = BN254_SCALAR_BITS - bit_offset;
+        if (valid_bits < 0) {
+            digit = 0;  // Entirely beyond scalar
+        } else if (valid_bits < window_bits) {
+            digit &= (1u << valid_bits) - 1;  // Mask to valid bits
+        }
+    }
+
+    return digit;
 }
 
 // ============================================================
@@ -932,6 +949,9 @@ static void pt_scalar_mul(const uint64_t p[12], const uint32_t scalar[8], uint64
     // Extract nibbles from scalar (MSB first): 256 bits = 64 nibbles
     // scalar is 8 x uint32_t, little-endian limbs
     // Nibble 63 is the highest 4 bits of scalar[7], nibble 0 is lowest 4 bits of scalar[0]
+    //
+    // IMPORTANT: BN254 scalars are only 254 bits. Nibble 63 contains bits 252-255,
+    // but only bits 252-253 are valid. Bits 254-255 are garbage and must be masked to 0.
     uint8_t nibbles[64];
     for (int i = 0; i < 8; i++) {
         uint32_t word = scalar[i];
@@ -940,6 +960,8 @@ static void pt_scalar_mul(const uint64_t p[12], const uint32_t scalar[8], uint64
             word >>= 4;
         }
     }
+    // Mask out garbage bits in nibble 63 (bits 252-255, only 252-253 are valid)
+    nibbles[63] &= 0x3;  // Only 2 bits (254 - 252 = 2) are valid in the last nibble
 
     // Find highest non-zero nibble
     int top = 63;

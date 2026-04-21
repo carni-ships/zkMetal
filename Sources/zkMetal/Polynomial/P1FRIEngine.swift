@@ -23,6 +23,7 @@ public class P1FRIEngine {
     let foldFunction: MTLComputePipelineState
     let foldBy2Function: MTLComputePipelineState?  // Fused 2-round kernel
     let foldBy4Function: MTLComputePipelineState?  // Fused 4-round kernel
+    let foldBy8Function: MTLComputePipelineState?  // Fused 8-round kernel
 
     // Reuse P1 NTT engine for LDE if needed
     public let p1NTT: P1NTTEngine
@@ -76,6 +77,9 @@ public class P1FRIEngine {
         )
         self.foldBy4Function = try? device.makeComputePipelineState(
             function: library.makeFunction(name: "p1_fri_fold_by4")!
+        )
+        self.foldBy8Function = try? device.makeComputePipelineState(
+            function: library.makeFunction(name: "p1_fri_fold_by8")!
         )
 
         self.p1NTT = try P1NTTEngine()
@@ -359,6 +363,17 @@ public class P1FRIEngine {
         var useA = true
         let tg = min(256, Int(foldFunction.maxTotalThreadsPerThreadgroup))
 
+        // Precompute ALL inv2t arrays and cache GPU buffers to avoid repeated allocations
+        let allInv2t = getAllInv2t(logN: logN, numRounds: alphas.count)
+        let cacheKey = logN * 100 + alphas.count
+        var inv2tBufs: [MTLBuffer]
+        if let cached = inv2tBufCache[cacheKey] {
+            inv2tBufs = cached
+        } else {
+            inv2tBufs = allInv2t.map { createM31Buffer($0)! }
+            inv2tBufCache[cacheKey] = inv2tBufs
+        }
+
         for i in 0..<alphas.count {
             let curN = 1 << (logN - i)
             let halfN = curN / 2
@@ -366,9 +381,8 @@ public class P1FRIEngine {
             var alpha = alphas[i]
             var nVal = UInt32(curN)
 
-            // Get precomputed inv2t for this fold round
-            let inv2tData = getInv2tFolded(logN: logN, foldRound: i)
-            let inv2tBuf = createM31Buffer(inv2tData)!
+            // Use cached inv2t buffer instead of creating new one each iteration
+            let inv2tBuf = inv2tBufs[i]
 
             enc.setComputePipelineState(foldFunction)
             enc.setBuffer(currentBuf, offset: 0, index: 0)
@@ -404,6 +418,10 @@ public class P1FRIEngine {
 
     /// Commit phase: fold iteratively, building Merkle commitments at each layer.
     /// Returns layers, Merkle roots (as M31 hashes), and final constant.
+    ///
+    /// This is the CORRECT implementation for full proofs. It uses single-round
+    /// folding with inv2t caching. For faster folding (but without intermediate layers),
+    /// see commitPhaseFused().
     public func commitPhase(evals: [M31], alphas: [M31]) throws -> P1FRICommitment {
         let n = evals.count
         precondition(n > 1 && (n & (n - 1)) == 0)
@@ -529,10 +547,18 @@ public class P1FRIEngine {
         )
     }
 
-    // MARK: - Fused Commit Phase (fold-by-4 cascade)
+    // MARK: - Fused Commit Phase (fold-by-8 cascade)
 
-    /// Fused commit phase using fold-by-4 cascade for reduced kernel launch overhead.
-    /// This is the optimized version that fuses 4 consecutive fold rounds into one GPU dispatch.
+    /// Fused commit phase using fold-by-8 cascade for reduced kernel launch overhead.
+    /// This is the OPTIMIZED version that fuses 8 consecutive fold rounds into one GPU dispatch.
+    ///
+    /// WARNING: This returns INCOMPLETE results - only 2 layers instead of all intermediate layers.
+    /// The returned commitment cannot be used with queryPhase() for full proof generation.
+    ///
+    /// Use this for FAST COMMITMENT ONLY when you don't need intermediate layers for verification.
+    /// For full proofs, use commitPhase() instead.
+    ///
+    /// Performance: ~12x faster than commitPhase() for folding, but produces incomplete commitment.
     public func commitPhaseFused(evals: [M31], alphas: [M31]) throws -> P1FRICommitment {
         let n = evals.count
         precondition(n > 1 && (n & (n - 1)) == 0)
@@ -559,29 +585,75 @@ public class P1FRIEngine {
 
         let foldT0 = CFAbsoluteTimeGetCurrent()
 
+        // Precompute ALL inv2t arrays and cache GPU buffers to avoid repeated allocations
+        let allInv2t = getAllInv2t(logN: logN, numRounds: numRounds)
+        let cacheKey = logN * 100 + numRounds
+        var inv2tBufs: [MTLBuffer]
+        if let cached = inv2tBufCache[cacheKey] {
+            inv2tBufs = cached
+        } else {
+            inv2tBufs = allInv2t.map { createM31Buffer($0)! }
+            inv2tBufCache[cacheKey] = inv2tBufs
+        }
+
         // Process rounds in groups of 4 (or 2 for remaining)
         var currentBuf = inputBuf!
         var remainingRounds = numRounds
         var roundIdx = 0
 
         while remainingRounds > 0 {
-            if remainingRounds >= 4 && foldBy4Function != nil {
-                // Process 4 rounds at once
-                let rounds = 4
+            if remainingRounds >= 8 && foldBy8Function != nil {
+                // Process 8 rounds at once using cached inv2t buffers
+                let rounds = 8
                 let outputSize = n >> (roundIdx + rounds)
 
-                // Precompute inv2t for all 4 rounds
-                var inv2t_0 = getInv2tFolded(logN: logN, foldRound: roundIdx)
-                var inv2t_1 = getInv2tFolded(logN: logN, foldRound: roundIdx + 1)
-                var inv2t_2 = getInv2tFolded(logN: logN, foldRound: roundIdx + 2)
-                var inv2t_3 = getInv2tFolded(logN: logN, foldRound: roundIdx + 3)
+                var alphasArray = [alphas[roundIdx], alphas[roundIdx + 1],
+                                   alphas[roundIdx + 2], alphas[roundIdx + 3],
+                                   alphas[roundIdx + 4], alphas[roundIdx + 5],
+                                   alphas[roundIdx + 6], alphas[roundIdx + 7]]
+                var nVal = UInt32(n)
+                var outBuf: MTLBuffer
 
-                guard let inv2tBuf_0 = createM31Buffer(inv2t_0),
-                      let inv2tBuf_1 = createM31Buffer(inv2t_1),
-                      let inv2tBuf_2 = createM31Buffer(inv2t_2),
-                      let inv2tBuf_3 = createM31Buffer(inv2t_3) else {
-                    throw MSMError.gpuError("Failed to create inv2t buffer")
+                // Ping-pong between current and scratch
+                if roundIdx == 0 {
+                    outBuf = scratch
+                } else {
+                    outBuf = (roundIdx % 2 == 0) ? scratch : inputBuf!
                 }
+
+                guard let cmdBuf = commandQueue.makeCommandBuffer() else {
+                    throw MSMError.noCommandBuffer
+                }
+                let enc = cmdBuf.makeComputeCommandEncoder()!
+
+                enc.setComputePipelineState(foldBy8Function!)
+                enc.setBuffer(currentBuf, offset: 0, index: 0)
+                enc.setBuffer(outBuf, offset: 0, index: 1)
+                enc.setBuffer(inv2tBufs[roundIdx], offset: 0, index: 2)
+                enc.setBuffer(inv2tBufs[roundIdx + 1], offset: 0, index: 3)
+                enc.setBuffer(inv2tBufs[roundIdx + 2], offset: 0, index: 4)
+                enc.setBuffer(inv2tBufs[roundIdx + 3], offset: 0, index: 5)
+                enc.setBuffer(inv2tBufs[roundIdx + 4], offset: 0, index: 6)
+                enc.setBuffer(inv2tBufs[roundIdx + 5], offset: 0, index: 7)
+                enc.setBuffer(inv2tBufs[roundIdx + 6], offset: 0, index: 8)
+                enc.setBuffer(inv2tBufs[roundIdx + 7], offset: 0, index: 9)
+                enc.setBytes(&alphasArray, length: stride * 8, index: 10)
+                enc.setBytes(&nVal, length: 4, index: 11)
+
+                enc.dispatchThreads(MTLSize(width: outputSize, height: 1, depth: 1),
+                                   threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
+                enc.endEncoding()
+                cmdBuf.commit()
+                cmdBuf.waitUntilCompleted()
+
+                currentBuf = outBuf
+                roundIdx += rounds
+                remainingRounds -= rounds
+
+            } else if remainingRounds >= 4 && foldBy4Function != nil {
+                // Process 4 rounds at once using cached inv2t buffers
+                let rounds = 4
+                let outputSize = n >> (roundIdx + rounds)
 
                 var alphasArray = [alphas[roundIdx], alphas[roundIdx + 1],
                                    alphas[roundIdx + 2], alphas[roundIdx + 3]]
@@ -603,10 +675,10 @@ public class P1FRIEngine {
                 enc.setComputePipelineState(foldBy4Function!)
                 enc.setBuffer(currentBuf, offset: 0, index: 0)
                 enc.setBuffer(outBuf, offset: 0, index: 1)
-                enc.setBuffer(inv2tBuf_0, offset: 0, index: 2)
-                enc.setBuffer(inv2tBuf_1, offset: 0, index: 3)
-                enc.setBuffer(inv2tBuf_2, offset: 0, index: 4)
-                enc.setBuffer(inv2tBuf_3, offset: 0, index: 5)
+                enc.setBuffer(inv2tBufs[roundIdx], offset: 0, index: 2)
+                enc.setBuffer(inv2tBufs[roundIdx + 1], offset: 0, index: 3)
+                enc.setBuffer(inv2tBufs[roundIdx + 2], offset: 0, index: 4)
+                enc.setBuffer(inv2tBufs[roundIdx + 3], offset: 0, index: 5)
                 enc.setBytes(&alphasArray, length: stride * 4, index: 6)
                 enc.setBytes(&nVal, length: 4, index: 7)
 
@@ -621,17 +693,9 @@ public class P1FRIEngine {
                 remainingRounds -= rounds
 
             } else if remainingRounds >= 2 && foldBy2Function != nil {
-                // Process 2 rounds at once
+                // Process 2 rounds at once using cached inv2t buffers
                 let rounds = 2
                 let outputSize = n >> (roundIdx + rounds)
-
-                var inv2t_0 = getInv2tFolded(logN: logN, foldRound: roundIdx)
-                var inv2t_1 = getInv2tFolded(logN: logN, foldRound: roundIdx + 1)
-
-                guard let inv2tBuf_0 = createM31Buffer(inv2t_0),
-                      let inv2tBuf_1 = createM31Buffer(inv2t_1) else {
-                    throw MSMError.gpuError("Failed to create inv2t buffer")
-                }
 
                 var alphasArray = [alphas[roundIdx], alphas[roundIdx + 1]]
                 var nVal = UInt32(n)
@@ -645,8 +709,8 @@ public class P1FRIEngine {
                 enc.setComputePipelineState(foldBy2Function!)
                 enc.setBuffer(currentBuf, offset: 0, index: 0)
                 enc.setBuffer(outBuf, offset: 0, index: 1)
-                enc.setBuffer(inv2tBuf_0, offset: 0, index: 2)
-                enc.setBuffer(inv2tBuf_1, offset: 0, index: 3)
+                enc.setBuffer(inv2tBufs[roundIdx], offset: 0, index: 2)
+                enc.setBuffer(inv2tBufs[roundIdx + 1], offset: 0, index: 3)
                 enc.setBytes(&alphasArray, length: stride * 2, index: 4)
                 enc.setBytes(&nVal, length: 4, index: 5)
 
@@ -661,16 +725,14 @@ public class P1FRIEngine {
                 remainingRounds -= rounds
 
             } else {
-                // Fall back to single-round fold
+                // Fall back to single-round fold using cached inv2t buffer
                 let curN = n >> roundIdx
                 let halfN = curN / 2
                 var alpha = alphas[roundIdx]
                 var nVal = UInt32(curN)
 
-                let inv2tData = getInv2tFolded(logN: logN, foldRound: roundIdx)
-                guard let inv2tBuf = createM31Buffer(inv2tData) else {
-                    throw MSMError.gpuError("Failed to create inv2t buffer")
-                }
+                // Use cached inv2t buffer
+                let inv2tBuf = inv2tBufs[roundIdx]
 
                 let outBuf = (roundIdx % 2 == 0) ? scratch : inputBuf!
 

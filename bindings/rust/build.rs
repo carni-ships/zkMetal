@@ -36,11 +36,11 @@ fn main() {
         println!("cargo:rustc-link-lib=framework=Foundation");
     }
 
-    // NEON feature: link the static C library for CPU-accelerated field ops.
+    // NEON feature: the NeonFieldOps symbols are embedded in libzkMetal-ffi.dylib.
+    // SPM compiles NeonFieldOps as part of the main library, not as a separate .a.
+    // No additional linking needed - the zkMetal-ffi dylib already contains these symbols.
     if cfg!(feature = "neon") {
-        // NeonFieldOps is compiled as a static library by SPM.
-        // The .a file is typically at .build/release/libNeonFieldOps.a
-        println!("cargo:rustc-link-lib=static=NeonFieldOps");
+        println!("/* neon symbols are in zkMetal-ffi dylib */");
     }
 
     println!("cargo:rerun-if-env-changed=ZKMETAL_LIB_DIR");

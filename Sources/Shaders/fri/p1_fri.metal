@@ -164,6 +164,209 @@ kernel void p1_fri_fold_by4(
 }
 
 // ============================================================================
+// FOLD-BY-8 CASCADE KERNEL
+// Fuses 8 consecutive fold rounds into a single GPU dispatch.
+// Uses threadgroup memory to store intermediate fold results.
+//
+// Each threadgroup handles 512 elements of the INPUT (n/2 elements).
+// Within the threadgroup, we accumulate fold results for each eighth:
+// - Q0 threads compute fold positions [0, n/4)
+// - Q1 threads compute fold positions [n/4, n/2)
+// - Q2 threads compute fold positions [n/2, 3n/4)
+// - Q3 threads compute fold positions [3n/4, n)
+// Then repeat through rounds 1-7.
+//
+// Output: n/256 elements
+// ============================================================================
+
+kernel void p1_fri_fold_by8(
+    device const M31* input           [[buffer(0)]],
+    device M31* output               [[buffer(1)]],
+    device const M31* inv_2t_0       [[buffer(2)]],  // inv_2t for round 0: size n/2
+    device const M31* inv_2t_1       [[buffer(3)]],  // inv_2t for round 1: size n/4
+    device const M31* inv_2t_2       [[buffer(4)]],  // inv_2t for round 2: size n/8
+    device const M31* inv_2t_3       [[buffer(5)]],  // inv_2t for round 3: size n/16
+    device const M31* inv_2t_4       [[buffer(6)]],  // inv_2t for round 4: size n/32
+    device const M31* inv_2t_5       [[buffer(7)]],  // inv_2t for round 5: size n/64
+    device const M31* inv_2t_6       [[buffer(8)]],  // inv_2t for round 6: size n/128
+    device const M31* inv_2t_7       [[buffer(9)]],  // inv_2t for round 7: size n/256
+    constant M31* alphas             [[buffer(10)]],  // 8 alpha values
+    constant uint& n                 [[buffer(11)]],  // original domain size
+    uint gid                         [[thread_position_in_grid]],
+    uint tid                         [[thread_index_in_threadgroup]],
+    uint tgid                        [[threadgroup_position_in_grid]],
+    uint tg_size                     [[threads_per_threadgroup]]
+) {
+    uint n0 = n >> 1;   // n/2
+    uint n1 = n >> 2;   // n/4
+    uint n2 = n >> 3;   // n/8
+    uint n3 = n >> 4;   // n/16
+    uint n4 = n >> 5;   // n/32
+    uint n5 = n >> 6;   // n/64
+    uint n6 = n >> 7;   // n/128
+    uint n7 = n >> 8;   // n/256 (output size)
+
+    if (gid >= n0) return;  // We have n/2 threads
+
+    // Threadgroup memory for intermediate results
+    // Each thread stores its fold result for all 8 rounds
+    threadgroup M31 stage0[512];  // After round 0: n/2 elements
+    threadgroup M31 stage1[512];  // After round 1: n/4 elements
+    threadgroup M31 stage2[256];  // After round 2: n/8 elements
+    threadgroup M31 stage3[256];  // After round 3: n/16 elements
+    threadgroup M31 stage4[128];  // After round 4: n/32 elements
+    threadgroup M31 stage5[128];  // After round 5: n/64 elements
+    threadgroup M31 stage6[64];   // After round 6: n/128 elements
+
+    // ========================================================================
+    // Round 0: n -> n/2
+    // Each thread reads its pair and computes one element of the n/2 output
+    // ========================================================================
+    M31 a0 = input[gid];
+    M31 b0 = input[gid + n0];
+    M31 sum0 = m31_add(a0, b0);
+    M31 half_sum0 = m31_mul(sum0, M31{M31_INV2});
+    M31 diff0 = m31_sub(a0, b0);
+    M31 alpha0_diff = m31_mul(alphas[0], diff0);
+    M31 diff_term0 = m31_mul(alpha0_diff, inv_2t_0[gid]);
+    stage0[tid] = m31_add(half_sum0, diff_term0);
+
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // ========================================================================
+    // Round 1: n/2 -> n/4
+    // Threads 0..n/4-1 process pairs from stage0
+    // ========================================================================
+    if (tid < n1) {
+        uint r1_idx = tid;
+        uint src_idx = r1_idx + (tid & 1) * n1;
+        M31 a1 = stage0[src_idx];
+        M31 b1 = stage0[src_idx + n1];
+        M31 sum1 = m31_add(a1, b1);
+        M31 half_sum1 = m31_mul(sum1, M31{M31_INV2});
+        M31 diff1 = m31_sub(a1, b1);
+        M31 alpha1_diff = m31_mul(alphas[1], diff1);
+        M31 diff_term1 = m31_mul(alpha1_diff, inv_2t_1[r1_idx]);
+        stage1[tid] = m31_add(half_sum1, diff_term1);
+    }
+
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // ========================================================================
+    // Round 2: n/4 -> n/8
+    // Threads 0..n/8-1 process pairs from stage1
+    // ========================================================================
+    if (tid < n2) {
+        uint r2_idx = tid;
+        uint src_idx = r2_idx + (tid & 1) * n2;
+        M31 a2 = stage1[src_idx];
+        M31 b2 = stage1[src_idx + n2];
+        M31 sum2 = m31_add(a2, b2);
+        M31 half_sum2 = m31_mul(sum2, M31{M31_INV2});
+        M31 diff2 = m31_sub(a2, b2);
+        M31 alpha2_diff = m31_mul(alphas[2], diff2);
+        M31 diff_term2 = m31_mul(alpha2_diff, inv_2t_2[r2_idx]);
+        stage2[tid] = m31_add(half_sum2, diff_term2);
+    }
+
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // ========================================================================
+    // Round 3: n/8 -> n/16
+    // Threads 0..n/16-1 process pairs from stage2
+    // ========================================================================
+    if (tid < n3) {
+        uint r3_idx = tid;
+        uint src_idx = r3_idx + (tid & 1) * n3;
+        M31 a3 = stage2[src_idx];
+        M31 b3 = stage2[src_idx + n3];
+        M31 sum3 = m31_add(a3, b3);
+        M31 half_sum3 = m31_mul(sum3, M31{M31_INV2});
+        M31 diff3 = m31_sub(a3, b3);
+        M31 alpha3_diff = m31_mul(alphas[3], diff3);
+        M31 diff_term3 = m31_mul(alpha3_diff, inv_2t_3[r3_idx]);
+        stage3[tid] = m31_add(half_sum3, diff_term3);
+    }
+
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // ========================================================================
+    // Round 4: n/16 -> n/32
+    // Threads 0..n/32-1 process pairs from stage3
+    // ========================================================================
+    if (tid < n4) {
+        uint r4_idx = tid;
+        uint src_idx = r4_idx + (tid & 1) * n4;
+        M31 a4 = stage3[src_idx];
+        M31 b4 = stage3[src_idx + n4];
+        M31 sum4 = m31_add(a4, b4);
+        M31 half_sum4 = m31_mul(sum4, M31{M31_INV2});
+        M31 diff4 = m31_sub(a4, b4);
+        M31 alpha4_diff = m31_mul(alphas[4], diff4);
+        M31 diff_term4 = m31_mul(alpha4_diff, inv_2t_4[r4_idx]);
+        stage4[tid] = m31_add(half_sum4, diff_term4);
+    }
+
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // ========================================================================
+    // Round 5: n/32 -> n/64
+    // Threads 0..n/64-1 process pairs from stage4
+    // ========================================================================
+    if (tid < n5) {
+        uint r5_idx = tid;
+        uint src_idx = r5_idx + (tid & 1) * n5;
+        M31 a5 = stage4[src_idx];
+        M31 b5 = stage4[src_idx + n5];
+        M31 sum5 = m31_add(a5, b5);
+        M31 half_sum5 = m31_mul(sum5, M31{M31_INV2});
+        M31 diff5 = m31_sub(a5, b5);
+        M31 alpha5_diff = m31_mul(alphas[5], diff5);
+        M31 diff_term5 = m31_mul(alpha5_diff, inv_2t_5[r5_idx]);
+        stage5[tid] = m31_add(half_sum5, diff_term5);
+    }
+
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // ========================================================================
+    // Round 6: n/64 -> n/128
+    // Threads 0..n/128-1 process pairs from stage5
+    // ========================================================================
+    if (tid < n6) {
+        uint r6_idx = tid;
+        uint src_idx = r6_idx + (tid & 1) * n6;
+        M31 a6 = stage5[src_idx];
+        M31 b6 = stage5[src_idx + n6];
+        M31 sum6 = m31_add(a6, b6);
+        M31 half_sum6 = m31_mul(sum6, M31{M31_INV2});
+        M31 diff6 = m31_sub(a6, b6);
+        M31 alpha6_diff = m31_mul(alphas[6], diff6);
+        M31 diff_term6 = m31_mul(alpha6_diff, inv_2t_6[r6_idx]);
+        stage6[tid] = m31_add(half_sum6, diff_term6);
+    }
+
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // ========================================================================
+    // Round 7: n/128 -> n/256
+    // Threads 0..n/256-1 process pairs from stage6
+    // Write final output
+    // ========================================================================
+    if (tid < n7) {
+        uint r7_idx = tid;
+        uint src_idx = r7_idx + (tid & 1) * n7;
+        M31 a7 = stage6[src_idx];
+        M31 b7 = stage6[src_idx + n7];
+        M31 sum7 = m31_add(a7, b7);
+        M31 half_sum7 = m31_mul(sum7, M31{M31_INV2});
+        M31 diff7 = m31_sub(a7, b7);
+        M31 alpha7_diff = m31_mul(alphas[7], diff7);
+        M31 diff_term7 = m31_mul(alpha7_diff, inv_2t_7[r7_idx]);
+        output[r7_idx + tgid * n7] = m31_add(half_sum7, diff_term7);
+    }
+}
+
+// ============================================================================
 // FOLD-BY-2 CASCADE KERNEL (for cases where we can't do 4)
 // ============================================================================
 
