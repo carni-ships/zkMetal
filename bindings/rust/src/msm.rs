@@ -367,3 +367,14 @@ pub fn bn254_batch_to_affine_cpu(proj: &[ProjectivePoint]) -> Vec<[u64; 8]> {
     }
     aff
 }
+
+/// CPU projective to affine conversion (standalone, not on ProjectivePoint).
+#[cfg(feature = "neon")]
+pub fn bn254_projectiveto_affine(result: &mut [u64; 8], proj: &ProjectivePoint) {
+    unsafe {
+        neon_ffi::bn254_projective_to_affine(
+            proj.coords.as_ptr(),
+            result.as_mut_ptr(),
+        );
+    }
+}
