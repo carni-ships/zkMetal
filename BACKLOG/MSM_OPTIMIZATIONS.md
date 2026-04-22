@@ -5,30 +5,30 @@
 **Description**: Offload Horner polynomial evaluation from CPU to GPU
 **Status**: Implemented (commit 64d0046e)
 
-## 2. Multi-threaded GLV Scalar Decomposition
+## 2. Multi-threaded GLV Scalar Decomposition ❌ N/A
 **Impact**: ~49ms savings at 2^20 scale
 **Description**: Parallelize the GLV endomorphism and signed digit decomposition across CPU threads
-**Status**: Ideas
+**Status**: GLV is already on GPU, not CPU. No CPU GLV to parallelize.
 
-## 3. Larger GPU Threadgroups
+## 3. Larger GPU Threadgroups ❌ N/A
 **Impact**: ~10-20% GPU improvement
 **Description**: Experiment with larger threadgroup sizes for better occupancy at large scales (2^20)
-**Status**: Ideas
+**Status**: Already at 256 which is optimal for M3 Pro. Kernel has no shared memory requirements.
 
-## 4. Batch GLV Processing
+## 4. Batch GLV Processing ❌ N/A
 **Impact**: Memory bandwidth improvement
 **Description**: Process multiple windows concurrently to better utilize memory bandwidth
-**Status**: Ideas
+**Status**: Already batched. GLV kernel processes all scalars in one dispatch.
 
-## 5. GPU Sort Verification Bypass
+## 5. GPU Sort Verification Bypass ❌ N/A
 **Impact**: ~65ms savings at 2^20 scale
 **Description**: The GPU sort currently runs both GPU and CPU then compares. For production, skip verification
-**Status**: Ideas
+**Status**: GPU sort is DISABLED due to non-determinism bugs. Only CPU sort is used. Verification bypass not applicable.
 
-## 6. NEON Vectorized Horner
+## 6. NEON Vectorized Horner ❌ N/A
 **Impact**: ~100ms savings on CPU path
 **Description**: Use NEON SIMD to vectorize the Horner combine on ARM
-**Status**: Ideas
+**Status**: CPU Horner only used when nWindows <= 1 (scales <= 2^16 with 16-bit windows). GPU Horner used for all practical scales.
 
 ---
 
