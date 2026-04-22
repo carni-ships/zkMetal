@@ -1022,6 +1022,33 @@ public class MetalMSM {
                 threadsPerThreadgroup: MTLSize(width: min(tuning.msmThreadgroupSize, nWindows), height: 1, depth: 1))
             enc.endEncoding()
         }
+
+        // GPU Horner combine - replaces CPU version for ~221ms speedup at 2^20
+        if nWindows > 1 {
+            guard let hornerCB = commandQueue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
+            let hornerEnc = hornerCB.makeComputeCommandEncoder()!
+            hornerEnc.setComputePipelineState(hornerCombineFunction)
+            hornerEnc.setBuffer(windowResultsBuffer, offset: 0, index: 0)
+            hornerEnc.setBuffer(finalResultBuffer, offset: 0, index: 1)
+            var nwVal = UInt32(nWindows)
+            var wbVal = UInt32(windowBits)
+            hornerEnc.setBytes(&nwVal, length: MemoryLayout<UInt32>.stride, index: 2)
+            hornerEnc.setBytes(&wbVal, length: MemoryLayout<UInt32>.stride, index: 3)
+            hornerEnc.dispatchThreads(MTLSize(width: 1, height: 1, depth: 1),
+                                       threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1))
+            hornerEnc.endEncoding()
+            hornerCB.commit()
+            hornerCB.waitUntilCompleted()
+
+            // Read result from GPU buffer
+            let resultPtr = finalResultBuffer!.contents().bindMemory(to: PointProjective.self, capacity: 1)
+            let result = resultPtr.pointee
+            if profileMSM { let _t4 = CFAbsoluteTimeGetCurrent(); fputs(String(format: "  [profile] GPU Horner combine: %.2f ms\n", (_t4 - _tStart) * 1000), stderr); fputs(String(format: "  [profile] nWindows=%d, windowBits=%d, effectiveN=%d, nBuckets=%d, nSegments=%d\n", nWindows, windowBits, effectiveN, nBuckets, nSegments), stderr) }
+            if scalarOutMetalBuf == nil { flatScalarBuf?.deallocate() }
+            _ = scalarOutMetalBuf
+            return result
+        }
+
         cb.commit()
         cb.waitUntilCompleted()
         if profileMSM { let _t3 = CFAbsoluteTimeGetCurrent(); fputs(String(format: "  [profile] GPU reduce+bucket_sum+combine: %.2f ms\n", (_t3 - _tStart) * 1000), stderr) }

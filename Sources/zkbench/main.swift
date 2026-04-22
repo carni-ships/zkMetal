@@ -5,6 +5,9 @@ import Metal
 import zkMetal
 
 func runMSMBench() throws {
+    // Run correctness test first
+    runPippengerTest()
+
     guard let device = MTLCreateSystemDefaultDevice() else {
         fputs("Error: No Metal GPU available\n", stderr)
         return
@@ -325,6 +328,8 @@ if cmd == "calibrate" {
     runJoltBench()
 } else if cmd == "msm" {
     try runMSMBench()
+} else if cmd == "msm-profile" || cmd == "msmprofile" {
+    runMSMProfile()
 } else if cmd == "profile" || cmd == "profiling" {
     // MetalProfilingBench.main() // TODO: missing implementation
     print("Error: MetalProfilingBench not implemented")
@@ -372,6 +377,8 @@ if cmd == "calibrate" {
 } else if cmd == "msm-debug" {
     // runMSMDebugTest()  // TODO: Fix build issue
     print("MSM debug test disabled due to build issue")
+} else if cmd == "pippenger-test" {
+    runPippengerTest()
 } else {
     try runMSMBench()
 }
