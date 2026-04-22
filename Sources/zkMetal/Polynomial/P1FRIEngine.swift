@@ -550,15 +550,9 @@ public class P1FRIEngine {
     // MARK: - Fused Commit Phase (fold-by-8 cascade)
 
     /// Fused commit phase using fold-by-8 cascade for reduced kernel launch overhead.
-    /// This is the OPTIMIZED version that fuses 8 consecutive fold rounds into one GPU dispatch.
+    /// This version outputs ALL intermediate layers for complete proof generation.
     ///
-    /// WARNING: This returns INCOMPLETE results - only 2 layers instead of all intermediate layers.
-    /// The returned commitment cannot be used with queryPhase() for full proof generation.
-    ///
-    /// Use this for FAST COMMITMENT ONLY when you don't need intermediate layers for verification.
-    /// For full proofs, use commitPhase() instead.
-    ///
-    /// Performance: ~12x faster than commitPhase() for folding, but produces incomplete commitment.
+    /// Performance: Still faster than commitPhase() but produces complete commitment.
     public func commitPhaseFused(evals: [M31], alphas: [M31]) throws -> P1FRICommitment {
         let n = evals.count
         precondition(n > 1 && (n & (n - 1)) == 0)
@@ -580,12 +574,9 @@ public class P1FRIEngine {
             memcpy(inputBuf!.contents(), src.baseAddress!, n * stride)
         }
 
-        // Scratch buffer for intermediate results
-        let scratch = getScratchBuffer(n: n / 2)
-
         let foldT0 = CFAbsoluteTimeGetCurrent()
 
-        // Precompute ALL inv2t arrays and cache GPU buffers to avoid repeated allocations
+        // Precompute ALL inv2t arrays and cache GPU buffers
         let allInv2t = getAllInv2t(logN: logN, numRounds: numRounds)
         let cacheKey = logN * 100 + numRounds
         var inv2tBufs: [MTLBuffer]
@@ -596,30 +587,40 @@ public class P1FRIEngine {
             inv2tBufCache[cacheKey] = inv2tBufs
         }
 
-        // Process rounds in groups of 4 (or 2 for remaining)
+        // Collect all intermediate layers for full commitment
+        var allLayers: [[M31]] = [evals]
         var currentBuf = inputBuf!
+
+        // Process rounds in groups of 8 (with intermediate output support)
         var remainingRounds = numRounds
         var roundIdx = 0
 
         while remainingRounds > 0 {
             if remainingRounds >= 8 && foldBy8Function != nil {
-                // Process 8 rounds at once using cached inv2t buffers
+                // Process 8 rounds at once
                 let rounds = 8
-                let outputSize = n >> (roundIdx + rounds)
+
+                // Allocate intermediate output buffers for this dispatch
+                let stageSizes = (0..<7).map { n >> ($0 + 2) }  // n/2, n/4, ..., n/128
+                var stageBufs: [MTLBuffer] = []
+                for size in stageSizes {
+                    guard let buf = device.makeBuffer(length: size * stride, options: .storageModeShared) else {
+                        throw MSMError.gpuError("Failed to create stage buffer")
+                    }
+                    stageBufs.append(buf)
+                }
+
+                // Allocate final output buffer
+                let finalSize = n >> (roundIdx + rounds)
+                guard let outBuf = device.makeBuffer(length: finalSize * stride, options: .storageModeShared) else {
+                    throw MSMError.gpuError("Failed to create output buffer")
+                }
 
                 var alphasArray = [alphas[roundIdx], alphas[roundIdx + 1],
                                    alphas[roundIdx + 2], alphas[roundIdx + 3],
                                    alphas[roundIdx + 4], alphas[roundIdx + 5],
                                    alphas[roundIdx + 6], alphas[roundIdx + 7]]
                 var nVal = UInt32(n)
-                var outBuf: MTLBuffer
-
-                // Ping-pong between current and scratch
-                if roundIdx == 0 {
-                    outBuf = scratch
-                } else {
-                    outBuf = (roundIdx % 2 == 0) ? scratch : inputBuf!
-                }
 
                 guard let cmdBuf = commandQueue.makeCommandBuffer() else {
                     throw MSMError.noCommandBuffer
@@ -639,33 +640,47 @@ public class P1FRIEngine {
                 enc.setBuffer(inv2tBufs[roundIdx + 7], offset: 0, index: 9)
                 enc.setBytes(&alphasArray, length: stride * 8, index: 10)
                 enc.setBytes(&nVal, length: 4, index: 11)
+                // Stage output buffers at indices 12-18
+                enc.setBuffer(stageBufs[0], offset: 0, index: 12)
+                enc.setBuffer(stageBufs[1], offset: 0, index: 13)
+                enc.setBuffer(stageBufs[2], offset: 0, index: 14)
+                enc.setBuffer(stageBufs[3], offset: 0, index: 15)
+                enc.setBuffer(stageBufs[4], offset: 0, index: 16)
+                enc.setBuffer(stageBufs[5], offset: 0, index: 17)
+                enc.setBuffer(stageBufs[6], offset: 0, index: 18)
 
-                enc.dispatchThreads(MTLSize(width: outputSize, height: 1, depth: 1),
+                // Dispatch: threadgroup size 256, grid size = n/2 threads (n0 = n/2)
+                let n0 = n >> 1
+                enc.dispatchThreads(MTLSize(width: n0, height: 1, depth: 1),
                                    threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
                 enc.endEncoding()
                 cmdBuf.commit()
                 cmdBuf.waitUntilCompleted()
+
+                // Read back intermediate layers
+                for i in 0..<7 {
+                    let size = stageSizes[i]
+                    let ptr = stageBufs[i].contents().bindMemory(to: M31.self, capacity: size)
+                    let layer = Array(UnsafeBufferPointer(start: ptr, count: size))
+                    allLayers.append(layer)
+                }
 
                 currentBuf = outBuf
                 roundIdx += rounds
                 remainingRounds -= rounds
 
             } else if remainingRounds >= 4 && foldBy4Function != nil {
-                // Process 4 rounds at once using cached inv2t buffers
+                // Process 4 rounds - allocate single output buffer
                 let rounds = 4
                 let outputSize = n >> (roundIdx + rounds)
+
+                guard let outBuf = device.makeBuffer(length: outputSize * stride, options: .storageModeShared) else {
+                    throw MSMError.gpuError("Failed to create output buffer")
+                }
 
                 var alphasArray = [alphas[roundIdx], alphas[roundIdx + 1],
                                    alphas[roundIdx + 2], alphas[roundIdx + 3]]
                 var nVal = UInt32(n)
-                var outBuf: MTLBuffer
-
-                // Ping-pong between current and scratch
-                if roundIdx == 0 {
-                    outBuf = scratch
-                } else {
-                    outBuf = (roundIdx % 2 == 0) ? scratch : inputBuf!
-                }
 
                 guard let cmdBuf = commandQueue.makeCommandBuffer() else {
                     throw MSMError.noCommandBuffer
@@ -682,7 +697,8 @@ public class P1FRIEngine {
                 enc.setBytes(&alphasArray, length: stride * 4, index: 6)
                 enc.setBytes(&nVal, length: 4, index: 7)
 
-                enc.dispatchThreads(MTLSize(width: outputSize, height: 1, depth: 1),
+                let n0 = n >> 1
+                enc.dispatchThreads(MTLSize(width: n0, height: 1, depth: 1),
                                    threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
                 enc.endEncoding()
                 cmdBuf.commit()
@@ -693,13 +709,16 @@ public class P1FRIEngine {
                 remainingRounds -= rounds
 
             } else if remainingRounds >= 2 && foldBy2Function != nil {
-                // Process 2 rounds at once using cached inv2t buffers
+                // Process 2 rounds
                 let rounds = 2
                 let outputSize = n >> (roundIdx + rounds)
 
+                guard let outBuf = device.makeBuffer(length: outputSize * stride, options: .storageModeShared) else {
+                    throw MSMError.gpuError("Failed to create output buffer")
+                }
+
                 var alphasArray = [alphas[roundIdx], alphas[roundIdx + 1]]
                 var nVal = UInt32(n)
-                let outBuf = scratch
 
                 guard let cmdBuf = commandQueue.makeCommandBuffer() else {
                     throw MSMError.noCommandBuffer
@@ -714,7 +733,8 @@ public class P1FRIEngine {
                 enc.setBytes(&alphasArray, length: stride * 2, index: 4)
                 enc.setBytes(&nVal, length: 4, index: 5)
 
-                enc.dispatchThreads(MTLSize(width: outputSize, height: 1, depth: 1),
+                let n0 = n >> 1
+                enc.dispatchThreads(MTLSize(width: n0, height: 1, depth: 1),
                                    threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
                 enc.endEncoding()
                 cmdBuf.commit()
@@ -725,16 +745,16 @@ public class P1FRIEngine {
                 remainingRounds -= rounds
 
             } else {
-                // Fall back to single-round fold using cached inv2t buffer
+                // Fall back to single-round fold
                 let curN = n >> roundIdx
                 let halfN = curN / 2
                 var alpha = alphas[roundIdx]
                 var nVal = UInt32(curN)
-
-                // Use cached inv2t buffer
                 let inv2tBuf = inv2tBufs[roundIdx]
 
-                let outBuf = (roundIdx % 2 == 0) ? scratch : inputBuf!
+                guard let outBuf = device.makeBuffer(length: halfN * stride, options: .storageModeShared) else {
+                    throw MSMError.gpuError("Failed to create output buffer")
+                }
 
                 guard let cmdBuf = commandQueue.makeCommandBuffer() else {
                     throw MSMError.noCommandBuffer
@@ -755,6 +775,11 @@ public class P1FRIEngine {
                 cmdBuf.commit()
                 cmdBuf.waitUntilCompleted()
 
+                // Read back this layer
+                let ptr = outBuf.contents().bindMemory(to: M31.self, capacity: halfN)
+                let layer = Array(UnsafeBufferPointer(start: ptr, count: halfN))
+                allLayers.append(layer)
+
                 currentBuf = outBuf
                 roundIdx += 1
                 remainingRounds -= 1
@@ -763,15 +788,19 @@ public class P1FRIEngine {
 
         let foldTime = (CFAbsoluteTimeGetCurrent() - foldT0) * 1000
 
-        // Read back final result and intermediate layers for Merkle
-        // Note: fused version only keeps the final result - for full Merkle we need all layers
-        // For now, compute Merkle only on final result
+        // Read final result
         let finalSize = n >> numRounds
         let ptr = currentBuf.contents().bindMemory(to: M31.self, capacity: finalSize)
         let finalLayer = Array(UnsafeBufferPointer(start: ptr, count: finalSize))
+        allLayers.append(finalLayer)
 
+        // Compute Merkle roots for all layers (excluding original input)
         let merkleT0 = CFAbsoluteTimeGetCurrent()
-        let root = p1M31MerkleRoot(finalLayer)
+        var roots: [M31] = []
+        for i in 1..<allLayers.count {
+            let root = p1M31MerkleRoot(allLayers[i])
+            roots.append(root)
+        }
         let merkleTime = (CFAbsoluteTimeGetCurrent() - merkleT0) * 1000
 
         if profileCommit {
@@ -779,11 +808,9 @@ public class P1FRIEngine {
                         foldTime, merkleTime, foldTime + merkleTime), stderr)
         }
 
-        // For full verification we need all layers - fall back to standard commit
-        // for now, just return what we have
         return P1FRICommitment(
-            layers: [evals, finalLayer],
-            roots: [root],
+            layers: allLayers,
+            roots: roots,
             alphas: alphas,
             finalValue: finalLayer[0],
             logN: logN

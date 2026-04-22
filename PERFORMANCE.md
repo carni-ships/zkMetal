@@ -187,31 +187,80 @@ Prototype implementation using Mersenne31 field with standard radix-2 FFT on mul
 
 | Size | Time |
 |------|------|
-| 2^10 | 0.17ms |
-| 2^12 | 0.36ms |
-| 2^14 | 0.21ms |
-| 2^16 | 0.35ms |
-| 2^18 | 1.23ms |
-| 2^20 | 3.70ms |
+| 2^10 | 0.60ms |
+| 2^12 | 0.40ms |
+| 2^14 | 0.80ms |
+| 2^16 | 0.56ms |
+| 2^18 | 1.17ms |
+| 2^20 | 3.69ms |
 
-### P^1 FRI Commit Phase (GPU)
+### P^1 FRI Commit Phase (GPU) - With inv2t Caching
 
 Optimized with inv2t caching (65x speedup over naive recomputation).
 
-| Size | Commit Time |
-|------|-----------|
-| 2^14 | 1.9ms |
-| 2^16 | 8.0ms |
-| 2^18 | 21.9ms |
-| 2^20 | 83.4ms |
+| Size | Commit Time | Rounds |
+|------|-----------|--------|
+| 2^14 | **0.24-0.59ms** | 13 |
+| 2^16 | **0.83ms** | 15 |
+| 2^18 | **2.39ms** | 17 |
+| 2^20 | **3.99ms** | 19 |
 
 **Key optimization**: Precompute all inv2t arrays for all FRI rounds upfront with GPU buffer caching.
 
-# Metal profiling
-swift run -c release zkbench profile
-```
+### P^1 FRI Fused Commit Phase (fold-by-8 Cascade)
+
+The fused commit uses a GPU kernel that computes 8 FRI fold rounds in a single dispatch, outputting all intermediate layers for complete proof generation.
+
+| Size | Standard Commit | Fused Commit | Layers Produced |
+|------|----------------|-------------|-----------------|
+| 2^14 | 0.59ms | ~0.5ms | 14 (all intermediate) |
+| 2^18 | 1.38ms | ~1.5ms | 18 (all intermediate) |
+| 2^20 | 3.74ms | ~6ms | 20 (all intermediate) |
+
+**Trade-off**: Fused commit produces complete layer output enabling full `queryPhase()` verification, but has slightly higher overhead due to intermediate buffer allocation and readback. Use standard `commitPhase()` when only final result is needed.
+
+**Implementation**: Metal kernel `p1_fri_fold_by8` writes intermediate stages to 7 output buffers (indices 12-18), then Swift engine reads back all layers for Merkle root computation.
+
+### P^1 FRI Multi-fold Performance (GPU)
+
+| Size | Single Fold | Multi-fold (all rounds) |
+|------|-------------|--------------------------|
+| 2^14 | 1.30ms | 2.25ms |
+| 2^18 | 13.36ms | 27.86ms |
+| 2^20 | 52.19ms | 108.53ms |
+
+## Reed-Solomon Erasure Coding
+
+### NTT-Based RS (BabyBear)
+
+| Operation | Size | Throughput |
+|-----------|------|------------|
+| Encode k=2^8 | n=512 (2x) | 2.0 MB/s |
+| Encode k=2^10 | n=2048 (2x) | 17.1 MB/s |
+| Encode k=2^12 | n=8192 (2x) | 30.7 MB/s |
+| Encode k=2^14 | n=32768 (2x) | **346.8 MB/s** |
+| Encode k=2^14 | n=65536 (4x) | 92.6 MB/s |
+
+### Data Availability Sampling (DAS)
+
+| Blob Size | Throughput |
+|-----------|------------|
+| 1 KB | 3.0 MB/s |
+| 64 KB | **249.2 MB/s** |
+| 128 KB | 195.6 MB/s |
+
+### GF(2^16) GPU RS (Systematic Encoding)
+
+| k | parity | Throughput |
+|---|--------|------------|
+| 256 | 256 | 0.6 MB/s |
+| 1024 | 1024 | 1.4 MB/s |
+| 4096 | 4096 | 3.3 MB/s |
+
+**Note**: GF(2^16) systematic encoding has lower throughput than NTT-based due to matrix multiplication overhead.
 
 ## Version History
 
+- **2026-04-21**: Updated P^1 FRI with inv2t cache numbers (8-21x faster), added RS/DAS section
 - **2026-04-18**: Updated with beta macOS 26.3 performance notice and regression analysis
 - **2026-04-14**: Initial baseline performance on stable macOS 15.x

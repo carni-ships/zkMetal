@@ -195,6 +195,14 @@ kernel void p1_fri_fold_by8(
     device const M31* inv_2t_7       [[buffer(9)]],  // inv_2t for round 7: size n/256
     constant M31* alphas             [[buffer(10)]],  // 8 alpha values
     constant uint& n                 [[buffer(11)]],  // original domain size
+    // Output buffers for intermediate stages (buffer indices 12-18)
+    device M31* stage0_out           [[buffer(12)]],  // n/2 elements
+    device M31* stage1_out           [[buffer(13)]],  // n/4 elements
+    device M31* stage2_out           [[buffer(14)]],  // n/8 elements
+    device M31* stage3_out           [[buffer(15)]],  // n/16 elements
+    device M31* stage4_out           [[buffer(16)]],  // n/32 elements
+    device M31* stage5_out           [[buffer(17)]],  // n/64 elements
+    device M31* stage6_out           [[buffer(18)]],  // n/128 elements
     uint gid                         [[thread_position_in_grid]],
     uint tid                         [[thread_index_in_threadgroup]],
     uint tgid                        [[threadgroup_position_in_grid]],
@@ -255,6 +263,11 @@ kernel void p1_fri_fold_by8(
 
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
+    // Write stage 0 output (n/2 elements) — uses tid as index since tid < n1
+    if (tid < n1) {
+        stage0_out[tid + tgid * n1] = stage1[tid];
+    }
+
     // ========================================================================
     // Round 2: n/4 -> n/8
     // Threads 0..n/8-1 process pairs from stage1
@@ -273,6 +286,11 @@ kernel void p1_fri_fold_by8(
     }
 
     threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Write stage 1 output (n/4 elements) — uses tid as index since tid < n2 = n/4
+    if (tid < n2) {
+        stage1_out[tid + tgid * n2] = stage2[tid];
+    }
 
     // ========================================================================
     // Round 3: n/8 -> n/16
@@ -293,6 +311,11 @@ kernel void p1_fri_fold_by8(
 
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
+    // Write stage 2 output (n/8 elements) — uses tid as index since tid < n3 = n/16 < n2
+    if (tid < n3) {
+        stage2_out[tid + tgid * n3] = stage3[tid];
+    }
+
     // ========================================================================
     // Round 4: n/16 -> n/32
     // Threads 0..n/32-1 process pairs from stage3
@@ -311,6 +334,11 @@ kernel void p1_fri_fold_by8(
     }
 
     threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Write stage 3 output (n/16 elements) — uses tid as index since tid < n4
+    if (tid < n4) {
+        stage3_out[tid + tgid * n4] = stage4[tid];
+    }
 
     // ========================================================================
     // Round 5: n/32 -> n/64
@@ -331,6 +359,11 @@ kernel void p1_fri_fold_by8(
 
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
+    // Write stage 4 output (n/32 elements) — uses tid as index since tid < n5
+    if (tid < n5) {
+        stage4_out[tid + tgid * n5] = stage5[tid];
+    }
+
     // ========================================================================
     // Round 6: n/64 -> n/128
     // Threads 0..n/128-1 process pairs from stage5
@@ -350,10 +383,15 @@ kernel void p1_fri_fold_by8(
 
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
+    // Write stage 5 output (n/64 elements) — uses tid as index since tid < n6
+    if (tid < n6) {
+        stage5_out[tid + tgid * n6] = stage6[tid];
+    }
+
     // ========================================================================
     // Round 7: n/128 -> n/256
     // Threads 0..n/256-1 process pairs from stage6
-    // Write final output
+    // Write final output and stage 6
     // ========================================================================
     if (tid < n7) {
         uint r7_idx = tid;
@@ -365,7 +403,10 @@ kernel void p1_fri_fold_by8(
         M31 diff7 = m31_sub(a7, b7);
         M31 alpha7_diff = m31_mul(alphas[7], diff7);
         M31 diff_term7 = m31_mul(alpha7_diff, inv_2t_7[r7_idx]);
-        output[r7_idx + tgid * n7] = m31_add(half_sum7, diff_term7);
+        M31 result7 = m31_add(half_sum7, diff_term7);
+        output[r7_idx + tgid * n7] = result7;
+        // Write stage 6 output (n/128 elements) — uses tid as index since tid < n7
+        stage6_out[tid + tgid * n6] = stage6[tid];
     }
 }
 
