@@ -1,9 +1,9 @@
 # MSM Optimization Backlog
 
-## 1. GPU Horner Combine
+## 1. GPU Horner Combine ✅ DONE
 **Impact**: ~221ms savings (45% at 2^20 scale)
 **Description**: Offload Horner polynomial evaluation from CPU to GPU
-**Status**: Ideas
+**Status**: Implemented (commit 64d0046e)
 
 ## 2. Multi-threaded GLV Scalar Decomposition
 **Impact**: ~49ms savings at 2^20 scale
@@ -53,10 +53,10 @@
 
 # Other Optimizations
 
-## 1. Rust bindings for C Pippenger
+## 1. Rust bindings for C Pippenger ✅ DONE
 **Impact**: Enable Rust to use C Pippenger MSM
-**Description**: Currently Rust tests can't link to NeonFieldOps. Need proper static library
-**Status**: Ideas
+**Description**: Added ark_fr_to_pippenger_scalar() and bn254_projectiveto_affine() with correctness tests
+**Status**: Implemented (commit 4a418ae0)
 
 ## 2. Circle STARK prover cache warmup
 **Impact**: Faster subsequent proof generation
