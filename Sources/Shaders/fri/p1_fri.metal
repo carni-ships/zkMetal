@@ -11,8 +11,11 @@
 
 #include "../fields/mersenne31.metal"
 
+#ifndef M31_INV2_DEFINED
+#define M31_INV2_DEFINED
 // Precomputed inverse of 2 mod p = (p+1)/2
 constant uint M31_INV2 = 1073741824u;  // (2^31 - 1 + 1) / 2 = 2^30
+#endif
 
 // P^1 FRI fold: standard t → t² folding.
 // Pairs f[i] with f[i + n/2] where domain points form sign pairs (±t).

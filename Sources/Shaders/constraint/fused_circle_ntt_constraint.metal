@@ -8,8 +8,7 @@
 #include "../fields/mersenne31.metal"
 #include "../fri/circle_fri.metal"
 
-// M31_INV2: (p+1)/2 = 2^30, needed for circle FRI fold but stripped by cClean include-filter
-constant uint M31_INV2 = 1073741824u;  // (2^31 - 1 + 1) / 2
+// M31_INV2 is defined in circle_fri.metal with include guard
 
 // --- Small fused: Circle NTT in shared memory + Fibonacci constraint eval ---
 // Performs forward Circle NTT on two trace columns in shared memory,

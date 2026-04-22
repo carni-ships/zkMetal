@@ -10,8 +10,11 @@
 
 #include "../fields/mersenne31.metal"
 
+#ifndef M31_INV2_DEFINED
+#define M31_INV2_DEFINED
 // Precomputed inverse of 2 mod p = (p+1)/2
 constant uint M31_INV2 = 1073741824u;  // (2^31 - 1 + 1) / 2 = 2^30
+#endif
 
 // Circle FRI first fold: uses y-coordinate twiddles (twin-coset decomposition).
 // Pairs f[i] with f[i + half] where these correspond to (x, y) and (x, -y).
