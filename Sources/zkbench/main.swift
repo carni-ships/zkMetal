@@ -214,6 +214,8 @@ if cmd == "calibrate" {
     runCQLookupBench()
 } else if cmd == "sparse" || cmd == "sparse-sumcheck" {
     runSparseSumcheckBench()
+} else if cmd == "sparse-matvec" || cmd == "sparsematvec" {
+    runSparseMatvecProfiler()
 } else if cmd == "amortized" || cmd == "amortized-sumcheck" {
     runAmortizedSumcheckBench()
 } else if cmd == "amortized-correctness" {

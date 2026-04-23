@@ -359,7 +359,14 @@ kernel void additive_fft_gf8_forward_pairs_tg(
 
 // Inverse additive FFT over GF(2^8).
 // Fused: processes all k levels in one dispatch.
-// DIT: small stride first (reverse of forward).
+// DIT: small stride first = reverse depth order.
+//
+// Forward butterfly: new_lo = lo ^ (s*hi), new_hi = lo ^ hi
+// Inverse: hi = f(new_lo, new_hi, s), lo = new_hi ^ hi
+// where f finds hi such that s*hi ^ hi = new_lo ^ new_hi
+//
+// This requires brute-force search for hi (at most 256 iterations).
+//
 // buffer(0): LUT, buffer(1): data, buffer(2): basis, buffer(3): n, buffer(4): k
 #ifdef USE_LUT
 kernel void additive_fft_gf8_inverse(
@@ -381,12 +388,16 @@ kernel void additive_fft_gf8_inverse(
 #endif
     if (gid >= n) return;
 
-    uint8_t val = data[gid];
+    uint8_t val = data[gid];  // val = new_hi at entry
 
     // k levels (DIT: small stride first = reverse depth order)
     for (int depth = int(k) - 1; depth >= 0; depth--) {
         uint block_size = n >> depth;
         uint halfSize = block_size >> 1;
+
+        // Skip if halfSize is 0 (block_size = 1, no butterfly at this depth)
+        if (halfSize == 0) continue;
+
         uint local_idx = gid % block_size;
 
         if (local_idx < halfSize) {
@@ -396,16 +407,22 @@ kernel void additive_fft_gf8_inverse(
         uint j = gid - halfSize;
 
         uint8_t s = basis[depth];
-        uint8_t hi_val = val;
-        uint8_t lo_val = data[j];
+        uint8_t newHi = val;       // new_hi from previous iteration
+        uint8_t newLo = data[j];   // new_lo
 
-        // Un-propagate: hi ^= lo
-        // Un-twist: lo ^= s * hi_new
-        uint8_t unpropagated = hi_val ^ lo_val;
-        uint8_t untwisted = lo_val ^ gf28_mul(lut, s, unpropagated);
+        // Solve s*hi ^ hi = newLo ^ newHi for hi (brute force)
+        uint8_t C = newLo ^ newHi;
+        uint8_t hiVal = 0;
+        for (uint hiTest = 0; hiTest < 256; hiTest++) {
+            if (gf28_mul(lut, s, uint8_t(hiTest)) ^ uint8_t(hiTest) == C) {
+                hiVal = uint8_t(hiTest);
+                break;
+            }
+        }
+        uint8_t loVal = newHi ^ hiVal;
 
-        data[j] = untwisted;
-        val = unpropagated;
+        data[j] = loVal;
+        val = hiVal;  // Update val to original hi for next iteration
     }
 
     data[gid] = val;

@@ -425,6 +425,105 @@ kernel void msm381_signed_digit_extract(
     }
 }
 
+// --- GLV On-the-fly Endomorphism Support ---
+
+// On-the-fly endomorphism constant for GLV: β in Montgomery form
+constant Fp381 GLV381_BETA_MONT_REDUCE = {
+    { 0xce84ea86, 0x5b623b5c, 0x5eead1ad, 0x8f13871d,
+      0x83ae36ad, 0x7c2c93a8, 0x11e09e86, 0x4e9c404a,
+      0x24e0d0b3, 0x5c671f3c, 0x2f5be8c0, 0x05c671f3 }
+};
+
+// On-the-fly endomorphism helper for GLV MSM
+// idx >= n means k2 path (apply β·x), idx < n means k1 path (no endomorphism)
+inline Point381Affine point381_get_glv(device const Point381Affine* points, uint idx, uint n) {
+    Point381Affine p = points[idx % n];
+    if (idx >= n) {
+        // Endomorphized point: β·x
+        p.x = fp381_mul(GLV381_BETA_MONT_REDUCE, p.x);
+    }
+    return p;
+}
+
+// GLV-aware signed-digit extraction: outputs both k1 and k2 digits
+// k1 digits stored at [0, n), k2 digits stored at [n, 2n)
+// Digits stored as ushort (15-bit digits fit in 16 bits)
+// Bit 15 of digit = neg flag (0x8000)
+kernel void msm381_signed_digit_extract_glv(
+    device const uint* k1_scalars        [[buffer(0)]],
+    device const uint* k2_scalars         [[buffer(1)]],
+    device ushort* digits                [[buffer(2)]],  // UInt16 for digit storage
+    device uchar* endo_flags             [[buffer(3)]],
+    constant uint& n_points              [[buffer(4)]],
+    constant uint& window_bits           [[buffer(5)]],
+    constant uint& n_windows             [[buffer(6)]],
+    uint gid                             [[thread_position_in_grid]]
+) {
+    if (gid >= n_points) return;
+
+    uint mask = (1u << window_bits) - 1u;
+    uint half_bk = 1u << (window_bits - 1u);
+    uint full_bk = 1u << window_bits;
+
+    // Extract k1 digits
+    const device uint* sp1 = k1_scalars + gid * 8;
+    uint carry1 = 0;
+    for (uint w = 0; w < n_windows; w++) {
+        uint bit_off = w * window_bits;
+        uint limb_idx = bit_off / 32u;
+        uint bit_pos = bit_off % 32u;
+
+        uint idx = 0;
+        if (limb_idx < 8u) {
+            idx = sp1[limb_idx] >> bit_pos;
+            if (bit_pos + window_bits > 32u && limb_idx + 1u < 8u) {
+                idx |= sp1[limb_idx + 1u] << (32u - bit_pos);
+            }
+            idx &= mask;
+        }
+
+        uint digit = idx + carry1;
+        carry1 = 0;
+        if (digit > half_bk) {
+            digit = full_bk - digit;
+            carry1 = 1;
+            digits[w * n_points + gid] = ushort(digit) | 0x8000u;  // neg flag in bit 15
+        } else {
+            digits[w * n_points + gid] = ushort(digit);
+        }
+        endo_flags[w * n_points + gid] = 0;  // k1 path
+    }
+
+    // Extract k2 digits (stored at [n, 2n) offset)
+    const device uint* sp2 = k2_scalars + gid * 8;
+    uint carry2 = 0;
+    for (uint w = 0; w < n_windows; w++) {
+        uint bit_off = w * window_bits;
+        uint limb_idx = bit_off / 32u;
+        uint bit_pos = bit_off % 32u;
+
+        uint idx = 0;
+        if (limb_idx < 8u) {
+            idx = sp2[limb_idx] >> bit_pos;
+            if (bit_pos + window_bits > 32u && limb_idx + 1u < 8u) {
+                idx |= sp2[limb_idx + 1u] << (32u - bit_pos);
+            }
+            idx &= mask;
+        }
+
+        uint digit = idx + carry2;
+        carry2 = 0;
+        if (digit > half_bk) {
+            digit = full_bk - digit;
+            carry2 = 1;
+            digits[w * n_points + n_points + gid] = ushort(digit) | 0x8000u;  // neg flag
+        } else {
+            digits[w * n_points + n_points + gid] = ushort(digit);
+        }
+        endo_flags[w * n_points + n_points + gid] = 1;  // k2 path (endo)
+    }
+}
+
 // GPU counting sort: histogram phase
 kernel void msm381_sort_histogram(
     device const uint* digits          [[buffer(0)]],

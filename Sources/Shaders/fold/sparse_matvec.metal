@@ -49,8 +49,8 @@
 //
 // result[row] = sum_{k=rowPtr[row]}^{rowPtr[row+1]-1} values[k] * z[colIdx[k]]
 //
-// Each threadgroup handles one row. Threads cooperatively compute partial
-// products and reduce to a single result.
+// Each thread handles one row. This is simpler and works well for sparse matrices
+// where each row typically has few non-zeros.
 
 kernel void sparse_matvec_bn254(
     device const uint* rowPtr       [[buffer(0)]],  // m+1 uint32 row pointers
@@ -59,59 +59,20 @@ kernel void sparse_matvec_bn254(
     device const Fr*   z           [[buffer(3)]],  // n Fr input vector
     device Fr*         result      [[buffer(4)]],  // m Fr output vector
     constant uint&     m           [[buffer(5)]],  // number of rows
-    uint tgid                      [[threadgroup_position_in_grid]],
-    uint tid                       [[thread_index_in_threadgroup]]
+    uint tgid                      [[threadgroup_position_in_grid]]
 ) {
     if (tgid >= m) return;
 
     uint rowStart = rowPtr[tgid];
     uint rowEnd = rowPtr[tgid + 1];
-    uint nnz = rowEnd - rowStart;
 
-    if (nnz == 0) {
-        result[tgid] = fr_zero();
-        return;
-    }
-
-    // Threadgroup memory for partial results (one per thread)
-    threadgroup Fr partials[SPARSE_MATVEC_TG_SIZE];
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-
-    // Each thread processes a subset of the non-zeros in this row
     Fr acc = fr_zero();
-
-    for (uint k = tid; k < nnz; k += SPARSE_MATVEC_TG_SIZE) {
-        uint nzIdx = rowStart + k;
-        uint col = colIdx[nzIdx];
-        Fr v = values[nzIdx];
-        Fr zval = z[col];
-        acc = fr_add(acc, fr_mul(v, zval));
+    for (uint nz = rowStart; nz < rowEnd; nz++) {
+        uint col = colIdx[nz];
+        acc = fr_add(acc, fr_mul(values[nz], z[col]));
     }
 
-    partials[tid] = acc;
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-
-    // Parallel reduction in threadgroup
-    // Simple tree reduction using SIMD shuffle
-    for (uint s = SPARSE_MATVEC_TG_SIZE / 2; s > 32; s >>= 1) {
-        if (tid < s) {
-            partials[tid] = fr_add(partials[tid], partials[tid + s]);
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-    }
-
-    // SIMD shuffle reduction for final steps
-    if (tid < 32) {
-        Fr acc_local = partials[tid];
-        #pragma unroll
-        for (uint off = 16; off > 0; off >>= 1) {
-            Fr other = simd_shuffle_down(acc_local, off);
-            acc_local = fr_add(acc_local, other);
-        }
-        if (tid == 0) {
-            result[tgid] = acc_local;
-        }
-    }
+    result[tgid] = acc;
 }
 
 // ============================================================================
@@ -141,117 +102,28 @@ kernel void sparse_matvec_triple_bn254(
     device Fr*         resultB      [[buffer(7)]],  // m Fr output vector B*z
     device Fr*         resultC      [[buffer(8)]],  // m Fr output vector C*z
     constant uint&     m           [[buffer(9)]],   // number of rows
-    uint tgid                      [[threadgroup_position_in_grid]],
-    uint tid                       [[thread_index_in_threadgroup]]
+    uint tgid                      [[threadgroup_position_in_grid]]
 ) {
     if (tgid >= m) return;
 
     uint rowStart = rowPtr[tgid];
     uint rowEnd = rowPtr[tgid + 1];
-    uint nnz = rowEnd - rowStart;
-
-    if (nnz == 0) {
-        resultA[tgid] = fr_zero();
-        resultB[tgid] = fr_zero();
-        resultC[tgid] = fr_zero();
-        return;
-    }
-
-    threadgroup Fr partialsA[SPARSE_MATVEC_TG_SIZE];
-    threadgroup Fr partialsB[SPARSE_MATVEC_TG_SIZE];
-    threadgroup Fr partialsC[SPARSE_MATVEC_TG_SIZE];
-    threadgroup_barrier(mem_flags::mem_threadgroup);
 
     Fr accA = fr_zero();
     Fr accB = fr_zero();
     Fr accC = fr_zero();
 
-    // Process non-zeros: fetch z[col] once, compute three products
-    for (uint k = tid; k < nnz; k += SPARSE_MATVEC_TG_SIZE) {
-        uint nzIdx = rowStart + k;
-        uint col = colIdx[nzIdx];
+    for (uint nz = rowStart; nz < rowEnd; nz++) {
+        uint col = colIdx[nz];
         Fr zval = z[col];
-
-        // All three multiplications use the same zval
-        accA = fr_add(accA, fr_mul(valuesA[nzIdx], zval));
-        accB = fr_add(accB, fr_mul(valuesB[nzIdx], zval));
-        accC = fr_add(accC, fr_mul(valuesC[nzIdx], zval));
+        accA = fr_add(accA, fr_mul(valuesA[nz], zval));
+        accB = fr_add(accB, fr_mul(valuesB[nz], zval));
+        accC = fr_add(accC, fr_mul(valuesC[nz], zval));
     }
 
-    partialsA[tid] = accA;
-    partialsB[tid] = accB;
-    partialsC[tid] = accC;
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-
-    // Parallel reduction
-    for (uint s = SPARSE_MATVEC_TG_SIZE / 2; s > 32; s >>= 1) {
-        if (tid < s) {
-            partialsA[tid] = fr_add(partialsA[tid], partialsA[tid + s]);
-            partialsB[tid] = fr_add(partialsB[tid], partialsB[tid + s]);
-            partialsC[tid] = fr_add(partialsC[tid], partialsC[tid + s]);
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-    }
-
-    if (tid < 32) {
-        Fr accA_local = partialsA[tid];
-        Fr accB_local = partialsB[tid];
-        Fr accC_local = partialsC[tid];
-        #pragma unroll
-        for (uint off = 16; off > 0; off >>= 1) {
-            accA_local = fr_add(accA_local, simd_shuffle_down(accA_local, off));
-            accB_local = fr_add(accB_local, simd_shuffle_down(accB_local, off));
-            accC_local = fr_add(accC_local, simd_shuffle_down(accC_local, off));
-        }
-        if (tid == 0) {
-            resultA[tgid] = accA_local;
-            resultB[tgid] = accB_local;
-            resultC[tgid] = accC_local;
-        }
-    }
-}
-
-// ============================================================================
-// Sparse MatVec — Large Row Variant (one thread per non-zero)
-// ============================================================================
-//
-// For rows with very large numbers of non-zeros, we switch to a model where
-// each thread processes one non-zero element. This avoids threadgroup
-// synchronization overhead for dense rows.
-//
-// result[row] = sum values[k] * z[colIdx[k]] for row
-//
-// Each thread handles multiple rows (strided access).
-
-kernel void sparse_matvec_large_rows_bn254(
-    device const uint* rowPtr       [[buffer(0)]],  // m+1 uint32 row pointers
-    device const uint* colIdx       [[buffer(1)]],  // nnz uint32 column indices
-    device const Fr*   values       [[buffer(2)]],  // nnz Fr values
-    device const Fr*   z           [[buffer(3)]],  // n Fr input vector
-    device Fr*         result      [[buffer(4)]],  // m Fr output vector
-    constant uint&     m           [[buffer(5)]],  // number of rows
-    constant uint&     nnz         [[buffer(6)]],  // total non-zeros
-    uint gid                       [[thread_position_in_grid]]
-) {
-    if (gid >= nnz) return;
-
-    // Find which row this non-zero belongs to using binary search on rowPtr
-    // For small m, linear search is faster
-    uint row = 0;
-    for (uint i = 0; i < m; i++) {
-        if (gid >= rowPtr[i] && gid < rowPtr[i + 1]) {
-            row = i;
-            break;
-        }
-    }
-
-    Fr prod = fr_mul(values[gid], z[colIdx[gid]]);
-
-    // Atomic add to result[row] (multiple threads may contribute to same row)
-    // Note: This is a simplification. For true atomicity, we need to handle
-    // the reduction differently. In practice, for large rows, each row has
-    // enough non-zeros that we can process them without atomic contention.
-    // For the Nova case with small matrices, the standard kernel is preferred.
+    resultA[tgid] = accA;
+    resultB[tgid] = accB;
+    resultC[tgid] = accC;
 }
 
 // ============================================================================

@@ -225,6 +225,12 @@ kernel void glv377_decompose(
 
 // --- GLV Endomorphism Kernel ---
 // Apply φ(P) = (β·x, y) and handle negation flags
+// β in Montgomery form as constant for GPU caching (precomputed from BLS12377GLV.betaMontgomery)
+constant Fq377 GLV377_BETA_MONT = {
+    { 0x5a7b8727, 0x2c766f92, 0x253d58b5, 0x03d7f6b0,
+      0xec122131, 0x838ec0de, 0xf658bb10, 0xbd5eb3e9,
+      0x6ed3e52e, 0x6942bd12, 0xdd04ed6a, 0x01673786 }
+};
 
 kernel void glv377_endomorphism(
     device Point377Affine* points [[buffer(0)]],
@@ -240,40 +246,10 @@ kernel void glv377_endomorphism(
     // Apply neg1: negate P if needed
     if (neg1_flags[gid]) {
         p.y = fq377_neg(p.y);
-        points[gid] = p;
-        // Reload for endomorphism computation
-        p.y = fq377_neg(p.y);
     }
 
-    // β in Montgomery form (cube root of unity in Fq377)
-    // β = 258664426012969093929703085429980814127835149614277183275038967946009968870203535512256352201271898244626862047231
-    // Stored as fq377_to_mont(β)
-    Fq377 beta;
-    beta.v[0]  = 0xffffff68; beta.v[1]  = 0x02cdffff;
-    beta.v[2]  = 0x7fffffb1; beta.v[3]  = 0x51409f83;
-    beta.v[4]  = 0x8a7d3ff2; beta.v[5]  = 0x9f7db3a9;
-    beta.v[6]  = 0x6e7c6305; beta.v[7]  = 0x7b4e97b7;
-    beta.v[8]  = 0x803c84e8; beta.v[9]  = 0x4cf495bf;
-    beta.v[10] = 0xe2fdf49a; beta.v[11] = 0x008d6661;
-
-    // That's actually R mod q (= 1 in Montgomery form). Need actual beta.
-    // β in standard form: [0xffffffffffffffff, 0xd1e945779fffffff, 0x59064ee822fb5bff,
-    //                      0xb8882a75cc9bc8e3, 0xbc8756ba8f8c524e, 0x01ae3a4617c510ea]
-    // Convert to Montgomery: beta_mont = fq377_to_mont(beta_raw)
-    // Must be precomputed. Placeholder - will be filled by CPU init.
-
-    // Actually, compute β in Montgomery form from raw value
-    Fq377 beta_raw;
-    beta_raw.v[0]  = 0xffffffff; beta_raw.v[1]  = 0xffffffff;
-    beta_raw.v[2]  = 0x9fffffff; beta_raw.v[3]  = 0xd1e94577;
-    beta_raw.v[4]  = 0x22fb5bff; beta_raw.v[5]  = 0x59064ee8;
-    beta_raw.v[6]  = 0xcc9bc8e3; beta_raw.v[7]  = 0xb8882a75;
-    beta_raw.v[8]  = 0x8f8c524e; beta_raw.v[9]  = 0xbc8756ba;
-    beta_raw.v[10] = 0x17c510ea; beta_raw.v[11] = 0x01ae3a46;
-    Fq377 beta_mont = fq377_to_mont(beta_raw);
-
     Point377Affine endo;
-    endo.x = fq377_mul(beta_mont, p.x);
+    endo.x = fq377_mul(GLV377_BETA_MONT, p.x);
 
     if (neg2_flags[gid]) {
         endo.y = fq377_neg(p.y);
@@ -282,4 +258,42 @@ kernel void glv377_endomorphism(
     }
 
     points[n + gid] = endo;
+}
+
+// --- Combined Copy + Endomorphism Kernel ---
+// Fuses point copy from CPU with endomorphism to reduce memory bandwidth
+// Reads from source buffer, applies neg1/endo, writes to GPU buffer
+
+kernel void glv377_copy_and_endo(
+    const device Point377Affine* src_points [[buffer(0)]],
+    device Point377Affine* dst_points [[buffer(1)]],
+    const device uchar* neg1_flags [[buffer(2)]],
+    const device uchar* neg2_flags [[buffer(3)]],
+    constant uint& n [[buffer(4)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    if (gid >= n) return;
+
+    Point377Affine p = src_points[gid];
+
+    // Apply neg1: negate P if needed
+    if (neg1_flags[gid]) {
+        p.y = fq377_neg(p.y);
+    }
+
+    // Write original point (with neg1 applied) to first half
+    dst_points[gid] = p;
+
+    // Apply endomorphism: φ(P) = (β·x, y)
+    Point377Affine endo;
+    endo.x = fq377_mul(GLV377_BETA_MONT, p.x);
+
+    if (neg2_flags[gid]) {
+        endo.y = fq377_neg(p.y);
+    } else {
+        endo.y = p.y;
+    }
+
+    // Write endomorphized point to second half
+    dst_points[n + gid] = endo;
 }

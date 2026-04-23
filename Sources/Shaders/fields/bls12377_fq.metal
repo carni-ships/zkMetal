@@ -136,41 +136,39 @@ Fq377 fq377_one() {
 // CIOS (Coarsely Integrated Operand Scanning) with 32-bit limbs for 12-limb field
 
 Fq377 fq377_mul(Fq377 a, Fq377 b) {
-    uint t[FQ_LIMBS + 2];
-    #pragma unroll
-    for (int i = 0; i < FQ_LIMBS + 2; i++) t[i] = 0;
+    uint t[25];
+    for (int i = 0; i < 25; i++) t[i] = 0;
 
-    #pragma unroll
-    for (int i = 0; i < FQ_LIMBS; i++) {
+    // Main multiplication loop with integrated reduction
+    for (int i = 0; i < 12; i++) {
         ulong carry = 0;
-        #pragma unroll
-        for (int j = 0; j < FQ_LIMBS; j++) {
+        for (int j = 0; j < 12; j++) {
             carry += ulong(t[j]) + ulong(a.v[i]) * ulong(b.v[j]);
             t[j] = uint(carry & 0xFFFFFFFF);
             carry >>= 32;
         }
-        ulong ext = ulong(t[FQ_LIMBS]) + carry;
-        t[FQ_LIMBS] = uint(ext & 0xFFFFFFFF);
-        t[FQ_LIMBS + 1] = uint(ext >> 32);
+        ulong ext = ulong(t[12]) + carry;
+        t[12] = uint(ext & 0xFFFFFFFF);
+        t[13] = uint(ext >> 32);
 
+        // Montgomery reduction
         uint m = t[0] * FQ377_INV;
         carry = ulong(t[0]) + ulong(m) * ulong(FQ377_P[0]);
         carry >>= 32;
-        #pragma unroll
-        for (int j = 1; j < FQ_LIMBS; j++) {
+        for (int j = 1; j < 12; j++) {
             carry += ulong(t[j]) + ulong(m) * ulong(FQ377_P[j]);
             t[j - 1] = uint(carry & 0xFFFFFFFF);
             carry >>= 32;
         }
-        ext = ulong(t[FQ_LIMBS]) + carry;
-        t[FQ_LIMBS - 1] = uint(ext & 0xFFFFFFFF);
-        t[FQ_LIMBS] = t[FQ_LIMBS + 1] + uint(ext >> 32);
-        t[FQ_LIMBS + 1] = 0;
+        ext = ulong(t[12]) + carry;
+        t[11] = uint(ext & 0xFFFFFFFF);
+        t[12] = t[13] + uint(ext >> 32);
+        t[13] = 0;
     }
 
     Fq377 r;
-    for (int i = 0; i < FQ_LIMBS; i++) r.v[i] = t[i];
-    if (t[FQ_LIMBS] != 0 || fq377_gte(r, fq377_modulus())) {
+    for (int i = 0; i < 12; i++) r.v[i] = t[i];
+    if (t[12] != 0 || fq377_gte(r, fq377_modulus())) {
         uint borrow;
         r = fq377_sub_raw(r, fq377_modulus(), borrow);
     }

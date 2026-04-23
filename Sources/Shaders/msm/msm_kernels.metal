@@ -329,7 +329,7 @@ kernel void gpu_sort_scatter(
     uint raw = digits[w * n_points + i];
     uint digit = raw & 0x7FFFFFFFu;
     if (digit == 0) return;
-    uint pos = atomic_fetch_add_explicit(&positions[w * n_buckets + digit], 1u, memory_order_relaxed);
+    uint pos = atomic_fetch_add_explicit(&positions[w * n_points + digit], 1u, memory_order_relaxed);
     uint idx = i;
     if (raw & 0x80000000u) idx |= 0x80000000u;
     sorted_indices[w * n_points + pos] = idx;

@@ -1,0 +1,1495 @@
+{
+  "": {
+    "dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/zkMetalTests.d",
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/zkMetalTests.o",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/primary.swiftdeps"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/AIRConstraintCompilerTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/AIRConstraintCompilerTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/AIRConstraintCompilerTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/AIRConstraintCompilerTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/AIRConstraintCompilerTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/AIRDSLTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/AIRDSLTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/AIRDSLTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/AIRDSLTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/AIRDSLTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/AIRTraceGenTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/AIRTraceGenTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/AIRTraceGenTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/AIRTraceGenTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/AIRTraceGenTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/AdditiveFFTTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/AdditiveFFTTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/AdditiveFFTTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/AdditiveFFTTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/AdditiveFFTTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/BabyBearSTARKTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/BabyBearSTARKTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/BabyBearSTARKTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/BabyBearSTARKTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/BabyBearSTARKTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/BatchECDSATests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/BatchECDSATests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/BatchECDSATests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/BatchECDSATests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/BatchECDSATests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/BatchEd25519Tests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/BatchEd25519Tests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/BatchEd25519Tests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/BatchEd25519Tests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/BatchEd25519Tests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/BatchKZGTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/BatchKZGTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/BatchKZGTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/BatchKZGTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/BatchKZGTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/BinaryFRITests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/BinaryFRITests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/BinaryFRITests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/BinaryFRITests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/BinaryFRITests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/BinaryTowerTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/BinaryTowerTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/BinaryTowerTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/BinaryTowerTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/BinaryTowerTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/BiniusM3Tests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/BiniusM3Tests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/BiniusM3Tests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/BiniusM3Tests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/BiniusM3Tests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/BlazeTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/BlazeTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/BlazeTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/BlazeTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/BlazeTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/BulletproofsTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/BulletproofsTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/BulletproofsTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/BulletproofsTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/BulletproofsTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/CairoTraceTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/CairoTraceTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/CairoTraceTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/CairoTraceTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/CairoTraceTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/CircleSTARKTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/CircleSTARKTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/CircleSTARKTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/CircleSTARKTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/CircleSTARKTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/CircomParserTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/CircomParserTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/CircomParserTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/CircomParserTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/CircomParserTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/ConstraintConverterTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/ConstraintConverterTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/ConstraintConverterTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/ConstraintConverterTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/ConstraintConverterTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/ConstraintOptimizerTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/ConstraintOptimizerTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/ConstraintOptimizerTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/ConstraintOptimizerTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/ConstraintOptimizerTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/CosetDomainTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/CosetDomainTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/CosetDomainTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/CosetDomainTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/CosetDomainTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/CosetLDETests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/CosetLDETests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/CosetLDETests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/CosetLDETests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/CosetLDETests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/CustomGateLibraryTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/CustomGateLibraryTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/CustomGateLibraryTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/CustomGateLibraryTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/CustomGateLibraryTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/DASTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/DASTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/DASTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/DASTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/DASTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/DataParallelTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/DataParallelTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/DataParallelTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/DataParallelTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/DataParallelTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/EVMPrecompileTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/EVMPrecompileTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/EVMPrecompileTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/EVMPrecompileTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/EVMPrecompileTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/FflonkTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/FflonkTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/FflonkTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/FflonkTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/FflonkTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/FieldTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/FieldTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/FieldTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/FieldTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/FieldTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GKRTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GKRTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GKRTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GKRTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GKRTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUAIRCompositionTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUAIRCompositionTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUAIRCompositionTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUAIRCompositionTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUAIRCompositionTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUAIRConstraintCompilerTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUAIRConstraintCompilerTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUAIRConstraintCompilerTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUAIRConstraintCompilerTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUAIRConstraintCompilerTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUAIRTraceValidatorTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUAIRTraceValidatorTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUAIRTraceValidatorTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUAIRTraceValidatorTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUAIRTraceValidatorTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUAdditiveFFTTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUAdditiveFFTTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUAdditiveFFTTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUAdditiveFFTTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUAdditiveFFTTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUBLSAggregateTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBLSAggregateTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBLSAggregateTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBLSAggregateTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBLSAggregateTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUBLSSignatureTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBLSSignatureTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBLSSignatureTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBLSSignatureTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBLSSignatureTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUBabyBearExtensionTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBabyBearExtensionTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBabyBearExtensionTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBabyBearExtensionTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBabyBearExtensionTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUBabyBearSTARKProverTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBabyBearSTARKProverTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBabyBearSTARKProverTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBabyBearSTARKProverTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBabyBearSTARKProverTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUBasefoldProverTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBasefoldProverTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBasefoldProverTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBasefoldProverTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBasefoldProverTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUBatchInverseEngineTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBatchInverseEngineTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBatchInverseEngineTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBatchInverseEngineTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBatchInverseEngineTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUBatchInverseTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBatchInverseTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBatchInverseTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBatchInverseTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBatchInverseTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUBatchPCSVerifierTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBatchPCSVerifierTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBatchPCSVerifierTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBatchPCSVerifierTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBatchPCSVerifierTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUBatchTranscriptTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBatchTranscriptTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBatchTranscriptTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBatchTranscriptTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBatchTranscriptTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUBiniusBinaryFieldTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBiniusBinaryFieldTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBiniusBinaryFieldTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBiniusBinaryFieldTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBiniusBinaryFieldTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUBiniusPolyTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBiniusPolyTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBiniusPolyTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBiniusPolyTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBiniusPolyTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUBiniusTowerTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBiniusTowerTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBiniusTowerTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBiniusTowerTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBiniusTowerTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUBrakedownProverTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBrakedownProverTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBrakedownProverTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBrakedownProverTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBrakedownProverTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUBufferPoolTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBufferPoolTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBufferPoolTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBufferPoolTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUBufferPoolTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUCQLookupTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUCQLookupTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUCQLookupTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUCQLookupTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUCQLookupTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUCairoMemoryArgTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUCairoMemoryArgTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUCairoMemoryArgTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUCairoMemoryArgTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUCairoMemoryArgTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUCircleSTARKProverTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUCircleSTARKProverTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUCircleSTARKProverTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUCircleSTARKProverTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUCircleSTARKProverTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUCircuitOptimizerTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUCircuitOptimizerTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUCircuitOptimizerTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUCircuitOptimizerTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUCircuitOptimizerTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUCommitmentBatchTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUCommitmentBatchTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUCommitmentBatchTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUCommitmentBatchTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUCommitmentBatchTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUConstraintCompilerTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUConstraintCompilerTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUConstraintCompilerTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUConstraintCompilerTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUConstraintCompilerTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUConstraintEvalTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUConstraintEvalTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUConstraintEvalTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUConstraintEvalTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUConstraintEvalTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUConstraintSatTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUConstraintSatTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUConstraintSatTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUConstraintSatTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUConstraintSatTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUCosetFFTTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUCosetFFTTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUCosetFFTTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUCosetFFTTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUCosetFFTTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUCosetLDEEngineTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUCosetLDEEngineTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUCosetLDEEngineTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUCosetLDEEngineTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUCosetLDEEngineTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUCosetNTTEngineTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUCosetNTTEngineTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUCosetNTTEngineTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUCosetNTTEngineTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUCosetNTTEngineTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUECDSABatchVerifyTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUECDSABatchVerifyTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUECDSABatchVerifyTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUECDSABatchVerifyTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUECDSABatchVerifyTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUEVMPrecompileTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUEVMPrecompileTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUEVMPrecompileTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUEVMPrecompileTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUEVMPrecompileTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUFFTTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUFFTTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUFFTTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUFFTTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUFFTTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUFRICommitPhaseTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUFRICommitPhaseTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUFRICommitPhaseTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUFRICommitPhaseTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUFRICommitPhaseTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUFRIFoldTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUFRIFoldTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUFRIFoldTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUFRIFoldTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUFRIFoldTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUFRIGrindingTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUFRIGrindingTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUFRIGrindingTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUFRIGrindingTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUFRIGrindingTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUFRIProverTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUFRIProverTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUFRIProverTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUFRIProverTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUFRIProverTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUFRITests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUFRITests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUFRITests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUFRITests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUFRITests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUFRIVerifierTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUFRIVerifierTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUFRIVerifierTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUFRIVerifierTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUFRIVerifierTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUFflonkProverTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUFflonkProverTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUFflonkProverTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUFflonkProverTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUFflonkProverTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUFiatShamirTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUFiatShamirTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUFiatShamirTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUFiatShamirTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUFiatShamirTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUFieldExtensionTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUFieldExtensionTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUFieldExtensionTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUFieldExtensionTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUFieldExtensionTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUGKRProtocolTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUGKRProtocolTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUGKRProtocolTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUGKRProtocolTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUGKRProtocolTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUGoldilocksExtensionTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUGoldilocksExtensionTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUGoldilocksExtensionTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUGoldilocksExtensionTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUGoldilocksExtensionTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUGoldilocksSTARKProverTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUGoldilocksSTARKProverTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUGoldilocksSTARKProverTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUGoldilocksSTARKProverTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUGoldilocksSTARKProverTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUGrandProductEngineTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUGrandProductEngineTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUGrandProductEngineTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUGrandProductEngineTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUGrandProductEngineTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUGrandProductProverTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUGrandProductProverTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUGrandProductProverTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUGrandProductProverTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUGrandProductProverTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUGroth16AggregateTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUGroth16AggregateTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUGroth16AggregateTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUGroth16AggregateTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUGroth16AggregateTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUGroth16ProverTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUGroth16ProverTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUGroth16ProverTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUGroth16ProverTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUGroth16ProverTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUGroth16VKTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUGroth16VKTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUGroth16VKTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUGroth16VKTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUGroth16VKTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUHalo2BackendTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUHalo2BackendTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUHalo2BackendTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUHalo2BackendTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUHalo2BackendTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUHalo2LookupArgTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUHalo2LookupArgTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUHalo2LookupArgTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUHalo2LookupArgTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUHalo2LookupArgTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUHornerEvalTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUHornerEvalTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUHornerEvalTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUHornerEvalTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUHornerEvalTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUHyperPlonkIOPTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUHyperPlonkIOPTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUHyperPlonkIOPTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUHyperPlonkIOPTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUHyperPlonkIOPTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUIPAEngineTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUIPAEngineTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUIPAEngineTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUIPAEngineTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUIPAEngineTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUIPAProverTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUIPAProverTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUIPAProverTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUIPAProverTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUIPAProverTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUInnerProductTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUInnerProductTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUInnerProductTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUInnerProductTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUInnerProductTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUJoltInstructionTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUJoltInstructionTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUJoltInstructionTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUJoltInstructionTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUJoltInstructionTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUJoltSubtableTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUJoltSubtableTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUJoltSubtableTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUJoltSubtableTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUJoltSubtableTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUKZGBatchVerifyTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUKZGBatchVerifyTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUKZGBatchVerifyTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUKZGBatchVerifyTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUKZGBatchVerifyTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUKZGDegreeBoundTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUKZGDegreeBoundTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUKZGDegreeBoundTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUKZGDegreeBoundTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUKZGDegreeBoundTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUKZGMultiOpenTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUKZGMultiOpenTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUKZGMultiOpenTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUKZGMultiOpenTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUKZGMultiOpenTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUKZGSetupTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUKZGSetupTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUKZGSetupTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUKZGSetupTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUKZGSetupTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPULassoEngineTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPULassoEngineTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPULassoEngineTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPULassoEngineTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPULassoEngineTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPULogUpEngineTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPULogUpEngineTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPULogUpEngineTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPULogUpEngineTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPULogUpEngineTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPULookupGrandProductTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPULookupGrandProductTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPULookupGrandProductTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPULookupGrandProductTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPULookupGrandProductTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUMarlinPolyIOPTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUMarlinPolyIOPTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUMarlinPolyIOPTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUMarlinPolyIOPTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUMarlinPolyIOPTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUMatrixTransposeTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUMatrixTransposeTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUMatrixTransposeTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUMatrixTransposeTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUMatrixTransposeTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUMerkleAggregateTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUMerkleAggregateTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUMerkleAggregateTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUMerkleAggregateTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUMerkleAggregateTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUMerkleBatchProofTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUMerkleBatchProofTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUMerkleBatchProofTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUMerkleBatchProofTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUMerkleBatchProofTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUMerkleTreeTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUMerkleTreeTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUMerkleTreeTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUMerkleTreeTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUMerkleTreeTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUMultiPointEvalTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUMultiPointEvalTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUMultiPointEvalTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUMultiPointEvalTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUMultiPointEvalTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUMultilinearSumcheckTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUMultilinearSumcheckTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUMultilinearSumcheckTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUMultilinearSumcheckTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUMultilinearSumcheckTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUMultilinearTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUMultilinearTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUMultilinearTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUMultilinearTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUMultilinearTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUNovaDeciderCircuitTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUNovaDeciderCircuitTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUNovaDeciderCircuitTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUNovaDeciderCircuitTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUNovaDeciderCircuitTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUNovaDeciderTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUNovaDeciderTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUNovaDeciderTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUNovaDeciderTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUNovaDeciderTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUNovaFoldTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUNovaFoldTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUNovaFoldTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUNovaFoldTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUNovaFoldTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUNovaRelaxationTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUNovaRelaxationTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUNovaRelaxationTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUNovaRelaxationTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUNovaRelaxationTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUNovaVerifierTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUNovaVerifierTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUNovaVerifierTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUNovaVerifierTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUNovaVerifierTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUPCSFactoryTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPCSFactoryTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPCSFactoryTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPCSFactoryTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPCSFactoryTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUParallelReduceTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUParallelReduceTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUParallelReduceTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUParallelReduceTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUParallelReduceTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUPedersenChainTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPedersenChainTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPedersenChainTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPedersenChainTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPedersenChainTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUPermutationEngineTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPermutationEngineTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPermutationEngineTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPermutationEngineTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPermutationEngineTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUPlonkCopyConstraintTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPlonkCopyConstraintTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPlonkCopyConstraintTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPlonkCopyConstraintTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPlonkCopyConstraintTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUPlonkCustomGateTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPlonkCustomGateTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPlonkCustomGateTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPlonkCustomGateTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPlonkCustomGateTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUPlonkGateTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPlonkGateTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPlonkGateTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPlonkGateTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPlonkGateTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUPlonkGrandProductTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPlonkGrandProductTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPlonkGrandProductTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPlonkGrandProductTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPlonkGrandProductTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUPlonkLinearizeTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPlonkLinearizeTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPlonkLinearizeTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPlonkLinearizeTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPlonkLinearizeTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUPlonkLookupTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPlonkLookupTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPlonkLookupTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPlonkLookupTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPlonkLookupTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUPlonkQuotientTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPlonkQuotientTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPlonkQuotientTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPlonkQuotientTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPlonkQuotientTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUPlonkWireAssignTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPlonkWireAssignTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPlonkWireAssignTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPlonkWireAssignTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPlonkWireAssignTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUPlonky2EngineTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPlonky2EngineTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPlonky2EngineTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPlonky2EngineTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPlonky2EngineTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUPlonky3AIRTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPlonky3AIRTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPlonky3AIRTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPlonky3AIRTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPlonky3AIRTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUPlookupTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPlookupTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPlookupTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPlookupTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPlookupTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUPolyArithTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPolyArithTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPolyArithTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPolyArithTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPolyArithTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUPolyCommitOpenTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPolyCommitOpenTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPolyCommitOpenTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPolyCommitOpenTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPolyCommitOpenTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUPolyCompositionTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPolyCompositionTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPolyCompositionTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPolyCompositionTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPolyCompositionTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUPolyDivTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPolyDivTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPolyDivTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPolyDivTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPolyDivTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUPolyDivisionTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPolyDivisionTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPolyDivisionTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPolyDivisionTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPolyDivisionTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUPolyEvalTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPolyEvalTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPolyEvalTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPolyEvalTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPolyEvalTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUPolyInterpolationTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPolyInterpolationTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPolyInterpolationTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPolyInterpolationTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPolyInterpolationTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUPoseidon2ChainTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPoseidon2ChainTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPoseidon2ChainTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPoseidon2ChainTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPoseidon2ChainTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUPoseidon2PermTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPoseidon2PermTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPoseidon2PermTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPoseidon2PermTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPoseidon2PermTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUPrefixSumTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPrefixSumTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPrefixSumTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPrefixSumTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUPrefixSumTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUProofAggregationTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUProofAggregationTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUProofAggregationTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUProofAggregationTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUProofAggregationTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUProofBatchAggregationTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUProofBatchAggregationTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUProofBatchAggregationTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUProofBatchAggregationTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUProofBatchAggregationTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUProofCompositionTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUProofCompositionTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUProofCompositionTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUProofCompositionTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUProofCompositionTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUProofSerializerTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUProofSerializerTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUProofSerializerTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUProofSerializerTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUProofSerializerTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUProtogalaxyVerifierTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUProtogalaxyVerifierTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUProtogalaxyVerifierTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUProtogalaxyVerifierTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUProtogalaxyVerifierTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUQuotientEngineTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUQuotientEngineTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUQuotientEngineTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUQuotientEngineTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUQuotientEngineTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUR1CSSolverTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUR1CSSolverTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUR1CSSolverTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUR1CSSolverTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUR1CSSolverTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUR1CSToAIRCompilerTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUR1CSToAIRCompilerTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUR1CSToAIRCompilerTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUR1CSToAIRCompilerTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUR1CSToAIRCompilerTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUR1CSToQAPTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUR1CSToQAPTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUR1CSToQAPTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUR1CSToQAPTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUR1CSToQAPTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUR1CSWitnessSolverTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUR1CSWitnessSolverTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUR1CSWitnessSolverTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUR1CSWitnessSolverTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUR1CSWitnessSolverTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPURLCEngineTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPURLCEngineTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPURLCEngineTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPURLCEngineTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPURLCEngineTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPURangeProofProtocolTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPURangeProofProtocolTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPURangeProofProtocolTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPURangeProofProtocolTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPURangeProofProtocolTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPURangeProofTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPURangeProofTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPURangeProofTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPURangeProofTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPURangeProofTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPURecursiveCompositionTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPURecursiveCompositionTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPURecursiveCompositionTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPURecursiveCompositionTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPURecursiveCompositionTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPURecursiveSNARKTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPURecursiveSNARKTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPURecursiveSNARKTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPURecursiveSNARKTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPURecursiveSNARKTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUSTARKDeepCompositionTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUSTARKDeepCompositionTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUSTARKDeepCompositionTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUSTARKDeepCompositionTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUSTARKDeepCompositionTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUSTARKQueryPhaseTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUSTARKQueryPhaseTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUSTARKQueryPhaseTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUSTARKQueryPhaseTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUSTARKQueryPhaseTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUSTARKTraceLDETests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUSTARKTraceLDETests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUSTARKTraceLDETests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUSTARKTraceLDETests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUSTARKTraceLDETests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUSTARKVerifierTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUSTARKVerifierTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUSTARKVerifierTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUSTARKVerifierTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUSTARKVerifierTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUSparsePolyEngineTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUSparsePolyEngineTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUSparsePolyEngineTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUSparsePolyEngineTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUSparsePolyEngineTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUSpartanLinearizeTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUSpartanLinearizeTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUSpartanLinearizeTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUSpartanLinearizeTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUSpartanLinearizeTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUSpartanProverTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUSpartanProverTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUSpartanProverTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUSpartanProverTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUSpartanProverTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUSumcheckProtocolTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUSumcheckProtocolTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUSumcheckProtocolTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUSumcheckProtocolTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUSumcheckProtocolTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUSumcheckProverTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUSumcheckProverTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUSumcheckProverTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUSumcheckProverTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUSumcheckProverTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUSumcheckTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUSumcheckTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUSumcheckTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUSumcheckTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUSumcheckTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUTraceGeneratorTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUTraceGeneratorTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUTraceGeneratorTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUTraceGeneratorTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUTraceGeneratorTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUVanishingPolyTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUVanishingPolyTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUVanishingPolyTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUVanishingPolyTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUVanishingPolyTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUVectorCommitTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUVectorCommitTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUVectorCommitTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUVectorCommitTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUVectorCommitTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUVerkleMultiproofTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUVerkleMultiproofTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUVerkleMultiproofTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUVerkleMultiproofTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUVerkleMultiproofTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUVerkleTreeTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUVerkleTreeTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUVerkleTreeTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUVerkleTreeTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUVerkleTreeTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUWitnessCommitTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUWitnessCommitTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUWitnessCommitTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUWitnessCommitTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUWitnessCommitTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUWitnessGenTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUWitnessGenTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUWitnessGenTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUWitnessGenTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUWitnessGenTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUWitnessReductionTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUWitnessReductionTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUWitnessReductionTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUWitnessReductionTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUWitnessReductionTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUWitnessTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUWitnessTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUWitnessTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUWitnessTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUWitnessTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUZeromorphProverTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUZeromorphProverTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUZeromorphProverTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUZeromorphProverTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUZeromorphProverTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUZeromorphTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUZeromorphTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUZeromorphTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUZeromorphTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUZeromorphTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GPUzkVMEngineTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUzkVMEngineTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUzkVMEngineTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUzkVMEngineTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GPUzkVMEngineTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GoldilocksSTARKTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GoldilocksSTARKTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GoldilocksSTARKTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GoldilocksSTARKTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GoldilocksSTARKTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/GroestlHashTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GroestlHashTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GroestlHashTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GroestlHashTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/GroestlHashTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/Groth16GPUWitnessTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/Groth16GPUWitnessTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/Groth16GPUWitnessTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/Groth16GPUWitnessTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/Groth16GPUWitnessTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/Groth16ProverTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/Groth16ProverTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/Groth16ProverTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/Groth16ProverTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/Groth16ProverTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/Groth16RecursiveTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/Groth16RecursiveTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/Groth16RecursiveTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/Groth16RecursiveTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/Groth16RecursiveTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/Groth16SolidityTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/Groth16SolidityTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/Groth16SolidityTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/Groth16SolidityTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/Groth16SolidityTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/Halo2PermutationTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/Halo2PermutationTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/Halo2PermutationTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/Halo2PermutationTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/Halo2PermutationTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/HashTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/HashTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/HashTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/HashTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/HashTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/HyperNovaTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/HyperNovaTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/HyperNovaTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/HyperNovaTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/HyperNovaTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/IPAVerifierCircuitTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/IPAVerifierCircuitTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/IPAVerifierCircuitTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/IPAVerifierCircuitTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/IPAVerifierCircuitTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/IVCTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/IVCTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/IVCTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/IVCTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/IVCTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/InterpolationTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/InterpolationTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/InterpolationTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/InterpolationTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/InterpolationTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/JoltDecompositionTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/JoltDecompositionTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/JoltDecompositionTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/JoltDecompositionTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/JoltDecompositionTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/KZGMultiOpenTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/KZGMultiOpenTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/KZGMultiOpenTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/KZGMultiOpenTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/KZGMultiOpenTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/LatticeNTTNeonTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/LatticeNTTNeonTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/LatticeNTTNeonTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/LatticeNTTNeonTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/LatticeNTTNeonTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/LatticeNTTTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/LatticeNTTTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/LatticeNTTTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/LatticeNTTTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/LatticeNTTTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/LatticeNeonNTTTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/LatticeNeonNTTTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/LatticeNeonNTTTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/LatticeNeonNTTTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/LatticeNeonNTTTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/LogUpGKRTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/LogUpGKRTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/LogUpGKRTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/LogUpGKRTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/LogUpGKRTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/LookupSingularityTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/LookupSingularityTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/LookupSingularityTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/LookupSingularityTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/LookupSingularityTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/MSMTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/MSMTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/MSMTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/MSMTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/MSMTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/MarlinProverTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/MarlinProverTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/MarlinProverTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/MarlinProverTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/MarlinProverTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/MemoryCheckingTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/MemoryCheckingTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/MemoryCheckingTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/MemoryCheckingTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/MemoryCheckingTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/MultiMSMTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/MultiMSMTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/MultiMSMTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/MultiMSMTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/MultiMSMTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/MultiScalarInnerProductTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/MultiScalarInnerProductTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/MultiScalarInnerProductTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/MultiScalarInnerProductTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/MultiScalarInnerProductTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/MultilinearTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/MultilinearTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/MultilinearTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/MultilinearTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/MultilinearTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/NTTTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/NTTTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/NTTTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/NTTTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/NTTTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/NTTTwiddleSkipTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/NTTTwiddleSkipTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/NTTTwiddleSkipTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/NTTTwiddleSkipTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/NTTTwiddleSkipTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/NovaEngineTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/NovaEngineTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/NovaEngineTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/NovaEngineTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/NovaEngineTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/NovaFoldingTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/NovaFoldingTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/NovaFoldingTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/NovaFoldingTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/NovaFoldingTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/PCSComparisonTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PCSComparisonTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PCSComparisonTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PCSComparisonTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PCSComparisonTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/PCSProtocolTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PCSProtocolTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PCSProtocolTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PCSProtocolTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PCSProtocolTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/PackedNEONTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PackedNEONTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PackedNEONTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PackedNEONTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PackedNEONTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/PairingDiagnostic.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PairingDiagnostic.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PairingDiagnostic~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PairingDiagnostic.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PairingDiagnostic.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/PastaNTTTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PastaNTTTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PastaNTTTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PastaNTTTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PastaNTTTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/PastaPolyTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PastaPolyTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PastaPolyTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PastaPolyTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PastaPolyTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/PastaPoseidonTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PastaPoseidonTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PastaPoseidonTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PastaPoseidonTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PastaPoseidonTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/PedersenEngineTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PedersenEngineTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PedersenEngineTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PedersenEngineTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PedersenEngineTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/PedersenHashTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PedersenHashTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PedersenHashTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PedersenHashTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PedersenHashTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/PedersenVectorTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PedersenVectorTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PedersenVectorTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PedersenVectorTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PedersenVectorTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/PlonkEndToEndTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PlonkEndToEndTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PlonkEndToEndTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PlonkEndToEndTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PlonkEndToEndTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/PlonkGateTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PlonkGateTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PlonkGateTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PlonkGateTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PlonkGateTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/PlonkPermutationTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PlonkPermutationTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PlonkPermutationTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PlonkPermutationTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PlonkPermutationTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/PlonkTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PlonkTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PlonkTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PlonkTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PlonkTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/PlonkishArithTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PlonkishArithTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PlonkishArithTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PlonkishArithTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PlonkishArithTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/Plonky2RecursiveTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/Plonky2RecursiveTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/Plonky2RecursiveTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/Plonky2RecursiveTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/Plonky2RecursiveTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/Plonky2VerifierTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/Plonky2VerifierTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/Plonky2VerifierTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/Plonky2VerifierTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/Plonky2VerifierTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/PolyIdentityTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PolyIdentityTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PolyIdentityTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PolyIdentityTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PolyIdentityTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/PolynomialTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PolynomialTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PolynomialTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PolynomialTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PolynomialTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/Poseidon2SpongeTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/Poseidon2SpongeTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/Poseidon2SpongeTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/Poseidon2SpongeTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/Poseidon2SpongeTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/PrefixScanTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PrefixScanTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PrefixScanTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PrefixScanTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/PrefixScanTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/ProofSystemTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/ProofSystemTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/ProofSystemTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/ProofSystemTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/ProofSystemTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/ProofTranscriptCodecTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/ProofTranscriptCodecTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/ProofTranscriptCodecTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/ProofTranscriptCodecTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/ProofTranscriptCodecTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/ProtogalaxyDeciderTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/ProtogalaxyDeciderTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/ProtogalaxyDeciderTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/ProtogalaxyDeciderTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/ProtogalaxyDeciderTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/ProtogalaxyTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/ProtogalaxyTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/ProtogalaxyTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/ProtogalaxyTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/ProtogalaxyTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/RISCVDecoderTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/RISCVDecoderTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/RISCVDecoderTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/RISCVDecoderTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/RISCVDecoderTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/RISCVExecutorTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/RISCVExecutorTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/RISCVExecutorTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/RISCVExecutorTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/RISCVExecutorTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/RecursiveSNARKTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/RecursiveSNARKTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/RecursiveSNARKTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/RecursiveSNARKTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/RecursiveSNARKTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/ReedSolomonTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/ReedSolomonTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/ReedSolomonTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/ReedSolomonTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/ReedSolomonTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/STARKVerifierTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/STARKVerifierTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/STARKVerifierTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/STARKVerifierTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/STARKVerifierTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/Secp256k1BatchMSMTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/Secp256k1BatchMSMTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/Secp256k1BatchMSMTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/Secp256k1BatchMSMTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/Secp256k1BatchMSMTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/SerializationTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/SerializationTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/SerializationTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/SerializationTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/SerializationTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/SnarkPackTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/SnarkPackTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/SnarkPackTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/SnarkPackTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/SnarkPackTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/SparsePolyCommitTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/SparsePolyCommitTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/SparsePolyCommitTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/SparsePolyCommitTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/SparsePolyCommitTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/SpartanPolyIOPTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/SpartanPolyIOPTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/SpartanPolyIOPTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/SpartanPolyIOPTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/SpartanPolyIOPTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/SpartanTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/SpartanTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/SpartanTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/SpartanTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/SpartanTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/Stark252STARKTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/Stark252STARKTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/Stark252STARKTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/Stark252STARKTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/Stark252STARKTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/SupernovaTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/SupernovaTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/SupernovaTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/SupernovaTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/SupernovaTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/TestRunner.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/TestRunner.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/TestRunner~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/TestRunner.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/TestRunner.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/TraceCompressionTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/TraceCompressionTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/TraceCompressionTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/TraceCompressionTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/TraceCompressionTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/TranscriptHardeningTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/TranscriptHardeningTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/TranscriptHardeningTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/TranscriptHardeningTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/TranscriptHardeningTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/TranscriptTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/TranscriptTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/TranscriptTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/TranscriptTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/TranscriptTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/TrustedSetupTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/TrustedSetupTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/TrustedSetupTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/TrustedSetupTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/TrustedSetupTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/UnifiedLookupTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/UnifiedLookupTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/UnifiedLookupTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/UnifiedLookupTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/UnifiedLookupTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/UniversalProofFormatTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/UniversalProofFormatTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/UniversalProofFormatTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/UniversalProofFormatTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/UniversalProofFormatTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/VerkleProofEngineTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/VerkleProofEngineTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/VerkleProofEngineTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/VerkleProofEngineTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/VerkleProofEngineTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/VerkleProofTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/VerkleProofTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/VerkleProofTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/VerkleProofTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/VerkleProofTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/WHIRProverTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/WHIRProverTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/WHIRProverTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/WHIRProverTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/WHIRProverTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/WitnessGenTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/WitnessGenTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/WitnessGenTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/WitnessGenTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/WitnessGenTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/WitnessSolverTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/WitnessSolverTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/WitnessSolverTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/WitnessSolverTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/WitnessSolverTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/XHashTests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/XHashTests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/XHashTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/XHashTests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/XHashTests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Tests/zkMetalTests/main.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/main.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/main~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/main.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetalTests.build/main.dia"
+  }
+}

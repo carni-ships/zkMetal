@@ -307,7 +307,7 @@ public func runBLS12377MSMBench() {
 
     do {
         let engine = try BLS12377MSM()
-        // engine.useGLV = true  // GLV available but adds overhead for 12-limb fields
+        engine.useGLV = true  // Test with GLV enabled
 
         // Generate points: G, 2G, 3G, ...
         let gen = bls12377Generator()
@@ -370,6 +370,35 @@ public func runBLS12377MSMBench() {
             let sInt = Int(s[0]) | (Int(s[1]) << 32)  // just low 64 bits for simple scalar mul
             let term = point377MulInt(point377FromAffine(smallPts[i]), sInt & 0xFFFF)
             cpuResult = point377Add(cpuResult, term)
+        }
+
+        // Profile timing breakdown with GLV
+        print("\n--- GLV Timing Breakdown ---")
+        let profileSizes: [(Int, Int)] = [(1024, 11), (16384, 11), (65536, 15)]
+        for (n, wb) in profileSizes {
+            let pts = Array(allPoints.prefix(n))
+            let scals = Array(allScalars.prefix(n))
+            let engine2 = try BLS12377MSM()
+            engine2.useGLV = true
+            engine2.windowBitsOverride = UInt32(wb)
+
+            // Warmup
+            let _ = try engine2.msm(points: pts, scalars: scals)
+
+            // Time scalar reduction
+            let redStart = CFAbsoluteTimeGetCurrent()
+            for i in 0..<n {
+                let _ = BLS12377MSM.reduceModR(scals[i])
+            }
+            let redTime = (CFAbsoluteTimeGetCurrent() - redStart) * 1000
+
+            // Time GPU MSM (includes GLV decomposition + endomorphism + sort + reduction + combine)
+            let gpuStart = CFAbsoluteTimeGetCurrent()
+            let _ = try engine2.msm(points: pts, scalars: scals)
+            let gpuTime = (CFAbsoluteTimeGetCurrent() - gpuStart) * 1000
+
+            print(String(format: "  n=%d (w=%d): reduction=%.1fms, GPU=%.1fms, total=%.1fms",
+                        n, wb, redTime, gpuTime, redTime + gpuTime))
         }
 
         // GPU result (using same low-bits-only scalars for comparison)

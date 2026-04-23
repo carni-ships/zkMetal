@@ -42,7 +42,8 @@ public class GPUSparseMatvecEngine {
     /// Threshold: matrices with fewer total non-zeros than this use CPU path
     public var nnzThreshold: Int = 256
 
-    private let library: MTLLibrary
+    /// The compiled Metal shader library (public for profiling purposes)
+    public let library: MTLLibrary
 
     public init(threadgroupSize: Int = 64) throws {
         guard let device = MTLCreateSystemDefaultDevice() else {

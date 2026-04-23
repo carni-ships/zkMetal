@@ -5,7 +5,7 @@ High-level priorities and future directions.
 ## Remaining Opportunities
 
 ### High Priority
-- **Hardware upgrade** (M4 Pro/Max with more GPU cores)
+- [OUT-OF-SCOPE] **Hardware upgrade** (M4 Pro/Max with more GPU cores) - depends on external decision
 - **Protocol changes** (different PCS, fewer commitment rounds)
 
 ### Medium Priority
@@ -14,7 +14,7 @@ High-level priorities and future directions.
 
 ### Lower Priority
 - **Bucket-Interleaved Layout** — 15-25% speedup for secp256k1 MSM. Medium effort.
-- **MetalSpoon SP1 prover** GPU port — constraint eval / permutation / PCS dispatch.
+- [OUT-OF-SCOPE] **MetalSpoon SP1 prover** GPU port — constraint eval / permutation / PCS dispatch.
 
 ### Theoretical Extensions (Require Deep Protocol Changes)
 - Fused-DeepFold with shared-memory batch (4-8 rounds in one SM dispatch)

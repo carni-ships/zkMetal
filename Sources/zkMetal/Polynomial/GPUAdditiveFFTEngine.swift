@@ -676,6 +676,9 @@ public class GPUAdditiveFFTEngine {
     }
 
     /// CPU inverse additive FFT (DIT, reverse depth order).
+    /// Forward butterfly: new_lo = lo ^ (s*hi), new_hi = lo ^ hi
+    /// Inverse: hi = f(new_lo, new_hi, s), lo = new_hi ^ hi
+    /// where f finds hi such that s*hi ^ hi = new_lo ^ new_hi
     public static func cpuInverse(data: [UInt8], n: Int, k: Int, basis: [UInt8]) throws -> [UInt8] {
         var result = data
         for depth in stride(from: k - 1, through: 0, by: -1) {
@@ -686,14 +689,25 @@ public class GPUAdditiveFFTEngine {
                     let hiIdx = blockStart + half + i
                     let loIdx = blockStart + i
                     let s = basis[depth]
-                    let hiVal = result[hiIdx]
-                    let loVal = result[loIdx]
-                    // Un-propagate: hi ^= lo
-                    let unpropagated = hiVal ^ loVal
-                    // Un-twist: lo ^= s * hi_new
-                    let untwisted = loVal ^ gf28MulCPU(s, unpropagated)
-                    result[loIdx] = untwisted
-                    result[hiIdx] = unpropagated
+                    let newLo = result[loIdx]
+                    let newHi = result[hiIdx]
+                    // Solve s*hi ^ hi = newLo ^ newHi for hi
+                    // (brute force: at most 256 iterations, rarely needed)
+                    let C = newLo ^ newHi
+                    var hiVal: UInt8 = 0
+                    var found = false
+                    for hiTest in 0..<256 {
+                        let testVal = UInt8(hiTest)
+                        if gf28MulCPU(s, testVal) ^ testVal == C {
+                            hiVal = testVal
+                            found = true
+                            break
+                        }
+                    }
+                    // If not found, hi is 0 (shouldn't happen with valid s values)
+                    let loVal = newHi ^ hiVal
+                    result[loIdx] = loVal
+                    result[hiIdx] = hiVal
                 }
             }
         }

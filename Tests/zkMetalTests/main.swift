@@ -96,6 +96,7 @@ let allTests: [(String, () -> Void)] = [
     ("gpufft", runGPUFFTTests),
     ("gpuadditivefft", runGPUAdditiveFFTTests),
     ("sparsepolycommit", runSparsePolyCommitTests),
+    ("gpusparsematvec", runGPUSparseMatvecEngineTests),
     ("gpumultipointeval", runGPUMultiPointEvalTests),
     ("stark252stark", runStark252STARKTests),
     ("verkleproofengine", runVerkleProofEngineTests),

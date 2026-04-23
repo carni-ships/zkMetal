@@ -23,7 +23,7 @@ public class P1FRIEngine {
     let foldFunction: MTLComputePipelineState
     let foldBy2Function: MTLComputePipelineState?  // Fused 2-round kernel
     let foldBy4Function: MTLComputePipelineState?  // Fused 4-round kernel
-    let foldBy8Function: MTLComputePipelineState?  // Fused 8-round kernel
+    let foldBy8Function: MTLComputePipelineState? = nil  // Fused 8-round kernel (disabled due to indexing issues)
 
     // Reuse P1 NTT engine for LDE if needed
     public let p1NTT: P1NTTEngine
@@ -78,9 +78,10 @@ public class P1FRIEngine {
         self.foldBy4Function = try? device.makeComputePipelineState(
             function: library.makeFunction(name: "p1_fri_fold_by4")!
         )
-        self.foldBy8Function = try? device.makeComputePipelineState(
-            function: library.makeFunction(name: "p1_fri_fold_by8")!
-        )
+        // Fold-by-8 disabled due to threadgroup indexing issues
+        // self.foldBy8Function = try? device.makeComputePipelineState(
+        //     function: library.makeFunction(name: "p1_fri_fold_by8")!
+        // )
 
         self.p1NTT = try P1NTTEngine()
     }
@@ -596,80 +597,8 @@ public class P1FRIEngine {
         var roundIdx = 0
 
         while remainingRounds > 0 {
-            if remainingRounds >= 8 && foldBy8Function != nil {
-                // Process 8 rounds at once
-                let rounds = 8
-
-                // Allocate intermediate output buffers for this dispatch
-                let stageSizes = (0..<7).map { n >> ($0 + 2) }  // n/2, n/4, ..., n/128
-                var stageBufs: [MTLBuffer] = []
-                for size in stageSizes {
-                    guard let buf = device.makeBuffer(length: size * stride, options: .storageModeShared) else {
-                        throw MSMError.gpuError("Failed to create stage buffer")
-                    }
-                    stageBufs.append(buf)
-                }
-
-                // Allocate final output buffer
-                let finalSize = n >> (roundIdx + rounds)
-                guard let outBuf = device.makeBuffer(length: finalSize * stride, options: .storageModeShared) else {
-                    throw MSMError.gpuError("Failed to create output buffer")
-                }
-
-                var alphasArray = [alphas[roundIdx], alphas[roundIdx + 1],
-                                   alphas[roundIdx + 2], alphas[roundIdx + 3],
-                                   alphas[roundIdx + 4], alphas[roundIdx + 5],
-                                   alphas[roundIdx + 6], alphas[roundIdx + 7]]
-                var nVal = UInt32(n)
-
-                guard let cmdBuf = commandQueue.makeCommandBuffer() else {
-                    throw MSMError.noCommandBuffer
-                }
-                let enc = cmdBuf.makeComputeCommandEncoder()!
-
-                enc.setComputePipelineState(foldBy8Function!)
-                enc.setBuffer(currentBuf, offset: 0, index: 0)
-                enc.setBuffer(outBuf, offset: 0, index: 1)
-                enc.setBuffer(inv2tBufs[roundIdx], offset: 0, index: 2)
-                enc.setBuffer(inv2tBufs[roundIdx + 1], offset: 0, index: 3)
-                enc.setBuffer(inv2tBufs[roundIdx + 2], offset: 0, index: 4)
-                enc.setBuffer(inv2tBufs[roundIdx + 3], offset: 0, index: 5)
-                enc.setBuffer(inv2tBufs[roundIdx + 4], offset: 0, index: 6)
-                enc.setBuffer(inv2tBufs[roundIdx + 5], offset: 0, index: 7)
-                enc.setBuffer(inv2tBufs[roundIdx + 6], offset: 0, index: 8)
-                enc.setBuffer(inv2tBufs[roundIdx + 7], offset: 0, index: 9)
-                enc.setBytes(&alphasArray, length: stride * 8, index: 10)
-                enc.setBytes(&nVal, length: 4, index: 11)
-                // Stage output buffers at indices 12-18
-                enc.setBuffer(stageBufs[0], offset: 0, index: 12)
-                enc.setBuffer(stageBufs[1], offset: 0, index: 13)
-                enc.setBuffer(stageBufs[2], offset: 0, index: 14)
-                enc.setBuffer(stageBufs[3], offset: 0, index: 15)
-                enc.setBuffer(stageBufs[4], offset: 0, index: 16)
-                enc.setBuffer(stageBufs[5], offset: 0, index: 17)
-                enc.setBuffer(stageBufs[6], offset: 0, index: 18)
-
-                // Dispatch: threadgroup size 256, grid size = n/2 threads (n0 = n/2)
-                let n0 = n >> 1
-                enc.dispatchThreads(MTLSize(width: n0, height: 1, depth: 1),
-                                   threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
-                enc.endEncoding()
-                cmdBuf.commit()
-                cmdBuf.waitUntilCompleted()
-
-                // Read back intermediate layers
-                for i in 0..<7 {
-                    let size = stageSizes[i]
-                    let ptr = stageBufs[i].contents().bindMemory(to: M31.self, capacity: size)
-                    let layer = Array(UnsafeBufferPointer(start: ptr, count: size))
-                    allLayers.append(layer)
-                }
-
-                currentBuf = outBuf
-                roundIdx += rounds
-                remainingRounds -= rounds
-
-            } else if remainingRounds >= 4 && foldBy4Function != nil {
+            // Note: fold-by-8 disabled due to threadgroup indexing issues
+            if remainingRounds >= 4 && foldBy4Function != nil {
                 // Process 4 rounds - allocate single output buffer
                 let rounds = 4
                 let outputSize = n >> (roundIdx + rounds)

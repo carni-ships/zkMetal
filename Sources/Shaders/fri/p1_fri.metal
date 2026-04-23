@@ -182,6 +182,15 @@ kernel void p1_fri_fold_by4(
 // Output: n/256 elements
 // ============================================================================
 
+// ============================================================================
+// FOLD-BY-8 CASCADE KERNEL
+// Fuses 8 consecutive fold rounds into a single GPU dispatch.
+// Uses threadgroup memory to store intermediate fold results.
+//
+// WARNING: This kernel has structural issues with threadgroup indexing
+// for larger n values. Use fold-by-4 or single-fold for correctness.
+// ============================================================================
+
 kernel void p1_fri_fold_by8(
     device const M31* input           [[buffer(0)]],
     device M31* output               [[buffer(1)]],
@@ -220,7 +229,6 @@ kernel void p1_fri_fold_by8(
     if (gid >= n0) return;  // We have n/2 threads
 
     // Threadgroup memory for intermediate results
-    // Each thread stores its fold result for all 8 rounds
     threadgroup M31 stage0[512];  // After round 0: n/2 elements
     threadgroup M31 stage1[512];  // After round 1: n/4 elements
     threadgroup M31 stage2[256];  // After round 2: n/8 elements
@@ -231,7 +239,6 @@ kernel void p1_fri_fold_by8(
 
     // ========================================================================
     // Round 0: n -> n/2
-    // Each thread reads its pair and computes one element of the n/2 output
     // ========================================================================
     M31 a0 = input[gid];
     M31 b0 = input[gid + n0];
@@ -244,13 +251,17 @@ kernel void p1_fri_fold_by8(
 
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
+    // Write stage 0 output
+    if (tid < n1) {
+        stage0_out[tid + tgid * n1] = stage0[tid];
+    }
+
     // ========================================================================
-    // Round 1: n/2 -> n/4
-    // Threads 0..n/4-1 process pairs from stage0
+    // Round 1: n/2 -> n/4 (NOTE: has threadgroup indexing issues)
     // ========================================================================
     if (tid < n1) {
         uint r1_idx = tid;
-        uint src_idx = r1_idx + (tid & 1) * n1;
+        uint src_idx = r1_idx + (r1_idx & 1) * n1;
         M31 a1 = stage0[src_idx];
         M31 b1 = stage0[src_idx + n1];
         M31 sum1 = m31_add(a1, b1);
@@ -263,18 +274,17 @@ kernel void p1_fri_fold_by8(
 
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    // Write stage 0 output (n/2 elements) — uses tid as index since tid < n1
-    if (tid < n1) {
-        stage0_out[tid + tgid * n1] = stage1[tid];
+    // Write stage 1 output
+    if (tid < n2) {
+        stage1_out[tid + tgid * n2] = stage1[tid];
     }
 
     // ========================================================================
     // Round 2: n/4 -> n/8
-    // Threads 0..n/8-1 process pairs from stage1
     // ========================================================================
     if (tid < n2) {
         uint r2_idx = tid;
-        uint src_idx = r2_idx + (tid & 1) * n2;
+        uint src_idx = r2_idx + (r2_idx & 1) * n2;
         M31 a2 = stage1[src_idx];
         M31 b2 = stage1[src_idx + n2];
         M31 sum2 = m31_add(a2, b2);
@@ -287,18 +297,17 @@ kernel void p1_fri_fold_by8(
 
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    // Write stage 1 output (n/4 elements) — uses tid as index since tid < n2 = n/4
-    if (tid < n2) {
-        stage1_out[tid + tgid * n2] = stage2[tid];
+    // Write stage 2 output
+    if (tid < n3) {
+        stage2_out[tid + tgid * n3] = stage3[tid];
     }
 
     // ========================================================================
     // Round 3: n/8 -> n/16
-    // Threads 0..n/16-1 process pairs from stage2
     // ========================================================================
     if (tid < n3) {
         uint r3_idx = tid;
-        uint src_idx = r3_idx + (tid & 1) * n3;
+        uint src_idx = r3_idx + (r3_idx & 1) * n3;
         M31 a3 = stage2[src_idx];
         M31 b3 = stage2[src_idx + n3];
         M31 sum3 = m31_add(a3, b3);
@@ -311,18 +320,17 @@ kernel void p1_fri_fold_by8(
 
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    // Write stage 2 output (n/8 elements) — uses tid as index since tid < n3 = n/16 < n2
-    if (tid < n3) {
-        stage2_out[tid + tgid * n3] = stage3[tid];
+    // Write stage 3 output
+    if (tid < n4) {
+        stage3_out[tid + tgid * n4] = stage3[tid];
     }
 
     // ========================================================================
     // Round 4: n/16 -> n/32
-    // Threads 0..n/32-1 process pairs from stage3
     // ========================================================================
     if (tid < n4) {
         uint r4_idx = tid;
-        uint src_idx = r4_idx + (tid & 1) * n4;
+        uint src_idx = r4_idx + (r4_idx & 1) * n4;
         M31 a4 = stage3[src_idx];
         M31 b4 = stage3[src_idx + n4];
         M31 sum4 = m31_add(a4, b4);
@@ -335,18 +343,17 @@ kernel void p1_fri_fold_by8(
 
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    // Write stage 3 output (n/16 elements) — uses tid as index since tid < n4
-    if (tid < n4) {
-        stage3_out[tid + tgid * n4] = stage4[tid];
+    // Write stage 4 output
+    if (tid < n5) {
+        stage4_out[tid + tgid * n5] = stage4[tid];
     }
 
     // ========================================================================
     // Round 5: n/32 -> n/64
-    // Threads 0..n/64-1 process pairs from stage4
     // ========================================================================
     if (tid < n5) {
         uint r5_idx = tid;
-        uint src_idx = r5_idx + (tid & 1) * n5;
+        uint src_idx = r5_idx + (r5_idx & 1) * n5;
         M31 a5 = stage4[src_idx];
         M31 b5 = stage4[src_idx + n5];
         M31 sum5 = m31_add(a5, b5);
@@ -359,18 +366,17 @@ kernel void p1_fri_fold_by8(
 
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    // Write stage 4 output (n/32 elements) — uses tid as index since tid < n5
-    if (tid < n5) {
-        stage4_out[tid + tgid * n5] = stage5[tid];
+    // Write stage 5 output
+    if (tid < n6) {
+        stage5_out[tid + tgid * n6] = stage5[tid];
     }
 
     // ========================================================================
     // Round 6: n/64 -> n/128
-    // Threads 0..n/128-1 process pairs from stage5
     // ========================================================================
     if (tid < n6) {
         uint r6_idx = tid;
-        uint src_idx = r6_idx + (tid & 1) * n6;
+        uint src_idx = r6_idx + (r6_idx & 1) * n6;
         M31 a6 = stage5[src_idx];
         M31 b6 = stage5[src_idx + n6];
         M31 sum6 = m31_add(a6, b6);
@@ -383,19 +389,17 @@ kernel void p1_fri_fold_by8(
 
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    // Write stage 5 output (n/64 elements) — uses tid as index since tid < n6
-    if (tid < n6) {
-        stage5_out[tid + tgid * n6] = stage6[tid];
+    // Write stage 6 output
+    if (tid < n7) {
+        stage6_out[tid + tgid * n6] = stage6[tid];
     }
 
     // ========================================================================
     // Round 7: n/128 -> n/256
-    // Threads 0..n/256-1 process pairs from stage6
-    // Write final output and stage 6
     // ========================================================================
     if (tid < n7) {
         uint r7_idx = tid;
-        uint src_idx = r7_idx + (tid & 1) * n7;
+        uint src_idx = r7_idx + (r7_idx & 1) * n7;
         M31 a7 = stage6[src_idx];
         M31 b7 = stage6[src_idx + n7];
         M31 sum7 = m31_add(a7, b7);
@@ -403,10 +407,7 @@ kernel void p1_fri_fold_by8(
         M31 diff7 = m31_sub(a7, b7);
         M31 alpha7_diff = m31_mul(alphas[7], diff7);
         M31 diff_term7 = m31_mul(alpha7_diff, inv_2t_7[r7_idx]);
-        M31 result7 = m31_add(half_sum7, diff_term7);
-        output[r7_idx + tgid * n7] = result7;
-        // Write stage 6 output (n/128 elements) — uses tid as index since tid < n7
-        stage6_out[tid + tgid * n6] = stage6[tid];
+        output[r7_idx + tgid * n7] = m31_add(half_sum7, diff_term7);
     }
 }
 

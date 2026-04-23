@@ -1,6 +1,7 @@
 // BLS12-381 Metal MSM Engine -- Pippenger's bucket method with GPU acceleration
 // Uses BLS12-381 G1 curve (y^2 = x^3 + 4) over 381-bit Fp.
-// No GLV endomorphism -- full 255-bit scalar windows.
+// Supports GLV endomorphism for ~2× speedup (128-bit scalar decomposition).
+// GLV halves scalar width (255→128 bits) at cost of 2× points.
 
 import Foundation
 import Metal
@@ -18,9 +19,11 @@ public class BLS12381MSM {
     private let combineSegmentsFunction: MTLComputePipelineState
     private let hornerCombineFunction: MTLComputePipelineState
     private let signedDigitFunction: MTLComputePipelineState
+    private let glvSignedDigitFunction: MTLComputePipelineState?
     private let gpuSortHistogramFunction: MTLComputePipelineState
     private let gpuSortScatterFunction: MTLComputePipelineState
     private let gpuBuildCsmFunction: MTLComputePipelineState
+    private let glvDecomposeFunction: MTLComputePipelineState
 
     // Pre-allocated buffers
     private var maxAllocatedPoints = 0
@@ -40,10 +43,27 @@ public class BLS12381MSM {
     private var cpuCountsPtr: UnsafeMutablePointer<Int>?
     private var cpuPositionsPtr: UnsafeMutablePointer<Int>?
     private var cpuScratchCapacity = 0
-    private var signedDigitPtr: UnsafeMutablePointer<UInt32>?
+    private var signedDigitPtr: UnsafeMutablePointer<UInt16>?
     private var signedDigitCapacity = 0
+
+    // GLV buffers
+    private var glvScalarInBufCached: MTLBuffer?
+    private var glvK1MetalBufCached: MTLBuffer?
+    private var glvK2MetalBufCached: MTLBuffer?
+    private var glvNeg1BufCached: MTLBuffer?
+    private var glvNeg2BufCached: MTLBuffer?
+    private var glvEndoPointsBufCached: MTLBuffer?
+    private var glvCachedN: Int = 0
+
     public var windowBitsOverride: UInt32?
+    // GLV endomorphism: halves scalar width (255→128 bits) at cost of 2× points
+    public var useGLV = false
     private let tuning: TuningConfig
+
+    // GLV kernel pipeline states
+    private let glvCopyAndEndoFunction: MTLComputePipelineState?
+    private let glvReduceSortedGLVFunction: MTLComputePipelineState?
+    private let glvBucketSumGLVFunction: MTLComputePipelineState?
 
     public static let cacheDir = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".zkmsm").appendingPathComponent("cache")
@@ -64,7 +84,8 @@ public class BLS12381MSM {
 
         let requiredKernels = [
             "msm381_reduce_sorted_buckets", "msm381_bucket_sum_direct",
-            "msm381_combine_segments", "msm381_signed_digit_extract"
+            "msm381_combine_segments", "msm381_signed_digit_extract",
+            "msm381_signed_digit_extract_glv", "glv381_decompose"
         ]
         if FileManager.default.fileExists(atPath: cacheFile.path) {
             do {
@@ -103,9 +124,22 @@ public class BLS12381MSM {
         self.combineSegmentsFunction = try device.makeComputePipelineState(function: combineFn)
         self.hornerCombineFunction = try device.makeComputePipelineState(function: hornerFn)
         self.signedDigitFunction = try device.makeComputePipelineState(function: signedDigitFn)
+        self.glvSignedDigitFunction = try? device.makeComputePipelineState(
+            function: library.makeFunction(name: "msm381_signed_digit_extract_glv")!)
         self.gpuSortHistogramFunction = try device.makeComputePipelineState(function: gpuSortHistFn)
         self.gpuSortScatterFunction = try device.makeComputePipelineState(function: gpuSortScatFn)
         self.gpuBuildCsmFunction = try device.makeComputePipelineState(function: gpuBuildCsmFn)
+        self.glvDecomposeFunction = try device.makeComputePipelineState(
+            function: library.makeFunction(name: "glv381_decompose")!)
+
+        // Try to get GLV-specific kernels
+        self.glvCopyAndEndoFunction = try? device.makeComputePipelineState(
+            function: library.makeFunction(name: "glv381_copy_and_endo")!)
+        self.glvReduceSortedGLVFunction = try? device.makeComputePipelineState(
+            function: library.makeFunction(name: "msm381_reduce_sorted_buckets_glv")!)
+        self.glvBucketSumGLVFunction = try? device.makeComputePipelineState(
+            function: library.makeFunction(name: "msm381_bucket_sum_glv")!)
+
         self.tuning = TuningManager.shared.config(device: device)
     }
 
@@ -114,6 +148,7 @@ public class BLS12381MSM {
 
         let fqSource = try String(contentsOfFile: shaderDir + "/fields/bls12381_fq.metal", encoding: .utf8)
         let curveSource = try String(contentsOfFile: shaderDir + "/geometry/bls12381_curve.metal", encoding: .utf8)
+        let glvSource = try String(contentsOfFile: shaderDir + "/msm/bls12381_glv_kernels.metal", encoding: .utf8)
         let msmSource = try String(contentsOfFile: shaderDir + "/msm/bls12381_msm_kernels.metal", encoding: .utf8)
 
         func stripIncludes(_ s: String) -> String {
@@ -130,6 +165,7 @@ public class BLS12381MSM {
 
         let combined = stripGuards(fqSource) + "\n" +
                         stripGuards(stripIncludes(curveSource)) + "\n" +
+                        stripIncludes(glvSource) + "\n" +
                         stripIncludes(msmSource)
 
         let options = MTLCompileOptions()
@@ -368,9 +404,9 @@ public class BLS12381MSM {
                         if digit > halfBk {
                             digit = fullBk &- digit
                             carry = 1
-                            signedDigitBuf[w * eN + i] = digit | 0x80000000
+                            signedDigitBuf[w * eN + i] = UInt16(digit) | 0x8000
                         } else {
-                            signedDigitBuf[w * eN + i] = digit
+                            signedDigitBuf[w * eN + i] = UInt16(digit)
                         }
                     }
                 }
@@ -389,7 +425,7 @@ public class BLS12381MSM {
 
             for i in 0..<nBuckets { counts[i] = 0 }
             for i in 0..<n {
-                counts[Int(sdBuf[i] & 0x7FFFFFFF)] += 1
+                counts[Int(sdBuf[i] & 0x7FFF)] += 1
             }
 
             var runningOffset = 0
@@ -402,10 +438,10 @@ public class BLS12381MSM {
 
             for i in 0..<n {
                 let raw = sdBuf[i]
-                let digit = Int(raw & 0x7FFFFFFF)
+                let digit = Int(raw & 0x7FFF)
                 if digit == 0 { continue }
                 var idx = UInt32(i)
-                if (raw & 0x80000000) != 0 { idx |= 0x80000000 }
+                if (raw & 0x8000) != 0 { idx |= 0x80000000 }
                 sortedIdxPtr[idxBase + positions[digit]] = idx
                 positions[digit] += 1
             }

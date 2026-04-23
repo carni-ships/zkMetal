@@ -1,0 +1,3 @@
+module zkMetal_ffi {
+    header "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetal_ffi.build/include/zkMetal-ffi-Swift.h"
+}

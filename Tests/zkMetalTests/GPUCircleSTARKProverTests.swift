@@ -4,6 +4,7 @@
 
 import zkMetal
 import Foundation
+import Metal
 
 public func runGPUCircleSTARKProverTests() {
     suite("GPU Circle STARK Prover -- Config")
@@ -16,6 +17,12 @@ public func runGPUCircleSTARKProverTests() {
     testPoseidon2M31MerkleTree()
     testPoseidon2M31MerkleProofVerify()
     testPoseidon2M31MerkleTampered()
+
+    suite("GPU Circle STARK Prover -- GPU Merkle Tree")
+    testGPUMerkleTreeEngine()
+    testGPUMerkleTreeRootMatch()
+    testGPUMerkleTreeProofVerify()
+    testGPUMerkleTreeLargerSize()
 
     suite("GPU Circle STARK Prover -- Circle Domain")
     testCircleDomainCoset()
@@ -62,6 +69,13 @@ public func runGPUCircleSTARKProverTests() {
 
     suite("GPU Circle STARK Prover -- Determinism")
     testDeterministicProving()
+
+    suite("GPU Circle STARK Prover -- Merkle Tree Cache")
+    testMerkleTreeCacheKey()
+    testMerkleTreeCacheCreation()
+    testMerkleTreeCacheLRUEviction()
+    testMerkleTreeCacheInProver()
+    testMerkleTreeCachePrewarm()
 }
 
 // MARK: - Config Tests
@@ -208,6 +222,93 @@ private func testPoseidon2M31MerkleTampered() {
         index: 5, root: root
     )
     expect(!wrongIdx, "Wrong index rejected by Merkle proof")
+}
+
+// MARK: - GPU Merkle Tree Tests
+
+private func testGPUMerkleTreeEngine() {
+    do {
+        let engine = try GPUMerkleTreeM31Engine()
+        expect(true, "GPUMerkleTreeM31Engine initialized")
+    } catch {
+        expect(false, "GPUMerkleTreeM31Engine init error: \(error)")
+    }
+}
+
+private func testGPUMerkleTreeRootMatch() {
+    do {
+        let n = 8
+        let values = (0..<n).map { M31(v: UInt32($0 + 1)) }
+
+        // CPU tree
+        let cpuTree = buildPoseidon2M31MerkleTree(values, count: n)
+        let cpuRoot = poseidon2M31MerkleRoot(cpuTree, n: n)
+
+        // GPU tree
+        let gpuTreeEng = try GPUMerkleTreeM31Engine()
+        let gpuTree = try gpuTreeEng.buildTree(values: values, count: n)
+        let gpuRoot = gpuTree[2 * n - 2]
+
+        expect(cpuRoot == gpuRoot, "GPU root matches CPU root")
+    } catch {
+        expect(false, "GPUMerkleTree root match error: \(error)")
+    }
+}
+
+private func testGPUMerkleTreeProofVerify() {
+    do {
+        let n = 16
+        let values = (0..<n).map { M31(v: UInt32($0 * 7 + 3)) }
+
+        // GPU tree
+        let gpuTreeEng = try GPUMerkleTreeM31Engine()
+        let gpuTree = try gpuTreeEng.buildTree(values: values, count: n)
+        let gpuRoot = gpuTree[2 * n - 2]
+
+        // Verify proofs
+        for i in 0..<n {
+            let path = poseidon2M31MerkleProof(gpuTree, n: n, index: i)
+            expectEqual(path.count, 4, "Merkle path depth = log2(16) = 4")
+
+            // Reconstruct leaf digest
+            let val = values[i]
+            let leafInput = [val, M31(v: UInt32(i)), M31.zero, M31.zero,
+                             M31.zero, M31.zero, M31.zero, M31.zero]
+            let leafDigest = M31Digest(values: poseidon2M31HashSingle(leafInput))
+
+            let valid = verifyPoseidon2M31MerkleProof(
+                leafDigest: leafDigest, path: path,
+                index: i, root: gpuRoot
+            )
+            expect(valid, "GPU Merkle proof valid for leaf \(i)")
+        }
+    } catch {
+        expect(false, "GPUMerkleTree proof verify error: \(error)")
+    }
+}
+
+private func testGPUMerkleTreeLargerSize() {
+    do {
+        // Test with larger tree (2^10 = 1024 leaves)
+        let n = 1024
+        var values = [M31]()
+        for i in 0..<n {
+            values.append(M31(v: UInt32(i * 17 + 42) % M31.P))
+        }
+
+        // CPU tree (for small n, can still do it)
+        let cpuTree = buildPoseidon2M31MerkleTree(values, count: n)
+        let cpuRoot = poseidon2M31MerkleRoot(cpuTree, n: n)
+
+        // GPU tree
+        let gpuTreeEng = try GPUMerkleTreeM31Engine()
+        let gpuTree = try gpuTreeEng.buildTree(values: values, count: n)
+        let gpuRoot = gpuTree[2 * n - 2]
+
+        expect(cpuRoot == gpuRoot, "GPU root matches CPU root for n=1024")
+    } catch {
+        expect(false, "GPUMerkleTree larger size error: \(error)")
+    }
 }
 
 // MARK: - Circle Domain Tests
@@ -737,5 +838,174 @@ private func testDeterministicProving() {
                    "FRI query indices are deterministic")
     } catch {
         expect(false, "Deterministic proving test error: \(error)")
+    }
+}
+
+// MARK: - Merkle Tree Cache Tests
+
+private func testMerkleTreeCacheKey() {
+    let key1 = MerkleTreeCacheKey(evalLen: 65536, numColumns: 180)
+    expectEqual(key1.evalLen, 65536, "Cache key evalLen")
+    expectEqual(key1.numColumns, 180, "Cache key numColumns")
+    expectEqual(key1.logEvalLen, 16, "Cache key logEvalLen")
+
+    // Same key should be equal
+    let key2 = MerkleTreeCacheKey(evalLen: 65536, numColumns: 180)
+    expectEqual(key1, key2, "Same keys are equal")
+
+    // Different key should not be equal
+    let key3 = MerkleTreeCacheKey(evalLen: 65536, numColumns: 64)
+    expect(key1 != key3, "Different numColumns keys are not equal")
+
+    let key4 = MerkleTreeCacheKey(evalLen: 262144, numColumns: 180)
+    expect(key1 != key4, "Different evalLen keys are not equal")
+}
+
+private func testMerkleTreeCacheCreation() {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+        print("  [SKIP] No GPU available for cache test")
+        return
+    }
+
+    do {
+        let cache = MerkleTreeCache(device: MTLCreateSystemDefaultDevice()!)
+
+        // Get cache statistics before any entries
+        expectEqual(cache.entryCount, 0, "Cache starts empty")
+        expectEqual(cache.hitRate, 0.0, "Initial hit rate is 0")
+
+        // Create cache entry (cache miss)
+        let state = try cache.getOrCreate(evalLen: 65536, numColumns: 180)
+
+        expectEqual(cache.entryCount, 1, "Cache has 1 entry after creation")
+        expectEqual(state.key.evalLen, 65536, "Cached state evalLen")
+        expectEqual(state.key.numColumns, 180, "Cached state numColumns")
+        expectEqual(state.numLeaves, 8192, "Cached state numLeaves (65536 / 8)")
+
+        // Second access should hit cache (state.hitCount = 1 after one hit)
+        let state2 = try cache.getOrCreate(evalLen: 65536, numColumns: 180)
+        expect(state === state2, "Same key returns same cached state")
+        expectEqual(state.hitCount, 1, "State hit count after one reuse")
+
+        // Cache statistics should show 1 hit, 1 miss
+        expectEqual(cache.hitCount, 1, "Cache hit count = 1")
+        expectEqual(cache.missCount, 1, "Cache miss count = 1")
+
+        // Different key should create new entry
+        let state3 = try cache.getOrCreate(evalLen: 65536, numColumns: 64)
+        expect(state3 !== state, "Different key returns different state")
+        expectEqual(cache.entryCount, 2, "Cache has 2 entries")
+
+        // Third call with first key should hit again
+        let state4 = try cache.getOrCreate(evalLen: 65536, numColumns: 180)
+        expect(state4 === state, "Same key returns cached state")
+        expectEqual(state.hitCount, 2, "State hit count after second reuse")
+
+        // Statistics should now show 2 hits, 2 misses
+        expectEqual(cache.hitCount, 2, "Cache hit count = 2")
+        expectEqual(cache.missCount, 2, "Cache miss count = 2")
+        expect(cache.hitRate > 0.4, "Hit rate should be > 40%")
+
+        cache.clear()
+        expectEqual(cache.entryCount, 0, "Cache cleared")
+
+    } catch {
+        expect(false, "Cache creation error: \(error)")
+    }
+}
+
+private func testMerkleTreeCacheLRUEviction() {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+        print("  [SKIP] No GPU available for cache eviction test")
+        return
+    }
+
+    do {
+        let cache = MerkleTreeCache(device: MTLCreateSystemDefaultDevice()!)
+        cache.prewarm()
+
+        // Create multiple entries to trigger eviction
+        let keys: [(Int, Int)] = [
+            (1 << 18, 180),  // 2^18, 180 columns
+            (1 << 18, 64),   // 2^18, 64 columns
+            (1 << 20, 180),  // 2^20, 180 columns
+            (1 << 20, 64),   // 2^20, 64 columns
+        ]
+
+        for (evalLen, numCols) in keys {
+            _ = try cache.getOrCreate(evalLen: evalLen, numColumns: numCols)
+        }
+
+        // Cache should have some entries (may be less than max due to memory limits)
+        expect(cache.entryCount > 0, "Cache has entries after creation")
+
+        // Clear and verify
+        cache.clear()
+        expectEqual(cache.entryCount, 0, "Cache cleared")
+
+    } catch {
+        expect(false, "Cache eviction error: \(error)")
+    }
+}
+
+private func testMerkleTreeCacheInProver() {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+        print("  [SKIP] No GPU available for prover cache test")
+        return
+    }
+
+    do {
+        let air = FibonacciAIR(logTraceLength: 4)
+        let engine = GPUCircleSTARKProverEngine(config: .fast)
+
+        // First proof - cache miss
+        let result1 = try engine.prove(air: air)
+
+        // Check cache stats are available
+        let stats = engine.cacheStats
+        expect(stats.contains("MerkleTreeCache"), "Cache stats contains MerkleTreeCache")
+
+        // Second proof - should hit cache
+        let result2 = try engine.prove(air: air)
+
+        // Both proofs should be valid
+        let verified1 = engine.verify(air: air, proof: result1.proof)
+        let verified2 = engine.verify(air: air, proof: result2.proof)
+        expect(verified1, "First proof verifies")
+        expect(verified2, "Second proof verifies")
+
+        // Clear cache and verify
+        engine.clearCache()
+        let clearedStats = engine.cacheStats
+        expect(clearedStats.contains("Entries: 0"), "Cache cleared (0 entries)")
+
+    } catch {
+        expect(false, "Prover cache test error: \(error)")
+    }
+}
+
+private func testMerkleTreeCachePrewarm() {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+        print("  [SKIP] No GPU available for prewarm test")
+        return
+    }
+
+    do {
+        let cache = MerkleTreeCache(device: MTLCreateSystemDefaultDevice()!)
+
+        // Prewarm should create entries for common domain sizes
+        cache.prewarm()
+
+        // Some common sizes should be cached
+        let state1 = cache.get(evalLen: 1 << 18, numColumns: 180)
+        expect(state1 != nil, "2^18 x 180 prewarmed")
+
+        let state2 = cache.get(evalLen: 1 << 20, numColumns: 180)
+        expect(state2 != nil, "2^20 x 180 prewarmed")
+
+        cache.clear()
+
+    } catch {
+        expect(false, "Prewarm error: \(error)")
     }
 }

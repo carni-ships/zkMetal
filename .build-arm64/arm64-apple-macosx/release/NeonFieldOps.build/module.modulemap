@@ -1,0 +1,4 @@
+module NeonFieldOps {
+    umbrella header "/Users/carnation/Documents/Claude/zkMetal/Sources/NeonFieldOps/include/NeonFieldOps.h"
+    export *
+}

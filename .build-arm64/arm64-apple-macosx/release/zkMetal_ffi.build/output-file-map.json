@@ -1,0 +1,13 @@
+{
+  "": {
+    "dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetal_ffi.build/zkMetal_ffi.d",
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetal_ffi.build/zkMetal_ffi.o",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetal_ffi.build/primary.swiftdeps"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkMetal-ffi/zkMetal_ffi.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetal_ffi.build/zkMetal_ffi.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetal_ffi.build/zkMetal_ffi~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetal_ffi.build/zkMetal_ffi.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkMetal_ffi.build/zkMetal_ffi.dia"
+  }
+}

@@ -364,6 +364,32 @@ public class CircleNTTEngine {
         enc.endEncoding()
     }
 
+    // MARK: - Batch NTT Encoding
+
+    /// Batch NTT encoding for multiple buffers.
+    /// All buffers share the same logN. Encodes them sequentially in the same command buffer.
+    ///
+    /// This is more efficient than calling encodeNTT in a loop because it avoids
+    /// repeated method call overhead. The actual GPU execution time is similar since
+    /// all dispatches go into the same command buffer.
+    public func encodeNTTBatch(buffers: [MTLBuffer], logN: Int, cmdBuf: MTLCommandBuffer) {
+        for buf in buffers {
+            encodeNTT(data: buf, logN: logN, cmdBuf: cmdBuf)
+        }
+    }
+
+    /// Batch INTT encoding for multiple buffers.
+    /// All buffers share the same logN. Encodes them sequentially in the same command buffer.
+    ///
+    /// This is more efficient than calling encodeINTT in a loop because it avoids
+    /// repeated method call overhead. The actual GPU execution time is similar since
+    /// all dispatches go into the same command buffer.
+    public func encodeINTTBatch(buffers: [MTLBuffer], logN: Int, cmdBuf: MTLCommandBuffer) {
+        for buf in buffers {
+            encodeINTT(data: buf, logN: logN, cmdBuf: cmdBuf)
+        }
+    }
+
     // MARK: - High-level API
 
     public func ntt(_ input: [M31]) throws -> [M31] {

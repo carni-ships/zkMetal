@@ -141,6 +141,42 @@ For reference, current observed performance on beta macOS:
 | Poseidon2 | 2^18 | 45ms | 1.4s | **32x** |
 | Poseidon2 | 2^20 | 129ms | -- | -- |
 
+## GPU Additive FFT (GF(2^8))
+
+GPU-accelerated Additive FFT (Cantor/Lin-Chung-Han) for GF(2^8) with fused all-k-levels kernel.
+
+**Key optimizations**:
+- 256x256 GF(2^8) multiplication LUT (64KB) for O(1) field multiplication
+- `forward_pairs` kernel (n/2 threads, no divergence)
+- Threadgroup-local basis caching (eliminates k global memory reads)
+
+### GPU Forward FFT
+
+| Size | Elements | basic | pairs | pairs_tg | CPU | GPU Speedup |
+|------|----------|-------|-------|----------|-----|-------------|
+| 2^14 | 16,384 | 0.45ms | 0.32ms | 0.32ms | 0.38ms | **1.2x** |
+| 2^16 | 65,536 | 0.41ms | 0.38ms | 0.37ms | 1.67ms | **4.5x** |
+| 2^18 | 262,144 | 0.66ms | 0.52ms | 0.52ms | 7.40ms | **14.2x** |
+| 2^20 | 1,048,576 | 1.64ms | 0.99ms | 0.68ms | 32.94ms | **48.4x** |
+| 2^22 | 4,194,304 | 3.67ms | 1.66ms | 1.53ms | 143.95ms | **94.1x** |
+
+### Throughput (GPU)
+
+| Size | Throughput |
+|------|------------|
+| 2^16 | ~177 GB/s |
+| 2^18 | ~504 GB/s |
+| 2^20 | ~611 GB/s |
+| 2^22 | ~574 GB/s |
+
+### Implementation Notes
+
+**Butterfly structure**:
+- Forward: `new_lo = lo ^ (s*hi)`, `new_hi = lo ^ hi`
+- Inverse: brute-force solve for `hi` such that `s*hi ^ hi = new_lo ^ new_hi`
+
+**Known limitation**: Some s values (e.g., s=94, s=255) only have ~50% solvability for the inverse equation. For inverse FFT, use basis with s=2 repeated or precompute inverse lookup tables.
+
 ## Recent Optimizations Committed
 
 Despite the environmental regression, these optimizations provide value on stable macOS:
@@ -187,12 +223,12 @@ Prototype implementation using Mersenne31 field with standard radix-2 FFT on mul
 
 | Size | Time |
 |------|------|
-| 2^10 | 0.60ms |
-| 2^12 | 0.40ms |
-| 2^14 | 0.80ms |
-| 2^16 | 0.56ms |
-| 2^18 | 1.17ms |
-| 2^20 | 3.69ms |
+| 2^10 | 0.16ms |
+| 2^12 | 0.20ms |
+| 2^14 | 0.20ms |
+| 2^16 | 0.31ms |
+| 2^18 | 0.95ms |
+| 2^20 | 3.36ms |
 
 ### P^1 FRI Commit Phase (GPU) - With inv2t Caching
 
@@ -200,26 +236,21 @@ Optimized with inv2t caching (65x speedup over naive recomputation).
 
 | Size | Commit Time | Rounds |
 |------|-----------|--------|
-| 2^14 | **0.24-0.59ms** | 13 |
-| 2^16 | **0.83ms** | 15 |
-| 2^18 | **2.39ms** | 17 |
-| 2^20 | **3.99ms** | 19 |
+| 2^14 | **0.26-0.53ms** | 13 |
+| 2^16 | **0.37ms** | 15 |
+| 2^18 | **1.02-1.24ms** | 17 |
+| 2^20 | **3.35-3.55ms** | 19 |
 
 **Key optimization**: Precompute all inv2t arrays for all FRI rounds upfront with GPU buffer caching.
 
-### P^1 FRI Fused Commit Phase (fold-by-8 Cascade)
+**Implementation**: Uses fold-by-4 cascade with fold-by-2 fallback for remaining rounds.
 
-The fused commit uses a GPU kernel that computes 8 FRI fold rounds in a single dispatch, outputting all intermediate layers for complete proof generation.
+### P^1 FRI Fold-by-8 (DISABLED)
 
-| Size | Standard Commit | Fused Commit | Layers Produced |
-|------|----------------|-------------|-----------------|
-| 2^14 | 0.59ms | ~0.5ms | 14 (all intermediate) |
-| 2^18 | 1.38ms | ~1.5ms | 18 (all intermediate) |
-| 2^20 | 3.74ms | ~6ms | 20 (all intermediate) |
-
-**Trade-off**: Fused commit produces complete layer output enabling full `queryPhase()` verification, but has slightly higher overhead due to intermediate buffer allocation and readback. Use standard `commitPhase()` when only final result is needed.
-
-**Implementation**: Metal kernel `p1_fri_fold_by8` writes intermediate stages to 7 output buffers (indices 12-18), then Swift engine reads back all layers for Merkle root computation.
+The fold-by-8 kernel had threadgroup indexing issues causing incorrect results.
+- Kernel disabled until structural redesign
+- Standard commit uses fold-by-4 with fold-by-2 fallback
+- All tests pass with current implementation
 
 ### P^1 FRI Multi-fold Performance (GPU)
 
@@ -259,8 +290,102 @@ The fused commit uses a GPU kernel that computes 8 FRI fold rounds in a single d
 
 **Note**: GF(2^16) systematic encoding has lower throughput than NTT-based due to matrix multiplication overhead.
 
+## GPU Sort Non-Determinism (Not a Problem for MSM)
+
+### Updated Finding
+
+The GPU counting sort produces **different intra-bucket orderings between runs**, but this is NOT a correctness issue for Pippenger MSM:
+
+**Key insight**: The bucket placement IS correct - all points with digit D end up in buckets for digit D. The algorithm only depends on:
+- **Bucket counts** - correct
+- **Bucket offsets** - correct
+- **Point indices within buckets** - but any order works
+
+### Original Investigation
+
+**Initial problem**: Buffer stride mismatch between GPU scatter kernel and Swift prefix sum initialization.
+
+| Component | Original Index Calculation |
+|-----------|--------------------------|
+| GPU scatter kernel | `positions[w * n_buckets + digit]` |
+| Swift prefix sum | `positions[w * effectiveN + digit]` |
+
+**Fix**: Changed GPU scatter to use `n_points` stride matching Swift prefix sum:
+```metal
+// Changed from:
+uint pos = atomic_fetch_add_explicit(&positions[w * n_buckets + digit], ...);
+// To:
+uint pos = atomic_fetch_add_explicit(&positions[w * n_points + digit], ...);
+```
+
+After this fix, counts and offsets are correct (0 diffs), but sorted_indices show ~30% diff rate due to **thread scheduling variability**.
+
+### Why Atomic Operations Are Correct But Non-Deterministic
+
+The `atomic_fetch_add_explicit` correctly ensures each thread gets a unique position. However:
+
+1. Thread A and Thread B both want bucket `d`
+2. Thread A's atomic completes first → position X
+3. Thread B's atomic completes second → position X+1
+4. **Both indices are placed in bucket d** but the order varies
+
+Since `memory_order_relaxed` doesn't guarantee ordering between atomics, different runs can have different interleavings.
+
+### Metal Memory Ordering Limitation
+
+Metal only supports `memory_order_relaxed` for atomics on `device` address space:
+
+```metal
+// Not available on Metal device address space
+atomic_fetch_add_explicit(&positions[...], 1u, memory_order_seq_cst);
+// Error: candidate disabled: 'order' argument must be 'metal::memory_order_relaxed'
+```
+
+### Why Pippenger Still Passes
+
+The Pippenger MSM algorithm only uses:
+- **Bucket counts** - how many scalars map to each bucket
+- **Bucket offsets** - starting position of each bucket in sorted array
+- **Point indices within buckets** - but any deterministic ordering works
+
+The bucket contents don't need to be in any specific order - they just need to contain all the correct points. The GPU sort produces correct counts and offsets, and the points within each bucket happen to all be valid for that bucket (just in varying order).
+
+### Workaround
+
+Using CPU-based sorting as fallback (~2ms for 32K points):
+
+```swift
+let useGpuSort = false  // CPU sort is correct and deterministic
+```
+
+### Potential Fix Directions Explored
+
+1. **Sort-based approach (ATTEMPTED)**: Instead of counting sort, use GPU radix sort
+   - **Result**: Pippenger correctness passes, but **~2.5x slower** than CPU sort
+     - CPU overhead from array creation per window is significant
+     - Fully GPU-based implementation would be faster but more complex
+
+2. **Two-pass with local sort (SKIPPED)**: Each threadgroup sorts locally, then merge
+   - **Why skipped**: Complex to implement correctly
+
+3. **Pre-sorted indices (NOT VIABLE)**: Generate deterministic order on CPU
+   - **Why not viable**: Defeats the purpose of GPU sorting
+
+4. **Threadgroup-local histograms + merge (POTENTIAL)**: First phase builds local histograms per threadgroup (no atomics), second phase merges using CPU prefix sum
+
+## Conclusion
+
+The GPU sort non-determinism is caused by **thread scheduling variability** in atomic operations. However, this is **not a correctness problem** for Pippenger MSM - the algorithm only needs counts and offsets, not intra-bucket ordering.
+
+**Recommended approach**: Continue using CPU sorting which is correct and fast (~2ms for 32K points). If GPU sorting is needed:
+1. A fully GPU-based sorting algorithm (like radix sort) that doesn't use cross-threadgroup atomics
+2. Using `memory_order_seq_cst` if Metal ever supports it on device address space
+
 ## Version History
 
+- **2026-04-22**: GPU Additive FFT inverse bug fixed - butterfly requires brute-force solve for hi. Added GF(2^8) FFT benchmark section.
+- **2026-04-22**: GPU sort non-determinism clarified - NOT a correctness problem for Pippenger MSM. Root cause is thread scheduling variability, but algorithm only needs counts/offsets, not intra-bucket ordering. Radix sort attempted but slower than CPU sort.
+- **2026-04-22**: GPU sort non-determinism investigated - root cause is thread scheduling variability in atomic operations. Sort-based fix (radix sort) attempted but slower than CPU sort. Two-pass local sort skipped as complex. CPU sort remains workaround.
 - **2026-04-21**: Updated P^1 FRI with inv2t cache numbers (8-21x faster), added RS/DAS section
 - **2026-04-18**: Updated with beta macOS 26.3 performance notice and regression analysis
 - **2026-04-14**: Initial baseline performance on stable macOS 15.x

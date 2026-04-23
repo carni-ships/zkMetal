@@ -1,0 +1,577 @@
+{
+  "": {
+    "dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/zkbench.d",
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/zkbench.o",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/primary.swiftdeps"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/BenchStats.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/BenchStats.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/BenchStats~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/BenchStats.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/BenchStats.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/accumulation_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/accumulation_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/accumulation_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/accumulation_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/accumulation_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/amortized_sumcheck_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/amortized_sumcheck_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/amortized_sumcheck_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/amortized_sumcheck_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/amortized_sumcheck_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/asm_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/asm_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/asm_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/asm_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/asm_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/babyjubjub_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/babyjubjub_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/babyjubjub_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/babyjubjub_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/babyjubjub_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/basefold_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/basefold_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/basefold_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/basefold_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/basefold_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/batch_ecdsa_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/batch_ecdsa_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/batch_ecdsa_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/batch_ecdsa_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/batch_ecdsa_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/batch_ed25519_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/batch_ed25519_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/batch_ed25519_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/batch_ed25519_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/batch_ed25519_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/batch_field_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/batch_field_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/batch_field_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/batch_field_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/batch_field_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/batch_transcript_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/batch_transcript_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/batch_transcript_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/batch_transcript_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/batch_transcript_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/batch_verify_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/batch_verify_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/batch_verify_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/batch_verify_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/batch_verify_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/binary_fri_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/binary_fri_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/binary_fri_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/binary_fri_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/binary_fri_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/binius_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/binius_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/binius_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/binius_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/binius_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/blake3_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/blake3_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/blake3_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/blake3_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/blake3_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/blake3_neon_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/blake3_neon_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/blake3_neon_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/blake3_neon_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/blake3_neon_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/blaze_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/blaze_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/blaze_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/blaze_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/blaze_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/bls12377_ntt_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/bls12377_ntt_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/bls12377_ntt_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/bls12377_ntt_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/bls12377_ntt_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/bls12381_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/bls12381_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/bls12381_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/bls12381_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/bls12381_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/bls_sig_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/bls_sig_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/bls_sig_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/bls_sig_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/bls_sig_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/brakedown_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/brakedown_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/brakedown_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/brakedown_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/brakedown_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/circle_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/circle_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/circle_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/circle_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/circle_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/circle_fri_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/circle_fri_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/circle_fri_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/circle_fri_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/circle_fri_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/circle_stark_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/circle_stark_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/circle_stark_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/circle_stark_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/circle_stark_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/constraint_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/constraint_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/constraint_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/constraint_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/constraint_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/correctness_tests.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/correctness_tests.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/correctness_tests~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/correctness_tests.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/correctness_tests.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/cpu_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/cpu_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/cpu_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/cpu_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/cpu_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/cq_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/cq_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/cq_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/cq_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/cq_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/data_parallel_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/data_parallel_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/data_parallel_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/data_parallel_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/data_parallel_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/ecdsa_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/ecdsa_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/ecdsa_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/ecdsa_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/ecdsa_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/ed25519_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/ed25519_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/ed25519_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/ed25519_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/ed25519_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/erasure_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/erasure_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/erasure_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/erasure_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/erasure_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/field_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/field_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/field_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/field_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/field_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/field_ops_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/field_ops_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/field_ops_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/field_ops_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/field_ops_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/folding_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/folding_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/folding_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/folding_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/folding_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/fri_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/fri_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/fri_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/fri_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/fri_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/fused_constraint_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/fused_constraint_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/fused_constraint_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/fused_constraint_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/fused_constraint_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/g2_msm_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/g2_msm_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/g2_msm_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/g2_msm_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/g2_msm_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/gkr_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/gkr_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/gkr_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/gkr_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/gkr_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/goldilocks_neon_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/goldilocks_neon_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/goldilocks_neon_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/goldilocks_neon_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/goldilocks_neon_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/gpu_kzg_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/gpu_kzg_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/gpu_kzg_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/gpu_kzg_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/gpu_kzg_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/groth16_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/groth16_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/groth16_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/groth16_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/groth16_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/grumpkin_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/grumpkin_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/grumpkin_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/grumpkin_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/grumpkin_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/he_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/he_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/he_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/he_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/he_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/highdeg_sumcheck_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/highdeg_sumcheck_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/highdeg_sumcheck_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/highdeg_sumcheck_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/highdeg_sumcheck_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/incremental_merkle_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/incremental_merkle_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/incremental_merkle_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/incremental_merkle_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/incremental_merkle_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/ipa_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/ipa_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/ipa_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/ipa_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/ipa_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/jolt_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/jolt_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/jolt_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/jolt_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/jolt_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/jubjub_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/jubjub_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/jubjub_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/jubjub_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/jubjub_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/keccak_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/keccak_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/keccak_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/keccak_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/keccak_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/keccak_neon_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/keccak_neon_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/keccak_neon_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/keccak_neon_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/keccak_neon_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/kzg_batch_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/kzg_batch_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/kzg_batch_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/kzg_batch_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/kzg_batch_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/kzg_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/kzg_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/kzg_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/kzg_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/kzg_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/kzg_fused_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/kzg_fused_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/kzg_fused_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/kzg_fused_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/kzg_fused_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/lasso_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/lasso_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/lasso_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/lasso_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/lasso_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/lattice_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/lattice_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/lattice_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/lattice_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/lattice_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/lookup_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/lookup_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/lookup_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/lookup_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/lookup_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/main.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/main.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/main~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/main.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/main.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/marlin_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/marlin_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/marlin_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/marlin_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/marlin_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/merkle_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/merkle_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/merkle_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/merkle_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/merkle_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/merkle_tree_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/merkle_tree_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/merkle_tree_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/merkle_tree_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/merkle_tree_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/ntt_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/ntt_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/ntt_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/ntt_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/ntt_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/p1_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/p1_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/p1_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/p1_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/p1_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/p1_large_test.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/p1_large_test.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/p1_large_test~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/p1_large_test.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/p1_large_test.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/pairing_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/pairing_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/pairing_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/pairing_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/pairing_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/pasta_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/pasta_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/pasta_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/pasta_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/pasta_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/pasta_poseidon_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/pasta_poseidon_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/pasta_poseidon_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/pasta_poseidon_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/pasta_poseidon_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/pcs_comparison_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/pcs_comparison_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/pcs_comparison_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/pcs_comparison_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/pcs_comparison_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/plonk_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/plonk_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/plonk_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/plonk_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/plonk_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/plonk_custom_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/plonk_custom_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/plonk_custom_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/plonk_custom_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/plonk_custom_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/plookup_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/plookup_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/plookup_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/plookup_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/plookup_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/poly_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/poly_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/poly_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/poly_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/poly_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/poseidon2_babybear_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/poseidon2_babybear_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/poseidon2_babybear_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/poseidon2_babybear_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/poseidon2_babybear_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/poseidon2_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/poseidon2_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/poseidon2_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/poseidon2_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/poseidon2_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/poseidon2_m31_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/poseidon2_m31_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/poseidon2_m31_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/poseidon2_m31_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/poseidon2_m31_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/profile_msm.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/profile_msm.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/profile_msm~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/profile_msm.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/profile_msm.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/schnorr_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/schnorr_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/schnorr_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/schnorr_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/schnorr_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/secp256k1_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/secp256k1_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/secp256k1_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/secp256k1_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/secp256k1_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/serialization_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/serialization_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/serialization_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/serialization_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/serialization_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/sha256_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/sha256_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/sha256_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/sha256_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/sha256_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/sort_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/sort_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/sort_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/sort_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/sort_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/sparse_sumcheck_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/sparse_sumcheck_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/sparse_sumcheck_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/sparse_sumcheck_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/sparse_sumcheck_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/spartan_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/spartan_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/spartan_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/spartan_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/spartan_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/stark252_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/stark252_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/stark252_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/stark252_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/stark252_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/stir_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/stir_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/stir_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/stir_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/stir_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/streaming_verify_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/streaming_verify_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/streaming_verify_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/streaming_verify_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/streaming_verify_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/sumcheck_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/sumcheck_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/sumcheck_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/sumcheck_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/sumcheck_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/tensor_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/tensor_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/tensor_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/tensor_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/tensor_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/test_msm_debug.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/test_msm_debug.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/test_msm_debug~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/test_msm_debug.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/test_msm_debug.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/transcript_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/transcript_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/transcript_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/transcript_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/transcript_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/univariate_sumcheck_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/univariate_sumcheck_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/univariate_sumcheck_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/univariate_sumcheck_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/univariate_sumcheck_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/verkle_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/verkle_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/verkle_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/verkle_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/verkle_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/whir_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/whir_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/whir_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/whir_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/whir_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/wip_stubs.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/wip_stubs.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/wip_stubs~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/wip_stubs.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/wip_stubs.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/witness_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/witness_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/witness_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/witness_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/witness_bench.dia"
+  },
+  "/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/zeromorph_bench.swift": {
+    "object": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/zeromorph_bench.swift.o",
+    "swiftmodule": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/zeromorph_bench~partial.swiftmodule",
+    "swift-dependencies": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/zeromorph_bench.swiftdeps",
+    "diagnostics": "/Users/carnation/Documents/Claude/zkMetal/.build-arm64/arm64-apple-macosx/release/zkbench.build/zeromorph_bench.dia"
+  }
+}

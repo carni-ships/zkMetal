@@ -279,3 +279,60 @@ kernel void poseidon2_m31_merkle_fused_batch(
         all_roots[tgid * M31_NODE_SIZE + tid] = shared_data[tid];
     }
 }
+
+// Hash individual M31 values to Poseidon2-M31 leaf digests for Merkle tree construction.
+// Each thread hashes one leaf: state[0] = value, state[1] = index, state[2..7] = 0.
+// Output: array of n * 8 M31 elements (digests)
+kernel void poseidon2_m31_hash_leaves(
+    device const uint* values         [[buffer(0)]],  // Individual M31 values (one per thread)
+    device uint* digests             [[buffer(1)]],   // Output: 8 M31 per leaf
+    constant uint* rc                [[buffer(2)]],   // Round constants
+    constant uint& count             [[buffer(3)]],   // Number of leaves
+    uint gid                         [[thread_position_in_grid]]
+) {
+    if (gid >= count) return;
+
+    M31 s[P2M31_T];
+    // Initialize: position 0 = value, position 1 = index, rest = 0
+    s[0] = M31{values[gid]};
+    s[1] = M31{gid};  // index as M31
+    for (uint i = 2; i < P2M31_T; i++) {
+        s[i] = m31_zero();
+    }
+
+    p2m31_permute(s, rc);
+
+    // Output rate portion (first 8 elements)
+    uint out_base = gid * P2M31_RATE;
+    for (uint i = 0; i < P2M31_RATE; i++) {
+        digests[out_base + i] = s[i].v;
+    }
+}
+
+// Build complete Merkle tree on GPU for M31 Poseidon2 (level-by-level).
+// This kernel handles one level of the tree:
+// - Input: pairs of 8-M31 nodes at inputOffset
+// - Output: 8-M31 parent hashes at outputOffset
+// Uses memory barriers between levels for correct synchronization.
+kernel void poseidon2_m31_merkle_tree_level(
+    device const uint* input         [[buffer(0)]],   // Input nodes (pairs)
+    device uint* output              [[buffer(1)]],   // Output parents
+    constant uint* rc                [[buffer(2)]],   // Round constants
+    constant uint& num_pairs         [[buffer(3)]],   // Number of pairs to hash
+    uint gid                         [[thread_position_in_grid]]
+) {
+    if (gid >= num_pairs) return;
+
+    uint in_base = gid * P2M31_T;
+    M31 s[P2M31_T];
+    for (uint i = 0; i < P2M31_T; i++) {
+        s[i] = M31{input[in_base + i]};
+    }
+
+    p2m31_permute(s, rc);
+
+    uint out_base = gid * P2M31_RATE;
+    for (uint i = 0; i < P2M31_RATE; i++) {
+        output[out_base + i] = s[i].v;
+    }
+}

@@ -1003,10 +1003,13 @@ public class NTTEngine {
             return
         }
         let n = UInt32(1 << logN)
+        let nInt = Int(n)
         let invTwiddles = getInvTwiddles(logN: logN)
         let invN = getInvN(logN: logN)
         var nVal = n
         let fusedStages = min(logN, NTTEngine.maxFusedLogN)
+        let hasFused = fusedStages > 1
+        let scratch: MTLBuffer? = hasFused ? getScratchBuffer(n: nInt) : nil
 
         let enc = cmdBuf.makeComputeCommandEncoder()!
 
@@ -1082,6 +1085,38 @@ public class NTTEngine {
         enc.dispatchThreads(MTLSize(width: Int(n), height: 1, depth: 1),
                            threadsPerThreadgroup: MTLSize(width: tgScale, height: 1, depth: 1))
         enc.endEncoding()
+
+        if hasFused {
+            let blit = cmdBuf.makeBlitCommandEncoder()!
+            blit.copy(from: scratch!, sourceOffset: 0, to: data, destinationOffset: 0, size: nInt * MemoryLayout<Fr>.stride)
+            blit.endEncoding()
+        }
+    }
+
+    // MARK: - Batch NTT Encoding
+
+    /// Batch INTT encoding for multiple buffers.
+    /// All buffers share the same logN. Encodes them sequentially in the same command buffer.
+    ///
+    /// This is more efficient than calling encodeINTT in a loop because it avoids
+    /// repeated method call overhead. The actual GPU execution time is similar since
+    /// all dispatches go into the same command buffer.
+    public func encodeINTTBatch(buffers: [MTLBuffer], logN: Int, cmdBuf: MTLCommandBuffer) {
+        for buf in buffers {
+            encodeINTT(data: buf, logN: logN, cmdBuf: cmdBuf)
+        }
+    }
+
+    /// Batch NTT encoding for multiple buffers.
+    /// All buffers share the same logN. Encodes them sequentially in the same command buffer.
+    ///
+    /// This is more efficient than calling encodeNTT in a loop because it avoids
+    /// repeated method call overhead. The actual GPU execution time is similar since
+    /// all dispatches go into the same command buffer.
+    public func encodeNTTBatch(buffers: [MTLBuffer], logN: Int, cmdBuf: MTLCommandBuffer) {
+        for buf in buffers {
+            encodeNTT(data: buf, logN: logN, cmdBuf: cmdBuf)
+        }
     }
 
     /// Encode NTT on a sub-region of a buffer (for batched tree operations).

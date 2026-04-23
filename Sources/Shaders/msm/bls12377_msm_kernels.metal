@@ -9,6 +9,24 @@ struct Msm377Params {
     uint n_buckets;
 };
 
+// On-the-fly endomorphism constant for GLV: β in Montgomery form
+constant Fq377 GLV377_BETA_MONT_REDUCE = {
+    { 0x5a7b8727, 0x2c766f92, 0x253d58b5, 0x03d7f6b0,
+      0xec122131, 0x838ec0de, 0xf658bb10, 0xbd5eb3e9,
+      0x6ed3e52e, 0x6942bd12, 0xdd04ed6a, 0x01673786 }
+};
+
+// On-the-fly endomorphism helper for GLV MSM
+// idx >= n means k2 path (apply β·x), idx < n means k1 path (no endomorphism)
+inline Point377Affine point377_get_glv(device const Point377Affine* points, uint idx, uint n) {
+    Point377Affine p = points[idx % n];
+    if (idx >= n) {
+        // Endomorphized point: β·x
+        p.x = fq377_mul(GLV377_BETA_MONT_REDUCE, p.x);
+    }
+    return p;
+}
+
 // Phase 1: Reduce pre-sorted points per bucket (batched across windows)
 kernel void msm377_reduce_sorted_buckets(
     device const Point377Affine* points    [[buffer(0)]],
@@ -43,13 +61,17 @@ kernel void msm377_reduce_sorted_buckets(
     uint base = orig_window * params.n_points;
     uint offset = bucket_offsets[flat_idx];
     uint raw_idx0 = sorted_indices[base + offset];
-    Point377Affine pt0 = points[raw_idx0 & 0x7FFFFFFFu];
-    if (raw_idx0 & 0x80000000u) pt0.y = fq377_neg(pt0.y);
+    uint pt_idx0 = raw_idx0 & 0x7FFFFFFFu;
+    bool neg0 = (raw_idx0 & 0x80000000u) != 0;
+    Point377Affine pt0 = point377_get_glv(points, pt_idx0, params.n_points);
+    if (neg0) pt0.y = fq377_neg(pt0.y);
     Point377Projective acc = point377_from_affine(pt0);
     for (uint i = 1; i < count; i++) {
         uint raw_idx = sorted_indices[base + offset + i];
-        Point377Affine pt = points[raw_idx & 0x7FFFFFFFu];
-        if (raw_idx & 0x80000000u) pt.y = fq377_neg(pt.y);
+        uint pt_idx = raw_idx & 0x7FFFFFFFu;
+        bool neg = (raw_idx & 0x80000000u) != 0;
+        Point377Affine pt = point377_get_glv(points, pt_idx, params.n_points);
+        if (neg) pt.y = fq377_neg(pt.y);
         acc = point377_add_mixed(acc, pt);
     }
     buckets[flat_idx] = acc;
@@ -99,8 +121,10 @@ kernel void msm377_reduce_cooperative(
     Point377Projective acc = point377_identity();
     for (uint i = lid; i < count; i += 32) {
         uint raw_idx = sorted_indices[base + offset + i];
-        Point377Affine pt = points[raw_idx & 0x7FFFFFFFu];
-        if (raw_idx & 0x80000000u) pt.y = fq377_neg(pt.y);
+        uint pt_idx = raw_idx & 0x7FFFFFFFu;
+        bool neg = (raw_idx & 0x80000000u) != 0;
+        Point377Affine pt = point377_get_glv(points, pt_idx, params.n_points);
+        if (neg) pt.y = fq377_neg(pt.y);
         if (point377_is_identity(acc)) {
             acc = point377_from_affine(pt);
         } else {
@@ -249,6 +273,7 @@ kernel void msm377_horner_combine(
 }
 
 // Signed-digit scalar recoding for Fr377 (8×32-bit scalars)
+// GLV version: outputs (digit, is_endo) where is_endo=1 means k2·λ, is_endo=0 means k1
 kernel void msm377_signed_digit_extract(
     device const uint* scalars         [[buffer(0)]],
     device uint* digits                [[buffer(1)]],
@@ -288,6 +313,85 @@ kernel void msm377_signed_digit_extract(
         } else {
             digits[w * n_points + gid] = digit;
         }
+    }
+}
+
+// GLV-aware signed-digit extraction: outputs both k1 and k2 digits
+// k1 digits stored at [0, n), k2 digits stored at [n, 2n)
+// Digits stored as UInt16 (15-bit digits fit in 16 bits)
+// Bit 15 of digit = neg flag (0x8000)
+kernel void msm377_signed_digit_extract_glv(
+    device const uint* k1_scalars        [[buffer(0)]],
+    device const uint* k2_scalars         [[buffer(1)]],
+    device ushort* digits                [[buffer(2)]],  // UInt16 for digit storage
+    device uchar* endo_flags             [[buffer(3)]],
+    constant uint& n_points              [[buffer(4)]],
+    constant uint& window_bits           [[buffer(5)]],
+    constant uint& n_windows             [[buffer(6)]],
+    uint gid                             [[thread_position_in_grid]]
+) {
+    if (gid >= n_points) return;
+
+    uint mask = (1u << window_bits) - 1u;
+    uint half_bk = 1u << (window_bits - 1u);
+    uint full_bk = 1u << window_bits;
+
+    // Extract k1 digits
+    const device uint* sp1 = k1_scalars + gid * 8;
+    uint carry1 = 0;
+    for (uint w = 0; w < n_windows; w++) {
+        uint bit_off = w * window_bits;
+        uint limb_idx = bit_off / 32u;
+        uint bit_pos = bit_off % 32u;
+
+        uint idx = 0;
+        if (limb_idx < 8u) {
+            idx = sp1[limb_idx] >> bit_pos;
+            if (bit_pos + window_bits > 32u && limb_idx + 1u < 8u) {
+                idx |= sp1[limb_idx + 1u] << (32u - bit_pos);
+            }
+            idx &= mask;
+        }
+
+        uint digit = idx + carry1;
+        carry1 = 0;
+        if (digit > half_bk) {
+            digit = full_bk - digit;
+            carry1 = 1;
+            digits[w * n_points + gid] = ushort(digit) | 0x8000u;  // neg flag in bit 15
+        } else {
+            digits[w * n_points + gid] = ushort(digit);
+        }
+        endo_flags[w * n_points + gid] = 0;  // k1 path
+    }
+
+    // Extract k2 digits (stored at [n, 2n) offset)
+    const device uint* sp2 = k2_scalars + gid * 8;
+    uint carry2 = 0;
+    for (uint w = 0; w < n_windows; w++) {
+        uint bit_off = w * window_bits;
+        uint limb_idx = bit_off / 32u;
+        uint bit_pos = bit_off % 32u;
+
+        uint idx = 0;
+        if (limb_idx < 8u) {
+            idx = sp2[limb_idx] >> bit_pos;
+            if (bit_pos + window_bits > 32u && limb_idx + 1u < 8u) {
+                idx |= sp2[limb_idx + 1u] << (32u - bit_pos);
+            }
+            idx &= mask;
+        }
+
+        uint digit = idx + carry2;
+        carry2 = 0;
+        if (digit > half_bk) {
+            digit = full_bk - digit;
+            carry2 = 1;
+            digits[w * n_points + n_points + gid] = ushort(digit) | 0x8000u;  // neg flag
+        } else {
+            digits[w * n_points + n_points + gid] = ushort(digit);
+        }
+        endo_flags[w * n_points + n_points + gid] = 1;  // k2 path (endo)
     }
 }
 

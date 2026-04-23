@@ -1578,20 +1578,20 @@ void bn254_fr_vector_fold(const uint64_t *a, const uint64_t *b,
     }
 }
 
-void bn254_fr_batch_to_limbs(const uint64_t *mont, uint32_t *limbs, int n) {
-    // Convert n Fr elements from Montgomery form to integer uint32 limbs.
-    static const uint64_t ONE[4] = {1, 0, 0, 0};
+void bn254_fr_batch_to_limbs(const uint64_t *fr, uint32_t *limbs, int n) {
+    // Convert n Fr elements to Pippenger scalar format (8 x u32 limbs, little-endian).
+    // The input fr[] is 4 x u64 per element (little-endian, standard form).
+    // Pippenger expects 8 x u32 limbs (little-endian), so we just unpack.
     for (int i = 0; i < n; i++) {
-        uint64_t r[4];
-        fr_mul(mont + i * 4, ONE, r);
-        limbs[i * 8 + 0] = (uint32_t)(r[0]);
-        limbs[i * 8 + 1] = (uint32_t)(r[0] >> 32);
-        limbs[i * 8 + 2] = (uint32_t)(r[1]);
-        limbs[i * 8 + 3] = (uint32_t)(r[1] >> 32);
-        limbs[i * 8 + 4] = (uint32_t)(r[2]);
-        limbs[i * 8 + 5] = (uint32_t)(r[2] >> 32);
-        limbs[i * 8 + 6] = (uint32_t)(r[3]);
-        limbs[i * 8 + 7] = (uint32_t)(r[3] >> 32);
+        const uint64_t *f = fr + i * 4;
+        limbs[i * 8 + 0] = (uint32_t)(f[0]);
+        limbs[i * 8 + 1] = (uint32_t)(f[0] >> 32);
+        limbs[i * 8 + 2] = (uint32_t)(f[1]);
+        limbs[i * 8 + 3] = (uint32_t)(f[1] >> 32);
+        limbs[i * 8 + 4] = (uint32_t)(f[2]);
+        limbs[i * 8 + 5] = (uint32_t)(f[2] >> 32);
+        limbs[i * 8 + 6] = (uint32_t)(f[3]);
+        limbs[i * 8 + 7] = (uint32_t)(f[3] >> 32);
     }
 }
 
