@@ -181,3 +181,55 @@ See `Sources/zkMetal/MSM/BLS12377MSMEngine.swift:51-55` for rationale.
 
 **Conclusion:** The regression was likely due to other factors (small n, warmup issues, or measurement noise).
 All window sizes are safe to use. w=15 remains the default for historical consistency.
+
+## GPU Register Pressure Solutions (Apr 2026)
+
+**Problem:** BLS12-377 GPU MSM hangs at n >= 4096 with GLV enabled. GPU kernels are scheduled (status=3) but never complete. Root cause is extreme register pressure from 12-limb field operations combined with SIMD shuffle tree reduction in cooperative kernels.
+
+**Root Cause Analysis:**
+- BLS12-377 uses 12-limb field representation (vs 8-limb for BN254)
+- Each `fq377_add`, `fq377_mul` operates on 12×64-bit limbs
+- Cooperative bucket sum kernel uses SIMD shuffle tree + threadgroup barriers
+- Combined register pressure exceeds M3 Pro GPU limits
+- When registers spill to memory, GPU scheduler can't complete wavefronts
+
+**Solution Approaches Implemented:**
+
+1. **Option 2: Direct bucket sum kernel** ✅ Implemented
+   - Replace cooperative kernel with direct kernel for n >= 4096
+   - Direct kernel is simpler (no threadgroup sync, no SIMD shuffle tree)
+   - Slightly more compute per thread but lower register pressure
+   - File: `Sources/zkMetal/MSM/BLS12377MSMEngine.swift:680-720`
+
+2. **Option 5: Increase segments for large n** ✅ Implemented
+   - n >= 16384: nSegments = min(1024, nBuckets) - many small segments
+   - n >= 4096: nSegments = min(512, nBuckets/2) - medium segments
+   - n < 4096: nSegments = min(256, nBuckets/2) - original logic
+   - Fewer buckets per segment = simpler reduction per segment
+   - File: `Sources/zkMetal/MSM/BLS12377MSMEngine.swift:401-414`
+
+**Other Ideas (Backlog - Not Yet Tested):**
+
+3. **Two-pass bucket reduction**
+   - Pass 1: Each thread reduces its buckets to single accumulator
+   - Pass 2: Combine accumulators from all threads
+   - Simplifies Phase 2 - no complexity of SIMD shuffle tree mid-reduction
+
+4. **Horizontal bucket sum**
+   - Each thread processes contiguous block instead of strided buckets
+   - Then reduce thread results at the end
+   - Simple, lower register pressure
+
+5. **CPU bucket sum + GPU final combine**
+   - Move problematic Phase 2 bucket reduction to CPU
+   - GPU just does final window combination (Horner)
+   - CPU handles 12-limb ops with NEON + cache-friendly access
+
+6. **Separate GLV k1/k2 processing**
+   - Process k1 and k2 in separate passes instead of together
+   - Simplifies kernel - only handles one scalar component at a time
+
+7. **Pre-bucket partitioning**
+   - Pre-partition points into buckets on CPU (or simple GPU kernel)
+   - Phase 2 just sums pre-grouped points
+   - Moves complexity to sorting phase where registers don't matter

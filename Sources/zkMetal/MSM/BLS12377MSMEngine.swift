@@ -632,22 +632,46 @@ public class BLS12377MSM {
             enc.endEncoding()
         }
 
-        // Phase 2: Bucket sum + combine (SIMD cooperative version)
+        // Phase 2: Bucket sum + combine
+        // Use direct bucket sum for large n (n >= 4096) to avoid cooperative kernel's
+        // SIMD shuffle tree + threadgroup barriers that cause register pressure issues
+        // with 12-limb BLS12-377 field operations. Direct kernel is simpler and doesn't
+        // require threadgroup synchronization, at the cost of slightly more compute per thread.
         do {
             var nWinsBatch = UInt32(nWindows)
             let enc = cb.makeComputeCommandEncoder()!
-            enc.setComputePipelineState(bucketSumCooperativeFunction)
-            enc.setBuffer(bucketsBuffer, offset: 0, index: 0)
-            enc.setBuffer(segmentResultsBuffer, offset: 0, index: 1)
-            enc.setBytes(&params, length: MemoryLayout<Msm377Params>.stride, index: 2)
-            enc.setBytes(&nSegs, length: MemoryLayout<UInt32>.stride, index: 3)
-            enc.setBytes(&nWinsBatch, length: MemoryLayout<UInt32>.stride, index: 4)
-            let totalSegments = nSegments * nWindows
-            // Cap at 64: the cooperative kernel uses threadgroup arrays of size 64
-            let tgBucketSum = min(64, tuning.msmThreadgroupSize, totalSegments)
-            enc.dispatchThreads(
-                MTLSize(width: totalSegments, height: 1, depth: 1),
-                threadsPerThreadgroup: MTLSize(width: tgBucketSum, height: 1, depth: 1))
+
+            let useDirectSum = n >= 16384
+            if useDirectSum {
+                // Direct kernel: simpler, lower register pressure, no threadgroup sync
+                enc.setComputePipelineState(bucketSumDirectFunction)
+                enc.setBuffer(bucketsBuffer, offset: 0, index: 0)
+                enc.setBuffer(segmentResultsBuffer, offset: 0, index: 1)
+                enc.setBytes(&params, length: MemoryLayout<Msm377Params>.stride, index: 2)
+                enc.setBytes(&nSegs, length: MemoryLayout<UInt32>.stride, index: 3)
+                enc.setBytes(&nWinsBatch, length: MemoryLayout<UInt32>.stride, index: 4)
+                let totalSegments = nSegments * nWindows
+                // Direct kernel doesn't need threadgroup (uses simple thread stride)
+                let tgDirect = min(64, tuning.msmThreadgroupSize)
+                enc.dispatchThreads(
+                    MTLSize(width: totalSegments, height: 1, depth: 1),
+                    threadsPerThreadgroup: MTLSize(width: tgDirect, height: 1, depth: 1))
+            } else {
+                // Cooperative kernel: better parallelism for small-medium sizes
+                // Uses SIMD shuffle tree for efficient reduction
+                enc.setComputePipelineState(bucketSumCooperativeFunction)
+                enc.setBuffer(bucketsBuffer, offset: 0, index: 0)
+                enc.setBuffer(segmentResultsBuffer, offset: 0, index: 1)
+                enc.setBytes(&params, length: MemoryLayout<Msm377Params>.stride, index: 2)
+                enc.setBytes(&nSegs, length: MemoryLayout<UInt32>.stride, index: 3)
+                enc.setBytes(&nWinsBatch, length: MemoryLayout<UInt32>.stride, index: 4)
+                let totalSegments = nSegments * nWindows
+                // Cap at 64: the cooperative kernel uses threadgroup arrays of size 64
+                let tgBucketSum = min(64, tuning.msmThreadgroupSize, totalSegments)
+                enc.dispatchThreads(
+                    MTLSize(width: totalSegments, height: 1, depth: 1),
+                    threadsPerThreadgroup: MTLSize(width: tgBucketSum, height: 1, depth: 1))
+            }
             enc.memoryBarrier(scope: .buffers)
 
             enc.setComputePipelineState(combineSegmentsFunction)
