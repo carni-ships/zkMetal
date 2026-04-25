@@ -284,7 +284,8 @@ public class BLS12377MSM {
         }
 
         // For small n, CPU Pippenger is faster than GPU (avoids command buffer overhead)
-        // Also use CPU for n >= 4096 where GPU hangs with GLV (12-limb field ops register pressure)
+        // Use CPU for n >= 4096 where GPU hangs with GLV (cooperative kernel issues at 4096,
+        // direct kernel needed but only effective at n >= 16384)
         if n <= 2048 || n >= 4096 {
             let msmScalars = scalars.map { Self.reduceModR($0) }
             return bls12377CpuMSM(points: points, scalars: msmScalars)
