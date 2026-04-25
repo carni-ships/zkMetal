@@ -20,21 +20,25 @@
 **Description**: Process multiple windows concurrently to better utilize memory bandwidth
 **Status**: Already batched. GLV kernel processes all scalars in one dispatch.
 
-## 5. GPU Sort Verification Bypass ❌ N/A
-**Impact**: ~65ms savings at 2^20 scale
-**Description**: The GPU sort currently runs both GPU and CPU then compares. For production, skip verification
-**Status**: GPU sort is DISABLED due to non-determinism bugs. Only CPU sort is used.
+## 5. GPU Sort ✅ FIXED
+**Impact**: ~65ms savings at 2^20 scale (when enabled)
+**Description**: GPU sort using RadixSortEngine for deterministic parallel sorting
+**Status**: Fixed (Apr 23, 2026)
 
-**Investigation findings (Apr 22, 2026)**:
-- Root cause: GPU scatter and CPU scatter produce different sorted_indices despite identical prefix sum
-- Key observation: CSM (count-sorted map) and offsets are identical; only sorted_indices differ
-- Symptom: For 2^18 scale, ~31% of sorted_indices differ (5M+ diffs out of 16.7M)
-- Patterns observed: GPU indices at positions 0,1,2 are always 0x0 while CPU has actual indices
-- Multi-window runs show consistent CSM but varying sorted_indices per run
-- Hypothesis: Race condition in GPU scatter causes thread n to write to position n before atomic counter updates, OR the n_points vs n_buckets stride change introduced new issues
-- Fix attempted: Changed positionsBuffer allocation to n_points*n_windows and prefix sum to use w*n_points stride. Changed scatter kernel to use `positions[w*n_points + digit]`. Did NOT change sorted_indices stride (w*n_points was already correct).
-- Result: Fix did not resolve non-determinism. Reverted to CPU sort (useGpuSort=false).
-- Next steps: The scatter kernel may have additional bugs. Need to carefully trace the GPU scatter vs CPU scatter logic to find divergence. Verification bypass not applicable.
+**Root cause**: Race condition in atomic gpu_sort_scatter kernel.
+- GPU scatter used `atomic_fetch_add` on positions array to claim output positions
+- Multiple threads could read the same position value before any thread's atomic completed
+- This caused indices to be written to wrong positions, producing non-deterministic results
+
+**Fix**: Replaced atomic-based GPU scatter with RadixSortEngine's deterministic parallel sort.
+- RadixSortEngine uses SIMD-level ranking + threadgroup barriers (no atomics for ordering)
+- For each window: create (digit, index) pairs, sort by digit using GPU radix sort, extract indices
+- This is equivalent to the old GPU sort path but without the race condition
+
+**Changes**:
+- MSMEngine.swift: Set `useGpuSort = true` to enable RadixSortEngine-based GPU sort
+- The old atomic `gpu_sort_scatter` is now only used as fallback when `radixSortEngine == nil`
+- Removed the `useGpuSortWithTest` dead code path
 
 ## 6. NEON Vectorized Horner ❌ N/A
 **Impact**: ~100ms savings on CPU path

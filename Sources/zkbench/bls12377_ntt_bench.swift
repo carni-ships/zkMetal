@@ -306,8 +306,14 @@ public func runBLS12377MSMBench() {
     print("\n=== BLS12-377 MSM Benchmark ===")
 
     do {
+        print("[DEBUG] About to create BLS12377MSM engine")
+        fflush(stdout)
         let engine = try BLS12377MSM()
+        print("[DEBUG] Engine created, useGLV = \(engine.useGLV)")
+        fflush(stdout)
         engine.useGLV = true  // Test with GLV enabled
+        print("[DEBUG] useGLV set to true")
+        fflush(stdout)
 
         // Generate points: G, 2G, 3G, ...
         let gen = bls12377Generator()
@@ -373,17 +379,25 @@ public func runBLS12377MSMBench() {
         }
 
         // Profile timing breakdown with GLV
-        print("\n--- GLV Timing Breakdown ---")
-        let profileSizes: [(Int, Int)] = [(1024, 11), (16384, 11), (65536, 15)]
+        // Window bits tuned per size to avoid GPU timeout:
+        // - w=11: 2^11=2048 buckets per window, good for n<=4096
+        // - w=14: 2^14=16384 buckets per window, needed for n=16384+ on M3 Pro
+        // - w=15: 2^15=32768 buckets per window, for n>=65536
+        let profileSizes: [(Int, Int)] = [(1024, 11), (16384, 14), (65536, 15)]
         for (n, wb) in profileSizes {
+            print("[DEBUG] Creating engine2 for n=\(n), wb=\(wb)")
+            fflush(stdout)
             let pts = Array(allPoints.prefix(n))
             let scals = Array(allScalars.prefix(n))
             let engine2 = try BLS12377MSM()
-            engine2.useGLV = true
+            print("[DEBUG] engine2 created, calling msm...")
+            fflush(stdout)
+            engine2.useGLV = true  // Re-enable GLV
             engine2.windowBitsOverride = UInt32(wb)
 
             // Warmup
             let _ = try engine2.msm(points: pts, scalars: scals)
+            print("[DEBUG] msm warmup done for n=\(n)")
 
             // Time scalar reduction
             let redStart = CFAbsoluteTimeGetCurrent()

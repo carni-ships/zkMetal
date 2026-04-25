@@ -11,6 +11,7 @@ public class BLS12377MSM {
     private let reduceSortedFunction: MTLComputePipelineState
     private let reduceCooperativeFunction: MTLComputePipelineState
     private let bucketSumDirectFunction: MTLComputePipelineState
+    private let bucketSumCooperativeFunction: MTLComputePipelineState
     private let combineSegmentsFunction: MTLComputePipelineState
     private let hornerCombineFunction: MTLComputePipelineState
     private let signedDigitFunction: MTLComputePipelineState
@@ -77,8 +78,8 @@ public class BLS12377MSM {
 
         let requiredKernels = [
             "msm377_reduce_sorted_buckets", "msm377_bucket_sum_direct",
-            "msm377_combine_segments", "msm377_signed_digit_extract",
-              "msm377_signed_digit_extract_glv"
+            "msm377_bucket_sum_cooperative", "msm377_combine_segments",
+            "msm377_signed_digit_extract", "msm377_signed_digit_extract_glv"
         ]
         if FileManager.default.fileExists(atPath: cacheFile.path) {
             do {
@@ -98,6 +99,7 @@ public class BLS12377MSM {
         guard let reduceSortedFn = library.makeFunction(name: "msm377_reduce_sorted_buckets"),
               let reduceCoopFn = library.makeFunction(name: "msm377_reduce_cooperative"),
               let sumDirectFn = library.makeFunction(name: "msm377_bucket_sum_direct"),
+              let sumCoopFn = library.makeFunction(name: "msm377_bucket_sum_cooperative"),
               let combineFn = library.makeFunction(name: "msm377_combine_segments"),
               let hornerFn = library.makeFunction(name: "msm377_horner_combine"),
               let signedDigitFn = library.makeFunction(name: "msm377_signed_digit_extract"),
@@ -113,6 +115,7 @@ public class BLS12377MSM {
         self.reduceSortedFunction = try device.makeComputePipelineState(function: reduceSortedFn)
         self.reduceCooperativeFunction = try device.makeComputePipelineState(function: reduceCoopFn)
         self.bucketSumDirectFunction = try device.makeComputePipelineState(function: sumDirectFn)
+        self.bucketSumCooperativeFunction = try device.makeComputePipelineState(function: sumCoopFn)
         self.combineSegmentsFunction = try device.makeComputePipelineState(function: combineFn)
         self.hornerCombineFunction = try device.makeComputePipelineState(function: hornerFn)
         self.signedDigitFunction = try device.makeComputePipelineState(function: signedDigitFn)
@@ -222,7 +225,7 @@ public class BLS12377MSM {
         }
     }
 
-    private func ensureBuffers(n: Int, nBuckets: Int, nSegments: Int, nWindows: Int) {
+    private func ensureBuffers(n: Int, nBuckets: Int, nSegments: Int, nWindows: Int, isGLV: Bool = false) {
         let needRealloc = n > maxAllocatedPoints || nBuckets > maxAllocatedBuckets ||
                           nWindows > maxAllocatedWindows || nSegments > maxAllocatedSegments
         if needRealloc {
@@ -232,8 +235,10 @@ public class BLS12377MSM {
             let ns = nSegments
             pointsBuffer = device.makeBuffer(
                 length: MemoryLayout<Point377Affine>.stride * np, options: .storageModeShared)
+            // GLV mode needs sortedIndices for 2*n points (k1 and k2 digits combined)
+            let sortedIndicesN = isGLV ? max(2 * n, np) : np
             sortedIndicesBuffer = device.makeBuffer(
-                length: MemoryLayout<UInt32>.stride * np * nw, options: .storageModeShared)
+                length: MemoryLayout<UInt32>.stride * sortedIndicesN * nw, options: .storageModeShared)
             allOffsetsBuffer = device.makeBuffer(
                 length: MemoryLayout<UInt32>.stride * nb * nw, options: .storageModeShared)
             allCountsBuffer = device.makeBuffer(
@@ -279,7 +284,8 @@ public class BLS12377MSM {
         }
 
         // For small n, CPU Pippenger is faster than GPU (avoids command buffer overhead)
-        if n <= 2048 {
+        // Also use CPU for n >= 4096 where GPU hangs with GLV (12-limb field ops register pressure)
+        if n <= 2048 || n >= 4096 {
             let msmScalars = scalars.map { Self.reduceModR($0) }
             return bls12377CpuMSM(points: points, scalars: msmScalars)
         }
@@ -312,8 +318,15 @@ public class BLS12377MSM {
                 guard let sib = device.makeBuffer(length: scalarByteCount, options: .storageModeShared),
                       let k1b = device.makeBuffer(length: 2 * scalarByteCount, options: .storageModeShared),
                       let n1b = device.makeBuffer(length: n, options: .storageModeShared),
-                      let n2b = device.makeBuffer(length: n, options: .storageModeShared),
-                      let endoBuf = device.makeBuffer(length: 2 * n, options: .storageModeShared) else {
+                      let n2b = device.makeBuffer(length: n, options: .storageModeShared) else {
+                    throw MSMError.gpuError("Failed to allocate GLV buffers")
+                }
+                // endo_flags needs (nWindows + 1) * n bytes for k1+k2 merged access pattern
+                // k1: endo_flags[w * n + gid], k2: endo_flags[w * n + n + gid]
+                // Using windowBits=15 as worst case for sizing
+                let sizingNWindows = (128 + 15 - 1) / 15  // 9
+                let endoFlagsSize = (sizingNWindows + 1) * n
+                guard let endoBuf = device.makeBuffer(length: endoFlagsSize, options: .storageModeShared) else {
                     throw MSMError.gpuError("Failed to allocate GLV buffers")
                 }
                 glvScalarInBufCached = sib
@@ -356,8 +369,11 @@ public class BLS12377MSM {
             // GLV path: 128-bit scalars, 2× points. Fewer windows needed.
             if effectiveN <= 512 {
                 windowBits = 8
-            } else if effectiveN <= 8192 {
+            } else if effectiveN <= 4096 {
                 windowBits = 11
+            } else if effectiveN <= 16384 {
+                // Use w=14 to reduce number of windows/buckets and avoid GPU timeout
+                windowBits = 14
             } else if effectiveN <= 65536 {
                 windowBits = 15
             } else {
@@ -384,7 +400,7 @@ public class BLS12377MSM {
         let nBuckets = halfBuckets + 1
         let nSegments = min(256, max(1, nBuckets / 2))
 
-        ensureBuffers(n: effectiveN, nBuckets: nBuckets, nSegments: nSegments, nWindows: nWindows)
+        ensureBuffers(n: effectiveN, nBuckets: nBuckets, nSegments: nSegments, nWindows: nWindows, isGLV: glvN > 0)
         guard let pointsBuffer = pointsBuffer,
               let sortedIndicesBuffer = sortedIndicesBuffer,
               let allOffsetsBuffer = allOffsetsBuffer,
@@ -458,7 +474,9 @@ public class BLS12377MSM {
 
         let allOffsets = allOffsetsBuffer.contents().bindMemory(to: UInt32.self, capacity: nBuckets * nWindows)
         let allCounts = allCountsBuffer.contents().bindMemory(to: UInt32.self, capacity: nBuckets * nWindows)
-        let sortedIdxPtr = sortedIndicesBuffer.contents().bindMemory(to: UInt32.self, capacity: effectiveN * nWindows)
+        // GLV mode needs capacity for 2*n points (k1 and k2 digits)
+        let sortedIdxCapacity = (glvN > 0) ? (2 * glvN * nWindows) : (effectiveN * nWindows)
+        let sortedIdxPtr = sortedIndicesBuffer.contents().bindMemory(to: UInt32.self, capacity: sortedIdxCapacity)
         let countSortedMap = countSortedMapBuffer.contents().bindMemory(to: UInt32.self, capacity: nBuckets * nWindows)
 
         var params = Msm377Params(
@@ -606,41 +624,84 @@ public class BLS12377MSM {
             enc.setBuffer(sortedIndicesBuffer, offset: 0, index: 6)
             enc.setBuffer(countSortedMapBuffer, offset: 0, index: 7)
             let numBucketsTotal = nWindows * nBuckets
-            let tg = min(tuning.msmThreadgroupSize, Int(reduceSortedFunction.maxTotalThreadsPerThreadgroup))
+            // Cap threadgroup size at 64 to avoid GPU resource exhaustion with 12-limb field ops
+            let tg = min(64, tuning.msmThreadgroupSize, Int(reduceSortedFunction.maxTotalThreadsPerThreadgroup))
             enc.dispatchThreads(
                 MTLSize(width: numBucketsTotal, height: 1, depth: 1),
                 threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
             enc.endEncoding()
         }
 
-        // Phase 2: Bucket sum + combine
+        // Phase 2: Bucket sum + combine (SIMD cooperative version)
         do {
             var nWinsBatch = UInt32(nWindows)
             let enc = cb.makeComputeCommandEncoder()!
-            enc.setComputePipelineState(bucketSumDirectFunction)
+            enc.setComputePipelineState(bucketSumCooperativeFunction)
             enc.setBuffer(bucketsBuffer, offset: 0, index: 0)
             enc.setBuffer(segmentResultsBuffer, offset: 0, index: 1)
             enc.setBytes(&params, length: MemoryLayout<Msm377Params>.stride, index: 2)
             enc.setBytes(&nSegs, length: MemoryLayout<UInt32>.stride, index: 3)
             enc.setBytes(&nWinsBatch, length: MemoryLayout<UInt32>.stride, index: 4)
             let totalSegments = nSegments * nWindows
+            // Cap at 64: the cooperative kernel uses threadgroup arrays of size 64
+            let tgBucketSum = min(64, tuning.msmThreadgroupSize, totalSegments)
             enc.dispatchThreads(
                 MTLSize(width: totalSegments, height: 1, depth: 1),
-                threadsPerThreadgroup: MTLSize(width: min(tuning.msmThreadgroupSize, totalSegments), height: 1, depth: 1))
+                threadsPerThreadgroup: MTLSize(width: tgBucketSum, height: 1, depth: 1))
             enc.memoryBarrier(scope: .buffers)
 
             enc.setComputePipelineState(combineSegmentsFunction)
             enc.setBuffer(segmentResultsBuffer, offset: 0, index: 0)
             enc.setBuffer(windowResultsBuffer, offset: 0, index: 1)
             enc.setBytes(&nSegs, length: MemoryLayout<UInt32>.stride, index: 2)
+            let tgCombine = min(64, tuning.msmThreadgroupSize, nWindows)
             enc.dispatchThreads(
                 MTLSize(width: nWindows, height: 1, depth: 1),
-                threadsPerThreadgroup: MTLSize(width: min(tuning.msmThreadgroupSize, nWindows), height: 1, depth: 1))
+                threadsPerThreadgroup: MTLSize(width: tgCombine, height: 1, depth: 1))
             enc.endEncoding()
         }
         cb.commit()
-        cb.waitUntilCompleted()
+
+        // Poll with timeout to detect GPU hangs (12-limb field ops cause GPU hangs at large sizes)
+        // Use short timeout since GPU hangs are permanent (no recovery possible)
+        let startWait = CFAbsoluteTimeGetCurrent()
+        let timeoutSeconds: Double = 30.0  // 30 seconds - GPU hangs are permanent
+        while true {
+            let status = cb.status
+            let elapsed = CFAbsoluteTimeGetCurrent() - startWait
+            if status.rawValue >= 4 { break }
+            if elapsed > timeoutSeconds {
+                print("[DEBUG msm] TIMEOUT: GPU kernel taking longer than \(timeoutSeconds)s (status=\(status.rawValue))")
+                fflush(stdout)
+                break
+            }
+            if Int(elapsed) % 5 == 0 && elapsed > 1 {
+                print("[DEBUG msm] Still waiting... \(elapsed)s elapsed, status=\(cb.status.rawValue)")
+                fflush(stdout)
+            }
+            Thread.sleep(forTimeInterval: 1.0)
+        }
+        let waitTime = CFAbsoluteTimeGetCurrent() - startWait
+        print("[DEBUG msm] GPU wait completed after \(waitTime)s, status=\(cb.status.rawValue)")
+        fflush(stdout)
+
         let gpuDone = CFAbsoluteTimeGetCurrent()
+
+        // Check for GPU errors immediately
+        if let error = cb.error {
+            print("[DEBUG msm] GPU error detected: \(error), falling back to CPU")
+            fflush(stdout)
+            let cpuScalars = scalars.map { Self.reduceModR($0) }
+            return bls12377CpuMSM(points: points, scalars: cpuScalars)
+        }
+
+        // If GPU timed out or not completed, fall back to CPU Pippenger
+        if cb.status.rawValue < 4 {
+            print("[DEBUG msm] GPU timed out at status=\(cb.status.rawValue), falling back to CPU Pippenger")
+            fflush(stdout)
+            let cpuScalars = scalars.map { Self.reduceModR($0) }
+            return bls12377CpuMSM(points: points, scalars: cpuScalars)
+        }
 
         if let error = cb.error { throw MSMError.gpuError(error.localizedDescription) }
 

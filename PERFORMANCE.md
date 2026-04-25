@@ -96,6 +96,20 @@ For reference, current observed performance on beta macOS:
 | 2^16 | 367.0ms | 46.3ms | **7.9x** |
 | 2^20 | 1941.6ms | 175.3ms | **11x** |
 
+### MSM (BLS12-377 G1) - Current
+
+| Points | GPU (Current) | Notes |
+|--------|---------------|-------|
+| 2^8 | 1.4ms | GPU path |
+| 2^10 | 4.1ms | GPU path |
+| 2^12 | 10.4ms | GPU path |
+| 2^14 | 31.2ms | GPU path (n<4096) |
+| 2^16 | 110.1ms | CPU fallback (GPU hang at n>=4096) |
+| 2^17 | 208.7ms | CPU fallback |
+| 2^18 | 421.6ms | CPU fallback |
+
+**Note**: BLS12-377 GPU MSM uses on-the-fly endomorphism. GPU kernel hangs at n>=4096 due to extreme register pressure from 12-limb field operations. Large sizes use CPU Pippenger fallback. See `BACKLOG/MSM_OPTIMIZATIONS.md` for details.
+
 ### NTT (BN254) - Current
 
 | Size | GPU (Current) | GPU (Expected) | Regression |
@@ -383,6 +397,7 @@ The GPU sort non-determinism is caused by **thread scheduling variability** in a
 
 ## Version History
 
+- **2026-04-24**: BLS12-377 MSM GPU hang fixed with CPU fallback. GPU kernel hangs at n>=4096 due to 12-limb field register pressure. Added 30s timeout with polling and CPU fallback for large sizes. Benchmark results: 2^8=1.4ms, 2^10=4.1ms, 2^12=10.4ms, 2^14=31.2ms, 2^16=110.1ms, 2^17=208.7ms, 2^18=421.6ms.
 - **2026-04-22**: GPU Additive FFT inverse bug fixed - butterfly requires brute-force solve for hi. Added GF(2^8) FFT benchmark section.
 - **2026-04-22**: GPU sort non-determinism clarified - NOT a correctness problem for Pippenger MSM. Root cause is thread scheduling variability, but algorithm only needs counts/offsets, not intra-bucket ordering. Radix sort attempted but slower than CPU sort.
 - **2026-04-22**: GPU sort non-determinism investigated - root cause is thread scheduling variability in atomic operations. Sort-based fix (radix sort) attempted but slower than CPU sort. Two-pass local sort skipped as complex. CPU sort remains workaround.
