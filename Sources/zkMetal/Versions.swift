@@ -57,6 +57,8 @@ public enum Versions {
     public static let nttBLS12377    = PrimitiveVersion(version: "1.0.0", updated: "2026-04-02")
     public static let nttStark252    = PrimitiveVersion(version: "1.0.0", updated: "2026-04-04")
     public static let circleNTT      = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
+    public static let batchCircleNTT  = PrimitiveVersion(version: "1.0.0", updated: "2026-04-25")
+    public static let fusedNTT       = PrimitiveVersion(version: "1.0.0", updated: "2026-04-25")
     public static let p1NTT         = PrimitiveVersion(version: "0.1.0", updated: "2026-04-17")  // P^1 Rational Function NTT prototype
     public static let rnsNTT         = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let mersenne31     = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")

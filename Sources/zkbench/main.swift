@@ -177,7 +177,7 @@ if cmd == "calibrate" {
 } else if cmd == "bls12381" {
     runBLS12381Test()
 } else if cmd == "sha256" || cmd == "sha" {
-    runBlake3Bench()
+    runSHA256Bench()
 } else if cmd == "secp256k1" || cmd == "secp" {
     runSecp256k1Test()
 } else if cmd == "secpglv" {
