@@ -242,6 +242,8 @@ if cmd == "calibrate" {
     runCircleSTARKBench()
 } else if cmd == "circle-stark-fused" || cmd == "cstark-fused" {
     runCircleSTARKFusedRoundBench()
+} else if cmd == "trace-tree" || cmd == "ttree" {
+    runTraceTreeCompareBench()
 } else if cmd == "gpu-stark" || cmd == "gstark" {
     runGPUSTARKBench()
 } else if cmd == "circle-fri" || cmd == "cfri" {
