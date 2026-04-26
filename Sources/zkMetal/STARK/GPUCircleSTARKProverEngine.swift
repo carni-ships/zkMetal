@@ -706,7 +706,6 @@ public class GPUMerkleTreeM31Engine {
     /// in the proof output.
     ///
     /// - Parameters:
-    ///   - treeBuffers: Array of GPU buffers containing flattened trees (one per column)
     ///   - numTrees: Number of trees (columns)
     ///   - numLeaves: Number of leaves per tree
     ///   - queryIndex: Query index (same for all trees)
@@ -800,7 +799,7 @@ public class GPUMerkleTreeM31Engine {
         let numLevels = Int(log2(Double(numLeaves)))
         let treeNodeCount = 2 * numLeaves - 1
 
-        // Combine all tree buffers into one
+        // Combine all tree buffers into one using memcpy
         let totalTreeBytes = numTrees * treeNodeCount * nodeSize * MemoryLayout<UInt32>.stride
         guard let combinedTreeBuf = device.makeBuffer(length: totalTreeBytes, options: .storageModeShared) else {
             throw MSMError.gpuError("Failed to allocate combined tree buffer")
@@ -810,9 +809,8 @@ public class GPUMerkleTreeM31Engine {
         var offset = 0
         for treeBuf in treeBuffers.prefix(numTrees) {
             let srcPtr = treeBuf.contents().bindMemory(to: UInt32.self, capacity: treeNodeCount * nodeSize)
-            for i in 0..<(treeNodeCount * nodeSize) {
-                destPtr[offset + i] = srcPtr[i]
-            }
+            let bytesPerTree = treeNodeCount * nodeSize * MemoryLayout<UInt32>.stride
+            memcpy(destPtr.advanced(by: offset), srcPtr, bytesPerTree)
             offset += treeNodeCount * nodeSize
         }
 
