@@ -234,9 +234,13 @@ public class EdDSAEngine {
             var sMont = [UInt64](repeating: 0, count: 4)
             ed25519_fq_from_raw(&sLimbs, &sMont)
 
+            // Hoist weights[i] into a local var because Swift 6 no longer allows
+            // implicit `inout` of a subscripted [[UInt64]] element to UnsafePointer<UInt64>.
+            var wi = weights[i]
+
             // gScalar += z_i * S_i
             var ziSi = [UInt64](repeating: 0, count: 4)
-            ed25519_fq_mul(&weights[i], &sMont, &ziSi)
+            ed25519_fq_mul(&wi, &sMont, &ziSi)
             var tmp = [UInt64](repeating: 0, count: 4)
             ed25519_fq_add(&gScalarMont, &ziSi, &tmp)
             gScalarMont = tmp
@@ -258,7 +262,7 @@ public class EdDSAEngine {
             // In Fq: neg(z_i) = q - z_i
             var negZi = [UInt64](repeating: 0, count: 4)
             var zeroFq = [UInt64](repeating: 0, count: 4)
-            ed25519_fq_sub(&zeroFq, &weights[i], &negZi)
+            ed25519_fq_sub(&zeroFq, &wi, &negZi)
             var negZiRaw = [UInt64](repeating: 0, count: 4)
             ed25519_fq_to_raw(&negZi, &negZiRaw)
             let rSIdx = (1 + i) * 8
@@ -274,7 +278,7 @@ public class EdDSAEngine {
 
             // Scalar for A_i: negate z_i * k_i
             var zkMont = [UInt64](repeating: 0, count: 4)
-            ed25519_fq_mul(&weights[i], &kMont, &zkMont)
+            ed25519_fq_mul(&wi, &kMont, &zkMont)
             var negZk = [UInt64](repeating: 0, count: 4)
             ed25519_fq_sub(&zeroFq, &zkMont, &negZk)
             var negZkRaw = [UInt64](repeating: 0, count: 4)
