@@ -17,6 +17,11 @@ public class Poseidon2M31Engine {
     let merkleFusedBatchFunction: MTLComputePipelineState
     let rcBuffer: MTLBuffer
 
+    /// Max threadgroup size for hashPairs kernel
+    public var hashPairsMaxTG: Int { Int(hashPairsFunction.maxTotalThreadsPerThreadgroup) }
+    /// Max threadgroup size for merkleFused kernel
+    public var merkleFusedMaxTG: Int { Int(merkleFusedFunction.maxTotalThreadsPerThreadgroup) }
+
     // Cached buffers
     private var cachedInputBuf: MTLBuffer?
     private var cachedOutputBuf: MTLBuffer?
@@ -93,6 +98,11 @@ public class Poseidon2M31Engine {
     /// Input: array of 2n * 8 = 16n M31 elements (pairs of nodes: [left0_8, right0_8, left1_8, right1_8, ...])
     /// Output: array of n * 8 M31 elements (hashed nodes)
     public func hashPairs(_ input: [M31]) throws -> [M31] {
+        return try hashPairsCustomTG(input, customTG: nil)
+    }
+
+    /// Hash pairs with custom threadgroup size (nil = use tuning config)
+    public func hashPairsCustomTG(_ input: [M31], customTG: Int?) throws -> [M31] {
         let nodeSize = Poseidon2M31Engine.nodeSize
         precondition(input.count % (2 * nodeSize) == 0, "Input must have pairs of 8-element nodes")
         let n = input.count / (2 * nodeSize)  // number of pairs
@@ -127,7 +137,8 @@ public class Poseidon2M31Engine {
         enc.setBuffer(rcBuffer, offset: 0, index: 2)
         var count = UInt32(n)
         enc.setBytes(&count, length: 4, index: 3)
-        let tg = min(tuning.hashThreadgroupSize, Int(hashPairsFunction.maxTotalThreadsPerThreadgroup))
+        let maxTG = Int(hashPairsFunction.maxTotalThreadsPerThreadgroup)
+        let tg = min(customTG ?? tuning.hashThreadgroupSize, maxTG)
         enc.dispatchThreads(MTLSize(width: n, height: 1, depth: 1),
                            threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
         enc.endEncoding()

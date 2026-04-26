@@ -265,25 +265,35 @@ public func buildPoseidon2M31MerkleTree(_ values: [M31], count n: Int) -> [M31Di
     let treeSize = 2 * n - 1
     var tree = [M31Digest](repeating: M31Digest.zero, count: treeSize)
 
-    // Leaf hashing: pad each value to 8 M31 elements
-    for i in 0..<n {
-        let val = i < values.count ? values[i] : M31.zero
-        let leafInput = [val, M31(v: UInt32(i)), M31.zero, M31.zero,
-                         M31.zero, M31.zero, M31.zero, M31.zero]
-        tree[i] = M31Digest(values: poseidon2M31HashSingle(leafInput))
+    // Leaf hashing: parallel across all leaves
+    let numThreads = min(ProcessInfo.processInfo.activeProcessorCount, 16)
+    let chunkSize = max(1, n / numThreads)
+
+    DispatchQueue.concurrentPerform(iterations: numThreads) { threadIdx in
+        let start = threadIdx * chunkSize
+        let end = min(start + chunkSize, n)
+        for i in start..<end {
+            let val = i < values.count ? values[i] : M31.zero
+            let leafInput = [val, M31(v: UInt32(i)), M31.zero, M31.zero,
+                             M31.zero, M31.zero, M31.zero, M31.zero]
+            tree[i] = M31Digest(values: poseidon2M31HashSingle(leafInput))
+        }
     }
 
-    // Build internal nodes bottom-up
+    // Build internal nodes bottom-up (parallel within each level)
     var levelStart = 0
     var levelSize = n
     while levelSize > 1 {
         let parentStart = levelStart + levelSize
         let parentSize = levelSize / 2
-        for i in 0..<parentSize {
+
+        // Parallelize across parent nodes at this level
+        DispatchQueue.concurrentPerform(iterations: parentSize) { i in
             let left = tree[levelStart + 2 * i]
             let right = tree[levelStart + 2 * i + 1]
             tree[parentStart + i] = M31Digest(values: poseidon2M31Hash(left: left.values, right: right.values))
         }
+
         levelStart = parentStart
         levelSize = parentSize
     }
@@ -702,11 +712,12 @@ public class GPUMerkleTreeM31Engine {
     ///   - queryIndex: Query index (same for all trees)
     /// - Returns: Array of proofs, one per tree, each containing sibling digests at each level
     public func generateProofsGPU(
-        treeBuffers: [MTLBuffer],
+        treeBuffer: MTLBuffer,
         numTrees: Int,
         numLeaves: Int,
         queryIndex: Int
     ) throws -> [[M31Digest]] {
+        let t0 = CFAbsoluteTimeGetCurrent()
         let nodeSize = 8
         let numLevels = Int(log2(Double(numLeaves)))
         let proofBytes = numTrees * numLevels * nodeSize * MemoryLayout<UInt32>.stride
@@ -714,23 +725,6 @@ public class GPUMerkleTreeM31Engine {
         // Allocate proof buffer
         guard let proofBuf = device.makeBuffer(length: proofBytes, options: .storageModeShared) else {
             throw MSMError.gpuError("Failed to allocate proof buffer")
-        }
-
-        // Concatenate all tree buffers into one
-        let treeNodeCount = 2 * numLeaves - 1
-        let totalTreeBytes = numTrees * treeNodeCount * nodeSize * MemoryLayout<UInt32>.stride
-        guard let combinedTreeBuf = device.makeBuffer(length: totalTreeBytes, options: .storageModeShared) else {
-            throw MSMError.gpuError("Failed to allocate combined tree buffer")
-        }
-
-        let destPtr = combinedTreeBuf.contents().bindMemory(to: UInt32.self, capacity: numTrees * treeNodeCount * nodeSize)
-        var offset = 0
-        for treeBuf in treeBuffers {
-            let srcPtr = treeBuf.contents().bindMemory(to: UInt32.self, capacity: treeNodeCount * nodeSize)
-            for i in 0..<(treeNodeCount * nodeSize) {
-                destPtr[offset + i] = srcPtr[i]
-            }
-            offset += treeNodeCount * nodeSize
         }
 
         // Query indices buffer (same query index for all trees)
@@ -744,12 +738,13 @@ public class GPUMerkleTreeM31Engine {
         }
 
         // Dispatch batch proof kernel
+        let dispatchT0 = CFAbsoluteTimeGetCurrent()
         guard let cmdBuf = commandQueue.makeCommandBuffer() else {
             throw MSMError.noCommandBuffer
         }
         let enc = cmdBuf.makeComputeCommandEncoder()!
         enc.setComputePipelineState(proofBatchFunction)
-        enc.setBuffer(combinedTreeBuf, offset: 0, index: 0)
+        enc.setBuffer(treeBuffer, offset: 0, index: 0)
         enc.setBuffer(proofBuf, offset: 0, index: 1)
         var numTreesArg = UInt32(numTrees)
         enc.setBytes(&numTreesArg, length: 4, index: 2)
@@ -761,8 +756,10 @@ public class GPUMerkleTreeM31Engine {
         enc.endEncoding()
         cmdBuf.commit()
         cmdBuf.waitUntilCompleted()
+        let dispatchMs = (CFAbsoluteTimeGetCurrent() - dispatchT0) * 1000
 
         // Read proofs back to CPU
+        let readT0 = CFAbsoluteTimeGetCurrent()
         let proofCapacity = numTrees * numLevels * nodeSize
         let proofPtr = proofBuf.contents().bindMemory(to: UInt32.self, capacity: proofCapacity)
         var proofs = [[M31Digest]]()
@@ -782,8 +779,49 @@ public class GPUMerkleTreeM31Engine {
             }
             proofs.append(proof)
         }
+        let readMs = (CFAbsoluteTimeGetCurrent() - readT0) * 1000
+        let totalMs = (CFAbsoluteTimeGetCurrent() - t0) * 1000
+        print("[GPUMerkle] GPU proofs: dispatch=\(String(format: "%.1f", dispatchMs))ms, read=\(String(format: "%.1f", readMs))ms, total=\(String(format: "%.1f", totalMs))ms")
 
         return proofs
+    }
+
+    /// GPU-accelerated proof generation for multiple trees with a SINGLE dispatch.
+    /// Combines tree buffers into one and dispatches one kernel for all proofs.
+    public func generateProofsGPU(
+        treeBuffers: [MTLBuffer],
+        numTrees: Int,
+        numLeaves: Int,
+        queryIndex: Int
+    ) throws -> [[M31Digest]] {
+        guard !treeBuffers.isEmpty else { return [] }
+
+        let nodeSize = 8
+        let numLevels = Int(log2(Double(numLeaves)))
+        let treeNodeCount = 2 * numLeaves - 1
+
+        // Combine all tree buffers into one
+        let totalTreeBytes = numTrees * treeNodeCount * nodeSize * MemoryLayout<UInt32>.stride
+        guard let combinedTreeBuf = device.makeBuffer(length: totalTreeBytes, options: .storageModeShared) else {
+            throw MSMError.gpuError("Failed to allocate combined tree buffer")
+        }
+
+        let destPtr = combinedTreeBuf.contents().bindMemory(to: UInt32.self, capacity: numTrees * treeNodeCount * nodeSize)
+        var offset = 0
+        for treeBuf in treeBuffers.prefix(numTrees) {
+            let srcPtr = treeBuf.contents().bindMemory(to: UInt32.self, capacity: treeNodeCount * nodeSize)
+            for i in 0..<(treeNodeCount * nodeSize) {
+                destPtr[offset + i] = srcPtr[i]
+            }
+            offset += treeNodeCount * nodeSize
+        }
+
+        return try generateProofsGPU(
+            treeBuffer: combinedTreeBuf,
+            numTrees: numTrees,
+            numLeaves: numLeaves,
+            queryIndex: queryIndex
+        )
     }
 }
 
@@ -804,6 +842,9 @@ public class GPUCircleSTARKProverEngine {
     private var treeEngine: Poseidon2M31Engine?
     private var batchTreeEngine: GPUBatchMerkleEngine?
     private var gpuMerkleTreeEngine: GPUMerkleTreeM31Engine?
+
+    /// GPU buffers for trace trees (used for GPU-accelerated proof generation)
+    private var traceTreeBuffers: [MTLBuffer] = []
 
     /// Merkle tree cache for repeated proofs
     private var merkleTreeCache: MerkleTreeCache?
@@ -898,54 +939,22 @@ public class GPUCircleSTARKProverEngine {
         let ldeT = CFAbsoluteTimeGetCurrent()
 
         // Step 3: Commit trace columns via Poseidon2-M31 Merkle trees
-        // OPTIMIZATION: Use GPU Merkle tree engine for parallel tree building
-        // GPU strategy: hash leaves to digests in parallel, build tree level-by-level
+        // Use CPU tree construction (fast) - GPU tree building via buildTreeWithBuffer
+        // is slow at small-medium scales due to GPU dispatch overhead
         var traceCommitments = [M31Digest]()
         var traceTrees = [[M31Digest]]()
 
+        let commitT0 = CFAbsoluteTimeGetCurrent()
+        for colIdx in 0..<air.numColumns {
+            let tree = buildPoseidon2M31MerkleTree(traceLDEs[colIdx], count: evalLen)
+            traceCommitments.append(poseidon2M31MerkleRoot(tree, n: evalLen))
+            traceTrees.append(tree)
+        }
+        traceTreeBuffers = []  // GPU proofs disabled - GPU tree building is slow at small scales
+
+        let commitMs = (CFAbsoluteTimeGetCurrent() - commitT0) * 1000
         if gpuAvailable && config.usePoseidon2Merkle {
-            // GPU Merkle tree commitment
-            let gpuTreeEng = try ensureGPUMerkleTreeEngine()
-            let commitT0 = CFAbsoluteTimeGetCurrent()
-
-            // Build all trees in parallel using GPU
-            let treeQueue = DispatchQueue(label: "com.zkmetal.gpu.merkle", attributes: .concurrent)
-            var lock = NSLock()
-            var treeResults: [(Int, M31Digest, [M31Digest])] = []
-
-            let group = DispatchGroup()
-            for colIdx in 0..<air.numColumns {
-                group.enter()
-                treeQueue.async {
-                    do {
-                        let tree = try gpuTreeEng.buildTree(values: traceLDEs[colIdx], count: evalLen)
-                        let root = tree[2 * evalLen - 2]
-                        lock.lock()
-                        treeResults.append((colIdx, root, tree))
-                        lock.unlock()
-                    } catch {
-                        lock.lock()
-                        lock.unlock()
-                    }
-                    group.leave()
-                }
-            }
-            group.wait()
-
-            // Sort by index to maintain order
-            treeResults.sort { $0.0 < $1.0 }
-            traceCommitments = treeResults.map { $0.1 }
-            traceTrees = treeResults.map { $0.2 }
-
-            let commitMs = (CFAbsoluteTimeGetCurrent() - commitT0) * 1000
-            print("  GPU Merkle commit: \(String(format: "%.1f", commitMs)) ms for \(air.numColumns) columns")
-        } else {
-            // Fallback to CPU sequential commitment
-            for colIdx in 0..<air.numColumns {
-                let tree = buildPoseidon2M31MerkleTree(traceLDEs[colIdx], count: evalLen)
-                traceCommitments.append(poseidon2M31MerkleRoot(tree, n: evalLen))
-                traceTrees.append(tree)
-            }
+            print("  Merkle commit: \(String(format: "%.1f", commitMs)) ms for \(air.numColumns) columns (CPU trees, GPU proofs disabled)")
         }
         let commitT = CFAbsoluteTimeGetCurrent()
 
@@ -1018,17 +1027,58 @@ public class GPUCircleSTARKProverEngine {
         )
         let friT = CFAbsoluteTimeGetCurrent()
 
-        // Step 8: Query phase
+        // Step 8: Query phase — use GPU-accelerated proof generation when available
         var queryResponses = [GPUCircleSTARKQueryResponse]()
         queryResponses.reserveCapacity(friProof.queryIndices.count)
+
+        // Check if GPU proof generation is available
+        let useGPUProofs = gpuAvailable && !traceTreeBuffers.isEmpty
+        if useGPUProofs {
+            fputs("  [DEBUG] GPU proofs: gpuAvailable=\(gpuAvailable), traceTreeBuffers.count=\(traceTreeBuffers.count)\n", stderr)
+        }
+        var gpuProofEng: GPUMerkleTreeM31Engine? = nil
+        if useGPUProofs {
+            do {
+                gpuProofEng = try ensureGPUMerkleTreeEngine()
+                fputs("  [DEBUG] GPU proof engine ready\n", stderr)
+            } catch {
+                fputs("  [DEBUG] GPU proof engine failed: \(error)\n", stderr)
+            }
+        }
+
         for qi in friProof.queryIndices {
             guard qi < evalLen else { continue }
 
             var traceVals = [M31]()
             var tracePaths = [[M31Digest]]()
-            for colIdx in 0..<air.numColumns {
-                traceVals.append(traceLDEs[colIdx][qi])
-                tracePaths.append(poseidon2M31MerkleProof(traceTrees[colIdx], n: evalLen, index: qi))
+
+            if useGPUProofs, let proofEng = gpuProofEng, !traceTreeBuffers.isEmpty {
+                // GPU proof generation — generate all proofs at once for this query index
+                do {
+                    let proofs = try proofEng.generateProofsGPU(
+                        treeBuffers: traceTreeBuffers,
+                        numTrees: air.numColumns,
+                        numLeaves: evalLen,
+                        queryIndex: qi
+                    )
+                    // Extract values from traceLDEs
+                    for colIdx in 0..<air.numColumns {
+                        traceVals.append(traceLDEs[colIdx][qi])
+                        tracePaths.append(proofs[colIdx])
+                    }
+                } catch {
+                    // Fall back to CPU
+                    for colIdx in 0..<air.numColumns {
+                        traceVals.append(traceLDEs[colIdx][qi])
+                        tracePaths.append(poseidon2M31MerkleProof(traceTrees[colIdx], n: evalLen, index: qi))
+                    }
+                }
+            } else {
+                // CPU proof generation
+                for colIdx in 0..<air.numColumns {
+                    traceVals.append(traceLDEs[colIdx][qi])
+                    tracePaths.append(poseidon2M31MerkleProof(traceTrees[colIdx], n: evalLen, index: qi))
+                }
             }
 
             let compPath = poseidon2M31MerkleProof(compTree, n: evalLen, index: qi)

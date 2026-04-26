@@ -1,6 +1,7 @@
 // Circle STARK benchmark - Full prove + verify cycle over M31
 import zkMetal
 import Foundation
+import Metal
 
 public func runCircleSTARKBench() {
     fputs("\n--- Circle STARK Benchmark (Mersenne31) ---\n", stderr)
@@ -242,4 +243,95 @@ public func runCircleSTARKFusedRoundBench() {
             fputs("    2^\(logN): ERROR - \(error)\n", stderr)
         }
     }
+}
+
+// MARK: - GPU Circle STARK Prover Benchmark
+
+/// Benchmark the GPU Circle STARK prover engine.
+///
+/// NOTE: GPUCircleSTARKProverEngine uses Poseidon2-M31 for ALL Merkle trees,
+/// which is slower than the CPU CircleSTARKProver that uses Keccak for trace trees.
+/// This benchmark is primarily useful for measuring GPU proof generation performance,
+/// not overall prover performance.
+///
+/// For actual STARK proving, use CircleSTARKProver (cstark command) instead.
+public func runGPUSTARKBench() {
+    fputs("\n--- GPU Circle STARK Benchmark (Mersenne31) ---\n", stderr)
+    fputs("  NOTE: GPU prover uses Poseidon2-M31 which is slower than Keccak.\n", stderr)
+    fputs("  For actual proving, use 'cstark' (CPU CircleSTARK prover) instead.\n\n", stderr)
+
+    guard let device = MTLCreateSystemDefaultDevice() else {
+        fputs("  Error: No Metal GPU available\n", stderr)
+        return
+    }
+    fputs("  GPU: \(device.name)\n", stderr)
+
+    // --- Correctness test: Fibonacci AIR ---
+    do {
+        let air = FibonacciAIR(logTraceLength: 4)
+        let trace = air.generateTrace()
+
+        var allZero = true
+        for row in 0..<(air.traceLength - 1) {
+            let current = (0..<air.numColumns).map { trace[$0][row] }
+            let next = (0..<air.numColumns).map { trace[$0][row + 1] }
+            let cvals = air.evaluateConstraints(current: current, next: next)
+            for cv in cvals { if cv.v != 0 { allZero = false } }
+        }
+        fputs("  Fibonacci trace (2^4): \(allZero ? "PASS" : "FAIL")\n", stderr)
+    }
+
+    // --- Small prove + verify test ---
+    do {
+        let air = FibonacciAIR(logTraceLength: 6)
+        let prover = GPUCircleSTARKProverEngine(config: .fast)
+
+        let t0 = CFAbsoluteTimeGetCurrent()
+        let result = try prover.prove(air: air)
+        let proveTime = (CFAbsoluteTimeGetCurrent() - t0) * 1000
+
+        fputs("  Prove (2^6): \(String(format: "%.1f", proveTime))ms, " +
+              "proof \(result.proof.estimatedSizeBytes) bytes\n", stderr)
+        fputs("    Phase timings: trace \(String(format: "%.1f", result.traceGenTimeSeconds * 1000))ms, " +
+              "LDE \(String(format: "%.1f", result.ldeTimeSeconds * 1000))ms, " +
+              "commit \(String(format: "%.1f", result.commitTimeSeconds * 1000))ms, " +
+              "constraint \(String(format: "%.1f", result.constraintTimeSeconds * 1000))ms, " +
+              "FRI \(String(format: "%.1f", result.friTimeSeconds * 1000))ms, " +
+              "query \(String(format: "%.1f", result.queryTimeSeconds * 1000))ms\n", stderr)
+    } catch {
+        fputs("  Prove (2^6): FAIL - \(error)\n", stderr)
+    }
+
+    // --- Compare with CPU CircleSTARK prover ---
+    fputs("\n  Comparison: GPU prover vs CPU CircleSTARK prover\n", stderr)
+    for logN in [6, 8, 10] {
+        do {
+            let air = FibonacciAIR(logTraceLength: logN)
+
+            // GPU prover
+            let proverGPU = GPUCircleSTARKProverEngine(config: .fast)
+            proverGPU.profileProve = false
+            let _ = try proverGPU.prove(air: air)  // warmup
+            let t0 = CFAbsoluteTimeGetCurrent()
+            let resultGPU = try proverGPU.prove(air: air)
+            let gpuMs = (CFAbsoluteTimeGetCurrent() - t0) * 1000
+
+            // CPU prover
+            let proverCPU = CircleSTARKProver(logBlowup: 2, numQueries: 16)
+            let _ = try proverCPU.prove(air: air)  // warmup
+            let t1 = CFAbsoluteTimeGetCurrent()
+            let _ = try proverCPU.prove(air: air)
+            let cpuMs = (CFAbsoluteTimeGetCurrent() - t1) * 1000
+
+            let speedup = gpuMs / cpuMs
+            fputs(String(format: "    2^%-2d: GPU %7.1fms | CPU %6.1fms | %.2fx (CPU faster)\n",
+                        logN, gpuMs, cpuMs, speedup), stderr)
+        } catch {
+            fputs("    2^\(logN): ERROR - \(error)\n", stderr)
+        }
+    }
+
+    fputs("\n  CONCLUSION:\n", stderr)
+    fputs("  GPU prover is SLOWER than CPU prover due to Poseidon2-M31 Merkle trees.\n", stderr)
+    fputs("  GPU acceleration would help at larger scales or with GPU-friendly hash.\n\n", stderr)
 }

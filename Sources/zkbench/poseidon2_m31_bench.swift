@@ -189,3 +189,65 @@ public func runPoseidon2M31Bench() {
 
     print("\nPoseidon2 M31 benchmark complete.")
 }
+
+/// Threadgroup size sweep for Poseidon2-M31 hash pairs kernel
+public func runPoseidon2M31TGSweep() {
+    print("=== Poseidon2 M31 Threadgroup Size Sweep ===")
+
+    do {
+        let engine = try Poseidon2M31Engine()
+        print("GPU: \(engine.device.name)")
+        print("hashPairs maxTG: \(engine.hashPairsMaxTG)")
+        print("merkleFused maxTG: \(engine.merkleFusedMaxTG)")
+
+        // Test at different scales and threadgroup sizes
+        for logN in [14, 16, 18] {
+            let n = 1 << logN
+            let nodeSize = 8
+
+            var input = [M31](repeating: M31.zero, count: n * 2 * nodeSize)
+            var rng: UInt64 = 0xDEAD_BEEF
+            for i in 0..<input.count {
+                rng = rng &* 6364136223846793005 &+ 1442695040888963407
+                input[i] = M31(v: UInt32(truncatingIfNeeded: rng >> 33) % M31.P)
+            }
+
+            print("\n  --- 2^\(logN) = \(n) pairs ---")
+            print("  TG | Time(ms) | Hash/s")
+            print("  ---|----------|---------")
+
+            // Get valid TG sizes to test (must be <= maxTG)
+            let maxTG = engine.hashPairsMaxTG
+            let tgSizes: [Int]
+            if maxTG >= 1024 {
+                tgSizes = [32, 64, 128, 256, 512, 1024]
+            } else if maxTG >= 512 {
+                tgSizes = [32, 64, 128, 256, 512]
+            } else {
+                tgSizes = [32, 64, 128, 256]
+            }
+
+            for tgSize in tgSizes {
+                // Warmup
+                let _ = try engine.hashPairsCustomTG(input, customTG: tgSize)
+
+                // Timed (3 runs)
+                var times = [Double]()
+                for _ in 0..<3 {
+                    let t0 = CFAbsoluteTimeGetCurrent()
+                    let _ = try engine.hashPairsCustomTG(input, customTG: tgSize)
+                    times.append((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+                }
+                times.sort()
+                let median = times[1]
+                let hashPerSec = Double(n) / (median / 1000)
+                let marker = tgSize == 256 ? " ← current" : (median == times.min() ? " ← best" : "")
+                print(String(format: "  %3d |  %6.2f  | %8.0f%@", tgSize, median, hashPerSec, marker))
+            }
+        }
+    } catch {
+        print("  [FAIL] GPU error: \(error)")
+    }
+
+    print("\nPoseidon2 M31 TG sweep complete.")
+}

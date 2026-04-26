@@ -183,6 +183,8 @@ public class CircleSTARKProver {
             .replacingOccurrences(of: "#ifndef MERSENNE31_METAL", with: "")
             .replacingOccurrences(of: "#define MERSENNE31_METAL", with: "")
             .replacingOccurrences(of: "#endif // MERSENNE31_METAL", with: "")
+            + "\n// M31_INV2: precomputed inverse of 2 mod p = (2^31 - 1 + 1) / 2 = 2^30\n"
+            + "constant uint M31_INV2 = 1073741824u;\n"
         let opts = MTLCompileOptions()
         opts.fastMathEnabled = true
         let lib = try dev.makeLibrary(source: fClean + "\n" + cClean, options: opts)
@@ -205,6 +207,8 @@ public class CircleSTARKProver {
             .replacingOccurrences(of: "#ifndef MERSENNE31_METAL", with: "")
             .replacingOccurrences(of: "#define MERSENNE31_METAL", with: "")
             .replacingOccurrences(of: "#endif // MERSENNE31_METAL", with: "")
+            + "\n// M31_INV2: precomputed inverse of 2 mod p = (2^31 - 1 + 1) / 2 = 2^30\n"
+            + "constant uint M31_INV2 = 1073741824u;\n"
         let opts = MTLCompileOptions()
         opts.fastMathEnabled = true
         let lib = try dev.makeLibrary(source: fClean + "\n" + cClean, options: opts)
@@ -229,6 +233,8 @@ public class CircleSTARKProver {
             .replacingOccurrences(of: "#ifndef MERSENNE31_METAL", with: "")
             .replacingOccurrences(of: "#define MERSENNE31_METAL", with: "")
             .replacingOccurrences(of: "#endif // MERSENNE31_METAL", with: "")
+            + "\n// M31_INV2: precomputed inverse of 2 mod p = (2^31 - 1 + 1) / 2 = 2^30\n"
+            + "constant uint M31_INV2 = 1073741824u;\n"
         let opts = MTLCompileOptions()
         opts.fastMathEnabled = true
         let lib = try dev.makeLibrary(source: fClean + "\n" + cClean, options: opts)
@@ -253,6 +259,8 @@ public class CircleSTARKProver {
             .replacingOccurrences(of: "#ifndef MERSENNE31_METAL", with: "")
             .replacingOccurrences(of: "#define MERSENNE31_METAL", with: "")
             .replacingOccurrences(of: "#endif // MERSENNE31_METAL", with: "")
+            + "\n// M31_INV2: precomputed inverse of 2 mod p = (2^31 - 1 + 1) / 2 = 2^30\n"
+            + "constant uint M31_INV2 = 1073741824u;\n"
         let opts = MTLCompileOptions()
         opts.fastMathEnabled = true
         let lib = try dev.makeLibrary(source: fClean + "\n" + cClean, options: opts)

@@ -130,6 +130,8 @@ if cmd == "calibrate" {
     runPoseidon2Bench()
 } else if cmd == "poseidon2-m31" || cmd == "p2m31" {
     runPoseidon2M31Bench()
+} else if cmd == "p2m31-tg" || cmd == "p2m31-tgsweep" {
+    runPoseidon2M31TGSweep()
 } else if cmd == "poseidon2-bb" || cmd == "p2bb" {
     runPoseidon2BabyBearBench()
 } else if cmd == "keccak" || cmd == "k256" {
@@ -240,6 +242,8 @@ if cmd == "calibrate" {
     runCircleSTARKBench()
 } else if cmd == "circle-stark-fused" || cmd == "cstark-fused" {
     runCircleSTARKFusedRoundBench()
+} else if cmd == "gpu-stark" || cmd == "gstark" {
+    runGPUSTARKBench()
 } else if cmd == "circle-fri" || cmd == "cfri" {
     runCircleFRIBench()
 } else if cmd == "p1" || cmd == "p1stark" || cmd == "p1rational" {
