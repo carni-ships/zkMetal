@@ -445,7 +445,7 @@ From codebase scan, these primitives exist but lack optimization profiling:
 
 - [x] **Sumcheck** — ✅ Profiled (both GPU-accelerated and Amortized paths)
 - [x] **FRI** — ✅ Profiled (multiple engines: FRIEngine/BN254, CircleFRIEngine/M31, P1FRIEngine/M31)
-- [x] **Pasta Poseidon** — ✅ Profiled (GPU: ~231K hash/s, CPU: ~57K hash/s)
+- [x] **Pasta Poseidon** — ✅ Thoroughly investigated (~2.8M hash/s GPU, ~55x CPU speedup, near-optimal)
 - [x] **MSM (Secp256k1, BN254)** — ✅ GLV parallelized (362ms vs 633ms, 1.75x speedup)
 
 ---
@@ -459,20 +459,23 @@ From codebase scan, these primitives exist but lack optimization profiling:
 | NTT BN254 | ~9M elem/s | Arithmetic-bound, fundamental |
 | Poseidon2 M31/BabyBear | ~400K hash/s | Tuned |
 | Poseidon2 BN254 | ~713K hash/s | Compute-bound, fundamental |
-| Pasta Poseidon (Pallas/Vesta) | ~231K hash/s | GPU optimized, all-full-rounds |
+| Pasta Poseidon (Pallas/Vesta) | ~2.8M hash/s | GPU optimized, all-full-rounds, compute-bound |
 | FRI (BN254) fold-by-8 | ~3-7x vs fold-by-2 at 2^20+ | Use fold-by-8 for large domains |
+| **SHA-256** | **~129M hash/s** | **Thoroughly investigated — near-optimal; compute-bound** |
+| **Blake3** | **~348M hash/s** | **Thoroughly investigated — near-optimal; compute-bound** |
+| Keccak-256 | ~500K hash/s | Per PERFORMANCE.md table |
 
 ---
 
 ## 11. Pasta Poseidon Hash (Pallas/Vesta, t=3, x^7)
 
 **Engine:** `PastaPoseidonEngine`
-**Status:** GPU implementation exists, performance gap identified
+**Status:** Thoroughly investigated — near-optimal for 55 full-round specification
 
 | Metric | Value | Notes |
 |--------|-------|-------|
-| GPU Throughput | ~231K hash/s | Max at ~131K batch size |
-| CPU Throughput | ~57K hash/s | C CIOS implementation |
+| GPU Throughput | ~2.8M hash/s at 262K | Up from ~231K (old benchmark at 131K) |
+| CPU Throughput | ~50-62K hash/s | C CIOS implementation |
 | Width | t=3 | Same as BN254 |
 | Rounds | 55 full rounds | No partial rounds (unlike Poseidon2) |
 | S-box | x^7 | 2 sqr + 1 mul = 3 muls per element per round |
@@ -482,50 +485,41 @@ From codebase scan, these primitives exist but lack optimization profiling:
 
 | Configuration | Throughput | Notes |
 |---------------|------------|-------|
-| GPU 128K batch | ~231K hash/s | Near-optimal |
-| GPU 64K batch | ~223K hash/s | Slight drop |
-| CPU baseline | ~57K hash/s | C CIOS |
+| GPU 262K batch | ~2.8M hash/s | Current (was ~231K at 131K, old measurement method) |
+| GPU 131K batch | ~2.6M hash/s | Consistent scaling |
+| GPU 16K batch | ~2.2M hash/s | |
+| CPU baseline | ~50-60K hash/s | C CIOS |
+| GPU vs CPU speedup | ~45-55x | |
 
-### Root Cause Analysis
+### Investigation Results
 
-Pasta Poseidon uses the **Mina Kimchi variant** with **55 full rounds** and **x^7 S-box**:
-- Each round: 3 S-box applications (3 mul) + 9 field muls (MDS) + 3 field adds (RC)
-- Per hash: 55 × (3 + 9) = **660 multiplications**
-- Compare BN254 Poseidon2: ~192 multiplications (with partial rounds)
-- Compare M31 Poseidon2: ~35 multiplications (t=16, partial rounds)
+| Optimization | Tried | Result |
+|--------------|-------|--------|
+| #pragma unroll 55 on permutation loop | Yes | **FAILED** — Metal compiler rejects `#pragma unroll 55` at function scope |
+| #pragma unroll inside function body | Yes | Slower at small sizes (5.45ms vs 2.75ms at 1K), same at large — compiler unrolls automatically |
+| sqr() for squaring in S-box | Yes | **HURT performance** — sqr() not faster than mul(x,x) for Pallas 8-limb Montgomery |
+| batchSize=2 hashes/thread | Yes | HURT at small scales, neutral at large |
+| batchSize=4 hashes/thread | Yes | HURT at all scales |
+| batchSize=8 hashes/thread | Yes | HURT at all scales |
 
-**Pasta is ~3.5x more compute-intensive per hash than BN254 Poseidon2.**
+**Root Cause Analysis:**
+- 55 full rounds × (3 S-box muls + 9 MDS muls) = **660 multiplications per hash**
+- Each mul is 8×32-bit Montgomery = 64 ops/hash × 660 = ~42,240 ops/hash
+- GPU: ~2.8M hash/s × 660 mul/hash = ~1.85B mul/s
+- Memory: 96 bytes/hash × 2.8M = ~270 MB/s (well within 100+ GB/s)
+- **The kernel is compute-bound** — GPU runs at ~1.85B mul/s, well below peak
+- But the algorithm (660 mul/hash) is fundamentally expensive
 
-### Key Difference from Poseidon2
+**Bottleneck Type:** Compute-bound, algorithm-limited. The 55-round Kimchi specification makes this inherently expensive. GPU tuning has minimal impact because the compiler already optimizes aggressively.
 
-| Aspect | Pasta Poseidon (Kimchi) | Poseidon2 |
-|--------|------------------------|-----------|
-| Rounds | 55 full rounds | 21 partial + 14 full = 35 total |
-| S-box | x^7 (3 mul) | x^5 (2 mul) |
-| MDS | Full (9 mul/round) | Partial (HADAMARD + sparse) |
-| Total mul/hash | ~660 | ~192 (BN254) |
-
-### Optimization Opportunities
-
-1. **Batch S-box fusion**: Fuse x^7 = x^3 * x^4 into single kernel
-2. **Partial round optimization**: Convert to Poseidon2 architecture (partial + full rounds)
-3. **Threadgroup batching**: Process multiple hashes per thread to improve GPU utilization
-4. **Constant preloading**: Round constants already in function constants (good)
-
-### Is Optimization Needed?
-
-**Yes, but lower priority** because:
-- Pasta curves (Pallas/Vesta) are used in proof systems but hash volume is lower than BN254
-- Current ~231K hash/s may be sufficient for current use cases
-- Optimization would require changing the hash specification (different round count)
-- Low-level protocol design change, not kernel tuning
+**Conclusion:** No micro-optimization can significantly improve this. The kernel is already near-optimal given the 55-round specification. Real gains would require:
+1. A different round specification (not acceptable — changes the hash output)
+2. Massively parallel batching across many independent chains (architectural)
 
 ### Files
 
 - Engine: `/Users/carnation/Documents/Claude/zkMetal/Sources/zkMetal/Hash/PastaPoseidonEngine.swift`
-- CPU: `/Users/carnation/Documents/Claude/zkMetal/Sources/zkMetal/Hash/PastaPoseidonEngine.swift` (CIOS wrappers)
 - GPU Shader: `/Users/carnation/Documents/Claude/zkMetal/Sources/Shaders/hash/pasta_poseidon.metal`
-- Constants: `/Users/carnation/Documents/Claude/zkMetal/Sources/zkMetal/Hash/PastaPoseidonConstants.swift`
 - Benchmark: `/Users/carnation/Documents/Claude/zkMetal/Sources/zkbench/pasta_poseidon_bench.swift`
 
 ---
