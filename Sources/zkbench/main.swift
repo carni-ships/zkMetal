@@ -308,6 +308,8 @@ if cmd == "calibrate" {
     runKeccakNeonBench()
 } else if cmd == "blake3-neon" || cmd == "b3-neon" {
     runBlake3NeonBench()
+} else if cmd == "blake3" {
+    runBlake3Bench()
 } else if cmd == "cpu" {
     runCPUBench()
 } else if cmd == "cpu-msm" {
