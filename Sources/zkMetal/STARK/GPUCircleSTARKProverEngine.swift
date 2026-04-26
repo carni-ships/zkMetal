@@ -438,23 +438,13 @@ public class GPUMerkleTreeM31Engine {
 
     private static func compileProofBatchShaders(device: MTLDevice) throws -> MTLLibrary {
         let shaderDir = findShaderDir()
-        let m31Source = try String(contentsOfFile: shaderDir + "/fields/mersenne31.metal", encoding: .utf8)
+        // The merkle tree shader is self-contained with its own M31 definitions
+        // No need to prepend mersenne31.metal
         let merkleSource = try String(contentsOfFile: shaderDir + "/hash/poseidon2_m31_merkle_tree.metal", encoding: .utf8)
-
-        let cleanMerkle = merkleSource.split(separator: "\n")
-            .filter { !$0.contains("#include") }
-            .joined(separator: "\n")
-
-        let m31Clean = m31Source
-            .replacingOccurrences(of: "#ifndef MERSENNE31_METAL", with: "")
-            .replacingOccurrences(of: "#define MERSENNE31_METAL", with: "")
-            .replacingOccurrences(of: "#endif // MERSENNE31_METAL", with: "")
-
-        let combined = m31Clean + "\n" + cleanMerkle
 
         let options = MTLCompileOptions()
         options.fastMathEnabled = true
-        return try device.makeLibrary(source: combined, options: options)
+        return try device.makeLibrary(source: merkleSource, options: options)
     }
 
     /// Build a complete Poseidon2-M31 Merkle tree on GPU.

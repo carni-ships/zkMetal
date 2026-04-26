@@ -187,16 +187,50 @@ public class GPUCircleFRIProverEngine {
         let circleFRI = try String(contentsOfFile: shaderDir + "/fri/circle_fri.metal", encoding: .utf8)
         let parallelFRI = try String(contentsOfFile: shaderDir + "/fri/circle_fri_parallel.metal", encoding: .utf8)
 
-        let cleanM31 = m31Source
+        // Clean m31Source: remove include guards and add M31_INV2 (used by FRI shaders)
+        var cleanM31 = m31Source
             .replacingOccurrences(of: "#ifndef MERSENNE31_METAL", with: "")
             .replacingOccurrences(of: "#define MERSENNE31_METAL", with: "")
             .replacingOccurrences(of: "#endif // MERSENNE31_METAL", with: "")
 
-        let cleanCircle = circleFRI
-            .replacingOccurrences(of: "#include \"../fields/mersenne31.metal\"", with: "")
+        // M31_INV2 is used by circle FRI but not defined in mersenne31.metal
+        // Add it here so it only appears once
+        cleanM31 += "\n// M31_INV2: precomputed inverse of 2 mod p = (2^31 - 1 + 1) / 2 = 2^30\n"
+        cleanM31 += "constant uint M31_INV2 = 1073741824u;\n"
 
-        let cleanParallel = parallelFRI
-            .replacingOccurrences(of: "#include \"../fields/mersenne31.metal\"", with: "")
+        // Helper to check if line is a M31_INV2 definition (not a usage)
+        let isM31Inv2Definition: (String.SubSequence) -> Bool = { line in
+            let trimmed = String(line).trimmingCharacters(in: .whitespaces)
+            return trimmed.hasPrefix("constant uint M31_INV2")
+        }
+
+        // Clean circleFRI: remove include lines and M31_INV2 block (definition is now in cleanM31)
+        var cleanCircle = circleFRI
+            .split(separator: "\n")
+            .filter { line in
+                if line.contains("#include") { return false }
+                // Remove the #ifndef/#define/#endif guard lines
+                if line.contains("#ifndef M31_INV2_DEFINED") { return false }
+                if line.contains("#define M31_INV2_DEFINED") { return false }
+                if line.trimmingCharacters(in: .whitespaces) == "#endif" { return false }
+                // Remove only the M31_INV2 constant definition line, not usages
+                if isM31Inv2Definition(line) { return false }
+                return true
+            }
+            .joined(separator: "\n")
+
+        // Clean parallelFRI: same approach - remove M31_INV2 block
+        var cleanParallel = parallelFRI
+            .split(separator: "\n")
+            .filter { line in
+                if line.contains("#include") { return false }
+                if line.contains("#ifndef M31_INV2_DEFINED") { return false }
+                if line.contains("#define M31_INV2_DEFINED") { return false }
+                if line.trimmingCharacters(in: .whitespaces) == "#endif" { return false }
+                if isM31Inv2Definition(line) { return false }
+                return true
+            }
+            .joined(separator: "\n")
 
         let combined = cleanM31 + "\n" + cleanCircle + "\n" + cleanParallel
 
