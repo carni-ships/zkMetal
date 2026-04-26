@@ -780,10 +780,13 @@ private func be32ToLimbs4(_ bytes: [UInt8]) -> [UInt64] {
     var limbs = [UInt64](repeating: 0, count: 4)
     for i in 0..<4 {
         let base = (3 - i) * 8
-        limbs[i] = (UInt64(bytes[base]) << 56) | (UInt64(bytes[base + 1]) << 48) |
-                   (UInt64(bytes[base + 2]) << 40) | (UInt64(bytes[base + 3]) << 32) |
-                   (UInt64(bytes[base + 4]) << 24) | (UInt64(bytes[base + 5]) << 16) |
-                   (UInt64(bytes[base + 6]) << 8) | UInt64(bytes[base + 7])
+        // Split the 8-term OR chain across two locals so Swift 6's
+        // type-checker can solve each half in isolation.
+        let hi = (UInt64(bytes[base]) << 56) | (UInt64(bytes[base + 1]) << 48)
+               | (UInt64(bytes[base + 2]) << 40) | (UInt64(bytes[base + 3]) << 32)
+        let lo = (UInt64(bytes[base + 4]) << 24) | (UInt64(bytes[base + 5]) << 16)
+               | (UInt64(bytes[base + 6]) << 8)  |  UInt64(bytes[base + 7])
+        limbs[i] = hi | lo
     }
     return limbs
 }

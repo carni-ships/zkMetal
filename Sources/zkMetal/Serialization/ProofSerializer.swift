@@ -67,10 +67,13 @@ public func bn254G1Decompress(_ data: [UInt8]) -> PointProjective? {
     var xLimbs = [UInt64](repeating: 0, count: 4)
     for i in 0..<4 {
         let base = 1 + (3 - i) * 8
-        xLimbs[i] = (UInt64(data[base]) << 56) | (UInt64(data[base + 1]) << 48) |
-                     (UInt64(data[base + 2]) << 40) | (UInt64(data[base + 3]) << 32) |
-                     (UInt64(data[base + 4]) << 24) | (UInt64(data[base + 5]) << 16) |
-                     (UInt64(data[base + 6]) << 8) | UInt64(data[base + 7])
+        // Split the 8-term OR chain across two locals so Swift 6's
+        // type-checker can solve each half in isolation.
+        let hi = (UInt64(data[base]) << 56) | (UInt64(data[base + 1]) << 48)
+               | (UInt64(data[base + 2]) << 40) | (UInt64(data[base + 3]) << 32)
+        let lo = (UInt64(data[base + 4]) << 24) | (UInt64(data[base + 5]) << 16)
+               | (UInt64(data[base + 6]) << 8)  |  UInt64(data[base + 7])
+        xLimbs[i] = hi | lo
     }
 
     // Convert to Montgomery form
@@ -386,10 +389,13 @@ private func be48ToFp381Limbs(_ bytes: [UInt8]) -> [UInt64] {
     var limbs = [UInt64](repeating: 0, count: 6)
     for i in 0..<6 {
         let base = (5 - i) * 8
-        limbs[i] = (UInt64(bytes[base]) << 56) | (UInt64(bytes[base + 1]) << 48) |
-                   (UInt64(bytes[base + 2]) << 40) | (UInt64(bytes[base + 3]) << 32) |
-                   (UInt64(bytes[base + 4]) << 24) | (UInt64(bytes[base + 5]) << 16) |
-                   (UInt64(bytes[base + 6]) << 8) | UInt64(bytes[base + 7])
+        // Split the 8-term OR chain across two locals so Swift 6's
+        // type-checker can solve each half in isolation.
+        let hi = (UInt64(bytes[base]) << 56) | (UInt64(bytes[base + 1]) << 48)
+               | (UInt64(bytes[base + 2]) << 40) | (UInt64(bytes[base + 3]) << 32)
+        let lo = (UInt64(bytes[base + 4]) << 24) | (UInt64(bytes[base + 5]) << 16)
+               | (UInt64(bytes[base + 6]) << 8)  |  UInt64(bytes[base + 7])
+        limbs[i] = hi | lo
     }
     return limbs
 }
@@ -454,10 +460,13 @@ extension KZGProof {
         var evalLimbs = [UInt64](repeating: 0, count: 4)
         for i in 0..<4 {
             let base = (3 - i) * 8
-            evalLimbs[i] = (UInt64(data[base]) << 56) | (UInt64(data[base + 1]) << 48) |
-                           (UInt64(data[base + 2]) << 40) | (UInt64(data[base + 3]) << 32) |
-                           (UInt64(data[base + 4]) << 24) | (UInt64(data[base + 5]) << 16) |
-                           (UInt64(data[base + 6]) << 8) | UInt64(data[base + 7])
+            // Split the 8-term OR chain across two locals so Swift 6's
+            // type-checker can solve each half in isolation.
+            let hi = (UInt64(data[base]) << 56) | (UInt64(data[base + 1]) << 48)
+                   | (UInt64(data[base + 2]) << 40) | (UInt64(data[base + 3]) << 32)
+            let lo = (UInt64(data[base + 4]) << 24) | (UInt64(data[base + 5]) << 16)
+                   | (UInt64(data[base + 6]) << 8)  |  UInt64(data[base + 7])
+            evalLimbs[i] = hi | lo
         }
         let evalRaw = Fr.from64(evalLimbs)
         let evaluation = frMul(evalRaw, Fr.from64(Fr.R2_MOD_R))
