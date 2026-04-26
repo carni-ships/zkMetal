@@ -363,6 +363,7 @@ public class GPUMerkleTreeM31Engine {
 
     private let hashLeavesFunction: MTLComputePipelineState
     private let hashPairsFunction: MTLComputePipelineState
+    private let proofBatchFunction: MTLComputePipelineState
     private let rcBuffer: MTLBuffer
 
     private let nodeSize = 8  // M31 elements per node (Poseidon2 rate)
@@ -380,14 +381,19 @@ public class GPUMerkleTreeM31Engine {
         self.commandQueue = queue
 
         let library = try GPUMerkleTreeM31Engine.compileShaders(device: device)
+        let proofLibrary = try GPUMerkleTreeM31Engine.compileProofBatchShaders(device: device)
 
         guard let hashLeavesFn = library.makeFunction(name: "poseidon2_m31_hash_leaves"),
               let hashPairsFn = library.makeFunction(name: "poseidon2_m31_hash_pairs") else {
             throw MSMError.missingKernel
         }
+        guard let proofBatchFn = proofLibrary.makeFunction(name: "poseidon2_m31_merkle_proof_batch") else {
+            throw MSMError.missingKernel
+        }
 
         self.hashLeavesFunction = try device.makeComputePipelineState(function: hashLeavesFn)
         self.hashPairsFunction = try device.makeComputePipelineState(function: hashPairsFn)
+        self.proofBatchFunction = try device.makeComputePipelineState(function: proofBatchFn)
 
         // Create round constants buffer
         let rc = POSEIDON2_M31_ROUND_CONSTANTS
@@ -424,6 +430,27 @@ public class GPUMerkleTreeM31Engine {
             .replacingOccurrences(of: "#endif // MERSENNE31_METAL", with: "")
 
         let combined = m31Clean + "\n" + cleanP2
+
+        let options = MTLCompileOptions()
+        options.fastMathEnabled = true
+        return try device.makeLibrary(source: combined, options: options)
+    }
+
+    private static func compileProofBatchShaders(device: MTLDevice) throws -> MTLLibrary {
+        let shaderDir = findShaderDir()
+        let m31Source = try String(contentsOfFile: shaderDir + "/fields/mersenne31.metal", encoding: .utf8)
+        let merkleSource = try String(contentsOfFile: shaderDir + "/hash/poseidon2_m31_merkle_tree.metal", encoding: .utf8)
+
+        let cleanMerkle = merkleSource.split(separator: "\n")
+            .filter { !$0.contains("#include") }
+            .joined(separator: "\n")
+
+        let m31Clean = m31Source
+            .replacingOccurrences(of: "#ifndef MERSENNE31_METAL", with: "")
+            .replacingOccurrences(of: "#define MERSENNE31_METAL", with: "")
+            .replacingOccurrences(of: "#endif // MERSENNE31_METAL", with: "")
+
+        let combined = m31Clean + "\n" + cleanMerkle
 
         let options = MTLCompileOptions()
         options.fastMathEnabled = true
@@ -553,6 +580,220 @@ public class GPUMerkleTreeM31Engine {
     public func merkleRoot(values: [M31], count n: Int) throws -> M31Digest {
         let tree = try buildTree(values: values, count: n)
         return tree[2 * n - 2]
+    }
+
+    /// Build a complete Poseidon2-M31 Merkle tree on GPU and return the GPU buffer.
+    ///
+    /// This is similar to buildTree() but keeps the tree buffer on GPU for use
+    /// with generateProofsGPU(). Use this when you need both the tree structure
+    /// for proof generation and the root for commitment.
+    ///
+    /// Tree layout: nodes[0..<n] = leaves, nodes[n..<2n-1] = internal, nodes[2n-2] = root
+    /// Each node is 8 M31 elements (32 bytes).
+    ///
+    /// - Parameters:
+    ///   - values: Individual M31 values (leaves)
+    ///   - n: Number of leaves (must be power of 2)
+    /// - Returns: Tuple of (root digest, GPU tree buffer, node count)
+    public func buildTreeWithBuffer(values: [M31], count n: Int) throws -> (root: M31Digest, buffer: MTLBuffer, nodeCount: Int) {
+        precondition(n > 0 && (n & (n - 1)) == 0, "n must be a power of 2")
+        let treeSize = 2 * n - 1
+        let stride = MemoryLayout<UInt32>.stride
+
+        // Step 1: Hash leaves to digests (GPU)
+        let leafDigestBytes = n * nodeSize * stride
+        guard let valuesBuf = device.makeBuffer(length: n * stride, options: .storageModeShared) else {
+            throw MSMError.gpuError("Failed to allocate values buffer")
+        }
+        guard let leafDigestBuf = device.makeBuffer(length: leafDigestBytes, options: .storageModeShared) else {
+            throw MSMError.gpuError("Failed to allocate leaf digest buffer")
+        }
+
+        // Copy values
+        let valuesPtr = valuesBuf.contents().bindMemory(to: UInt32.self, capacity: n)
+        for i in 0..<n {
+            valuesPtr[i] = i < values.count ? values[i].v : 0
+        }
+
+        // Hash leaves on GPU
+        guard let cmdBuf = commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
+        }
+        let enc = cmdBuf.makeComputeCommandEncoder()!
+        enc.setComputePipelineState(hashLeavesFunction)
+        enc.setBuffer(valuesBuf, offset: 0, index: 0)
+        enc.setBuffer(leafDigestBuf, offset: 0, index: 1)
+        enc.setBuffer(rcBuffer, offset: 0, index: 2)
+        var count = UInt32(n)
+        enc.setBytes(&count, length: 4, index: 3)
+        let tg = min(tuning.hashThreadgroupSize, Int(hashLeavesFunction.maxTotalThreadsPerThreadgroup))
+        enc.dispatchThreads(MTLSize(width: n, height: 1, depth: 1),
+                          threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+        enc.endEncoding()
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+        if let error = cmdBuf.error {
+            throw MSMError.gpuError(error.localizedDescription)
+        }
+
+        // Step 2: Allocate tree buffer (leaves + internal nodes)
+        let treeBytes = treeSize * nodeSize * stride
+        guard let treeBuf = device.makeBuffer(length: treeBytes, options: .storageModeShared) else {
+            throw MSMError.gpuError("Failed to allocate tree buffer")
+        }
+
+        // Copy leaf digests to tree buffer
+        let leafPtr = leafDigestBuf.contents().bindMemory(to: UInt32.self, capacity: n * nodeSize)
+        let treePtr = treeBuf.contents().bindMemory(to: UInt32.self, capacity: treeSize * nodeSize)
+        for i in 0..<(n * nodeSize) {
+            treePtr[i] = leafPtr[i]
+        }
+
+        // Step 3: Build internal nodes level-by-level on GPU
+        guard let buildCmdBuf = commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
+        }
+        let buildEnc = buildCmdBuf.makeComputeCommandEncoder()!
+
+        var currentLevelNodes = n
+        var levelStart = 0
+
+        while currentLevelNodes > 1 {
+            let pairs = currentLevelNodes / 2
+            let inputOffset = levelStart * nodeSize
+            let outputOffset = (levelStart + currentLevelNodes) * nodeSize
+
+            buildEnc.setComputePipelineState(hashPairsFunction)
+            buildEnc.setBuffer(treeBuf, offset: inputOffset * stride, index: 0)
+            buildEnc.setBuffer(treeBuf, offset: outputOffset * stride, index: 1)
+            buildEnc.setBuffer(rcBuffer, offset: 0, index: 2)
+            var pairCount = UInt32(pairs)
+            buildEnc.setBytes(&pairCount, length: 4, index: 3)
+            let tgSize = min(tuning.hashThreadgroupSize, Int(hashPairsFunction.maxTotalThreadsPerThreadgroup))
+            buildEnc.dispatchThreads(MTLSize(width: pairs, height: 1, depth: 1),
+                                    threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
+
+            levelStart += currentLevelNodes
+            currentLevelNodes = pairs
+
+            buildEnc.memoryBarrier(scope: .buffers)
+        }
+
+        buildEnc.endEncoding()
+        buildCmdBuf.commit()
+        buildCmdBuf.waitUntilCompleted()
+        if let error = buildCmdBuf.error {
+            throw MSMError.gpuError(error.localizedDescription)
+        }
+
+        // Read root from GPU
+        let rootOffset = (2 * n - 2) * nodeSize
+        let rootPtr = treeBuf.contents().bindMemory(to: UInt32.self, capacity: (2 * n - 1) * nodeSize)
+        var rootValues = [M31]()
+        rootValues.reserveCapacity(nodeSize)
+        for i in 0..<nodeSize {
+            rootValues.append(M31(v: rootPtr[rootOffset + i]))
+        }
+        let root = M31Digest(values: rootValues)
+
+        return (root, treeBuf, treeSize)
+    }
+
+    /// Generate Merkle proofs for multiple trees on GPU in a single dispatch.
+    ///
+    /// This uses the poseidon2_m31_merkle_proof_batch kernel to generate proofs
+    /// for all trees simultaneously. Each tree has numLevels * 8 M31 elements
+    /// in the proof output.
+    ///
+    /// - Parameters:
+    ///   - treeBuffers: Array of GPU buffers containing flattened trees (one per column)
+    ///   - numTrees: Number of trees (columns)
+    ///   - numLeaves: Number of leaves per tree
+    ///   - queryIndex: Query index (same for all trees)
+    /// - Returns: Array of proofs, one per tree, each containing sibling digests at each level
+    public func generateProofsGPU(
+        treeBuffers: [MTLBuffer],
+        numTrees: Int,
+        numLeaves: Int,
+        queryIndex: Int
+    ) throws -> [[M31Digest]] {
+        let nodeSize = 8
+        let numLevels = Int(log2(Double(numLeaves)))
+        let proofBytes = numTrees * numLevels * nodeSize * MemoryLayout<UInt32>.stride
+
+        // Allocate proof buffer
+        guard let proofBuf = device.makeBuffer(length: proofBytes, options: .storageModeShared) else {
+            throw MSMError.gpuError("Failed to allocate proof buffer")
+        }
+
+        // Concatenate all tree buffers into one
+        let treeNodeCount = 2 * numLeaves - 1
+        let totalTreeBytes = numTrees * treeNodeCount * nodeSize * MemoryLayout<UInt32>.stride
+        guard let combinedTreeBuf = device.makeBuffer(length: totalTreeBytes, options: .storageModeShared) else {
+            throw MSMError.gpuError("Failed to allocate combined tree buffer")
+        }
+
+        let destPtr = combinedTreeBuf.contents().bindMemory(to: UInt32.self, capacity: numTrees * treeNodeCount * nodeSize)
+        var offset = 0
+        for treeBuf in treeBuffers {
+            let srcPtr = treeBuf.contents().bindMemory(to: UInt32.self, capacity: treeNodeCount * nodeSize)
+            for i in 0..<(treeNodeCount * nodeSize) {
+                destPtr[offset + i] = srcPtr[i]
+            }
+            offset += treeNodeCount * nodeSize
+        }
+
+        // Query indices buffer (same query index for all trees)
+        let indicesSize = numTrees * MemoryLayout<UInt32>.stride
+        guard let indicesBuf = device.makeBuffer(length: indicesSize, options: .storageModeShared) else {
+            throw MSMError.gpuError("Failed to allocate indices buffer")
+        }
+        let indicesPtr = indicesBuf.contents().bindMemory(to: UInt32.self, capacity: numTrees)
+        for i in 0..<numTrees {
+            indicesPtr[i] = UInt32(queryIndex)
+        }
+
+        // Dispatch batch proof kernel
+        guard let cmdBuf = commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
+        }
+        let enc = cmdBuf.makeComputeCommandEncoder()!
+        enc.setComputePipelineState(proofBatchFunction)
+        enc.setBuffer(combinedTreeBuf, offset: 0, index: 0)
+        enc.setBuffer(proofBuf, offset: 0, index: 1)
+        var numTreesArg = UInt32(numTrees)
+        enc.setBytes(&numTreesArg, length: 4, index: 2)
+        var leavesPerTreeArg = UInt32(numLeaves)
+        enc.setBytes(&leavesPerTreeArg, length: 4, index: 3)
+        enc.setBuffer(indicesBuf, offset: 0, index: 4)
+        enc.dispatchThreads(MTLSize(width: numTrees, height: 1, depth: 1),
+                            threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1))
+        enc.endEncoding()
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+
+        // Read proofs back to CPU
+        let proofCapacity = numTrees * numLevels * nodeSize
+        let proofPtr = proofBuf.contents().bindMemory(to: UInt32.self, capacity: proofCapacity)
+        var proofs = [[M31Digest]]()
+        proofs.reserveCapacity(numTrees)
+
+        for treeIdx in 0..<numTrees {
+            var proof = [M31Digest]()
+            proof.reserveCapacity(numLevels)
+            for level in 0..<numLevels {
+                var values = [M31]()
+                values.reserveCapacity(nodeSize)
+                let proofOffset = (treeIdx * numLevels + level) * nodeSize
+                for i in 0..<nodeSize {
+                    values.append(M31(v: proofPtr[proofOffset + i]))
+                }
+                proof.append(M31Digest(values: values))
+            }
+            proofs.append(proof)
+        }
+
+        return proofs
     }
 }
 
