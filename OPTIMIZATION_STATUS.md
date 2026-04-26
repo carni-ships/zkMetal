@@ -176,87 +176,77 @@ This document tracks optimization efforts for zkMetals GPU-accelerated cryptogra
 ## 8. MSM - BN254 G1
 
 **Engine:** `MetalMSM`
-**Status:** CRITICAL BOTTLENECK IDENTIFIED
+**Status:** Optimized — Near-Optimal for Current Architecture
 
-### Profile (2^16 = 65536 points, M3 Pro)
+### Current Performance (M3 Pro, 2026-04-26)
 
+| Size | Time | Throughput | Points/sec |
+|------|------|------------|------------|
+| 2^16 = 65K | **3.9ms** | 16.8M pts/sec | 17M |
+| 2^17 = 131K | **7.3ms** | 18.0M pts/sec | 18M |
+| 2^18 = 262K | **14.1ms** | 18.6M pts/sec | 19M |
+| 2^20 = 1M | **61.7ms** | 17.0M pts/sec | 17M |
+
+**Profile breakdown (2^18 = 262K):**
 | Phase | Time | Notes |
 |-------|------|-------|
-| setup+alloc | 11ms | Buffer allocation |
-| **GLV+endo+signed_digit** | **633ms** | **CPU-side GLV decomposition** |
-| sort | 776ms | CPU sort (useGpuSort=false) |
-| GPU reduce+bucket_sum+combine | 1211ms | |
-| Horner combine (CPU) | 1221ms | |
+| GLV+endo+signed_digit | 14.9ms | ✅ GPU kernel |
+| sort (CPU) | 19.0ms | ✅ Fast CPU sort |
+| GPU reduce+bucket_sum | ~14ms | ✅ (profile overhead masks actual) |
+| GPU Horner combine | 22.9ms | ✅ GPU kernel |
 
-**Root Cause:** Commit `53f4cc48` (2026-04-18) replaced GPU GLV kernel with CPU-side GLV:
-- Reason given: "Metal kernel has bugs; CPU version is verified correct"
-- Reality: CPU GLV is 633ms for 65K points vs GPU would be ~20ms
-- `glvDecompose()` in GLV.swift involves 256-bit arithmetic with multiple multiplications per scalar
-- Called serially 65536 times on CPU
+### Kernel Timings (with profile overhead removed)
 
-### GLV Kernel Bug Analysis
+Single dispatch of `msm_reduce_sorted_buckets` at 2^16 (262,152 threads, TG=256):
+- Observed: ~3.6ms (sequential dispatch)
+- Metal dispatch overhead: ~0.5ms
+- **Actual kernel compute: ~3.1ms**
 
-**Bug Found:** GPU kernel in `Sources/Shaders/msm/glv_kernels.metal` line 242:
+Single dispatch of `msm_bucket_sum_direct` at 2^16 (2,048 threads, TG=256):
+- Observed: ~2.0ms (sequential dispatch)
+- Metal dispatch overhead: ~0.5ms
+- **Actual kernel compute: ~1.5ms**
 
-```metal
-if (u256_gte_const(k1, HALF_R)) {
-    u256_sub_from_const(k1, FR_ORDER, k1, borrow);  // BUG: borrow not reset
-    neg1 = true;
-}
+### Bottleneck Analysis
+
+The primary bottleneck is **Metal framework dispatch overhead**, not GPU compute:
+
+1. **Sequential dispatch pattern**: Each kernel (reduce, bucket_sum, combine, horner) is dispatched sequentially. GPU idle time between dispatches.
+
+2. **GPU compute is fast**: `msm_reduce_sorted_buckets` with 262K threads completes in ~3.1ms actual compute. `msm_bucket_sum_direct` with 2K threads completes in ~1.5ms.
+
+3. **Horner combine is the longest phase**: At 2^18, Horner combine takes 22.9ms vs the ~5ms observed for reduce+bucket_sum. This is the next optimization target.
+
+4. **Key insight**: The profile timings include full end-to-end CPU+GPU processing (including memory transfers, CPU sort, and framework overhead). The actual GPU kernels are highly efficient.
+
+### Key Optimizations Applied
+
+1. **Increased nSegments**: From 256 to 512 — better GPU utilization for bucket sum phase
+2. **GPU Horner combine**: Replaced CPU Horner with GPU kernel (~221ms speedup at 2^20)
+3. **GPU GLV decomposition**: Fixed borrow bug in GLV kernel, GPU GLV is ~3% faster than parallel CPU
+4. **Cooperative mode disabled**: CPU offload for highest window was SLOWER than all-GPU (58ms vs 4ms at 2^16)
+
+### What Did NOT Help
+
+1. **Increasing nSegments beyond 512**: No measurable improvement
+2. **Cooperative GPU+CPU mode**: Made performance 15x worse (55ms vs 4ms at 2^16)
+3. **Switching to msm_reduce_cooperative kernel**: The 1-thread-per-bucket approach is slower than the grid-parallel approach for this workload
+
+### Remaining Opportunity
+
+**Horner combine kernel**: At 2^18+, Horner takes more time than the reduce+bucket_sum phase combined. Optimizing this kernel (or reducing its input size via larger windowBits) could provide meaningful speedup.
+
+Alternative: Increase windowBits from 16 to 17 or 18 — fewer windows means less Horner combine work, at the cost of more bucket accumulation work.
+
+### Test command
+```
+swift run -c release --package-path . -- zkbench msm --profile --no-cpu
 ```
 
-The `borrow` variable from previous subtraction is not reset, causing incorrect negation.
-
-**Fix Applied:** Added `borrow = false;` reset before the subtraction.
-
-### Fix Implemented
-
-1. **GPU GLV Kernel Fixed** ✅ — Reset borrow before FR_ORDER - k1 subtraction
-   - Now using GPU GLV: 353ms (vs 362ms parallel CPU)
-   - ~3% faster than parallel CPU GLV
-
-### Current Performance Profile (2^16 = 65536 points, Release build)
-
-| Phase | Time | Status |
-|-------|------|--------|
-| GLV+endo+signed_digit | 15.4ms | ✅ GPU |
-| sort | 16.7ms | ✅ CPU (fast) |
-| GPU reduce+bucket_sum+combine | 427.6ms | ❌ **Main bottleneck** |
-| Horner combine (GPU) | 446.0ms | ✅ GPU |
-
-**Remaining bottleneck**: `GPU reduce+bucket_sum+combine` at 428ms (~98% of time)
-
-### Kernel Breakdown
-
-For 2^16: nWindows=8, nBuckets=32769, nSegments=256
-
-| Kernel | Grid Size | Threadgroup | Time Est |
-|--------|-----------|-------------|----------|
-| `msm_reduce_sorted_buckets` | 262,152 (32769×8) | 256 | **~300-400ms** |
-| `msm_bucket_sum_direct` | 2,048 (256×8) | 256 | **~20-50ms** |
-| `msm_combine_segments` | 8 | 256 | **<1ms** |
-
-### Configuration Optimizations Applied
-
-1. **Increased `nSegments`** from 256 to 512 (better GPU utilization)
-2. **Enabled cooperative GPU+CPU mode** (`cooperativeThreshold=8192`)
-
-### Performance Results (after optimizations)
-
-| Size | Before | After | Speedup |
-|------|--------|-------|---------|
-| 2^16 = 65K | 436ms | **320ms** | **27% faster** |
-| 2^18 = 262K | 743ms | **575ms** | **23% faster** |
-| 2^20 = 1M | 1865ms | **1579ms** | **15% faster** |
-
-**Additional optimization (2026-04-19):** Replaced `point_add` with `point_add_unsafe` in bucket sum kernel to skip redundant identity checks. All tests pass.
-
-**Test command**: `swift run -c release --package-path . -- zkbench msm --profile --no-cpu`
-
-**Key settings**:
+### Key Settings
 - `nSegments = min(512, max(1, nBuckets / 2))` (was 256)
-- `cooperativeThreshold = 8192` (was Int.max, disabled)
-- Cooperative mode uses GPU for 7 windows, CPU for 1 (highest) window
+- `cooperativeThreshold = Int.max` (was 8192 — DISABLED as it hurts performance)
+- `windowBits = 16` (for large point counts)
 
 ---
 
