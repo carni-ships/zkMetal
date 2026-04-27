@@ -9,4 +9,11 @@ categories = ["cryptography"]
 keywords = ["zk", "metal", "apple-silicon", "cryptography", "neon"]
 
 [dependencies]
-zkmetal-sys = { path = "../zkmetal-sys" }
+zkmetal-sys = { path = "../zkmetal-sys", features = ["gpu", "neon"] }
+
+[features]
+default = []
+# Enable GPU acceleration (Metal GPU NTT, MSM, Poseidon2, Keccak, FRI, Pairing).
+gpu = ["zkmetal-sys/gpu"]
+# Enable CPU acceleration (ARM NEON NTT, field arithmetic, MSM for many curves).
+neon = ["zkmetal-sys/neon"]

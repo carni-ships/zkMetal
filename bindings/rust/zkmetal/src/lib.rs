@@ -23,3 +23,21 @@ pub mod hash;
 pub mod pairing;
 
 pub use zkmetal_sys;
+
+// ============================================================================
+// Error types (from zkmetal-sys)
+// ============================================================================
+
+pub use zkmetal_sys::{Result, ZkMetalError};
+
+/// Map a C status code to a `Result`.
+pub(crate) fn check_status(status: i32) -> Result<()> {
+    match status {
+        0 => Ok(()),
+        -1 => Err(ZkMetalError::NoGpu),
+        -2 => Err(ZkMetalError::InvalidInput),
+        -3 => Err(ZkMetalError::GpuError),
+        -4 => Err(ZkMetalError::AllocFailed),
+        _ => Err(ZkMetalError::Unknown),
+    }
+}

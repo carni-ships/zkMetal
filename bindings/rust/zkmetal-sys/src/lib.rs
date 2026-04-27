@@ -1,8 +1,14 @@
-//! Raw FFI bindings to the NeonFieldOps C library.
+//! Raw FFI bindings to the NeonFieldOps C library and zkMetal GPU engine.
 //!
-//! This crate provides unsafe `extern "C"` function declarations matching
-//! `Sources/NeonFieldOps/include/NeonFieldOps.h`. All functions require
-//! `target_arch = "aarch64"` (Apple Silicon / ARM64).
+//! This crate provides unsafe `extern "C"` function declarations matching:
+//! - `Sources/NeonFieldOps/include/NeonFieldOps.h` -- ARM NEON CPU kernels (field arithmetic, NTT, MSM)
+//! - `Sources/zkMetal-ffi/include/zkmetal.h` -- Metal GPU engine API (MSM, NTT, Poseidon2, Keccak, FRI, Pairing)
+//!
+//! All functions require `target_arch = "aarch64"` (Apple Silicon / ARM64).
+//!
+//! ## Features
+//!
+//! - `gpu` (default) -- Metal GPU kernels via `zkmetal.h` (MSM, NTT, Poseidon2, Keccak, FRI, Pairing)
 //!
 //! Field elements are represented as arrays of `u64` limbs in little-endian
 //! Montgomery form unless otherwise noted. Scalars for curve operations
@@ -12,6 +18,62 @@
 #![allow(non_camel_case_types)]
 
 use core::ffi::c_int;
+
+// ============================================================================
+// Error types
+// ============================================================================
+
+/// Error codes returned by zkMetal C FFI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i32)]
+pub enum ZkMetalError {
+    /// No Metal GPU available on this system.
+    NoGpu = -1,
+    /// Invalid input (e.g., zero points, bad size).
+    InvalidInput = -2,
+    /// GPU execution error.
+    GpuError = -3,
+    /// Memory allocation failed.
+    AllocFailed = -4,
+    /// Unknown error code from C FFI.
+    Unknown = -99,
+}
+
+/// Result type for zkMetal operations.
+pub type Result<T> = core::result::Result<T, ZkMetalError>;
+
+/// Map a C status code to a Rust Result.
+#[inline]
+pub(crate) fn check_status(status: i32) -> Result<()> {
+    match status {
+        0 => Ok(()),
+        -1 => Err(ZkMetalError::NoGpu),
+        -2 => Err(ZkMetalError::InvalidInput),
+        -3 => Err(ZkMetalError::GpuError),
+        -4 => Err(ZkMetalError::AllocFailed),
+        _ => Err(ZkMetalError::Unknown),
+    }
+}
+
+// =============================================================================
+// GPU NTT FFI (zkmetal.h, requires zkMetal C library linking)
+// =============================================================================
+
+#[cfg(feature = "gpu")]
+extern "C" {
+    // -- Engine lifecycle --
+    pub fn zkmetal_ntt_engine_create(out: *mut *mut std::ffi::c_void) -> i32;
+    pub fn zkmetal_ntt_engine_destroy(engine: *mut std::ffi::c_void);
+
+    // -- NTT --
+    pub fn zkmetal_bn254_ntt(engine: *mut std::ffi::c_void, data: *mut u8, log_n: u32) -> i32;
+    pub fn zkmetal_bn254_intt(engine: *mut std::ffi::c_void, data: *mut u8, log_n: u32) -> i32;
+    pub fn zkmetal_bn254_ntt_auto(data: *mut u8, log_n: u32) -> i32;
+    pub fn zkmetal_bn254_intt_auto(data: *mut u8, log_n: u32) -> i32;
+
+    // -- Utility --
+    pub fn zkmetal_gpu_available() -> i32;
+}
 
 // =============================================================================
 // BabyBear NTT (p = 0x78000001, 32-bit field)
@@ -61,6 +123,8 @@ extern "C" {
 extern "C" {
     pub fn bn254_fr_ntt(data: *mut u64, logN: c_int);
     pub fn bn254_fr_intt(data: *mut u64, logN: c_int);
+    pub fn bn254_fr_ntt_batch(data: *const *mut u64, logN: c_int, batch_size: c_int);
+    pub fn bn254_fr_intt_batch(data: *const *mut u64, logN: c_int, batch_size: c_int);
 }
 
 // =============================================================================

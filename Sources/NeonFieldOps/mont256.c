@@ -602,6 +602,156 @@ void bn254_fr_intt(uint64_t *data, int logN) {
 }
 
 // ============================================================
+// Batch NTT for BN254 Fr (LatticeVDF integration)
+// ============================================================
+
+// Internal helper: DIT stage for batch processing (same logic as ntt_dit_stage_serial)
+// but operates on a single transform buffer.
+static void ntt_dit_stage_single(uint64_t *data, const uint64_t *tw,
+                                 int halfBlock, int blockSize, int nBlocks, int twOffset)
+{
+    for (int bk = 0; bk < nBlocks; bk++) {
+        int base = bk * blockSize;
+        // j==0: twiddle==1, skip Montgomery mul
+        {
+            uint64_t *u = &data[base * 4];
+            uint64_t *vp = &data[(base + halfBlock) * 4];
+            uint64_t sum[4], diff[4];
+            mont_add_4limb(u, vp, BN254_FR_P, sum);
+            mont_sub_4limb(u, vp, BN254_FR_P, diff);
+            u[0] = sum[0]; u[1] = sum[1]; u[2] = sum[2]; u[3] = sum[3];
+            vp[0] = diff[0]; vp[1] = diff[1]; vp[2] = diff[2]; vp[3] = diff[3];
+        }
+        for (int j = 1; j < halfBlock; j++) {
+            uint64_t *u = &data[(base + j) * 4];
+            uint64_t *vp = &data[(base + j + halfBlock) * 4];
+            const uint64_t *twj = &tw[(twOffset + j) * 4];
+            uint64_t v[4];
+            mont_mul_4limb(twj, vp, BN254_FR_P, BN254_FR_INV, v);
+            uint64_t sum[4], diff[4];
+            mont_add_4limb(u, v, BN254_FR_P, sum);
+            mont_sub_4limb(u, v, BN254_FR_P, diff);
+            u[0] = sum[0]; u[1] = sum[1]; u[2] = sum[2]; u[3] = sum[3];
+            vp[0] = diff[0]; vp[1] = diff[1]; vp[2] = diff[2]; vp[3] = diff[3];
+        }
+    }
+}
+
+// Internal helper: DIF stage for batch INTT processing (same logic as intt_dif_stage_serial)
+static void intt_dif_stage_single(uint64_t *data, const uint64_t *tw,
+                                  int halfBlock, int blockSize, int nBlocks, int twOffset)
+{
+    for (int bk = 0; bk < nBlocks; bk++) {
+        int base = bk * blockSize;
+        // j==0: twiddle==1, skip Montgomery mul
+        {
+            uint64_t *ap = &data[base * 4];
+            uint64_t *bp = &data[(base + halfBlock) * 4];
+            uint64_t a[4], b[4];
+            a[0] = ap[0]; a[1] = ap[1]; a[2] = ap[2]; a[3] = ap[3];
+            b[0] = bp[0]; b[1] = bp[1]; b[2] = bp[2]; b[3] = bp[3];
+            uint64_t sum[4], diff[4];
+            mont_add_4limb(a, b, BN254_FR_P, sum);
+            mont_sub_4limb(a, b, BN254_FR_P, diff);
+            ap[0] = sum[0]; ap[1] = sum[1]; ap[2] = sum[2]; ap[3] = sum[3];
+            bp[0] = diff[0]; bp[1] = diff[1]; bp[2] = diff[2]; bp[3] = diff[3];
+        }
+        for (int j = 1; j < halfBlock; j++) {
+            uint64_t *ap = &data[(base + j) * 4];
+            uint64_t *bp = &data[(base + j + halfBlock) * 4];
+            const uint64_t *twj = &tw[(twOffset + j) * 4];
+            uint64_t a[4], b[4];
+            a[0] = ap[0]; a[1] = ap[1]; a[2] = ap[2]; a[3] = ap[3];
+            b[0] = bp[0]; b[1] = bp[1]; b[2] = bp[2]; b[3] = bp[3];
+            uint64_t sum[4], diff[4], prod[4];
+            mont_add_4limb(a, b, BN254_FR_P, sum);
+            mont_sub_4limb(a, b, BN254_FR_P, diff);
+            mont_mul_4limb(diff, twj, BN254_FR_P, BN254_FR_INV, prod);
+            ap[0] = sum[0]; ap[1] = sum[1]; ap[2] = sum[2]; ap[3] = sum[3];
+            bp[0] = prod[0]; bp[1] = prod[1]; bp[2] = prod[2]; bp[3] = prod[3];
+        }
+    }
+}
+
+/// Batch forward NTT for BN254 Fr field.
+/// Processes multiple transforms efficiently with shared twiddle setup.
+/// @param data Array of pointers to transform buffers. Each buffer is n * 4 uint64_t values.
+/// @param logN Log2 of the transform size (1..28).
+/// @param batch_size Number of transforms to process.
+void bn254_fr_ntt_batch(uint64_t **data, int logN, int batch_size) {
+    if (logN <= 0 || batch_size <= 0) return;
+    int n = 1 << logN;
+
+    // Setup twiddles once for the entire batch
+    fr_ensure_twiddles(logN);
+    const uint64_t *tw = fr_cached[logN].fwd;
+
+    // Process each transform sequentially in-place
+    for (int batch = 0; batch < batch_size; batch++) {
+        uint64_t *buf = data[batch];
+
+        bit_reverse_permute256(buf, logN);
+
+        for (int s = 0; s < logN; s++) {
+            int halfBlock = 1 << s;
+            int blockSize = halfBlock << 1;
+            int nBlocks = n / blockSize;
+            int twOffset = halfBlock - 1;
+
+            // For batch, use serial stages to avoid thread overhead
+            ntt_dit_stage_single(buf, tw, halfBlock, blockSize, nBlocks, twOffset);
+        }
+    }
+}
+
+/// Batch inverse NTT for BN254 Fr field.
+/// Processes multiple transforms efficiently with shared twiddle setup.
+/// @param data Array of pointers to transform buffers. Each buffer is n * 4 uint64_t values.
+/// @param logN Log2 of the transform size (1..28).
+/// @param batch_size Number of transforms to process.
+void bn254_fr_intt_batch(uint64_t **data, int logN, int batch_size) {
+    if (logN <= 0 || batch_size <= 0) return;
+    int n = 1 << logN;
+
+    // Setup twiddles once for the entire batch
+    fr_ensure_twiddles(logN);
+    const uint64_t *tw = fr_cached[logN].inv;
+
+    // Pre-compute 1/n scaling factor once for the batch
+    uint64_t n_mont[4];
+    uint64_t n_plain[4] = {(uint64_t)n, 0, 0, 0};
+    static const uint64_t BN254_FR_R2[4] = {
+        0x1bb8e645ae216da7ULL, 0x53fe3ab1e35c59e3ULL,
+        0x8c49833d53bb8085ULL, 0x0216d0b17f4e44a5ULL
+    };
+    mont_mul_4limb(n_plain, BN254_FR_R2, BN254_FR_P, BN254_FR_INV, n_mont);
+
+    uint64_t n_inv[4];
+    fr_inv(n_mont, n_inv);
+
+    // Process each transform sequentially in-place
+    for (int batch = 0; batch < batch_size; batch++) {
+        uint64_t *buf = data[batch];
+
+        // DIF stages (top-down)
+        for (int si = 0; si < logN; si++) {
+            int s = logN - 1 - si;
+            int halfBlock = 1 << s;
+            int blockSize = halfBlock << 1;
+            int nBlocks = n / blockSize;
+            int twOffset = halfBlock - 1;
+
+            intt_dif_stage_single(buf, tw, halfBlock, blockSize, nBlocks, twOffset);
+        }
+
+        bit_reverse_permute256(buf, logN);
+
+        // Scale by 1/n
+        bn254_fr_batch_mul_scalar(buf, n_inv, buf, n);
+    }
+}
+
+// ============================================================
 // Exported C wrapper for benchmarking (matches mont_mul_asm signature)
 // ============================================================
 void mont_mul_c(uint64_t *result, const uint64_t *a, const uint64_t *b) {

@@ -2,7 +2,7 @@
 name = "zkmetal-sys"
 version = "0.1.0"
 edition = "2021"
-description = "Raw FFI bindings to NeonFieldOps: Metal-accelerated ZK cryptographic primitives for Apple Silicon"
+description = "Raw FFI bindings to NeonFieldOps and zkMetal GPU engine"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/Carbearnara/zkMetal"
 categories = ["cryptography", "external-ffi-bindings"]
@@ -13,3 +13,7 @@ cc = "1"
 
 [features]
 default = []
+# Link against the zkMetal C library (zkMetal-ffi) for GPU engine API (MSM, NTT, Poseidon2, Keccak, FRI, Pairing).
+gpu = []
+# Link against NeonFieldOps for CPU-accelerated field arithmetic and NTT.
+neon = []

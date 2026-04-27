@@ -36,6 +36,20 @@ void bn254_fr_ntt(uint64_t *data, int logN);
 /// DIF + bit-reversal + 1/n scaling.
 void bn254_fr_intt(uint64_t *data, int logN);
 
+/// Batch forward NTT for BN254 Fr field (LatticeVDF integration).
+/// Processes multiple transforms efficiently with shared twiddle setup.
+/// @param data Array of pointers to transform buffers. Each buffer is n * 4 uint64_t values.
+/// @param logN Log2 of the transform size (1..28).
+/// @param batch_size Number of transforms to process.
+void bn254_fr_ntt_batch(uint64_t **data, int logN, int batch_size);
+
+/// Batch inverse NTT for BN254 Fr field (LatticeVDF integration).
+/// Processes multiple transforms efficiently with shared twiddle setup.
+/// @param data Array of pointers to transform buffers. Each buffer is n * 4 uint64_t values.
+/// @param logN Log2 of the transform size (1..28).
+/// @param batch_size Number of transforms to process.
+void bn254_fr_intt_batch(uint64_t **data, int logN, int batch_size);
+
 /// BN254 G1 Pippenger MSM using optimized C field arithmetic.
 /// Multi-threaded windows, mixed affine addition, batch-to-affine via Montgomery's trick.
 /// @param points  n affine points as n×8 uint64_t (x[4], y[4] per point, Montgomery form).
