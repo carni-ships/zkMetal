@@ -174,24 +174,21 @@ public class UnivariateSumcheckEngine {
         let g1 = pointFromAffine(kzg.srs[0])
         let sMr = frSub(srsSecret, r)
 
-        // Verify f opening: C == [eval]*G + [sMr]*witness
+        // Verify f opening: C_f == [f(r)]*G + [s-r]*pi_f
         guard verifyKZGOpening(commitment: fCommitment, eval: proof.fEval,
                                witness: proof.fOpeningProof, g1: g1, sMr: sMr) else {
-            print("    f KZG verify FAILED")
             return false
         }
 
         // Verify q opening
         guard verifyKZGOpening(commitment: proof.qCommitment, eval: proof.qEval,
                                witness: proof.qOpeningProof, g1: g1, sMr: sMr) else {
-            print("    q KZG verify FAILED")
             return false
         }
 
         // Verify p opening
         guard verifyKZGOpening(commitment: proof.pCommitment, eval: proof.pEval,
                                witness: proof.pOpeningProof, g1: g1, sMr: sMr) else {
-            print("    p KZG verify FAILED")
             return false
         }
 
@@ -297,22 +294,17 @@ public class UnivariateSumcheckEngine {
 
     // MARK: - Helpers
 
-    /// Verify a single KZG opening: C == [eval]*G + [sMr]*witness
+    /// Verify a single KZG opening: C == [eval]*G + [s-r]*witness
     private func verifyKZGOpening(commitment: PointProjective, eval: Fr,
                                   witness: PointProjective,
                                   g1: PointProjective, sMr: Fr) -> Bool {
-        // Compute [eval] * G
         let yG = cPointScalarMul(g1, eval)
-        // Compute [sMr] * witness
         let szP = cPointScalarMul(witness, sMr)
-        // expected = [eval]*G + [sMr]*witness
         let expected = pointAdd(yG, szP)
-        // Compare commitment == expected
         let cA = batchToAffine([commitment])
         let eA = batchToAffine([expected])
-        let result = fpToInt(cA[0].x) == fpToInt(eA[0].x) &&
-                     fpToInt(cA[0].y) == fpToInt(eA[0].y)
-        return result
+        return fpToInt(cA[0].x) == fpToInt(eA[0].x) &&
+               fpToInt(cA[0].y) == fpToInt(eA[0].y)
     }
 
     /// Divide polynomial g by Z_H(X) = X^n - 1 with remainder.

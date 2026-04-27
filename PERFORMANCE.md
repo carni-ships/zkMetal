@@ -395,8 +395,43 @@ The GPU sort non-determinism is caused by **thread scheduling variability** in a
 1. A fully GPU-based sorting algorithm (like radix sort) that doesn't use cross-threadgroup atomics
 2. Using `memory_order_seq_cst` if Metal ever supports it on device address space
 
+## Univariate Sumcheck (Aurora/Marlin Style)
+
+Aurora-style single-round univariate sumcheck protocol using KZG commitments.
+Claims `sum_{x in H} f(x) = v` in one round via polynomial decomposition.
+
+**Implementation**: `Sources/zkMetal/Polynomial/UnivariateSumcheckEngine.swift`
+
+**Key fix (2026-04-27)**: Fixed BN254 scalar masking bug in C Pippenger MSM (`bn254_msm.c`).
+The `get_window_digit()` function was not masking bits beyond the 254-bit scalar width,
+causing out-of-bounds bucket access and corrupted KZG verification results.
+
+### Single Prove/Verify Benchmark (BN254 Fr, CPU)
+
+| logN | n | prove(ms) | verify(ms) | proof(bytes) |
+|------|---|-----------|------------|--------------|
+| 2^6 | 64 | 2.7 | 1.1 | 576 |
+| 2^8 | 256 | 5.5 | 1.1 | 576 |
+| 2^10 | 1024 | 11.9 | 1.1 | 576 |
+
+### Batch Prove/Verify Benchmark (BN254 Fr, CPU)
+
+| logN | k (polys) | prove(ms) | verify(ms) |
+|------|-----------|-----------|------------|
+| 2^8 | 2 | 10.3 | 1.1 |
+| 2^8 | 4 | 9.7 | 1.1 |
+| 2^8 | 8 | 10.6 | 1.1 |
+| 2^10 | 2 | 23.1 | 1.1 |
+| 2^10 | 4 | 24.3 | 1.2 |
+| 2^10 | 8 | 21.3 | 1.1 |
+
+**Proof size**: 576 bytes = 5 projective points (5 × 96 bytes) + 3 Fr scalars (3 × 32 bytes)
+
+**Note**: Prove time scales with polynomial degree (O(n) for degree 2n). Verify is constant time O(1).
+
 ## Version History
 
+- **2026-04-27**: Univariate sumcheck KZG verification fixed. Bug was in BN254 scalar masking in `bn254_msm.c:get_window_digit()` — bits beyond position 254 caused out-of-bounds bucket access. All tests now pass. Benchmark: 2^6 prove=2.7ms/verify=1.1ms, 2^8 prove=5.5ms/verify=1.1ms, 2^10 prove=11.9ms/verify=1.1ms.
 - **2026-04-24**: BLS12-377 MSM GPU hang fixed with CPU fallback. GPU kernel hangs at n>=4096 due to 12-limb field register pressure. Added 30s timeout with polling and CPU fallback for large sizes. Benchmark results: 2^8=1.4ms, 2^10=4.1ms, 2^12=10.4ms, 2^14=31.2ms, 2^16=110.1ms, 2^17=208.7ms, 2^18=421.6ms.
 - **2026-04-22**: GPU Additive FFT inverse bug fixed - butterfly requires brute-force solve for hi. Added GF(2^8) FFT benchmark section.
 - **2026-04-22**: GPU sort non-determinism clarified - NOT a correctness problem for Pippenger MSM. Root cause is thread scheduling variability, but algorithm only needs counts/offsets, not intra-bucket ordering. Radix sort attempted but slower than CPU sort.

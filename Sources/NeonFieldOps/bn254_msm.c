@@ -602,10 +602,6 @@ static void batch_to_affine(const uint64_t *proj, uint64_t *aff, int n) {
 // Scalar window extraction
 // ============================================================
 
-// BN254 scalar field: 254 bits
-// We mask out bits beyond 254 to avoid garbage in the top window
-static const int BN254_SCALAR_BITS = 254;
-
 static inline uint32_t extract_window(const uint32_t *scalar, int window_idx, int window_bits) {
     int bit_offset = window_idx * window_bits;
     int word_idx = bit_offset / 32;
@@ -615,20 +611,7 @@ static inline uint32_t extract_window(const uint32_t *scalar, int window_idx, in
     if (word_idx + 1 < 8)
         word |= ((uint64_t)scalar[word_idx + 1]) << 32;
 
-    uint32_t digit = (uint32_t)((word >> bit_in_word) & ((1u << window_bits) - 1));
-
-    // Mask out bits beyond the scalar width (254 bits)
-    // This prevents garbage in the top window from causing out-of-bounds bucket access
-    if (bit_offset + window_bits > BN254_SCALAR_BITS) {
-        int valid_bits = BN254_SCALAR_BITS - bit_offset;
-        if (valid_bits < 0) {
-            digit = 0;  // Entirely beyond scalar
-        } else if (valid_bits < window_bits) {
-            digit &= (1u << valid_bits) - 1;  // Mask to valid bits
-        }
-    }
-
-    return digit;
+    return (uint32_t)((word >> bit_in_word) & ((1u << window_bits) - 1));
 }
 
 // ============================================================
@@ -674,21 +657,17 @@ static void *window_worker(void *arg) {
         pt_set_id(buckets + b * 12);
 
     // Phase 1: Bucket accumulation (mixed affine addition)
-    // Optimized: use inline copy instead of memcpy
     for (int i = 0; i < nn; i++) {
         uint32_t digit = extract_window(task->scalars + i * 8, w, wb);
         if (digit != 0) {
-            uint64_t *bucket = buckets + digit * 12;
             uint64_t tmp[12];
-            pt_add_mixed(bucket, task->points + i * 8, tmp);
-            // Inline copy: 12 uint64_t = 96 bytes
-            bucket[0] = tmp[0]; bucket[1] = tmp[1]; bucket[2] = tmp[2]; bucket[3] = tmp[3];
-            bucket[4] = tmp[4]; bucket[5] = tmp[5]; bucket[6] = tmp[6]; bucket[7] = tmp[7];
-            bucket[8] = tmp[8]; bucket[9] = tmp[9]; bucket[10] = tmp[10]; bucket[11] = tmp[11];
+            pt_add_mixed(buckets + digit * 12, task->points + i * 8, tmp);
+            memcpy(buckets + digit * 12, tmp, 96);
         }
     }
 
     // Phase 2: Batch convert buckets to affine (Montgomery's trick)
+    // Only convert buckets 1..nb (skip bucket 0)
     uint64_t *bucket_aff = (uint64_t *)malloc((size_t)nb * 64);
     batch_to_affine(buckets + 12, bucket_aff, nb);
 
@@ -698,30 +677,21 @@ static void *window_worker(void *arg) {
     pt_set_id(window_sum);
 
     for (int j = nb - 1; j >= 0; j--) {
-        uint64_t *aff = bucket_aff + j * 8;
-        // Check if affine point is non-identity
-        if (!(aff[0] == 0 && aff[1] == 0 && aff[2] == 0 && aff[3] == 0 &&
-              aff[4] == 0 && aff[5] == 0 && aff[6] == 0 && aff[7] == 0)) {
+        // bucket_aff[j] corresponds to original bucket j+1
+        if (!(bucket_aff[j*8] == 0 && bucket_aff[j*8+1] == 0 &&
+              bucket_aff[j*8+2] == 0 && bucket_aff[j*8+3] == 0 &&
+              bucket_aff[j*8+4] == 0 && bucket_aff[j*8+5] == 0 &&
+              bucket_aff[j*8+6] == 0 && bucket_aff[j*8+7] == 0)) {
             uint64_t tmp[12];
-            pt_add_mixed(running, aff, tmp);
-            running[0] = tmp[0]; running[1] = tmp[1]; running[2] = tmp[2]; running[3] = tmp[3];
-            running[4] = tmp[4]; running[5] = tmp[5]; running[6] = tmp[6]; running[7] = tmp[7];
-            running[8] = tmp[8]; running[9] = tmp[9]; running[10] = tmp[10]; running[11] = tmp[11];
+            pt_add_mixed(running, bucket_aff + j * 8, tmp);
+            memcpy(running, tmp, 96);
         }
         uint64_t tmp[12];
         pt_add(window_sum, running, tmp);
-        window_sum[0] = tmp[0]; window_sum[1] = tmp[1]; window_sum[2] = tmp[2]; window_sum[3] = tmp[3];
-        window_sum[4] = tmp[4]; window_sum[5] = tmp[5]; window_sum[6] = tmp[6]; window_sum[7] = tmp[7];
-        window_sum[8] = tmp[8]; window_sum[9] = tmp[9]; window_sum[10] = tmp[10]; window_sum[11] = tmp[11];
+        memcpy(window_sum, tmp, 96);
     }
 
-    // Inline copy to result
-    task->result[0] = window_sum[0]; task->result[1] = window_sum[1];
-    task->result[2] = window_sum[2]; task->result[3] = window_sum[3];
-    task->result[4] = window_sum[4]; task->result[5] = window_sum[5];
-    task->result[6] = window_sum[6]; task->result[7] = window_sum[7];
-    task->result[8] = window_sum[8]; task->result[9] = window_sum[9];
-    task->result[10] = window_sum[10]; task->result[11] = window_sum[11];
+    memcpy(task->result, window_sum, 96);
     free(buckets);
     free(bucket_aff);
     return NULL;
@@ -949,9 +919,6 @@ static void pt_scalar_mul(const uint64_t p[12], const uint32_t scalar[8], uint64
     // Extract nibbles from scalar (MSB first): 256 bits = 64 nibbles
     // scalar is 8 x uint32_t, little-endian limbs
     // Nibble 63 is the highest 4 bits of scalar[7], nibble 0 is lowest 4 bits of scalar[0]
-    //
-    // IMPORTANT: BN254 scalars are only 254 bits. Nibble 63 contains bits 252-255,
-    // but only bits 252-253 are valid. Bits 254-255 are garbage and must be masked to 0.
     uint8_t nibbles[64];
     for (int i = 0; i < 8; i++) {
         uint32_t word = scalar[i];
@@ -960,8 +927,6 @@ static void pt_scalar_mul(const uint64_t p[12], const uint32_t scalar[8], uint64
             word >>= 4;
         }
     }
-    // Mask out garbage bits in nibble 63 (bits 252-255, only 252-253 are valid)
-    nibbles[63] &= 0x3;  // Only 2 bits (254 - 252 = 2) are valid in the last nibble
 
     // Find highest non-zero nibble
     int top = 63;
@@ -1207,24 +1172,15 @@ void bn254_pippenger_msm(
         });
 
     // Horner combination: result = Σ windowResults[w] × 2^(w × wb)
-    // Optimized: inline copies instead of memcpy
-    const uint64_t *last = tasks[num_windows - 1].result;
-    result[0] = last[0]; result[1] = last[1]; result[2] = last[2]; result[3] = last[3];
-    result[4] = last[4]; result[5] = last[5]; result[6] = last[6]; result[7] = last[7];
-    result[8] = last[8]; result[9] = last[9]; result[10] = last[10]; result[11] = last[11];
-
-    uint64_t tmp[12];
+    memcpy(result, tasks[num_windows - 1].result, 96);
     for (int w = num_windows - 2; w >= 0; w--) {
+        uint64_t tmp[12];
         for (int s = 0; s < wb; s++) {
             pt_dbl(result, tmp);
-            result[0] = tmp[0]; result[1] = tmp[1]; result[2] = tmp[2]; result[3] = tmp[3];
-            result[4] = tmp[4]; result[5] = tmp[5]; result[6] = tmp[6]; result[7] = tmp[7];
-            result[8] = tmp[8]; result[9] = tmp[9]; result[10] = tmp[10]; result[11] = tmp[11];
+            memcpy(result, tmp, 96);
         }
         pt_add(result, tasks[w].result, tmp);
-        result[0] = tmp[0]; result[1] = tmp[1]; result[2] = tmp[2]; result[3] = tmp[3];
-        result[4] = tmp[4]; result[5] = tmp[5]; result[6] = tmp[6]; result[7] = tmp[7];
-        result[8] = tmp[8]; result[9] = tmp[9]; result[10] = tmp[10]; result[11] = tmp[11];
+        memcpy(result, tmp, 96);
     }
 
     free(tasks);
@@ -1578,20 +1534,20 @@ void bn254_fr_vector_fold(const uint64_t *a, const uint64_t *b,
     }
 }
 
-void bn254_fr_batch_to_limbs(const uint64_t *fr, uint32_t *limbs, int n) {
-    // Convert n Fr elements to Pippenger scalar format (8 x u32 limbs, little-endian).
-    // The input fr[] is 4 x u64 per element (little-endian, standard form).
-    // Pippenger expects 8 x u32 limbs (little-endian), so we just unpack.
+void bn254_fr_batch_to_limbs(const uint64_t *mont, uint32_t *limbs, int n) {
+    // Convert n Fr elements from Montgomery form to integer uint32 limbs.
+    static const uint64_t ONE[4] = {1, 0, 0, 0};
     for (int i = 0; i < n; i++) {
-        const uint64_t *f = fr + i * 4;
-        limbs[i * 8 + 0] = (uint32_t)(f[0]);
-        limbs[i * 8 + 1] = (uint32_t)(f[0] >> 32);
-        limbs[i * 8 + 2] = (uint32_t)(f[1]);
-        limbs[i * 8 + 3] = (uint32_t)(f[1] >> 32);
-        limbs[i * 8 + 4] = (uint32_t)(f[2]);
-        limbs[i * 8 + 5] = (uint32_t)(f[2] >> 32);
-        limbs[i * 8 + 6] = (uint32_t)(f[3]);
-        limbs[i * 8 + 7] = (uint32_t)(f[3] >> 32);
+        uint64_t r[4];
+        fr_mul(mont + i * 4, ONE, r);
+        limbs[i * 8 + 0] = (uint32_t)(r[0]);
+        limbs[i * 8 + 1] = (uint32_t)(r[0] >> 32);
+        limbs[i * 8 + 2] = (uint32_t)(r[1]);
+        limbs[i * 8 + 3] = (uint32_t)(r[1] >> 32);
+        limbs[i * 8 + 4] = (uint32_t)(r[2]);
+        limbs[i * 8 + 5] = (uint32_t)(r[2] >> 32);
+        limbs[i * 8 + 6] = (uint32_t)(r[3]);
+        limbs[i * 8 + 7] = (uint32_t)(r[3] >> 32);
     }
 }
 
@@ -1692,10 +1648,9 @@ typedef struct {
 } SumcheckRoundChunk;
 
 // Fused round-poly + reduce worker: computes S(0), S(1), S(2) partial sums
-// AND writes reduced output to separate buffer (not in-place).
+// AND writes reduced output in a single pass (one memory traversal).
 typedef struct {
-    uint64_t *buf;        // read-only: original values for round poly
-    uint64_t *out;        // write-only: reduced output
+    uint64_t *buf;        // mutable: writes reduced values to first half
     const uint64_t *challenge;
     int halfN;
     uint64_t s0[4], s1[4], s2[4];
@@ -1707,25 +1662,23 @@ static void sumcheck_fused_worker(SumcheckFusedChunk *c) {
     uint64_t s1[4] = {0,0,0,0};
     uint64_t s2[4] = {0,0,0,0};
     uint64_t *buf = c->buf;
-    uint64_t *out = c->out;
     const uint64_t *ch = c->challenge;
     int halfN = c->halfN;
     for (int i = c->start; i < c->end; i++) {
-        const uint64_t *a = buf + i * 4;
-        const uint64_t *b = buf + (halfN + i) * 4;
-        uint64_t *outA = out + i * 4;
-        // Round poly: accumulate S(0), S(1), S(2) from ORIGINAL values
+        uint64_t *a = buf + i * 4;
+        uint64_t *b = buf + (halfN + i) * 4;
+        // Round poly: accumulate S(0), S(1), S(2)
         uint64_t tmp[4];
         fr_add(s0, a, tmp); memcpy(s0, tmp, 32);
         fr_add(s1, b, tmp); memcpy(s1, tmp, 32);
         uint64_t twoB[4]; fr_add(b, b, twoB);
         uint64_t f2[4]; fr_sub(twoB, a, f2);
         fr_add(s2, f2, tmp); memcpy(s2, tmp, 32);
-        // Reduce: write to separate output buffer (NOT in-place)
+        // Reduce: a = a + ch * (b - a)
         uint64_t diff[4]; fr_sub(b, a, diff);
         uint64_t rd[4]; fr_mul(ch, diff, rd);
         uint64_t res[4]; fr_add(a, rd, res);
-        memcpy(outA, res, 32);
+        memcpy(a, res, 32);
     }
     memcpy(c->s0, s0, 32);
     memcpy(c->s1, s1, 32);
@@ -1761,10 +1714,8 @@ void bn254_fr_full_sumcheck(const uint64_t *evals, int numVars,
                              const uint64_t *challenges,
                              uint64_t *rounds, uint64_t *finalEval) {
     int n = 1 << numVars;
-    uint64_t *bufA = (uint64_t *)malloc(n * 32);
-    uint64_t *bufB = (uint64_t *)malloc(n * 16); // only need halfN * 32 at any point
-    memcpy(bufA, evals, n * 32);
-    uint64_t *src = bufA, *dst = bufB;
+    uint64_t *buf = (uint64_t *)malloc(n * 32);
+    memcpy(buf, evals, n * 32);
 
     // Pre-allocate thread chunks once, reused across all rounds
     const int maxThreads = 8;
@@ -1776,14 +1727,13 @@ void bn254_fr_full_sumcheck(const uint64_t *evals, int numVars,
 
         const uint64_t *ch = challenges + round * 4;
         if (halfN >= 8192) {
-            // Parallel round-poly + reduce with separate output buffer
+            // Fused parallel round-poly + reduce (single memory traversal)
             int nT = 8;
             if (halfN / 1024 < nT) nT = halfN / 1024;
             if (nT < 1) nT = 1;
             int perT = (halfN + nT - 1) / nT;
             for (int t = 0; t < nT; t++) {
-                chunks[t].buf = src;
-                chunks[t].out = dst;
+                chunks[t].buf = buf;
                 chunks[t].challenge = ch;
                 chunks[t].halfN = halfN;
                 chunks[t].start = t * perT;
@@ -1794,7 +1744,7 @@ void bn254_fr_full_sumcheck(const uint64_t *evals, int numVars,
                 ^(size_t idx) {
                     sumcheck_fused_worker(&chunks[idx]);
                 });
-            // Accumulate partial sums from all threads
+            // Reduce partial sums from all threads
             memcpy(rout, chunks[0].s0, 32);
             memcpy(rout + 4, chunks[0].s1, 32);
             memcpy(rout + 8, chunks[0].s2, 32);
@@ -1805,38 +1755,34 @@ void bn254_fr_full_sumcheck(const uint64_t *evals, int numVars,
                 fr_add(rout + 8, chunks[t].s2, tmp); memcpy(rout + 8, tmp, 32);
             }
         } else {
-            // Single-threaded round-poly + reduce with separate output buffer
+            // Single-threaded fused round-poly + reduce
             uint64_t s0[4] = {0,0,0,0};
             uint64_t s1[4] = {0,0,0,0};
             uint64_t s2[4] = {0,0,0,0};
             for (int i = 0; i < halfN; i++) {
-                const uint64_t *a = src + i * 4;
-                const uint64_t *b = src + (halfN + i) * 4;
-                uint64_t *outA = dst + i * 4;
+                uint64_t *a = buf + i * 4;
+                uint64_t *b = buf + (halfN + i) * 4;
                 uint64_t tmp[4];
                 fr_add(s0, a, tmp); memcpy(s0, tmp, 32);
                 fr_add(s1, b, tmp); memcpy(s1, tmp, 32);
                 uint64_t twoB[4]; fr_add(b, b, twoB);
                 uint64_t f2[4]; fr_sub(twoB, a, f2);
                 fr_add(s2, f2, tmp); memcpy(s2, tmp, 32);
-                // Reduce to separate output buffer
+                // Reduce in same pass
                 uint64_t diff[4]; fr_sub(b, a, diff);
                 uint64_t rd[4]; fr_mul(ch, diff, rd);
                 uint64_t res[4]; fr_add(a, rd, res);
-                memcpy(outA, res, 32);
+                memcpy(a, res, 32);
             }
             memcpy(rout, s0, 32);
             memcpy(rout + 4, s1, 32);
             memcpy(rout + 8, s2, 32);
         }
-        // Swap buffers for next round
         n = halfN;
-        uint64_t *tmp = src; src = dst; dst = tmp;
     }
-    memcpy(finalEval, src, 32); // src now points to final reduced value
+    memcpy(finalEval, buf, 32);
     free(chunks);
-    free(bufA);
-    free(bufB);
+    free(buf);
 }
 
 // Evaluate multilinear extension at a point.
