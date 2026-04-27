@@ -62,12 +62,12 @@ pub(crate) fn check_status(status: i32) -> Result<()> {
 #[cfg(feature = "gpu")]
 extern "C" {
     // -- Engine lifecycle --
-    pub fn zkmetal_ntt_engine_create(out: *mut *mut std::ffi::c_void) -> i32;
-    pub fn zkmetal_ntt_engine_destroy(engine: *mut std::ffi::c_void);
+    pub fn zkmetal_ntt_engine_create(out: *mut *mut core::ffi::c_void) -> i32;
+    pub fn zkmetal_ntt_engine_destroy(engine: *mut core::ffi::c_void);
 
     // -- NTT --
-    pub fn zkmetal_bn254_ntt(engine: *mut std::ffi::c_void, data: *mut u8, log_n: u32) -> i32;
-    pub fn zkmetal_bn254_intt(engine: *mut std::ffi::c_void, data: *mut u8, log_n: u32) -> i32;
+    pub fn zkmetal_bn254_ntt(engine: *mut core::ffi::c_void, data: *mut u8, log_n: u32) -> i32;
+    pub fn zkmetal_bn254_intt(engine: *mut core::ffi::c_void, data: *mut u8, log_n: u32) -> i32;
     pub fn zkmetal_bn254_ntt_auto(data: *mut u8, log_n: u32) -> i32;
     pub fn zkmetal_bn254_intt_auto(data: *mut u8, log_n: u32) -> i32;
 
