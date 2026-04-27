@@ -310,8 +310,9 @@ public class UnivariateSumcheckEngine {
         // Compare commitment == expected
         let cA = batchToAffine([commitment])
         let eA = batchToAffine([expected])
-        return fpToInt(cA[0].x) == fpToInt(eA[0].x) &&
-               fpToInt(cA[0].y) == fpToInt(eA[0].y)
+        let result = fpToInt(cA[0].x) == fpToInt(eA[0].x) &&
+                     fpToInt(cA[0].y) == fpToInt(eA[0].y)
+        return result
     }
 
     /// Divide polynomial g by Z_H(X) = X^n - 1 with remainder.
