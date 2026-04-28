@@ -183,9 +183,10 @@ public class CircleSTARKVerifier {
                 // Use FOLDED index (like prover does), not original % half
                 let qi = currentQueryIndices[qIdx] % half
 
+                let twiddle: M31 = roundIdx == 0 ? domain[qi].y : domain[qi].x
                 let expectedFolded = circleFRIFold(
                     f0: val, f1: sibVal,
-                    twiddle: roundIdx == 0 ? domain[qi].y : domain[qi].x,
+                    twiddle: twiddle,
                     alpha: foldAlpha
                 )
 
@@ -228,9 +229,10 @@ public class CircleSTARKVerifier {
                 // Use FOLDED index (like prover does), not original % half
                 let qi = currentQueryIndices[qIdx] % half
 
+                let twiddle: M31 = roundIdx == 0 ? domain[qi].y : domain[qi].x
                 let expectedFolded = circleFRIFold(
                     f0: val, f1: sibVal,
-                    twiddle: roundIdx == 0 ? domain[qi].y : domain[qi].x,
+                    twiddle: twiddle,
                     alpha: foldAlpha
                 )
 

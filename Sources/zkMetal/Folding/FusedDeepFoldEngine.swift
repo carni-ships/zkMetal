@@ -356,27 +356,25 @@ public class FusedDeepFoldEngine {
         let enc = cmdBuf.makeComputeCommandEncoder()!
 
         if kernel === fusedBy4Kernel && numRounds == 3 {
-            // Kernel signature: sharedMem(0), az0(1), bz0(2), cz0(3),
-            // az1(4), bz1(5), cz1(6), az2(7), bz2(8), cz2(9),
-            // az3(9), bz3(10), cz3(11), r(12), u0(13), outputT(14)
+            // Kernel signature: sharedMem(threadgroup), az0(buffer 0), bz0(buffer 1),
+            // cz0(buffer 2), az1(buffer 3), bz1(buffer 4), cz1(buffer 5),
+            // az2(buffer 6), bz2(buffer 7), cz2(buffer 8), az3(buffer 9), bz3(buffer 10),
+            // cz3(buffer 11), r(buffer 12), u0(buffer 13), outputT(buffer 14)
             enc.setComputePipelineState(kernel)
-            enc.setBuffer(tgMem, offset: 0, index: 0)
-            enc.setBuffer(az0Buf, offset: 0, index: 1)
-            enc.setBuffer(bz0Buf, offset: 0, index: 2)
-            enc.setBuffer(cz0Buf, offset: 0, index: 3)
-            // Round 0: az1, bz1, cz1 (buffers 4, 5, 6)
-            enc.setBuffer(azBuffers[0], offset: 0, index: 4)
-            enc.setBuffer(bzBuffers[0], offset: 0, index: 5)
-            enc.setBuffer(czBuffers[0], offset: 0, index: 6)
-            // Round 1: az2, bz2, cz2 (buffers 7, 8, 9)
-            enc.setBuffer(azBuffers[1], offset: 0, index: 7)
-            enc.setBuffer(bzBuffers[1], offset: 0, index: 8)
-            enc.setBuffer(czBuffers[1], offset: 0, index: 9)
-            // Round 2: az3, bz3, cz3 (buffers 9, 10, 11)
+            // Threadgroup memory is set via setThreadgroupMemoryLength (NOT a buffer binding)
+            enc.setThreadgroupMemoryLength(threadgroupMemorySize, index: 0)
+            enc.setBuffer(az0Buf, offset: 0, index: 0)
+            enc.setBuffer(bz0Buf, offset: 0, index: 1)
+            enc.setBuffer(cz0Buf, offset: 0, index: 2)
+            enc.setBuffer(azBuffers[0], offset: 0, index: 3)
+            enc.setBuffer(bzBuffers[0], offset: 0, index: 4)
+            enc.setBuffer(czBuffers[0], offset: 0, index: 5)
+            enc.setBuffer(azBuffers[1], offset: 0, index: 6)
+            enc.setBuffer(bzBuffers[1], offset: 0, index: 7)
+            enc.setBuffer(czBuffers[1], offset: 0, index: 8)
             enc.setBuffer(azBuffers[2], offset: 0, index: 9)
             enc.setBuffer(bzBuffers[2], offset: 0, index: 10)
             enc.setBuffer(czBuffers[2], offset: 0, index: 11)
-            // r at 12, u0 at 13, outputT at 14
             enc.setBuffer(challengesBuf, offset: 0, index: 12)
             enc.setBuffer(u0Buf, offset: 0, index: 13)
             enc.setBuffer(outputT, offset: 0, index: 14)
