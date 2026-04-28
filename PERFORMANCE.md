@@ -445,6 +445,68 @@ let verifier = CircleSTARKVerifier(transcriptType: .keccak)
 - `Sources/zkMetal/CircleSTARK/CircleSTARKVerifier.swift` — Configurable transcript type
 - `Sources/zkMetal/CircleSTARK/CircleSTARKProver.swift` — Always uses Poseidon2
 
+## WHIR (Weighted Hash IOP for Reed-Solomon Proximity Testing)
+
+**WHIR** (Arnon, Chiesa, Fenzi, Yogev — eprint 2024/1586) is a modern proximity testing protocol that replaces FRI with a sumcheck + hashing approach.
+
+**Key advantages over FRI:**
+- ~2 bits/soundness per query vs FRI's ~1 bit
+- O(log² n) queries for 128-bit security vs O(λ log n)
+- Smaller proofs for the same security level
+
+**Implementation:** `Sources/zkMetal/WHIR/WHIREngine.swift`, `WHIRVerifier.swift`
+
+### Benchmark Results (2026-04-28, Apple M3 Pro)
+
+| Config | Size | Rounds | Prove | Verify | Proof Size |
+|--------|------|--------|-------|--------|------------|
+| q=4, r=4 | 2^10 | 3 | 3.1ms | 0.3ms | 15.9 KB |
+| q=2, r=4 | 2^10 | 3 | 4.0ms | 0.2ms | 8.3 KB |
+| q=4, r=4 | 2^14 | 5 | 19.5ms | 0.7ms | 31.1 KB |
+| q=2, r=4 | 2^14 | 5 | 18.7ms | 0.5ms | 16.0 KB |
+
+**Comparison to FRI:**
+| Protocol | Size | Prove | Proof Size |
+|----------|------|-------|------------|
+| WHIR (q=4,r=4) | 2^14 | 19.5ms | 31.1 KB |
+| FRI (GPU foldBy8) | 2^14 | 20.3ms | ~3.8 KB |
+
+Note: WHIR has larger proofs but better soundness per query (~2 bits vs ~1 bit for FRI).
+
+### Correctness Verification
+
+All WHIR variants verified:
+- **full verify** (with original evaluations): ✅ PASS
+- **succinct verify** (without evaluations): ✅ PASS
+- **blind verify** (succinct without domain size): ✅ PASS
+
+### Key Implementation Details
+
+1. **RAA Pattern**: Uses Randomness Aggregating Architecture for weight derivation — single transcript squeeze for seed, then PCG PRNG expansion for all weights.
+
+2. **Merkle Commitment**: CPU Poseidon2 for small trees (<4096 leaves), GPU Poseidon2 for large trees.
+
+3. **Folding**: C CIOS Montgomery arithmetic via `bn254_fr_whir_fold()`.
+
+### Bugs Fixed (2026-04-28)
+
+1. **Query index derivation**: Verifier used `frToInt(c)[0]` (Montgomery limb) instead of `frToUInt64(c)` (actual value) — fixed in both `verify()` and `verifyFull()`.
+
+2. **Weight derivation mismatch**: Verifier used individual `ts.squeeze()` calls while prover used RAA pattern — fixed by implementing RAA in verifier.
+
+### Files
+
+- `Sources/zkMetal/WHIR/WHIREngine.swift` — Prover
+- `Sources/zkMetal/WHIR/WHIRVerifier.swift` — Verifier
+- `Sources/zkMetal/WHIR/WHIRProof.swift` — Proof data structures
+- `Sources/zkbench/whir_bench.swift` — Benchmark
+
+### Run Benchmark
+
+```bash
+swift run zkbench whir
+```
+
 ## FusedDeepFold (Nova/Supernova Multi-Round Folding)
 
 ### Overview
@@ -666,6 +728,7 @@ causing out-of-bounds bucket access and corrupted KZG verification results.
 
 ## Version History
 
+- **2026-04-28**: WHIR verifier bug fixed. Two issues: (1) query index used `frToInt(c)[0]` instead of `frToUInt64(c)` — fixed in both verify paths; (2) weight derivation used individual `ts.squeeze()` while prover uses RAA pattern — fixed by implementing RAA in verifier. All WHIR variants now pass (full/succinct/blind). Benchmark: q=4,r=4 at 2^14 proves in 19.5ms, verifies in 0.7ms.
 - **2026-04-28**: Circle STARK now uses Poseidon2-M31-based `CircleSTARKPoseidon2Transcript` instead of Keccak-based `CircleSTARKTranscript`. New file: `Sources/zkMetal/Transcript/Poseidon2Transcript.swift`. Benchmarks show 3.34x speedup (265ms vs 886ms for 1000 absorb+squeeze operations). Both prover and verifier updated. All correctness tests pass (determinism, domain separation, round-trip). **Breaking change**: proofs not compatible with old Keccak transcript.
 - **2026-04-28**: GPU batch merkle bug fixed in `poseidon2_m31_hash_leaves`. Root cause: kernel used `gid` as position index instead of `gid % n`, causing incorrect results when batch-processing multiple trees. Added `poseidon2_m31_hash_leaves_batch` kernel with correct indexing. Updated prover to use `buildTreesBatchGPU()`. Circle FRI commit phase now ~30x faster at 2^20 (3.4ms vs 111ms with CPU merkle). All Circle STARK tests pass.
 - **2026-04-27**: Univariate sumcheck KZG verification fixed. Bug was in BN254 scalar masking in `bn254_msm.c:get_window_digit()` — bits beyond position 254 caused out-of-bounds bucket access. All tests now pass. Benchmark: 2^6 prove=2.7ms/verify=1.1ms, 2^8 prove=5.5ms/verify=1.1ms, 2^10 prove=11.9ms/verify=1.1ms.
