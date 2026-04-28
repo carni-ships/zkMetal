@@ -759,20 +759,22 @@ public class GPUMerkleTreeM31Engine {
         }
 
         // Copy leaf digests to tree buffer (leaves at start of each tree's section)
-        // Note: treeStart uses treeSize (full tree including internal nodes) but we copy n leaves
-        // to position treeStart, which is correct for level-order layout where leaves are first
+        // Note: leafDigestBuf has consecutive digests (kernel writes gid*8), but tree sections
+        // are spaced treeSize apart. We must copy with proper source index calculation.
         let leafPtr = leafDigestBuf.contents().bindMemory(to: UInt32.self, capacity: totalValues * nodeSize)
         let treePtr = treeBuf.contents().bindMemory(to: UInt32.self, capacity: numTrees * treeSize * nodeSize)
         for treeIdx in 0..<numTrees {
             // Each tree section is treeSize nodes (2n-1), but leaves are only n nodes at the start
             let treeStart = treeIdx * treeSize * nodeSize
-            let leafStart = treeIdx * n * nodeSize
             for i in 0..<(n * nodeSize) {
-                treePtr[treeStart + i] = leafPtr[leafStart + i]
+                // Source index is consecutive: treeIdx * n + i within leaves
+                let srcIdx = (treeIdx * n + i / nodeSize) * nodeSize + (i % nodeSize)
+                treePtr[treeStart + i] = leafPtr[srcIdx]
             }
         }
 
-        // Build internal nodes level-by-level using batch kernel
+        // Build internal nodes level-by-level using per-tree dispatch
+        // (hashPairsFunction works correctly; treeBatchFunction has issues)
         guard let buildCmdBuf = commandQueue.makeCommandBuffer() else {
             throw MSMError.noCommandBuffer
         }
@@ -783,33 +785,27 @@ public class GPUMerkleTreeM31Engine {
 
         while currentLevelNodes > 1 {
             let pairs = currentLevelNodes / 2
-            // Byte offsets within each tree's section
-            let inputOffsetBytes = levelStart * nodeSize * stride
-            let outputOffsetBytes = (levelStart + currentLevelNodes) * nodeSize * stride
+            // Process each tree's level separately using hashPairsFunction
+            for treeIdx in 0..<numTrees {
+                let treeBase = treeIdx * treeSize * nodeSize
+                let inputOffset = treeBase + levelStart * nodeSize
+                let outputOffset = treeBase + (levelStart + currentLevelNodes) * nodeSize
 
-            buildEnc.setComputePipelineState(treeBatchFunction)
-            // Kernel handles tree layout internally, buffer offset is 0
-            buildEnc.setBuffer(treeBuf, offset: 0, index: 0)
-            buildEnc.setBuffer(treeBuf, offset: 0, index: 1)
-            buildEnc.setBuffer(rcBuffer, offset: 0, index: 2)
-            var numTreesVal = UInt32(numTrees)
-            buildEnc.setBytes(&numTreesVal, length: 4, index: 3)
-            var digestsPerTreeVal = UInt32(currentLevelNodes)
-            buildEnc.setBytes(&digestsPerTreeVal, length: 4, index: 4)
-            var digestStrideVal = UInt32(treeSize * nodeSize)
-            buildEnc.setBytes(&digestStrideVal, length: 4, index: 5)
-            var inputOffsetVal = UInt32(inputOffsetBytes)
-            buildEnc.setBytes(&inputOffsetVal, length: 4, index: 6)
-            var outputOffsetVal = UInt32(outputOffsetBytes)
-            buildEnc.setBytes(&outputOffsetVal, length: 4, index: 7)
-            let tgSize = min(tuning.hashThreadgroupSize, Int(treeBatchFunction.maxTotalThreadsPerThreadgroup))
-            buildEnc.dispatchThreads(MTLSize(width: pairs * numTrees, height: 1, depth: 1),
-                                    threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
+                buildEnc.setComputePipelineState(hashPairsFunction)
+                buildEnc.setBuffer(treeBuf, offset: inputOffset * stride, index: 0)
+                buildEnc.setBuffer(treeBuf, offset: outputOffset * stride, index: 1)
+                buildEnc.setBuffer(rcBuffer, offset: 0, index: 2)
+                var pairCount = UInt32(pairs)
+                buildEnc.setBytes(&pairCount, length: 4, index: 3)
+                let tgSize = min(tuning.hashThreadgroupSize, Int(hashPairsFunction.maxTotalThreadsPerThreadgroup))
+                buildEnc.dispatchThreads(MTLSize(width: pairs, height: 1, depth: 1),
+                                        threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
+            }
+
+            buildEnc.memoryBarrier(scope: .buffers)
 
             levelStart += currentLevelNodes
             currentLevelNodes = pairs
-
-            buildEnc.memoryBarrier(scope: .buffers)
         }
 
         buildEnc.endEncoding()
