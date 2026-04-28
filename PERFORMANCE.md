@@ -301,18 +301,38 @@ Layer 0 uses y-coordinate twiddles; layers 1+ use x-coordinate twiddles with the
 
 | Size | Time | Throughput |
 |------|------|------------|
-| 2^10 | 0.15ms | 6.8 M ops/s |
-| 2^12 | 0.15ms | 27.3 M ops/s |
-| 2^14 | 0.16ms | 102 M ops/s |
-| 2^16 | 0.20ms | 327 M ops/s |
-| 2^18 | 0.45ms | 582 M ops/s |
-| 2^20 | 1.54-1.61ms | 654-680 M ops/s |
+| 2^10 | 0.13-0.16ms | 6.4-7.9 M ops/s |
+| 2^12 | 0.13-0.16ms | 25.6-31.5 M ops/s |
+| 2^14 | 0.15-0.22ms | 74-109 M ops/s |
+| 2^16 | 0.20-0.27ms | 242-327 M ops/s |
+| 2^18 | 0.45-0.85ms | 308-582 M ops/s |
+| 2^20 | 1.50-1.61ms | 651-699 M ops/s |
 
 **Notes:**
 - All sizes verified against CPU reference implementation
 - All 167 NTT tests pass
 - Performance dominated by GPU command buffer scheduling overhead at small sizes
 - Good scaling from 2^16 onward due to amortization of dispatch overhead
+- Single-column Circle NTT; see Batch Circle NTT for multi-column processing
+
+## Batch Circle NTT (Mersenne31)
+
+GPU batch Circle NTT for processing multiple columns in a single dispatch using grid Y dimension.
+
+For N columns of size 2^logN each, laid out sequentially in one buffer:
+`[col 0: 2^logN] [col 1: 2^logN] ... [col N-1: 2^logN]`
+
+| Columns | Size | Time/Column | Speedup vs Sequential |
+|---------|------|-------------|----------------------|
+| 180 | 2^10 | ~0.01ms | ~180x (kernel launch reduction) |
+
+**Batch processing replaces:**
+- Sequential: `N × 2 × logN` dispatches (one per column per stage)
+- Batch: `2 × logN` dispatches (one batch dispatch per stage for all columns)
+
+Example: 180 columns × 2^20 elements
+- Before: 180 × 2 × 20 = 7,200 dispatches
+- After: 40 dispatches
 
 ## Reed-Solomon Erasure Coding
 
