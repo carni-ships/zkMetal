@@ -107,26 +107,19 @@ public class WHIRVerifier {
             if roundOpenings.count != effectiveQ { return false }
 
             // Check 1: Merkle paths + fold consistency for each query
-            var merkleCheckEnabled = true
             for qi in 0..<effectiveQ {
                 let opening = roundOpenings[qi]
                 if opening.index != queryIndices[qi] { return false }
                 if opening.values.count != reductionFactor { return false }
 
                 // Verify Merkle paths
-                if merkleCheckEnabled {
-                    var merkleOk = true
-                    for k in 0..<reductionFactor {
-                        let origIdx = Int(opening.index) * reductionFactor + k
-                        if !verifyMerklePath(root: root, leaf: opening.values[k],
-                                              index: origIdx, leafCount: currentN,
-                                              path: opening.merklePaths[k]) {
-                            merkleOk = false
-                            break
-                        }
+                for k in 0..<reductionFactor {
+                    let origIdx = Int(opening.index) * reductionFactor + k
+                    if !verifyMerklePath(root: root, leaf: opening.values[k],
+                                          index: origIdx, leafCount: currentN,
+                                          path: opening.merklePaths[k]) {
+                        return false
                     }
-                    // If first query fails Merkle, skip remaining (GPU/CPU hash mismatch)
-                    if qi == 0 && !merkleOk { merkleCheckEnabled = false }
                 }
 
                 // Verify fold consistency: Horner evaluation
@@ -153,18 +146,31 @@ public class WHIRVerifier {
             guard round < proof.weightedHashClaims.count else { return false }
             let claim = proof.weightedHashClaims[round]
 
-            // Re-derive weights from transcript
+            // Re-derive weights from transcript using RAA pattern (same as prover)
             ts.absorbLabel("whir-weights-r\(round)")
+            let seedFr = ts.squeeze()
+            var seed: UInt64 = 0
+            withUnsafeBytes(of: seedFr) { ptr in
+                for i in 0..<min(8, ptr.count) {
+                    seed ^= UInt64(ptr[i]) << (i * 8)
+                }
+            }
+
+            // Expand seed to many weights via PCG PRNG (same as prover)
             var expectedWeights = [Fr]()
             expectedWeights.reserveCapacity(effectiveQ * reductionFactor)
             for _ in 0..<(effectiveQ * reductionFactor) {
-                expectedWeights.append(ts.squeeze())
+                seed = seed &* 6364136223846793005 &+ 1442695040888963407
+                expectedWeights.append(frFromInt(seed))
             }
 
             // Verify weights match
             if claim.weights.count != expectedWeights.count { return false }
             for i in 0..<claim.weights.count {
-                if frToInt(claim.weights[i]) != frToInt(expectedWeights[i]) { return false }
+                if frToInt(claim.weights[i]) != frToInt(expectedWeights[i]) {
+                    fputs("WHIR verify FAIL: round \(round), weight[\(i)] mismatch\n", stderr)
+                    return false
+                }
             }
 
             // Recompute weighted sum and verify
@@ -178,7 +184,12 @@ public class WHIRVerifier {
                     wIdx += 1
                 }
             }
-            if frToInt(recomputedSum) != frToInt(claim.claimedSum) { return false }
+            let recomputedInt = frToInt(recomputedSum)
+            let claimedInt = frToInt(claim.claimedSum)
+            if recomputedInt != claimedInt {
+                fputs("WHIR verify weighted hash FAIL: round \(round), recomputed=\(recomputedInt[0]) claimed=\(claimedInt[0])\n", stderr)
+                return false
+            }
 
             currentN = foldedN
         }
@@ -268,14 +279,25 @@ public class WHIRVerifier {
                 if frToInt(expectedFold) != frToInt(foldedVal) { return false }
             }
 
-            // Verify weighted hash claim
+            // Verify weighted hash claim using RAA pattern (same as prover)
             guard round < proof.weightedHashClaims.count else { return false }
             let claim = proof.weightedHashClaims[round]
 
             ts.absorbLabel("whir-weights-r\(round)")
+            // Derive seed from transcript (same as prover's deriveWeightsRAA)
+            let seedFr = ts.squeeze()
+            var seed: UInt64 = 0
+            withUnsafeBytes(of: seedFr) { ptr in
+                for i in 0..<min(8, ptr.count) {
+                    seed ^= UInt64(ptr[i]) << (i * 8)
+                }
+            }
+
+            // Expand seed to many weights via PCG PRNG
             var expectedWeights = [Fr]()
             for _ in 0..<(effectiveQ * reductionFactor) {
-                expectedWeights.append(ts.squeeze())
+                seed = seed &* 6364136223846793005 &+ 1442695040888963407
+                expectedWeights.append(frFromInt(seed))
             }
 
             var recomputedSum = Fr.zero
