@@ -344,10 +344,11 @@ public class CircleFRIEngine {
         while round < alphas.count {
             let roundsRemaining = alphas.count - round
 
-            // foldFused2 kernel has a structural pairing mismatch that cannot be fixed
-            // by changing getInv2x alone. The kernel's x-fold pairs f1[i] with f1[i+n/4]
-            // using inv_2x indexed by i, but this pairing is incompatible with the
-            // x-coordinate squaring-map transformation that the x-fold formula requires.
+            // DISABLED: foldFused2 kernel has a structural pairing mismatch.
+            // The kernel's x-fold pairs f1[i] with f1[i+n/4] but the x-fold formula
+            // is derived for pairing f1[i] with f1[i+n/2] (the squaring map pairing).
+            // These are fundamentally incompatible - the kernel needs a different formula
+            // or a different fusion strategy (e.g., fuse two x-folds instead).
             // Single-round dispatch path is correct and performs well.
             if false && roundsRemaining >= 2 && logN - round >= 2 {
                 // Use fused2 kernel: y-fold + x-fold in one dispatch
