@@ -293,6 +293,27 @@ The fold-by-8 kernel had threadgroup indexing issues causing incorrect results.
 | 2^18 | 13.36ms | 27.86ms |
 | 2^20 | 52.19ms | 108.53ms |
 
+## Circle NTT (Mersenne31)
+
+GPU Circle NTT over Mersenne31 field (p = 2^31 - 1). Circle group has full 2-adicity (order p+1 = 2^31), enabling radix-2 FFT without restrictions.
+
+Layer 0 uses y-coordinate twiddles; layers 1+ use x-coordinate twiddles with the squaring map.
+
+| Size | Time | Throughput |
+|------|------|------------|
+| 2^10 | 0.15ms | 6.8 M ops/s |
+| 2^12 | 0.15ms | 27.3 M ops/s |
+| 2^14 | 0.16ms | 102 M ops/s |
+| 2^16 | 0.20ms | 327 M ops/s |
+| 2^18 | 0.45ms | 582 M ops/s |
+| 2^20 | 1.54-1.61ms | 654-680 M ops/s |
+
+**Notes:**
+- All sizes verified against CPU reference implementation
+- All 167 NTT tests pass
+- Performance dominated by GPU command buffer scheduling overhead at small sizes
+- Good scaling from 2^16 onward due to amortization of dispatch overhead
+
 ## Reed-Solomon Erasure Coding
 
 ### NTT-Based RS (BabyBear)
