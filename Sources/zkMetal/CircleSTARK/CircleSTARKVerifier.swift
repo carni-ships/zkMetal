@@ -172,6 +172,7 @@ public class CircleSTARKVerifier {
         // Skip the query indices - they're already absorbed in the main flow
 
         var currentLogN = logN
+        var currentQueryIndices = proof.queryIndices  // Track folded indices like prover
         for (roundIdx, round) in proof.rounds.enumerated() {
             let half = (1 << currentLogN) / 2
 
@@ -179,7 +180,8 @@ public class CircleSTARKVerifier {
             let domain = circleCosetDomain(logN: currentLogN)
 
             for (qIdx, (val, sibVal, path)) in round.queryResponses.enumerated() {
-                let qi = proof.queryIndices[qIdx] % half
+                // Use FOLDED index (like prover does), not original % half
+                let qi = currentQueryIndices[qIdx] % half
 
                 let expectedFolded = circleFRIFold(
                     f0: val, f1: sibVal,
@@ -201,6 +203,8 @@ public class CircleSTARKVerifier {
             }
 
             t.absorbBytes(round.commitment)
+            // Fold indices for next round (like prover does)
+            currentQueryIndices = currentQueryIndices.map { $0 % max(half / 2, 1) }
             currentLogN -= 1
         }
     }
@@ -213,6 +217,7 @@ public class CircleSTARKVerifier {
         // Skip the query indices - they're already absorbed in the main flow
 
         var currentLogN = logN
+        var currentQueryIndices = proof.queryIndices  // Track folded indices like prover
         for (roundIdx, round) in proof.rounds.enumerated() {
             let half = (1 << currentLogN) / 2
 
@@ -220,7 +225,8 @@ public class CircleSTARKVerifier {
             let domain = circleCosetDomain(logN: currentLogN)
 
             for (qIdx, (val, sibVal, path)) in round.queryResponses.enumerated() {
-                let qi = proof.queryIndices[qIdx] % half
+                // Use FOLDED index (like prover does), not original % half
+                let qi = currentQueryIndices[qIdx] % half
 
                 let expectedFolded = circleFRIFold(
                     f0: val, f1: sibVal,
@@ -242,6 +248,8 @@ public class CircleSTARKVerifier {
             }
 
             t.absorbBytes(round.commitment)
+            // Fold indices for next round (like prover does)
+            currentQueryIndices = currentQueryIndices.map { $0 % max(half / 2, 1) }
             currentLogN -= 1
         }
     }

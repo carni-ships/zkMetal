@@ -235,7 +235,19 @@ public class FusedDeepFoldEngine {
         // Validate inputs
         precondition(n == bz0.count && n == cz0.count, "Base vectors must have same length")
         precondition(instances.count == challenges.count, "instances count must match challenges count")
-        precondition(instances.count == fusedRounds, "instances count must equal fusedRounds")
+
+        // NOTE: by4 kernel processes 3 rounds, by8 processes 7 rounds
+        // Validate based on actual kernel capability
+        let requiredInstances: Int
+        switch fusedRounds {
+        case 3, 4:
+            requiredInstances = 3
+        case 7, 8:
+            requiredInstances = 7
+        default:
+            throw FusedFoldError.invalidFusedRounds("Only 3, 4, 7, or 8 rounds supported, got \(fusedRounds)")
+        }
+        precondition(instances.count == requiredInstances, "instances count must be \(requiredInstances) for fusedRounds=\(fusedRounds) (kernel limitation)")
 
         // Validate each instance has same length
         for (i, inst) in instances.enumerated() {

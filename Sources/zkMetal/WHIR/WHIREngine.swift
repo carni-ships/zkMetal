@@ -105,7 +105,7 @@ public class WHIRProver {
         // Fold until <= 16 elements remain
         let rounds = max(1, (logN - 4) / logReduction)
 
-        let ts = transcript ?? Transcript(label: "whir-v2")
+        var ts = transcript ?? Transcript(label: "whir-v2")
 
         // Phase 1: Build all layers (commit -> derive beta -> fold)
         var layers: [WHIRRoundCommitment] = []
@@ -297,7 +297,7 @@ public class WHIRProver {
             // PCG-RXS-M-XS-64: state = state * mul + inc
             seed = seed &* 6364136223846793005 &+ 1442695040888963407
             // Convert to Fr via simple range reduction
-            let w = frFromInt(Int(truncatingIfNeeded: seed))
+            let w = frFromInt(seed)
             weights.append(w)
         }
 
