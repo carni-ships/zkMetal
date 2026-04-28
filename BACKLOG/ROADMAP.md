@@ -17,9 +17,9 @@ High-level priorities and future directions.
 - [OUT-OF-SCOPE] **MetalSpoon SP1 prover** GPU port — constraint eval / permutation / PCS dispatch.
 
 ### Theoretical Extensions (Require Deep Protocol Changes)
-- Fused-DeepFold with shared-memory batch (4-8 rounds in one SM dispatch) — subagent implementing
-- Lazy NTT for Circle STARK — "Lazy Cantor-FFT" was misnamed; Cantor FFT is for binary fields (GF(2^m)), not Mersenne31; correct technique is "lazy twiddle computation" for standard NTT
-- WHIR-RAA — Implemented (RAA weight derivation pattern)
+- ~~Fused-DeepFold with shared-memory batch~~ — ✅ Complete (GPU correctness fixed 2026-04-28)
+- Lazy NTT for Circle STARK — Requires "lazy twiddle computation" for standard NTT; "lazy Cantor-FFT" was misnamed (Cantor FFT is for binary fields, not Mersenne31); not yet started
+- ~~WHIR-RAA~~ — ✅ Implemented (RAA weight derivation pattern)
 
 ## FRI Merkle Investigation (2026-04-12)
 
