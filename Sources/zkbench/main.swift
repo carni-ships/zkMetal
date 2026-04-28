@@ -254,6 +254,11 @@ if cmd == "calibrate" {
     runTranscriptBench()
 } else if cmd == "batch-transcript" || cmd == "bts" {
     runBatchTranscriptBench()
+} else if cmd == "circle-stark-transcript" || cmd == "cstark-ts" {
+    runCircleSTARKTranscriptCorrectnessTests()
+    runCircleSTARKTranscriptBenchmark()
+} else if cmd == "circle-stark-roundtrip" || cmd == "cstark-rt" {
+    runCircleSTARKTranscriptRoundTripTest()
 } else if cmd == "serial" || cmd == "serialize" {
     runSerializationBench()
 } else if cmd == "pcs" || cmd == "pcs-compare" || cmd == "pcs-comparison" {

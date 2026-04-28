@@ -402,6 +402,49 @@ GPU-accelerated Circle FRI over Mersenne31 field for Circle STARKs.
 
 **Conclusion**: GPU batch merkle hashing now enables efficient GPU acceleration for the entire FRI commit phase. The fix enables ~30x speedup for 2^20 compared to CPU merkle hashing.
 
+### Circle STARK Poseidon2 Transcript (2026-04-28)
+
+Replaced Keccak-based `CircleSTARKTranscript` with Poseidon2-M31-based `CircleSTARKPoseidon2Transcript` for Fiat-Shamir challenge derivation.
+
+**Implementation**: `Sources/zkMetal/Transcript/Poseidon2Transcript.swift`
+
+**Key Features:**
+- Field-native: `squeezeM31()` returns `M31` directly (no uint32 conversion)
+- Poseidon2-M31 permutation (t=16, rate=8, capacity=8)
+- Domain-separated labels via `absorbLabel()`
+- Both prover and verifier use identical transcript implementation
+- **Configurable**: `CircleSTARKVerifier(transcriptType: .poseidon2)` or `.keccak`
+
+**Configuration:**
+```swift
+// Default: Poseidon2 (fast, 3x speedup)
+let verifier = CircleSTARKVerifier()
+
+// For Keccak compatibility with old proofs
+let verifier = CircleSTARKVerifier(transcriptType: .keccak)
+```
+
+**Note**: Prover always uses Poseidon2. Verifier can be configured to `.poseidon2` (default, fast) or `.keccak` (for verifying old proofs). For verification to succeed, prover and verifier must use the same transcript type.
+
+**Benchmark Results (1000 absorb + 1000 squeeze):**
+
+| Backend | Time | Throughput | Speedup |
+|---------|------|------------|---------|
+| Poseidon2 (absorbBytes) | 265ms | 7,547 ops/s | **3.34x** |
+| Poseidon2 (absorbM31Many) | 273ms | 7,320 ops/s | **3.27x** |
+| Keccak (baseline) | 886ms | 2,257 ops/s | 1x |
+
+**Correctness Verification:**
+- Determinism: Same inputs produce same challenges ✅
+- Domain separation: Different labels produce different challenges ✅
+- Sequential squeezes: Distinct challenges produced ✅
+- Round-trip: Prover/verifier alpha and fold-alpha match ✅
+
+**Files Modified:**
+- `Sources/zkMetal/Transcript/Poseidon2Transcript.swift` — New `CircleSTARKPoseidon2Transcript` struct
+- `Sources/zkMetal/CircleSTARK/CircleSTARKVerifier.swift` — Configurable transcript type
+- `Sources/zkMetal/CircleSTARK/CircleSTARKProver.swift` — Always uses Poseidon2
+
 ## Reed-Solomon Erasure Coding
 
 ### NTT-Based RS (BabyBear)
@@ -559,6 +602,7 @@ causing out-of-bounds bucket access and corrupted KZG verification results.
 
 ## Version History
 
+- **2026-04-28**: Circle STARK now uses Poseidon2-M31-based `CircleSTARKPoseidon2Transcript` instead of Keccak-based `CircleSTARKTranscript`. New file: `Sources/zkMetal/Transcript/Poseidon2Transcript.swift`. Benchmarks show 3.34x speedup (265ms vs 886ms for 1000 absorb+squeeze operations). Both prover and verifier updated. All correctness tests pass (determinism, domain separation, round-trip). **Breaking change**: proofs not compatible with old Keccak transcript.
 - **2026-04-28**: GPU batch merkle bug fixed in `poseidon2_m31_hash_leaves`. Root cause: kernel used `gid` as position index instead of `gid % n`, causing incorrect results when batch-processing multiple trees. Added `poseidon2_m31_hash_leaves_batch` kernel with correct indexing. Updated prover to use `buildTreesBatchGPU()`. Circle FRI commit phase now ~30x faster at 2^20 (3.4ms vs 111ms with CPU merkle). All Circle STARK tests pass.
 - **2026-04-27**: Univariate sumcheck KZG verification fixed. Bug was in BN254 scalar masking in `bn254_msm.c:get_window_digit()` — bits beyond position 254 caused out-of-bounds bucket access. All tests now pass. Benchmark: 2^6 prove=2.7ms/verify=1.1ms, 2^8 prove=5.5ms/verify=1.1ms, 2^10 prove=11.9ms/verify=1.1ms.
 - **2026-04-24**: BLS12-377 MSM GPU hang fixed with CPU fallback. GPU kernel hangs at n>=4096 due to 12-limb field register pressure. Added 30s timeout with polling and CPU fallback for large sizes. Benchmark results: 2^8=1.4ms, 2^10=4.1ms, 2^12=10.4ms, 2^14=31.2ms, 2^16=110.1ms, 2^17=208.7ms, 2^18=421.6ms.

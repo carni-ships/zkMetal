@@ -111,6 +111,7 @@ public class CircleSTARKProver {
 
     public let logBlowup: Int
     public let numQueries: Int
+    public let transcriptType: CircleSTARKTranscriptType
 
     private var nttEng: CircleNTTEngine?
     private var friEng: CircleFRIEngine?
@@ -126,9 +127,10 @@ public class CircleSTARKProver {
     private var cachedDomainYBuf: MTLBuffer?
     private var cachedDomainYLogN: Int = 0
 
-    public init(logBlowup: Int = 4, numQueries: Int = 30) {
+    public init(logBlowup: Int = 4, numQueries: Int = 30, transcriptType: CircleSTARKTranscriptType = .poseidon2) {
         self.logBlowup = logBlowup
         self.numQueries = numQueries
+        self.transcriptType = transcriptType
     }
 
     private func ensureWitness() throws -> WitnessEngine {
@@ -383,8 +385,8 @@ public class CircleSTARKProver {
 
         let commitTraceT = CFAbsoluteTimeGetCurrent()
 
-        // Step 4: Fiat-Shamir
-        var transcript = CircleSTARKTranscript()
+        // Step 4: Fiat-Shamir - prover always uses Poseidon2 for speed
+        var transcript = CircleSTARKPoseidon2Transcript()
         transcript.absorbLabel("circle-stark-v1")
         for root in traceCommitments { transcript.absorbBytes(root) }
         let alpha = transcript.squeezeM31()
@@ -585,7 +587,7 @@ public class CircleSTARKProver {
         }
 
         // Step 4: Fiat-Shamir challenge
-        var transcript = CircleSTARKTranscript()
+        var transcript = CircleSTARKPoseidon2Transcript()
         transcript.absorbLabel("circle-stark-v1")
         for root in traceCommitments { transcript.absorbBytes(root) }
         let alpha = transcript.squeezeM31()
@@ -840,7 +842,7 @@ public class CircleSTARKProver {
         // Step 2+5 Fused: LDE + constraint evaluation in single command buffer
         let merkle = try ensureMerkle()
 
-        var transcript = CircleSTARKTranscript()
+        var transcript = CircleSTARKPoseidon2Transcript()
         transcript.absorbLabel("circle-stark-v1")
 
         // We need alpha before constraint eval, but alpha depends on trace commitments.
@@ -1065,7 +1067,7 @@ public class CircleSTARKProver {
         let nttT = CFAbsoluteTimeGetCurrent()
 
         // Transcript for alpha
-        var transcript = CircleSTARKTranscript()
+        var transcript = CircleSTARKPoseidon2Transcript()
         transcript.absorbLabel("circle-stark-v1")
         let alpha = transcript.squeezeM31()
 
@@ -1256,7 +1258,7 @@ public class CircleSTARKProver {
 
     private func cpuFRI(
         evals: [M31], logN: Int, numQueries: Int,
-        transcript: inout CircleSTARKTranscript
+        transcript: inout CircleSTARKPoseidon2Transcript
     ) throws -> CircleFRIProofData {
         var currentEvals = evals
         var currentLogN = logN

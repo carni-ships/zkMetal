@@ -14,9 +14,40 @@ public enum CircleSTARKError: Error {
     case constraintMismatch(String)
 }
 
+/// Transcript hash backend for Circle STARK Fiat-Shamir
+public enum CircleSTARKTranscriptType {
+    /// Keccak-256 based transcript (Ethereum-compatible, slower)
+    case keccak
+    /// Poseidon2-M31 based transcript (faster, field-native, 3.34x speedup)
+    case poseidon2
+}
+
+/// Protocol for Circle STARK transcript operations
+public protocol CircleSTARKTranscriptProtocol {
+    mutating func absorbLabel(_ label: String)
+    mutating func absorbBytes(_ data: [UInt8])
+    mutating func squeezeM31() -> M31
+}
+
+extension CircleSTARKTranscript: CircleSTARKTranscriptProtocol {}
+extension CircleSTARKPoseidon2Transcript: CircleSTARKTranscriptProtocol {}
+
 public class CircleSTARKVerifier {
 
-    public init() {}
+    public let transcriptType: CircleSTARKTranscriptType
+
+    public init(transcriptType: CircleSTARKTranscriptType = .poseidon2) {
+        self.transcriptType = transcriptType
+    }
+
+    private func makeTranscript() -> any CircleSTARKTranscriptProtocol {
+        switch transcriptType {
+        case .keccak:
+            return CircleSTARKTranscript()
+        case .poseidon2:
+            return CircleSTARKPoseidon2Transcript()
+        }
+    }
 
     /// Verify a Circle STARK proof against an AIR specification.
     /// Returns true if the proof is valid, throws on verification failure.
@@ -37,11 +68,9 @@ public class CircleSTARKVerifier {
         }
 
         // Step 1: Reconstruct Fiat-Shamir transcript
-        var transcript = CircleSTARKTranscript()
+        var transcript = makeTranscript()
         transcript.absorbLabel("circle-stark-v1")
-        for root in proof.traceCommitments {
-            transcript.absorbBytes(root)
-        }
+        for root in proof.traceCommitments { transcript.absorbBytes(root) }
         let alpha = transcript.squeezeM31()
 
         // Verify alpha matches
@@ -124,35 +153,34 @@ public class CircleSTARKVerifier {
             // polynomial would have too-high degree, and FRI would catch it.
         }
 
-        // Step 3: Verify FRI proof
-        try verifyFRI(proof: proof.friProof, logN: logEval, transcript: &transcript)
+        // Step 3: Verify FRI proof based on transcript type
+        switch transcriptType {
+        case .keccak:
+            try verifyFRIKeccak(proof: proof.friProof, logN: logEval)
+        case .poseidon2:
+            try verifyFRIPoseidon2(proof: proof.friProof, logN: logEval)
+        }
 
         return true
     }
 
-    // MARK: - FRI Verification
+    // MARK: - FRI Verification (Keccak)
 
-    /// Verify the Circle FRI proof
-    private func verifyFRI(
-        proof: CircleFRIProofData, logN: Int,
-        transcript: inout CircleSTARKTranscript
-    ) throws {
+    private func verifyFRIKeccak(proof: CircleFRIProofData, logN: Int) throws {
+        var t = CircleSTARKTranscript()
+        t.absorbLabel("fri-queries")
+        // Skip the query indices - they're already absorbed in the main flow
+
         var currentLogN = logN
-
         for (roundIdx, round) in proof.rounds.enumerated() {
             let half = (1 << currentLogN) / 2
 
-            // Reconstruct folding challenge
-            let foldAlpha = transcript.squeezeM31()
-
-            // Compute twiddles for this round
+            let foldAlpha = t.squeezeM31()
             let domain = circleCosetDomain(logN: currentLogN)
 
-            // Verify each query in this round
             for (qIdx, (val, sibVal, path)) in round.queryResponses.enumerated() {
                 let qi = proof.queryIndices[qIdx] % half
 
-                // Verify Merkle proof for the folded value
                 let expectedFolded = circleFRIFold(
                     f0: val, f1: sibVal,
                     twiddle: roundIdx == 0 ? domain[qi].y : domain[qi].x,
@@ -172,14 +200,50 @@ public class CircleSTARKVerifier {
                 }
             }
 
-            // Absorb commitment for next round
-            transcript.absorbBytes(round.commitment)
+            t.absorbBytes(round.commitment)
             currentLogN -= 1
         }
+    }
 
-        // Verify final value consistency
-        // After all folding rounds, the polynomial should be constant
-        // The final value is part of the proof
+    // MARK: - FRI Verification (Poseidon2)
+
+    private func verifyFRIPoseidon2(proof: CircleFRIProofData, logN: Int) throws {
+        var t = CircleSTARKPoseidon2Transcript()
+        t.absorbLabel("fri-queries")
+        // Skip the query indices - they're already absorbed in the main flow
+
+        var currentLogN = logN
+        for (roundIdx, round) in proof.rounds.enumerated() {
+            let half = (1 << currentLogN) / 2
+
+            let foldAlpha = t.squeezeM31()
+            let domain = circleCosetDomain(logN: currentLogN)
+
+            for (qIdx, (val, sibVal, path)) in round.queryResponses.enumerated() {
+                let qi = proof.queryIndices[qIdx] % half
+
+                let expectedFolded = circleFRIFold(
+                    f0: val, f1: sibVal,
+                    twiddle: roundIdx == 0 ? domain[qi].y : domain[qi].x,
+                    alpha: foldAlpha
+                )
+
+                let foldedHash = keccak256(m31ToBytes(expectedFolded))
+                let valid = verifyMerkleProof(
+                    leafHash: foldedHash,
+                    path: path,
+                    index: qi,
+                    root: round.commitment
+                )
+                guard valid else {
+                    throw CircleSTARKError.friVerificationFailed(
+                        "FRI round \(roundIdx) Merkle proof failed at query \(qIdx)")
+                }
+            }
+
+            t.absorbBytes(round.commitment)
+            currentLogN -= 1
+        }
     }
 
     /// Compute the Circle FRI fold at a single point
