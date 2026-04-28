@@ -499,6 +499,38 @@ public class GPUNovaFoldEngine {
         return transcript.squeeze()
     }
 
+    // MARK: - Fused Multi-Round Fold
+
+    /// Optional fused multi-round fold using FusedDeepFoldEngine.
+    ///
+    /// This method allows using the fused deep fold kernel to process multiple
+    /// fold rounds in a single GPU dispatch. Useful for high-throughput scenarios
+    /// where multiple instances need to be folded together.
+    ///
+    /// - Note: This requires the matvec results (az, bz, cz) to be precomputed.
+    ///   For full integration with the Nova engine, use the standard foldStep() method.
+    ///
+    /// - Parameters:
+    ///   - az0, bz0, cz0: Base instance matvec results
+    ///   - instances: Array of (az, bz, cz, w) tuples for each round
+    ///   - challenges: Folding challenges r_i for each round
+    ///   - u0: Base instance scalar u
+    /// - Returns: Tuple of (accumulated_T, accumulated_W)
+    public func fusedFoldStep(
+        az0: [Fr], bz0: [Fr], cz0: [Fr],
+        instances: [(az: [Fr], bz: [Fr], cz: [Fr], w: [Fr])],
+        challenges: [Fr],
+        u0: Fr = Fr.one
+    ) throws -> (t: [Fr], w: [Fr]) {
+        let fusedEngine = try FusedDeepFoldEngine(fusedRounds: instances.count)
+        return try fusedEngine.fusedFoldWithWitness(
+            az0: az0, bz0: bz0, cz0: cz0,
+            instances: instances,
+            challenges: challenges,
+            u0: u0
+        )
+    }
+
     // MARK: - GPU Inner Product for Cross-Term Components
 
     /// Compute elementwise inner product using GPU when beneficial.

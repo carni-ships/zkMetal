@@ -287,6 +287,8 @@ if cmd == "calibrate" {
     runBlazeBench()
 } else if cmd == "fold" || cmd == "nova" || cmd == "hypernova" {
     runFoldingBench()
+} else if cmd == "fused-deepfold" || cmd == "fused-df" {
+    runFusedDeepFoldBench()
 } else if cmd == "accum" || cmd == "accumulate" || cmd == "accumulation" {
     runAccumulationBench()
 } else if cmd == "gkr" {

@@ -119,6 +119,7 @@ public enum Versions {
     public static let babyBearSTARK  = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
     public static let folding        = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let gpuHighArityFold = PrimitiveVersion(version: "1.0.0", updated: "2026-04-16")
+    public static let fusedDeepFold  = PrimitiveVersion(version: "1.0.0", updated: "2026-04-28")
     public static let brakedown      = PrimitiveVersion(version: "1.0.0", updated: "2026-04-03")
     public static let binaryTower    = PrimitiveVersion(version: "2.0.0", updated: "2026-04-05")
     public static let latticeNTT     = PrimitiveVersion(version: "1.1.0", updated: "2026-04-05")

@@ -445,6 +445,70 @@ let verifier = CircleSTARKVerifier(transcriptType: .keccak)
 - `Sources/zkMetal/CircleSTARK/CircleSTARKVerifier.swift` — Configurable transcript type
 - `Sources/zkMetal/CircleSTARK/CircleSTARKProver.swift` — Always uses Poseidon2
 
+## FusedDeepFold (Nova/Supernova Multi-Round Folding)
+
+### Overview
+
+FusedDeepFold is a GPU-accelerated implementation of multi-round Nova/Supernova folding that fuses 4-8 consecutive fold rounds into a single GPU dispatch. This reduces dispatch overhead and memory bandwidth by eliminating intermediate GPU synchronizations between rounds.
+
+**Files:**
+- `Sources/zkMetal/Folding/FusedDeepFoldEngine.swift` — Swift engine
+- `Sources/Shaders/fold/fused_deepfold.metal` — Metal kernels
+
+### Benchmark Results (2026-04-28)
+
+| Size (m) | CPU Time | GPU Time | Speedup |
+|----------|----------|----------|---------|
+| 256 (2^8) | 0.81 ms | 0.37 ms | **2.2x** |
+| 1024 (2^10) | 3.22 ms | 0.56 ms | **5.8x** |
+| 4096 (2^12) | 13.04 ms | 0.71 ms | **18.4x** |
+| 16384 (2^14) | 52.13 ms | 1.37 ms | **38.2x** |
+
+**Note**: GPU speedup scales with vector size due to better parallelism utilization at larger sizes.
+
+### Known Issues (BLOCKING CORRECTNESS)
+
+1. **GPU Correctness Failure**: GPU produces all-zero results while CPU produces correct values. The GPU kernel executes but produces incorrect output.
+
+2. **Kernel Naming Mismatch**: The `fused_deepfold_bn254_by4` kernel is named "by4" suggesting 4 rounds, but it only processes 3 rounds of folding (using r[0], r[1], r[2]). The 4th round mentioned in comments has no data buffers.
+
+3. **Buffer Index Issues**: Swift dispatch code buffer indices don't match Metal kernel signatures:
+   - Kernel expects: `r` at buffer 13, `u0` at buffer 14, `outputT` at buffer 15
+   - Swift was setting: `challenges` at 16, `u0` at 17, `outputT` at 18
+   - After partial fix: indices corrected but correctness still failing
+
+4. **Generic Kernel Removed**: The `fused_deepfold_bn254` and `fused_deepfold_bn254_with_witness` kernels used `device Fr**` double pointers which Metal doesn't support in device address space. These were removed, leaving only the specialized by4 and by8 kernels.
+
+5. **API Inconsistency**: Engine accepts `fusedRounds` parameter (4 or 8) but the actual kernel behavior doesn't match - the by4 kernel only does 3 rounds despite the name.
+
+### Required Fixes
+
+1. **Verify kernel buffer bindings**: The by4 kernel only processes 3 rounds despite being named "by4". Either:
+   - Rename to "by3" and update API
+   - Or extend kernel to actually support 4 rounds
+
+2. **Fix buffer indices in Swift dispatch**: Current indices still produce incorrect results
+
+3. **Verify threadgroup synchronization**: The barrier usage in the kernel needs verification
+
+4. **Test with 3 rounds**: To verify kernel works at all, test with exactly 3 instances and 3 challenges (matching kernel's actual capability)
+
+### Benchmark Command
+
+```bash
+swift run zkbench fused-deepfold
+```
+
+### Implementation Status
+
+- [ ] GPU kernel produces correct results
+- [ ] Buffer indices verified correct
+- [ ] Threadgroup synchronization verified
+- [ ] 4-round support added (if desired)
+- [x] CPU reference implementation works correctly
+- [x] Build succeeds
+- [ ] GPU correctness verified
+
 ## Reed-Solomon Erasure Coding
 
 ### NTT-Based RS (BabyBear)
