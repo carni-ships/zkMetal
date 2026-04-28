@@ -307,11 +307,11 @@ public class CircleFRIEngine {
         while round < alphas.count {
             let roundsRemaining = alphas.count - round
 
-            // DISABLED: foldFused2 kernel has correctness issue
-            // The kernel's x-fold uses stride n/4 (pairs f1[i], f1[i+n/4]), but getInv2x
-            // precomputes inv_2x assuming standard x-fold pairing after squaring map.
-            // The inv_2x values don't match what the fused kernel expects.
-            // Single-round dispatch path (below) is correct and performs well.
+            // DISABLED: foldFused2 kernel has correctness issue. The kernel's x-fold pairs
+            // f1[i] with f1[i+n/4] using inv_2x indexed by i, but the current getInv2x
+            // precomputes inv_2x for the WRONG domain positions for this pairing.
+            // Need to fix getInv2x to produce correct inv_2x for f1[i]-f1[i+n/4] pairing.
+            // Single-round dispatch path is correct and performs well.
             if false && roundsRemaining >= 2 && logN - round >= 2 {
                 // Use fused2 kernel: y-fold + x-fold in one dispatch
                 // Round 0 (y-fold): n -> n/2

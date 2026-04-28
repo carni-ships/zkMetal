@@ -717,64 +717,59 @@ public class GPUMerkleTreeM31Engine {
         let treeSize = 2 * n - 1
         let stride = MemoryLayout<UInt32>.stride
 
-        // Flatten all columns into a single values buffer
-        let totalValues = numTrees * n
-        guard let valuesBuf = device.makeBuffer(length: totalValues * stride, options: .storageModeShared) else {
-            throw MSMError.gpuError("Failed to allocate values buffer")
-        }
-        let valuesPtr = valuesBuf.contents().bindMemory(to: UInt32.self, capacity: totalValues)
-        for (treeIdx, col) in columns.enumerated() {
-            for i in 0..<n {
-                valuesPtr[treeIdx * n + i] = i < col.count ? col[i].v : 0
-            }
-        }
-
-        // Hash all leaves on GPU (flattened layout)
-        let leafDigestBytes = totalValues * nodeSize * stride
-        guard let leafDigestBuf = device.makeBuffer(length: leafDigestBytes, options: .storageModeShared) else {
-            throw MSMError.gpuError("Failed to allocate leaf digest buffer")
-        }
-
-        guard let cmdBuf = commandQueue.makeCommandBuffer() else {
-            throw MSMError.noCommandBuffer
-        }
-        let enc = cmdBuf.makeComputeCommandEncoder()!
-        enc.setComputePipelineState(hashLeavesFunction)
-        enc.setBuffer(valuesBuf, offset: 0, index: 0)
-        enc.setBuffer(leafDigestBuf, offset: 0, index: 1)
-        enc.setBuffer(rcBuffer, offset: 0, index: 2)
-        var count = UInt32(totalValues)
-        enc.setBytes(&count, length: 4, index: 3)
-        let tg = min(tuning.hashThreadgroupSize, Int(hashLeavesFunction.maxTotalThreadsPerThreadgroup))
-        enc.dispatchThreads(MTLSize(width: totalValues, height: 1, depth: 1),
-                          threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
-        enc.endEncoding()
-        cmdBuf.commit()
-        cmdBuf.waitUntilCompleted()
-
         // Allocate combined tree buffer for all trees
         let treeBytes = numTrees * treeSize * nodeSize * stride
         guard let treeBuf = device.makeBuffer(length: treeBytes, options: .storageModeShared) else {
             throw MSMError.gpuError("Failed to allocate tree buffer")
         }
-
-        // Copy leaf digests to tree buffer (leaves at start of each tree's section)
-        // Note: leafDigestBuf has consecutive digests (kernel writes gid*8), but tree sections
-        // are spaced treeSize apart. We must copy with proper source index calculation.
-        let leafPtr = leafDigestBuf.contents().bindMemory(to: UInt32.self, capacity: totalValues * nodeSize)
         let treePtr = treeBuf.contents().bindMemory(to: UInt32.self, capacity: numTrees * treeSize * nodeSize)
+
+        // Process each tree: hash leaves and build tree
         for treeIdx in 0..<numTrees {
-            // Each tree section is treeSize nodes (2n-1), but leaves are only n nodes at the start
-            let treeStart = treeIdx * treeSize * nodeSize
+            let treeBase = treeIdx * treeSize * nodeSize
+            let col = columns[treeIdx]
+
+            // Step 1: Hash leaves to digests (GPU) - per-tree to avoid GPU batch issues
+            let valuesBufSize = n * stride
+            let leafDigestBytes = n * nodeSize * stride
+
+            guard let valuesBuf = device.makeBuffer(length: valuesBufSize, options: .storageModeShared),
+                  let leafDigestBuf = device.makeBuffer(length: leafDigestBytes, options: .storageModeShared) else {
+                throw MSMError.gpuError("Failed to allocate buffers for tree \(treeIdx)")
+            }
+
+            // Copy values
+            let valuesPtr = valuesBuf.contents().bindMemory(to: UInt32.self, capacity: n)
+            for i in 0..<n {
+                valuesPtr[i] = i < col.count ? col[i].v : 0
+            }
+
+            // Hash leaves on GPU
+            guard let cmdBuf = commandQueue.makeCommandBuffer() else {
+                throw MSMError.noCommandBuffer
+            }
+            let enc = cmdBuf.makeComputeCommandEncoder()!
+            enc.setComputePipelineState(hashLeavesFunction)
+            enc.setBuffer(valuesBuf, offset: 0, index: 0)
+            enc.setBuffer(leafDigestBuf, offset: 0, index: 1)
+            enc.setBuffer(rcBuffer, offset: 0, index: 2)
+            var count = UInt32(n)
+            enc.setBytes(&count, length: 4, index: 3)
+            let tg = min(tuning.hashThreadgroupSize, Int(hashLeavesFunction.maxTotalThreadsPerThreadgroup))
+            enc.dispatchThreads(MTLSize(width: n, height: 1, depth: 1),
+                              threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+            enc.endEncoding()
+            cmdBuf.commit()
+            cmdBuf.waitUntilCompleted()
+
+            // Copy leaf digests to tree buffer (leaves at start of tree's section)
+            let leafPtr = leafDigestBuf.contents().bindMemory(to: UInt32.self, capacity: n * nodeSize)
             for i in 0..<(n * nodeSize) {
-                // Source index is consecutive: treeIdx * n + i within leaves
-                let srcIdx = (treeIdx * n + i / nodeSize) * nodeSize + (i % nodeSize)
-                treePtr[treeStart + i] = leafPtr[srcIdx]
+                treePtr[treeBase + i] = leafPtr[i]
             }
         }
 
         // Build internal nodes level-by-level using per-tree dispatch
-        // Process each tree independently to avoid GPU state issues
         for treeIdx in 0..<numTrees {
             let treeBase = treeIdx * treeSize * nodeSize
 
@@ -812,6 +807,7 @@ public class GPUMerkleTreeM31Engine {
 
         // Extract roots from all trees
         let rootPtr = treeBuf.contents().bindMemory(to: UInt32.self, capacity: numTrees * treeSize * nodeSize)
+
         var roots = [M31Digest]()
         roots.reserveCapacity(numTrees)
         for treeIdx in 0..<numTrees {
