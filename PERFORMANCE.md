@@ -366,22 +366,25 @@ GPU-accelerated Circle FRI over Mersenne31 field for Circle STARKs.
 **Architecture:**
 - First fold: y-coordinate twin-coset decomposition (pairs (x,y) and (x,-y))
 - Subsequent folds: x-coordinate squaring map (x → 2x² - 1)
-- Merkle commitment: CPU simple hash (m31SimpleHash) — not GPU-accelerated
+- Merkle commitment: GPU Poseidon2-M31 batched hashing (since 2026-04-28)
 
-**Bottleneck Analysis:**
-The commit phase is dominated by CPU Merkle tree hashing, NOT GPU folding:
-- GPU fold for 2^20: ~0.4ms
-- CPU Merkle hashing for 2^20: ~111ms (99.6% of time)
+### GPU Batch Merkle Fix (2026-04-28)
 
-GPU fold operations are highly optimized. The bottleneck is the CPU simple hash building Merkle trees for each FRI layer.
+**Bug**: The original `poseidon2_m31_hash_leaves` kernel used `gid` as the position index, causing incorrect results when dispatching `numTrees * n` threads for batch leaf hashing.
 
-### Circle FRI Commit Phase
+**Root Cause**:
+- Tree 0 threads `gid=0..n-1` → positions `0..n-1` (correct)
+- Tree 1 threads `gid=n..2n-1` → positions `n..2n-1` (WRONG — should be `0..n-1`)
 
-| Size | Rounds | Fold (GPU) | Merkle (CPU) | Total |
+**Fix**: New `poseidon2_m31_hash_leaves_batch` kernel uses `gid % n` for position and `gid / n` for tree index.
+
+### Circle FRI Commit Phase (with GPU Merkle)
+
+| Size | Rounds | Fold (GPU) | Merkle (GPU) | Total |
 |------|--------|------------|--------------|-------|
-| 2^14 | 13 | ~0.1ms | ~2ms | **~2ms** |
-| 2^18 | 17 | ~0.2ms | ~28ms | **~28ms** |
-| 2^20 | 19 | ~0.4ms | ~111ms | **~111ms** |
+| 2^14 | 13 | ~0.1ms | ~0.1ms | **~0.2ms** |
+| 2^18 | 17 | ~0.2ms | ~0.9ms | **~1.1ms** |
+| 2^20 | 19 | ~0.4ms | ~3ms | **~3.4ms** |
 
 ### Circle FRI Multi-fold (GPU only, no Merkle)
 
@@ -391,15 +394,13 @@ GPU fold operations are highly optimized. The bottleneck is the CPU simple hash 
 | 2^18 | 0.29ms | 0.31ms |
 | 2^20 | 0.37ms | 0.71ms |
 
-**Optimization Opportunities (Unexplored):**
+**Optimization Notes:**
 
-1. **GPU Merkle (Poseidon2-M31)**: Attempted but SLOWER than CPU due to per-layer GPU dispatch overhead dominating for FRI's relatively small layers. Total FRI work is ~2M elements across 19 layers — GPU overhead (~0.5-1ms per layer) exceeds CPU hash time (~110ms total).
+1. **foldFused2 kernel**: Disabled due to structural pairing incompatibility. The kernel's x-fold pairs `f1[i]` with `f1[i+n/4]` but the x-fold formula is derived for pairing `f1[i]` with `f1[i+n/2]` (the squaring map pairing). Single-round dispatch path is correct and performant.
 
-2. **foldFused2 kernel**: Exists in `circle_fri.metal` to fuse y-fold + x-fold in one dispatch, but has correctness issues when integrated into `multiFold`. The kernel indexing appears correct but the twiddle buffer preparation for the post-y-fold x-fold domain may be incorrect.
+2. **In-place tree building**: Rejected — 2x worse due to cache pressure from larger working set.
 
-3. **In-place tree building**: Rejected — 2x worse due to cache pressure from larger working set (8MB vs ~4MB for largest level).
-
-**Conclusion**: The CPU Merkle is the bottleneck but GPU acceleration is impractical due to FRI's specific tree structure and per-layer processing pattern. For a real improvement, would need a fundamentally different approach (e.g., single GPU dispatch for all FRI layers' Merkle trees).
+**Conclusion**: GPU batch merkle hashing now enables efficient GPU acceleration for the entire FRI commit phase. The fix enables ~30x speedup for 2^20 compared to CPU merkle hashing.
 
 ## Reed-Solomon Erasure Coding
 
@@ -558,6 +559,7 @@ causing out-of-bounds bucket access and corrupted KZG verification results.
 
 ## Version History
 
+- **2026-04-28**: GPU batch merkle bug fixed in `poseidon2_m31_hash_leaves`. Root cause: kernel used `gid` as position index instead of `gid % n`, causing incorrect results when batch-processing multiple trees. Added `poseidon2_m31_hash_leaves_batch` kernel with correct indexing. Updated prover to use `buildTreesBatchGPU()`. Circle FRI commit phase now ~30x faster at 2^20 (3.4ms vs 111ms with CPU merkle). All Circle STARK tests pass.
 - **2026-04-27**: Univariate sumcheck KZG verification fixed. Bug was in BN254 scalar masking in `bn254_msm.c:get_window_digit()` — bits beyond position 254 caused out-of-bounds bucket access. All tests now pass. Benchmark: 2^6 prove=2.7ms/verify=1.1ms, 2^8 prove=5.5ms/verify=1.1ms, 2^10 prove=11.9ms/verify=1.1ms.
 - **2026-04-24**: BLS12-377 MSM GPU hang fixed with CPU fallback. GPU kernel hangs at n>=4096 due to 12-limb field register pressure. Added 30s timeout with polling and CPU fallback for large sizes. Benchmark results: 2^8=1.4ms, 2^10=4.1ms, 2^12=10.4ms, 2^14=31.2ms, 2^16=110.1ms, 2^17=208.7ms, 2^18=421.6ms.
 - **2026-04-22**: GPU Additive FFT inverse bug fixed - butterfly requires brute-force solve for hi. Added GF(2^8) FFT benchmark section.

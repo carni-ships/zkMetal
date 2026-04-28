@@ -318,6 +318,13 @@ kernel void poseidon2_m31_merkle_fused_batch(
 // Hash individual M31 values to Poseidon2-M31 leaf digests for Merkle tree construction.
 // Each thread hashes one leaf: state[0] = value, state[1] = index, state[2..7] = 0.
 // Output: array of n * 8 M31 elements (digests)
+//
+// NOTE: For batch processing (multiple trees), use poseidon2_m31_hash_leaves_batch
+// instead. This single-tree kernel uses gid as the position, which causes incorrect
+// results when dispatching numTrees*n threads for batch leaf hashing:
+// - Tree 0 threads gid=0..n-1 produce positions 0..n-1 (correct)
+// - Tree 1 threads gid=n..2n-1 produce positions n..2n-1 (WRONG - should be 0..n-1)
+// The batch kernel fixes this by using (gid % n) as the position.
 kernel void poseidon2_m31_hash_leaves(
     device const uint* values         [[buffer(0)]],  // Individual M31 values (one per thread)
     device uint* digests             [[buffer(1)]],   // Output: 8 M31 per leaf
@@ -330,7 +337,7 @@ kernel void poseidon2_m31_hash_leaves(
     M31 s[P2M31_T];
     // Initialize: position 0 = value, position 1 = index, rest = 0
     s[0] = M31{values[gid]};
-    s[1] = M31{gid};  // index as M31
+    s[1] = M31{gid};  // index as M31 - NOTE: for batch kernel, use (gid % n) instead
     for (uint i = 2; i < P2M31_T; i++) {
         s[i] = m31_zero();
     }
@@ -339,6 +346,48 @@ kernel void poseidon2_m31_hash_leaves(
 
     // Output rate portion (first 8 elements)
     uint out_base = gid * P2M31_RATE;
+    for (uint i = 0; i < P2M31_RATE; i++) {
+        digests[out_base + i] = s[i].v;
+    }
+}
+
+// Batched leaf hashing for multiple Merkle trees.
+// When dispatching numTrees * n threads, uses gid % n for position and gid / n for tree index.
+// This fixes the position bug in the single-tree kernel when batched.
+//
+// Parameters:
+//   values: flattened array of numTrees * n M31 values (tree0_leaves, tree1_leaves, ...)
+//   digests: output array of numTrees * n * 8 M31 elements
+//   n: leaves per tree (stride for tree index calculation)
+//   numTrees: number of trees (for validation)
+kernel void poseidon2_m31_hash_leaves_batch(
+    device const uint* values         [[buffer(0)]],  // numTrees * n values
+    device uint* digests             [[buffer(1)]],   // numTrees * n * 8 M31 output
+    constant uint* rc                [[buffer(2)]],   // Round constants
+    constant uint& n                  [[buffer(3)]],   // Leaves per tree
+    constant uint& numTrees           [[buffer(4)]],   // Number of trees
+    uint gid                         [[thread_position_in_grid]]
+) {
+    uint totalLeaves = n * numTrees;
+    if (gid >= totalLeaves) return;
+
+    // Correct position within tree: gid % n (not gid itself)
+    uint position = gid % n;
+    // Tree index: gid / n
+    uint treeIdx = gid / n;
+
+    M31 s[P2M31_T];
+    // Initialize: position 0 = value, position 1 = index, rest = 0
+    s[0] = M31{values[gid]};
+    s[1] = M31{position};  // Correct: local position within tree, not global gid
+    for (uint i = 2; i < P2M31_T; i++) {
+        s[i] = m31_zero();
+    }
+
+    p2m31_permute(s, rc);
+
+    // Output to correct tree's section: treeIdx * n * 8 + position * 8
+    uint out_base = (treeIdx * n + position) * P2M31_RATE;
     for (uint i = 0; i < P2M31_RATE; i++) {
         digests[out_base + i] = s[i].v;
     }

@@ -171,42 +171,6 @@ public class CircleFRIEngine {
         return bufs
     }
 
-    /// For fused2 kernel x-fold: inv_2x indexed by i corresponds to x-coord at position [currentSize/2 + i]
-    /// This is the UPPER half because fused2 pairs f1[i] with f1[i+currentSize/2]
-    private func getInv2xFused(logN: Int) -> [MTLBuffer] {
-        let n = 1 << logN
-        let half = n / 2
-        let domain = circleCosetDomain(logN: logN)
-
-        // After y-fold: domain becomes x-coordinates of the first half
-        var xs = (0..<half).map { domain[$0].x }
-
-        var bufs: [MTLBuffer] = []
-        let two = M31(v: 2)
-
-        var currentSize = half
-        while currentSize > 1 {
-            let foldHalf = currentSize / 2
-            // For fused2: inv_2x[i] is for x-coordinate at position [foldHalf + i]
-            var inv2x = [M31](repeating: M31.zero, count: foldHalf)
-            for i in 0..<foldHalf {
-                let twoX = m31Mul(two, xs[foldHalf + i])
-                inv2x[i] = m31Inverse(twoX)
-            }
-            bufs.append(createM31Buffer(inv2x)!)
-
-            // Apply squaring map: x -> 2x^2 - 1 for next round
-            var newXs = [M31](repeating: M31.zero, count: foldHalf)
-            for i in 0..<foldHalf {
-                newXs[i] = m31Sub(m31Mul(two, m31Sqr(xs[i])), M31.one)
-            }
-            xs = newXs
-            currentSize = foldHalf
-        }
-
-        return bufs
-    }
-
     private func createM31Buffer(_ data: [M31]) -> MTLBuffer? {
         let byteCount = data.count * MemoryLayout<M31>.stride
         guard let buf = device.makeBuffer(length: byteCount, options: .storageModeShared) else {
@@ -329,7 +293,6 @@ public class CircleFRIEngine {
         // Precompute all twiddles
         let inv2yBuf = getInv2y(logN: logN)
         let inv2xBufs = getInv2x(logN: logN)
-        let inv2xBufsFused = getInv2xFused(logN: logN)
 
         guard let cmdBuf = commandQueue.makeCommandBuffer() else {
             throw MSMError.noCommandBuffer
@@ -342,78 +305,38 @@ public class CircleFRIEngine {
         var round = 0
 
         while round < alphas.count {
-            let roundsRemaining = alphas.count - round
+            // Single round dispatch: correct and well-optimized
+            let curN = 1 << (logN - round)
+            let halfN = curN / 2
+            let outputBuf = useA ? foldBufA! : foldBufB!
+            var alpha = alphas[round]
+            var nVal = UInt32(curN)
 
-            // DISABLED: foldFused2 kernel has a structural pairing mismatch.
-            // The kernel's x-fold pairs f1[i] with f1[i+n/4] but the x-fold formula
-            // is derived for pairing f1[i] with f1[i+n/2] (the squaring map pairing).
-            // These are fundamentally incompatible - the kernel needs a different formula
-            // or a different fusion strategy (e.g., fuse two x-folds instead).
-            // Single-round dispatch path is correct and performs well.
-            if false && roundsRemaining >= 2 && logN - round >= 2 {
-                // Use fused2 kernel: y-fold + x-fold in one dispatch
-                // Round 0 (y-fold): n -> n/2
-                // Round 1 (x-fold): n/2 -> n/4
-                let curN = 1 << (logN - round)
-                let quarterN = curN / 4
-                let outputBuf = useA ? foldBufA! : foldBufB!
-                var alpha0 = alphas[round]
-                var alpha1 = alphas[round + 1]
-                var nVal = UInt32(curN)
-
-                enc.setComputePipelineState(foldFused2Function)
+            if round == 0 {
+                enc.setComputePipelineState(foldFirstFunction)
                 enc.setBuffer(currentBuf, offset: 0, index: 0)
                 enc.setBuffer(outputBuf, offset: 0, index: 1)
                 enc.setBuffer(inv2yBuf, offset: 0, index: 2)
-                enc.setBuffer(inv2xBufsFused[round], offset: 0, index: 3)
-                enc.setBytes(&alpha0, length: stride, index: 4)
-                enc.setBytes(&alpha1, length: stride, index: 5)
-                enc.setBytes(&nVal, length: 4, index: 6)
-
-                enc.dispatchThreads(MTLSize(width: quarterN, height: 1, depth: 1),
-                                   threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
-
-                currentBuf = outputBuf
-                useA = !useA
-                round += 2
-
-                if round < alphas.count {
-                    enc.memoryBarrier(scope: .buffers)
-                }
+                enc.setBytes(&alpha, length: stride, index: 3)
+                enc.setBytes(&nVal, length: 4, index: 4)
             } else {
-                // Single round
-                let curN = 1 << (logN - round)
-                let halfN = curN / 2
-                let outputBuf = useA ? foldBufA! : foldBufB!
-                var alpha = alphas[round]
-                var nVal = UInt32(curN)
+                enc.setComputePipelineState(foldFunction)
+                enc.setBuffer(currentBuf, offset: 0, index: 0)
+                enc.setBuffer(outputBuf, offset: 0, index: 1)
+                enc.setBuffer(inv2xBufs[round - 1], offset: 0, index: 2)
+                enc.setBytes(&alpha, length: stride, index: 3)
+                enc.setBytes(&nVal, length: 4, index: 4)
+            }
 
-                if round == 0 {
-                    enc.setComputePipelineState(foldFirstFunction)
-                    enc.setBuffer(currentBuf, offset: 0, index: 0)
-                    enc.setBuffer(outputBuf, offset: 0, index: 1)
-                    enc.setBuffer(inv2yBuf, offset: 0, index: 2)
-                    enc.setBytes(&alpha, length: stride, index: 3)
-                    enc.setBytes(&nVal, length: 4, index: 4)
-                } else {
-                    enc.setComputePipelineState(foldFunction)
-                    enc.setBuffer(currentBuf, offset: 0, index: 0)
-                    enc.setBuffer(outputBuf, offset: 0, index: 1)
-                    enc.setBuffer(inv2xBufs[round - 1], offset: 0, index: 2)
-                    enc.setBytes(&alpha, length: stride, index: 3)
-                    enc.setBytes(&nVal, length: 4, index: 4)
-                }
+            enc.dispatchThreads(MTLSize(width: halfN, height: 1, depth: 1),
+                               threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
 
-                enc.dispatchThreads(MTLSize(width: halfN, height: 1, depth: 1),
-                                   threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+            currentBuf = outputBuf
+            useA = !useA
+            round += 1
 
-                currentBuf = outputBuf
-                useA = !useA
-                round += 1
-
-                if round < alphas.count {
-                    enc.memoryBarrier(scope: .buffers)
-                }
+            if round < alphas.count {
+                enc.memoryBarrier(scope: .buffers)
             }
         }
 
