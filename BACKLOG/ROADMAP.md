@@ -9,11 +9,11 @@ High-level priorities and future directions.
 - **Protocol changes** (different PCS, fewer commitment rounds)
 
 ### Medium Priority
-- **GPU CSR sparse matvec** — Main bottleneck for folding (6 matvecs per fold). Very high effort (3-4 weeks).
-- **GPU fused sumcheck round** — Fuses eq-weighting with fold. Medium effort (3-4 days).
+- ~~GPU CSR sparse matvec~~ — ✅ Implemented in `GPUSparseMatvecEngine.swift`, integrated into `GPUNovaFoldEngine`
+- ~~GPU fused sumcheck round~~ — ✅ Implemented in `GPUSumcheckProtocolEngine.swift` with fused kernels
 
 ### Lower Priority
-- **Bucket-Interleaved Layout** — 15-25% speedup for secp256k1 MSM. Medium effort.
+- ~~Bucket-Interleaved Layout~~ — ✅ Implemented (flag: `useBucketInterleaved`)
 - [OUT-OF-SCOPE] **MetalSpoon SP1 prover** GPU port — constraint eval / permutation / PCS dispatch.
 
 ### Theoretical Extensions (Require Deep Protocol Changes)
