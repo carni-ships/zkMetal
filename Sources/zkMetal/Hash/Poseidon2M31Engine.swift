@@ -13,6 +13,7 @@ public class Poseidon2M31Engine {
     public let commandQueue: MTLCommandQueue
     let permuteFunction: MTLComputePipelineState
     let hashPairsFunction: MTLComputePipelineState
+    let hashPairsBatchedFunction: MTLComputePipelineState
     let merkleFusedFunction: MTLComputePipelineState
     let merkleFusedBatchFunction: MTLComputePipelineState
     let rcBuffer: MTLBuffer
@@ -43,6 +44,7 @@ public class Poseidon2M31Engine {
 
         guard let permuteFn = library.makeFunction(name: "poseidon2_m31_permute"),
               let hashPairsFn = library.makeFunction(name: "poseidon2_m31_hash_pairs"),
+              let hashPairsBatchedFn = library.makeFunction(name: "poseidon2_m31_hash_pairs_batched"),
               let merkleFusedFn = library.makeFunction(name: "poseidon2_m31_merkle_fused"),
               let merkleFusedBatchFn = library.makeFunction(name: "poseidon2_m31_merkle_fused_batch") else {
             throw MSMError.missingKernel
@@ -50,6 +52,7 @@ public class Poseidon2M31Engine {
 
         self.permuteFunction = try device.makeComputePipelineState(function: permuteFn)
         self.hashPairsFunction = try device.makeComputePipelineState(function: hashPairsFn)
+        self.hashPairsBatchedFunction = try device.makeComputePipelineState(function: hashPairsBatchedFn)
         self.merkleFusedFunction = try device.makeComputePipelineState(function: merkleFusedFn)
         self.merkleFusedBatchFunction = try device.makeComputePipelineState(function: merkleFusedBatchFn)
 
@@ -141,6 +144,64 @@ public class Poseidon2M31Engine {
         let tg = min(customTG ?? tuning.hashThreadgroupSize, maxTG)
         enc.dispatchThreads(MTLSize(width: n, height: 1, depth: 1),
                            threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+        enc.endEncoding()
+
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+        if let error = cmdBuf.error {
+            throw MSMError.gpuError(error.localizedDescription)
+        }
+
+        let outPtr = outputBuf.contents().bindMemory(to: UInt32.self, capacity: n * nodeSize)
+        var result = [M31](repeating: M31.zero, count: n * nodeSize)
+        for i in 0..<(n * nodeSize) {
+            result[i] = M31(v: outPtr[i])
+        }
+        return result
+    }
+
+    /// Hash pairs using batched kernel (multiple pairs per thread)
+    /// batchSize >= 1. For n pairs, grid size = ceil(n / batchSize)
+    public func hashPairsBatched(_ input: [M31], batchSize: Int) throws -> [M31] {
+        let nodeSize = Poseidon2M31Engine.nodeSize
+        precondition(input.count % (2 * nodeSize) == 0, "Input must have pairs of 8-element nodes")
+        let n = input.count / (2 * nodeSize)  // number of pairs
+        let stride = MemoryLayout<UInt32>.stride
+
+        if n > cachedBufPairs {
+            guard let inBuf = device.makeBuffer(length: input.count * stride, options: .storageModeShared),
+                  let outBuf = device.makeBuffer(length: n * nodeSize * stride, options: .storageModeShared) else {
+                throw MSMError.gpuError("Failed to allocate buffers")
+            }
+            cachedInputBuf = inBuf
+            cachedOutputBuf = outBuf
+            cachedBufPairs = n
+        }
+
+        let inputBuf = cachedInputBuf!
+        let outputBuf = cachedOutputBuf!
+        // Copy M31 values as UInt32
+        let ptr = inputBuf.contents().bindMemory(to: UInt32.self, capacity: input.count)
+        for i in 0..<input.count {
+            ptr[i] = input[i].v
+        }
+
+        guard let cmdBuf = commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
+        }
+
+        let enc = cmdBuf.makeComputeCommandEncoder()!
+        enc.setComputePipelineState(hashPairsBatchedFunction)
+        enc.setBuffer(inputBuf, offset: 0, index: 0)
+        enc.setBuffer(outputBuf, offset: 0, index: 1)
+        enc.setBuffer(rcBuffer, offset: 0, index: 2)
+        var count = UInt32(n)
+        enc.setBytes(&count, length: 4, index: 3)
+        var batch = UInt32(batchSize)
+        enc.setBytes(&batch, length: 4, index: 4)
+        let gridSize = (n + batchSize - 1) / batchSize
+        enc.dispatchThreads(MTLSize(width: gridSize, height: 1, depth: 1),
+                           threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1))
         enc.endEncoding()
 
         cmdBuf.commit()

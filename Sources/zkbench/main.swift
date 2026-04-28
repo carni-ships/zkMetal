@@ -132,6 +132,8 @@ if cmd == "calibrate" {
     runPoseidon2M31Bench()
 } else if cmd == "p2m31-tg" || cmd == "p2m31-tgsweep" {
     runPoseidon2M31TGSweep()
+} else if cmd == "p2m31-batch" || cmd == "p2m31-batched" {
+    runPoseidon2M31BatchedBench()
 } else if cmd == "poseidon2-bb" || cmd == "p2bb" {
     runPoseidon2BabyBearBench()
 } else if cmd == "keccak" || cmd == "k256" {

@@ -144,16 +144,41 @@ For reference, current observed performance on beta macOS:
 | Keccak-256 | 2^16 | 387ms | 89ms (parallel) | 0.45ms | **860x** |
 | Keccak-256 | 2^18 | 1.6s | 360ms (parallel) | 1.4ms | **1143x** |
 
-## Merkle Trees - Expected Performance
+## Poseidon2 M31 (Mersenne31, t=16, x^5) - Updated 2026-04-27
 
-| Backend | Leaves | GPU | CPU | Speedup |
-|---------|--------|-----|-----|---------|
-| Poseidon2 | 2^10 | 7.3ms | 6ms | **1x** |
-| Poseidon2 | 2^12 | 8.7ms | 23ms | **3x** |
-| Poseidon2 | 2^14 | 10ms | 91ms | **9x** |
-| Poseidon2 | 2^16 | 21ms | 364ms | **17x** |
-| Poseidon2 | 2^18 | 45ms | 1.4s | **32x** |
-| Poseidon2 | 2^20 | 129ms | -- | -- |
+GPU-accelerated Poseidon2 hashing over Mersenne31 field. Each hash pair processes
+16 M31 elements (8 left + 8 right → 8 output). 35 rounds total (14 full + 21 partial).
+
+**Key observations**:
+- Kernel is memory-bandwidth bound: TG size and batch size have minimal impact at scale
+- Tree-reduced internal sum (7 adds vs 15) implemented but provides no measurable gain
+- Batched kernel (`hash_pairs_batched`) only helps at small scales (N < 2^16)
+
+### GPU Hash Pairs (Median of 5 runs, Apple M3 Pro)
+
+| Size | Pairs | Time | Throughput | Notes |
+|------|-------|------|------------|-------|
+| 2^10 | 1,024 | 3.5ms | 293K hash/s | Batching: BS=2 → +4% |
+| 2^12 | 4,096 | 13.4ms | 306K hash/s | Batching: marginal |
+| 2^14 | 16,384 | 53ms | 309K hash/s | Batching: BS=4 → **+8%** |
+| 2^16 | 65,536 | 209ms | 314K hash/s | Batching: no effect |
+| 2^18 | 262,144 | 828ms | 316K hash/s | Batching: no effect |
+| 2^20 | 1,048,576 | 3.3s | 315K hash/s | Saturation ceiling |
+
+**Batched kernel behavior**:
+- Small N (2^10-2^14): Up to 8% improvement from batching (amortizes kernel launch overhead)
+- Large N (2^16+): No measurable gain — GPU saturated, memory-bandwidth bound
+
+### GPU Merkle Tree (Fused Kernel)
+
+| Leaves | Time | Notes |
+|--------|------|-------|
+| 2^10 | 1.6ms | |
+| 2^12 | 4.9ms | |
+| 2^14 | 18ms | |
+| 2^16 | 70ms | |
+| 2^18 | 276ms | |
+| 2^20 | ~1.1s | |
 
 ## GPU Additive FFT (GF(2^8)) - Updated 2026-04-27
 

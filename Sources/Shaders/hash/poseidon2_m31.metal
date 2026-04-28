@@ -57,10 +57,14 @@ void p2m31_external_layer(thread M31 *s) {
 
 // Internal linear layer: y_i = diag[i] * x_i + sum(x_j)
 void p2m31_internal_layer(thread M31 *s) {
-    M31 sum = m31_zero();
-    for (uint i = 0; i < 16; i++) {
-        sum = m31_add(sum, s[i]);
-    }
+    // Tree-reduced sum: 16 elements -> 4 -> 2 -> 1 (7 adds instead of 15)
+    M31 s03 = m31_add(m31_add(s[0], s[1]), m31_add(s[2], s[3]));
+    M31 s47 = m31_add(m31_add(s[4], s[5]), m31_add(s[6], s[7]));
+    M31 s8b = m31_add(m31_add(s[8], s[9]), m31_add(s[10], s[11]));
+    M31 s_cf = m31_add(m31_add(s[12], s[13]), m31_add(s[14], s[15]));
+    M31 s07 = m31_add(s03, s47);
+    M31 s8f = m31_add(s8b, s_cf);
+    M31 sum = m31_add(s07, s8f);
 
     for (uint i = 0; i < 16; i++) {
         uint d = P2M31_INTERNAL_DIAG[i];
@@ -156,6 +160,37 @@ kernel void poseidon2_m31_hash_pairs(
     uint out_base = gid * P2M31_RATE;
     for (uint i = 0; i < P2M31_RATE; i++) {
         output[out_base + i] = s[i].v;
+    }
+}
+
+// Batched 2-to-1 compression: each thread processes 'batchSize' hash pairs
+// Improves GPU utilization when pair count is small relative to GPU core count
+kernel void poseidon2_m31_hash_pairs_batched(
+    device const uint* input        [[buffer(0)]],
+    device uint* output             [[buffer(1)]],
+    constant uint* rc               [[buffer(2)]],
+    constant uint& count            [[buffer(3)]],       // total number of hash pairs
+    constant uint& batchSize        [[buffer(4)]],      // pairs per thread
+    uint gid                        [[thread_position_in_grid]]
+) {
+    uint basePair = gid * batchSize;
+    uint endPair = basePair + batchSize;
+    if (basePair >= count) return;
+    if (endPair > count) endPair = count;
+
+    for (uint p = basePair; p < endPair; p++) {
+        M31 s[P2M31_T];
+        uint in_base = p * P2M31_T;
+        for (uint i = 0; i < P2M31_T; i++) {
+            s[i] = M31{input[in_base + i]};
+        }
+
+        p2m31_permute(s, rc);
+
+        uint out_base = p * P2M31_RATE;
+        for (uint i = 0; i < P2M31_RATE; i++) {
+            output[out_base + i] = s[i].v;
+        }
     }
 }
 

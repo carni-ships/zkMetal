@@ -190,6 +190,107 @@ public func runPoseidon2M31Bench() {
     print("\nPoseidon2 M31 benchmark complete.")
 }
 
+/// Batched hash pairs benchmark with batch size sweep
+public func runPoseidon2M31BatchedBench() {
+    print("=== Poseidon2 M31 Batched Hash Pairs ===")
+
+    do {
+        let engine = try Poseidon2M31Engine()
+        print("GPU: \(engine.device.name)")
+        print("hashPairs maxTG: \(engine.hashPairsMaxTG)")
+
+        // Test different pair counts and batch sizes
+        let configs: [(logN: Int, batchSizes: [Int])] = [
+            (10, [1, 2, 4, 8, 16]),
+            (12, [1, 4, 16, 64]),
+            (14, [1, 4, 16, 64]),
+            (16, [1, 4, 16, 64]),
+            (18, [1, 4, 16, 64]),
+        ]
+
+        for (logN, batchSizes) in configs {
+            let n = 1 << logN
+            let nodeSize = 8
+
+            // Generate input data once
+            var input = [M31](repeating: M31.zero, count: n * 2 * nodeSize)
+            var rng: UInt64 = 0xDEAD_BEEF
+            for i in 0..<input.count {
+                rng = rng &* 6364136223846793005 &+ 1442695040888963407
+                input[i] = M31(v: UInt32(truncatingIfNeeded: rng >> 33) % M31.P)
+            }
+
+            print("\n  --- 2^\(logN) = \(n) pairs ---")
+            print("  BS | Time(ms) | Hash/s | vs baseline")
+            print("  ---|----------|--------|------------")
+
+            // Baseline (non-batched)
+            let _ = try engine.hashPairs(input)
+            var baselineTimes = [Double]()
+            for _ in 0..<5 {
+                let t0 = CFAbsoluteTimeGetCurrent()
+                let _ = try engine.hashPairs(input)
+                baselineTimes.append((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+            }
+            baselineTimes.sort()
+            let baseline = baselineTimes[2]
+            let baselineHps = Double(n) / (baseline / 1000)
+            print(String(format: "  baseline: %7.2f ms (%8.0f hash/s)", baseline, baselineHps))
+
+            // Batched variants
+            for bs in batchSizes {
+                if bs == 1 { continue }  // skip bs=1 (same as baseline)
+
+                // Warmup
+                let _ = try engine.hashPairsBatched(input, batchSize: bs)
+
+                var times = [Double]()
+                for _ in 0..<5 {
+                    let t0 = CFAbsoluteTimeGetCurrent()
+                    let _ = try engine.hashPairsBatched(input, batchSize: bs)
+                    times.append((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+                }
+                times.sort()
+                let median = times[2]
+                let hashPerSec = Double(n) / (median / 1000)
+                let speedup = baseline / median
+                let marker = speedup > 1.0 ? " ↑\(String(format: "%.2f", speedup))x" : (speedup < 1.0 ? " ↓\(String(format: "%.2f", speedup))x" : "")
+                print(String(format: "  %3d |  %6.2f  | %8.0f%@", bs, median, hashPerSec, marker))
+            }
+        }
+
+        // Correctness check for batched kernel
+        print("\n  --- Correctness Check ---")
+        let n = 1024
+        var input = [M31](repeating: M31.zero, count: n * 2 * 8)
+        var rng: UInt64 = 0xCAFE_BABE
+        for i in 0..<input.count {
+            rng = rng &* 6364136223846793005 &+ 1442695040888963407
+            input[i] = M31(v: UInt32(truncatingIfNeeded: rng >> 33) % M31.P)
+        }
+
+        let baselineResult = try engine.hashPairs(input)
+        var allCorrect = true
+        for bs in [2, 4, 8, 16] {
+            let batchedResult = try engine.hashPairsBatched(input, batchSize: bs)
+            var match = true
+            for i in 0..<baselineResult.count {
+                if baselineResult[i].v != batchedResult[i].v {
+                    match = false
+                    break
+                }
+            }
+            print("  batchSize=\(bs): \(match ? "[pass]" : "[FAIL]")")
+            if !match { allCorrect = false }
+        }
+
+    } catch {
+        print("  [FAIL] GPU error: \(error)")
+    }
+
+    print("\nPoseidon2 M31 batched benchmark complete.")
+}
+
 /// Threadgroup size sweep for Poseidon2-M31 hash pairs kernel
 public func runPoseidon2M31TGSweep() {
     print("=== Poseidon2 M31 Threadgroup Size Sweep ===")
