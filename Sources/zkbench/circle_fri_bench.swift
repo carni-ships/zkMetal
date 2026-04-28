@@ -52,8 +52,30 @@ public func runCircleFRIBench() {
             alphas.append(M31(v: UInt32(17 + r * 13)))
         }
 
+        // Step-by-step CPU for debugging
+        var cpuStep = multiEvals
+        var cpuXs = (0..<(multiN/2)).map { circleCosetDomain(logN: multiLogN)[$0].x }
+        for r in 0..<numRounds {
+            let isFirst = (r == 0)
+            let foldLogN = multiLogN - r
+            if isFirst {
+                cpuStep = CircleFRIEngine.cpuFold(evals: cpuStep, alpha: alphas[r], logN: foldLogN, isFirstFold: true)
+            } else {
+                cpuStep = CircleFRIEngine.cpuFold(evals: cpuStep, alpha: alphas[r], logN: foldLogN, isFirstFold: false, xCoords: cpuXs)
+                // Update xCoords for next round
+                let two = M31(v: 2)
+                let foldHalf = cpuXs.count / 2
+                var newXs = [M31](repeating: M31.zero, count: foldHalf)
+                for i in 0..<foldHalf {
+                    newXs[i] = m31Sub(m31Mul(two, m31Sqr(cpuXs[i])), M31.one)
+                }
+                cpuXs = newXs
+            }
+            print("  CPU round \(r): size=\(cpuStep.count), [0]=\(cpuStep[0].v), [128]=\(cpuStep[128].v)")
+        }
+        let cpuMulti = cpuStep
+
         let gpuMulti = try engine.multiFold(evals: multiEvals, alphas: alphas)
-        let cpuMulti = CircleFRIEngine.cpuMultiFold(evals: multiEvals, alphas: alphas, logN: multiLogN)
 
         var multiCorrect = gpuMulti.count == cpuMulti.count
         if multiCorrect {

@@ -774,45 +774,40 @@ public class GPUMerkleTreeM31Engine {
         }
 
         // Build internal nodes level-by-level using per-tree dispatch
-        // (hashPairsFunction works correctly; treeBatchFunction has issues)
-        guard let buildCmdBuf = commandQueue.makeCommandBuffer() else {
-            throw MSMError.noCommandBuffer
-        }
-        let buildEnc = buildCmdBuf.makeComputeCommandEncoder()!
+        // Process each tree independently to avoid GPU state issues
+        for treeIdx in 0..<numTrees {
+            let treeBase = treeIdx * treeSize * nodeSize
 
-        var currentLevelNodes = n
-        var levelStart = 0
+            // Process this tree's levels one at a time, waiting for each level to complete
+            var currentLevelNodes = n
+            var levelStart = 0
 
-        while currentLevelNodes > 1 {
-            let pairs = currentLevelNodes / 2
-            // Process each tree's level separately using hashPairsFunction
-            for treeIdx in 0..<numTrees {
-                let treeBase = treeIdx * treeSize * nodeSize
+            while currentLevelNodes > 1 {
+                let pairs = currentLevelNodes / 2
                 let inputOffset = treeBase + levelStart * nodeSize
                 let outputOffset = treeBase + (levelStart + currentLevelNodes) * nodeSize
 
-                buildEnc.setComputePipelineState(hashPairsFunction)
-                buildEnc.setBuffer(treeBuf, offset: inputOffset * stride, index: 0)
-                buildEnc.setBuffer(treeBuf, offset: outputOffset * stride, index: 1)
-                buildEnc.setBuffer(rcBuffer, offset: 0, index: 2)
+                guard let cmdBuf = commandQueue.makeCommandBuffer() else {
+                    throw MSMError.noCommandBuffer
+                }
+                let enc = cmdBuf.makeComputeCommandEncoder()!
+
+                enc.setComputePipelineState(hashPairsFunction)
+                enc.setBuffer(treeBuf, offset: inputOffset * stride, index: 0)
+                enc.setBuffer(treeBuf, offset: outputOffset * stride, index: 1)
+                enc.setBuffer(rcBuffer, offset: 0, index: 2)
                 var pairCount = UInt32(pairs)
-                buildEnc.setBytes(&pairCount, length: 4, index: 3)
+                enc.setBytes(&pairCount, length: 4, index: 3)
                 let tgSize = min(tuning.hashThreadgroupSize, Int(hashPairsFunction.maxTotalThreadsPerThreadgroup))
-                buildEnc.dispatchThreads(MTLSize(width: pairs, height: 1, depth: 1),
+                enc.dispatchThreads(MTLSize(width: pairs, height: 1, depth: 1),
                                         threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
+                enc.endEncoding()
+                cmdBuf.commit()
+                cmdBuf.waitUntilCompleted()
+
+                levelStart += currentLevelNodes
+                currentLevelNodes = pairs
             }
-
-            buildEnc.memoryBarrier(scope: .buffers)
-
-            levelStart += currentLevelNodes
-            currentLevelNodes = pairs
-        }
-
-        buildEnc.endEncoding()
-        buildCmdBuf.commit()
-        buildCmdBuf.waitUntilCompleted()
-        if let error = buildCmdBuf.error {
-            throw MSMError.gpuError(error.localizedDescription)
         }
 
         // Extract roots from all trees
