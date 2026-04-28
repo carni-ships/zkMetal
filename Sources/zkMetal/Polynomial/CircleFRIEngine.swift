@@ -171,6 +171,42 @@ public class CircleFRIEngine {
         return bufs
     }
 
+    /// For fused2 kernel x-fold: inv_2x indexed by i corresponds to x-coord at position [currentSize/2 + i]
+    /// This is the UPPER half because fused2 pairs f1[i] with f1[i+currentSize/2]
+    private func getInv2xFused(logN: Int) -> [MTLBuffer] {
+        let n = 1 << logN
+        let half = n / 2
+        let domain = circleCosetDomain(logN: logN)
+
+        // After y-fold: domain becomes x-coordinates of the first half
+        var xs = (0..<half).map { domain[$0].x }
+
+        var bufs: [MTLBuffer] = []
+        let two = M31(v: 2)
+
+        var currentSize = half
+        while currentSize > 1 {
+            let foldHalf = currentSize / 2
+            // For fused2: inv_2x[i] is for x-coordinate at position [foldHalf + i]
+            var inv2x = [M31](repeating: M31.zero, count: foldHalf)
+            for i in 0..<foldHalf {
+                let twoX = m31Mul(two, xs[foldHalf + i])
+                inv2x[i] = m31Inverse(twoX)
+            }
+            bufs.append(createM31Buffer(inv2x)!)
+
+            // Apply squaring map: x -> 2x^2 - 1 for next round
+            var newXs = [M31](repeating: M31.zero, count: foldHalf)
+            for i in 0..<foldHalf {
+                newXs[i] = m31Sub(m31Mul(two, m31Sqr(xs[i])), M31.one)
+            }
+            xs = newXs
+            currentSize = foldHalf
+        }
+
+        return bufs
+    }
+
     private func createM31Buffer(_ data: [M31]) -> MTLBuffer? {
         let byteCount = data.count * MemoryLayout<M31>.stride
         guard let buf = device.makeBuffer(length: byteCount, options: .storageModeShared) else {
@@ -293,6 +329,7 @@ public class CircleFRIEngine {
         // Precompute all twiddles
         let inv2yBuf = getInv2y(logN: logN)
         let inv2xBufs = getInv2x(logN: logN)
+        let inv2xBufsFused = getInv2xFused(logN: logN)
 
         guard let cmdBuf = commandQueue.makeCommandBuffer() else {
             throw MSMError.noCommandBuffer
@@ -307,10 +344,10 @@ public class CircleFRIEngine {
         while round < alphas.count {
             let roundsRemaining = alphas.count - round
 
-            // DISABLED: foldFused2 kernel has correctness issue. The kernel's x-fold pairs
-            // f1[i] with f1[i+n/4] using inv_2x indexed by i, but the current getInv2x
-            // precomputes inv_2x for the WRONG domain positions for this pairing.
-            // Need to fix getInv2x to produce correct inv_2x for f1[i]-f1[i+n/4] pairing.
+            // foldFused2 kernel has a structural pairing mismatch that cannot be fixed
+            // by changing getInv2x alone. The kernel's x-fold pairs f1[i] with f1[i+n/4]
+            // using inv_2x indexed by i, but this pairing is incompatible with the
+            // x-coordinate squaring-map transformation that the x-fold formula requires.
             // Single-round dispatch path is correct and performs well.
             if false && roundsRemaining >= 2 && logN - round >= 2 {
                 // Use fused2 kernel: y-fold + x-fold in one dispatch
@@ -327,7 +364,7 @@ public class CircleFRIEngine {
                 enc.setBuffer(currentBuf, offset: 0, index: 0)
                 enc.setBuffer(outputBuf, offset: 0, index: 1)
                 enc.setBuffer(inv2yBuf, offset: 0, index: 2)
-                enc.setBuffer(inv2xBufs[round], offset: 0, index: 3)
+                enc.setBuffer(inv2xBufsFused[round], offset: 0, index: 3)
                 enc.setBytes(&alpha0, length: stride, index: 4)
                 enc.setBytes(&alpha1, length: stride, index: 5)
                 enc.setBytes(&nVal, length: 4, index: 6)
