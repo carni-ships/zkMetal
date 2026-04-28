@@ -358,34 +358,33 @@ public class FusedDeepFoldEngine {
         if kernel === fusedBy4Kernel && numRounds == 3 {
             // Kernel signature: sharedMem(0), az0(1), bz0(2), cz0(3),
             // az1(4), bz1(5), cz1(6), az2(7), bz2(8), cz2(9),
-            // az3(10), bz3(11), cz3(12), r(13), u0(14), outputT(15)
-            // NOTE: by4 kernel actually processes only 3 rounds (0,1,2)
+            // az3(9), bz3(10), cz3(11), r(12), u0(13), outputT(14)
             enc.setComputePipelineState(kernel)
             enc.setBuffer(tgMem, offset: 0, index: 0)
             enc.setBuffer(az0Buf, offset: 0, index: 1)
             enc.setBuffer(bz0Buf, offset: 0, index: 2)
             enc.setBuffer(cz0Buf, offset: 0, index: 3)
-            // Round 0: az1, bz1, cz1 (buffers 4,5,6)
+            // Round 0: az1, bz1, cz1 (buffers 4, 5, 6)
             enc.setBuffer(azBuffers[0], offset: 0, index: 4)
             enc.setBuffer(bzBuffers[0], offset: 0, index: 5)
             enc.setBuffer(czBuffers[0], offset: 0, index: 6)
-            // Round 1: az2, bz2, cz2 (buffers 7,8,9)
+            // Round 1: az2, bz2, cz2 (buffers 7, 8, 9)
             enc.setBuffer(azBuffers[1], offset: 0, index: 7)
             enc.setBuffer(bzBuffers[1], offset: 0, index: 8)
             enc.setBuffer(czBuffers[1], offset: 0, index: 9)
-            // Round 2: az3, bz3, cz3 (buffers 10,11,12)
-            enc.setBuffer(azBuffers[2], offset: 0, index: 10)
-            enc.setBuffer(bzBuffers[2], offset: 0, index: 11)
-            enc.setBuffer(czBuffers[2], offset: 0, index: 12)
-            // r at 13, u0 at 14, outputT at 15
-            enc.setBuffer(challengesBuf, offset: 0, index: 13)
-            enc.setBuffer(u0Buf, offset: 0, index: 14)
-            enc.setBuffer(outputT, offset: 0, index: 15)
+            // Round 2: az3, bz3, cz3 (buffers 9, 10, 11)
+            enc.setBuffer(azBuffers[2], offset: 0, index: 9)
+            enc.setBuffer(bzBuffers[2], offset: 0, index: 10)
+            enc.setBuffer(czBuffers[2], offset: 0, index: 11)
+            // r at 12, u0 at 13, outputT at 14
+            enc.setBuffer(challengesBuf, offset: 0, index: 12)
+            enc.setBuffer(u0Buf, offset: 0, index: 13)
+            enc.setBuffer(outputT, offset: 0, index: 14)
 
             let gridSize = MTLSize(width: n, height: 1, depth: 1)
             let tgSize = MTLSize(width: threadgroupSize, height: 1, depth: 1)
             enc.dispatchThreads(gridSize, threadsPerThreadgroup: tgSize)
-        } else if kernel === fusedBy8Kernel && numRounds == 8 {
+        } else if kernel === fusedBy8Kernel && numRounds == 7 {
             // Kernel signature: sharedMem(0), az0(1), bz0(2), cz0(3),
             // az1(4), bz1(5), cz1(6), az2(7), bz2(8), cz2(9),
             // az3(10), bz3(11), cz3(12), az4(13), bz4(14), cz4(15),
