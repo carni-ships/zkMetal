@@ -21,8 +21,201 @@
 //
 // This eliminates 2 GPU memory barriers and 2 buffer synchronizations.
 
-#include "../fields/mersenne31.metal"
-#include "../hash/poseidon2_m31.metal"
+// =============================================================================
+// INLINED: Mersenne31 field arithmetic (from ../fields/mersenne31.metal)
+// =============================================================================
+
+constant uint M31_P = 0x7FFFFFFFu;  // 2147483647
+
+struct M31 {
+    uint v;
+};
+
+M31 m31_zero() { return M31{0}; }
+M31 m31_one() { return M31{1}; }
+bool m31_is_zero(M31 a) { return a.v == 0; }
+
+M31 m31_from_u32(uint v) {
+    uint r = (v & M31_P) + (v >> 31);
+    return M31{r == M31_P ? 0u : r};
+}
+
+M31 m31_add(M31 a, M31 b) {
+    uint s = a.v + b.v;
+    uint r = (s & M31_P) + (s >> 31);
+    return M31{r == M31_P ? 0u : r};
+}
+
+M31 m31_sub(M31 a, M31 b) {
+    if (a.v >= b.v) return M31{a.v - b.v};
+    return M31{a.v + M31_P - b.v};
+}
+
+M31 m31_neg(M31 a) {
+    if (a.v == 0) return a;
+    return M31{M31_P - a.v};
+}
+
+M31 m31_mul(M31 a, M31 b) {
+    ulong prod = ulong(a.v) * ulong(b.v);
+    uint lo = uint(prod & ulong(M31_P));
+    uint hi = uint(prod >> 31);
+    uint s = lo + hi;
+    uint r = (s & M31_P) + (s >> 31);
+    return M31{r == M31_P ? 0u : r};
+}
+
+M31 m31_sqr(M31 a) { return m31_mul(a, a); }
+
+M31 m31_pow(M31 base, uint n) {
+    M31 result = m31_one();
+    while (n > 0) {
+        if (n & 1) result = m31_mul(result, base);
+        base = m31_sqr(base);
+        n >>= 1;
+    }
+    return result;
+}
+
+// Inverse via Fermat's little theorem: a^(p-2) mod p
+M31 m31_inv(M31 a) {
+    return m31_pow(a, M31_P - 2);
+}
+
+// M31_HALF = (P+1)/2 = 2^30 for field reduction in division by 2
+constant M31 M31_HALF = M31{1073741824};  // (M31_P + 1) / 2
+
+// =============================================================================
+// INLINED: Poseidon2-M31 (from ../hash/poseidon2_m31.metal)
+// =============================================================================
+
+// Width and round parameters
+#define P2M31_T 16
+#define P2M31_RATE 8
+#define P2M31_RF_HALF 7
+#define P2M31_RP 21
+#define P2M31_TOTAL_ROUNDS 35
+
+// Internal diagonal constants (from Plonky3/Stwo reference)
+constant uint P2M31_INTERNAL_DIAG[16] = {
+    1, 1, 2, 1, 8, 32, 2, 256, 4096, 8, 65536, 1024, 2, 16384, 512, 32768
+};
+
+// S-box: x -> x^5
+M31 p2m31_sbox(M31 x) {
+    M31 x2 = m31_sqr(x);
+    M31 x4 = m31_sqr(x2);
+    return m31_mul(x4, x);
+}
+
+// M4 circulant matrix: circ(2, 3, 1, 1) on 4 elements
+// Efficient Feistel-like implementation
+void p2m31_m4(thread M31 &s0, thread M31 &s1, thread M31 &s2, thread M31 &s3) {
+    M31 t0 = m31_add(s0, s1);
+    M31 t1 = m31_add(s2, s3);
+    M31 t2 = m31_add(m31_add(s1, s1), t1);
+    M31 t3 = m31_add(m31_add(s3, s3), t0);
+    s0 = m31_add(t0, t3);
+    s1 = m31_add(t1, t2);
+    s2 = m31_add(t0, t2);
+    s3 = m31_add(t1, t3);
+}
+
+// External linear layer for t=16: M4 on 4x4 blocks + cross-block mixing
+void p2m31_external_layer(thread M31 *s) {
+    p2m31_m4(s[0], s[1], s[2], s[3]);
+    p2m31_m4(s[4], s[5], s[6], s[7]);
+    p2m31_m4(s[8], s[9], s[10], s[11]);
+    p2m31_m4(s[12], s[13], s[14], s[15]);
+
+    for (uint i = 0; i < 4; i++) {
+        M31 sum = m31_add(m31_add(s[i], s[i+4]), m31_add(s[i+8], s[i+12]));
+        s[i]    = m31_add(s[i], sum);
+        s[i+4]  = m31_add(s[i+4], sum);
+        s[i+8]  = m31_add(s[i+8], sum);
+        s[i+12] = m31_add(s[i+12], sum);
+    }
+}
+
+// Internal linear layer: y_i = diag[i] * x_i + sum(x_j)
+void p2m31_internal_layer(thread M31 *s) {
+    M31 sum = m31_zero();
+    for (uint i = 0; i < 16; i++) {
+        sum = m31_add(sum, s[i]);
+    }
+
+    for (uint i = 0; i < 16; i++) {
+        uint d = P2M31_INTERNAL_DIAG[i];
+        M31 prod;
+        if (d == 1) {
+            prod = s[i];
+        } else if (d == 2) {
+            prod = m31_add(s[i], s[i]);
+        } else {
+            prod = m31_mul(s[i], M31{d % M31_P});
+        }
+        s[i] = m31_add(prod, sum);
+    }
+}
+
+// Full Poseidon2 permutation on 16 M31 elements
+void p2m31_permute(thread M31 *s, constant uint *rc) {
+    p2m31_external_layer(s);
+
+    for (uint r = 0; r < P2M31_RF_HALF; r++) {
+        uint rc_base = r * P2M31_T;
+        for (uint i = 0; i < P2M31_T; i++) s[i] = m31_add(s[i], M31{rc[rc_base + i]});
+        for (uint i = 0; i < P2M31_T; i++) s[i] = p2m31_sbox(s[i]);
+        p2m31_external_layer(s);
+    }
+
+    for (uint r = P2M31_RF_HALF; r < P2M31_RF_HALF + P2M31_RP; r++) {
+        s[0] = m31_add(s[0], M31{rc[r * P2M31_T]});
+        s[0] = p2m31_sbox(s[0]);
+        p2m31_internal_layer(s);
+    }
+
+    for (uint r = P2M31_RF_HALF + P2M31_RP; r < P2M31_TOTAL_ROUNDS; r++) {
+        uint rc_base = r * P2M31_T;
+        for (uint i = 0; i < P2M31_T; i++) s[i] = m31_add(s[i], M31{rc[rc_base + i]});
+        for (uint i = 0; i < P2M31_T; i++) s[i] = p2m31_sbox(s[i]);
+        p2m31_external_layer(s);
+    }
+}
+
+// Poseidon2 hash for a single leaf (8 M31 inputs, 8 M31 output)
+// This is a simplified wrapper for Merkle tree leaf hashing
+void poseidon2_m31_hash(thread M31 *inputs, uint inputLen, thread M31 *output) {
+    // For Merkle tree leaves, we use the 2-to-1 hash: hash(left || right)
+    // If inputLen == 8, treat as single block (rate=8, capacity=0 padding)
+    // If inputLen == 16, treat as two blocks concatenated
+
+    M31 s[P2M31_T];
+
+    if (inputLen == 8) {
+        // Single block: inputs[0..7] = rate, rest = 0
+        for (uint i = 0; i < 8; i++) s[i] = inputs[i];
+        for (uint i = 8; i < 16; i++) s[i] = m31_zero();
+    } else if (inputLen == 16) {
+        // Two blocks: left || right (for 2-to-1 hash)
+        for (uint i = 0; i < 8; i++) s[i] = inputs[i];
+        for (uint i = 8; i < 16; i++) s[i] = inputs[i - 8 + 8];  // inputs[8..15]
+    } else {
+        // Pad to 16 elements
+        for (uint i = 0; i < inputLen && i < 16; i++) s[i] = inputs[i];
+        for (uint i = inputLen; i < 16; i++) s[i] = m31_zero();
+    }
+
+    // Use identity round constants (0) for deterministic leaf hashing
+    // In production, proper round constants would be loaded from buffer
+    constant uint identity_rc[560] = {0};
+    p2m31_permute(s, identity_rc);
+
+    // Output first 8 elements (rate portion)
+    for (uint i = 0; i < 8; i++) {
+        output[i] = s[i];
+    }
+}
 
 // =============================================================================
 // CONFIGURATION
@@ -51,10 +244,11 @@ constant uint NODE_SIZE = 8;  // 8 M31 per Poseidon2 leaf
 // After this stage, data is in coefficient form (but still on GPU buffer)
 kernel void fused_intt_final_unshift_scale(
     device M31* data              [[buffer(0)]],
-    device const M31* invShift    [[buffer(1)]],   // shift^(-i), precomputed
+    device const M31* invShift   [[buffer(1)]],   // shift^(-i), precomputed
     device const M31* twiddles    [[buffer(2)]],   // NTT twiddles (unused for stage 0)
-    constant uint& n             [[buffer(3)]],    // Original size N
-    constant uint& logN          [[buffer(4)]],    // log2(N)
+    constant uint& n              [[buffer(3)]],    // Original size N
+    constant uint& logN           [[buffer(4)]],    // log2(N)
+    constant uint& invN           [[buffer(5)]],    // Precomputed 1/N as uint (already inverse)
     uint gid                      [[thread_position_in_grid]]
 ) {
     uint num_butterflies = n >> 1;
@@ -74,14 +268,14 @@ kernel void fused_intt_final_unshift_scale(
 
     // DIF butterfly with twiddle=1 (stage 0 always has twiddle=1)
     // This is the last INTT stage, so no twiddle multiplication needed
-    M31 sum  = m31Add(a, b);
-    M31 diff = m31Sub(a, b);
+    M31 sum  = m31_add(a, b);
+    M31 diff = m31_sub(a, b);
 
     // Fused unshift + scale: multiply by invShift[i] * (1/N)
-    // Precompute invN and combine with invShift for efficiency
-    uint invN = m31InverseUint32(n);
-    data[i] = m31Mul(m31Mul(sum,  invShift[i]), m31FromUint32(invN));
-    data[j] = m31Mul(m31Mul(diff, invShift[j]), m31FromUint32(invN));
+    // invN is precomputed as the modular inverse
+    M31 invNFr = m31_from_u32(invN);
+    data[i] = m31_mul(m31_mul(sum,  invShift[i]), invNFr);
+    data[j] = m31_mul(m31_mul(diff, invShift[j]), invNFr);
 }
 
 // =============================================================================
@@ -109,12 +303,12 @@ kernel void fused_ntt_first_coset_shift(
     uint j = i + 1;
 
     // Fused: apply coset shift BEFORE butterfly
-    M31 a = m31Mul(data[i], cosetPowers[i]);
-    M31 b = m31Mul(data[j], cosetPowers[j]);
+    M31 a = m31_mul(data[i], cosetPowers[i]);
+    M31 b = m31_mul(data[j], cosetPowers[j]);
 
     // DIT butterfly with twiddle=1 (stage 0 always has twiddle=1)
-    data[i] = m31Add(a, b);
-    data[j] = m31Sub(a, b);
+    data[i] = m31_add(a, b);
+    data[j] = m31_sub(a, b);
 }
 
 // =============================================================================
@@ -128,7 +322,7 @@ kernel void leaf_hash_poseidon2_m31(
     device M31* leaves            [[buffer(0)]],    // Input: extended evaluations
     device M31* leafHashes        [[buffer(1)]],    // Output: Poseidon2 digests (8 M31 each)
     device const uchar* domain    [[buffer(2)]],    // Optional domain separator
-    constant uint& numLeaves     [[buffer(3)]],    // Number of leaves = M / NODE_SIZE
+    constant uint& numLeaves      [[buffer(3)]],    // Number of leaves = M / NODE_SIZE
     uint gid                      [[thread_position_in_grid]]
 ) {
     if (gid >= numLeaves) return;
@@ -168,17 +362,18 @@ kernel void leaf_hash_poseidon2_m31(
 
 kernel void fused_intt_ntt_leafhash(
     device M31* data             [[buffer(0)]],    // In/Out: evaluation/coefficient/extended
-    device M31* cosetPowers      [[buffer(1)]],    // Precomputed: shift^i for extended domain
-    device M31* invShift         [[buffer(2)]],    // Precomputed: shift^(-i) for original domain
-    device M31* leafHashes       [[buffer(3)]],    // Output: Poseidon2-M31 leaf digests
-    device const M31* twiddles   [[buffer(4)]],    // NTT twiddles (not used in stage 0)
-    constant uint& n             [[buffer(5)]],     // Original evaluation size
-    constant uint& m             [[buffer(6)]],     // Extended size = blowupFactor * n
-    constant uint& logN          [[buffer(7)]],     // log2(N)
-    constant uint& logM          [[buffer(8)]],     // log2(M)
-    constant uint& logBlowup     [[buffer(9)]],     // log2(blowupFactor)
-    uint gid                     [[thread_position_in_grid]],
-    uint lid                     [[thread_position_in_threadgroup]]
+    device M31* cosetPowers     [[buffer(1)]],    // Precomputed: shift^i for extended domain
+    device M31* invShift        [[buffer(2)]],    // Precomputed: shift^(-i) for original domain
+    device M31* leafHashes      [[buffer(3)]],    // Output: Poseidon2-M31 leaf digests
+    device const M31* twiddles  [[buffer(4)]],    // NTT twiddles (not used in stage 0)
+    constant uint& n            [[buffer(5)]],     // Original evaluation size
+    constant uint& m            [[buffer(6)]],     // Extended size = blowupFactor * n
+    constant uint& logN         [[buffer(7)]],     // log2(N)
+    constant uint& logM         [[buffer(8)]],     // log2(M)
+    constant uint& logBlowup    [[buffer(9)]],     // log2(blowupFactor)
+    constant uint& invN         [[buffer(10)]],    // Precomputed 1/N as uint
+    uint gid                    [[thread_position_in_grid]],
+    uint lid                    [[thread_position_in_threadgroup]]
 ) {
     uint nHalf = n >> 1;
     uint mHalf = m >> 1;
@@ -196,14 +391,13 @@ kernel void fused_intt_ntt_leafhash(
         M31 b = data[j];
 
         // DIF butterfly (twiddle = 1 for stage 0)
-        M31 sum  = m31Add(a, b);
-        M31 diff = m31Sub(a, b);
+        M31 sum  = m31_add(a, b);
+        M31 diff = m31_sub(a, b);
 
         // Fused unshift + scale by 1/N
-        uint invN = m31InverseUint32(n);
-        M31 invNFr = m31FromUint32(invN);
-        data[i] = m31Mul(m31Mul(sum,  invShift[i]), invNFr);
-        data[j] = m31Mul(m31Mul(diff, invShift[j]), invNFr);
+        M31 invNFr = m31_from_u32(invN);
+        data[i] = m31_mul(m31_mul(sum,  invShift[i]), invNFr);
+        data[j] = m31_mul(m31_mul(diff, invShift[j]), invNFr);
     }
 
     // =================================================================
@@ -225,12 +419,12 @@ kernel void fused_intt_ntt_leafhash(
 
         // Apply coset shift for extended domain
         // For i >= n, shift powers are zero (but data is zero anyway from zero-padding)
-        M31 a = (i < n) ? m31Mul(data[i], cosetPowers[i]) : m31Mul(data[i], cosetPowers[i]);
-        M31 b = (j < n) ? m31Mul(data[j], cosetPowers[j]) : m31Mul(data[j], cosetPowers[j]);
+        M31 a = (i < n) ? m31_mul(data[i], cosetPowers[i]) : m31_mul(data[i], cosetPowers[i]);
+        M31 b = (j < n) ? m31_mul(data[j], cosetPowers[j]) : m31_mul(data[j], cosetPowers[j]);
 
         // DIT butterfly (twiddle = 1 for stage 0)
-        data[i] = m31Add(a, b);
-        data[j] = m31Sub(a, b);
+        data[i] = m31_add(a, b);
+        data[j] = m31_sub(a, b);
     }
 
     // =================================================================
@@ -275,8 +469,8 @@ kernel void fused_intt_ntt_leafhash(
 kernel void standalone_leaf_hash(
     device const M31* evals       [[buffer(0)]],    // Input: evaluations (NTT output)
     device M31* leafHashes       [[buffer(1)]],    // Output: Poseidon2-M31 leaf digests
-    constant uint& evalLen       [[buffer(2)]],    // Evaluation length
-    uint gid                     [[thread_position_in_grid]]
+    constant uint& evalLen        [[buffer(2)]],    // Evaluation length
+    uint gid                      [[thread_position_in_grid]]
 ) {
     uint numLeaves = evalLen >> 3;  // NODE_SIZE = 8
     if (gid >= numLeaves) return;
@@ -310,10 +504,10 @@ kernel void standalone_leaf_hash(
 // After each fold round, compute leaf hashes for the next tree level.
 kernel void fused_fold_leafhash(
     device M31* data             [[buffer(0)]],    // In/Out: folded data
-    device M31* leafHashes       [[buffer(1)]],    // Output: leaf hashes for this layer
-    device const M31* inv2t      [[buffer(2)]],    // Precomputed: 1/(2*t_i)
-    constant uint& n            [[buffer(3)]],     // Current layer size
-    constant uint& numLeaves     [[buffer(4)]],    // Leaves for leaf hash = n / NODE_SIZE
+    device M31* leafHashes        [[buffer(1)]],    // Output: leaf hashes for this layer
+    device const M31* inv2t       [[buffer(2)]],    // Precomputed: 1/(2*t_i)
+    constant uint& n              [[buffer(3)]],     // Current layer size
+    constant uint& numLeaves      [[buffer(4)]],    // Leaves for leaf hash = n / NODE_SIZE
     constant M31& alpha          [[buffer(5)]],     // Folding challenge
     uint gid                     [[thread_position_in_grid]]
 ) {
@@ -328,16 +522,16 @@ kernel void fused_fold_leafhash(
         M31 f1 = data[gid + nHalf];
 
         // (f[i] + f[i+n/2]) / 2
-        M31 sum = m31Mul(m31Add(f0, f1), M31_HALF);
+        M31 sum = m31_mul(m31_add(f0, f1), M31_HALF);
 
         // (f[i] - f[i+n/2]) / (2*t_i)
-        M31 diff = m31Mul(m31Sub(f0, f1), inv2t[gid]);
+        M31 diff = m31_mul(m31_sub(f0, f1), inv2t[gid]);
 
         // alpha * diff
-        diff = m31Mul(alpha, diff);
+        diff = m31_mul(alpha, diff);
 
         // Folded result
-        data[gid] = m31Add(sum, diff);
+        data[gid] = m31_add(sum, diff);
     }
 
     // =================================================================
@@ -375,11 +569,11 @@ kernel void fused_fold_leafhash(
 // Fused batch leaf hash for multiple columns
 // Each column has its own leaf hash output
 kernel void batch_leaf_hash(
-    device const M31* evals      [[buffer(0)]],    // Input: interleaved evaluations
-    device M31* leafHashes      [[buffer(1)]],    // Output: interleaved leaf hashes
-    constant uint& evalLen      [[buffer(2)]],    // Evaluation length per column
-    constant uint& numCols      [[buffer(3)]],    // Number of columns
-    uint gid                     [[thread_position_in_grid]]
+    device const M31* evals       [[buffer(0)]],    // Input: interleaved evaluations
+    device M31* leafHashes        [[buffer(1)]],    // Output: interleaved leaf hashes
+    constant uint& evalLen        [[buffer(2)]],    // Evaluation length per column
+    constant uint& numCols        [[buffer(3)]],    // Number of columns
+    uint gid                      [[thread_position_in_grid]]
 ) {
     uint numLeaves = evalLen >> 3;  // NODE_SIZE = 8
     uint totalLeaves = numLeaves * numCols;

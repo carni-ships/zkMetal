@@ -783,12 +783,14 @@ public class GPUMerkleTreeM31Engine {
 
         while currentLevelNodes > 1 {
             let pairs = currentLevelNodes / 2
-            let inputOffset = levelStart * nodeSize
-            let outputOffset = (levelStart + currentLevelNodes) * nodeSize
+            // Byte offsets within each tree's section
+            let inputOffsetBytes = levelStart * nodeSize * stride
+            let outputOffsetBytes = (levelStart + currentLevelNodes) * nodeSize * stride
 
             buildEnc.setComputePipelineState(treeBatchFunction)
-            buildEnc.setBuffer(treeBuf, offset: inputOffset * stride, index: 0)
-            buildEnc.setBuffer(treeBuf, offset: outputOffset * stride, index: 1)
+            // Kernel handles tree layout internally, buffer offset is 0
+            buildEnc.setBuffer(treeBuf, offset: 0, index: 0)
+            buildEnc.setBuffer(treeBuf, offset: 0, index: 1)
             buildEnc.setBuffer(rcBuffer, offset: 0, index: 2)
             var numTreesVal = UInt32(numTrees)
             buildEnc.setBytes(&numTreesVal, length: 4, index: 3)
@@ -796,6 +798,10 @@ public class GPUMerkleTreeM31Engine {
             buildEnc.setBytes(&digestsPerTreeVal, length: 4, index: 4)
             var digestStrideVal = UInt32(treeSize * nodeSize)
             buildEnc.setBytes(&digestStrideVal, length: 4, index: 5)
+            var inputOffsetVal = UInt32(inputOffsetBytes)
+            buildEnc.setBytes(&inputOffsetVal, length: 4, index: 6)
+            var outputOffsetVal = UInt32(outputOffsetBytes)
+            buildEnc.setBytes(&outputOffsetVal, length: 4, index: 7)
             let tgSize = min(tuning.hashThreadgroupSize, Int(treeBatchFunction.maxTotalThreadsPerThreadgroup))
             buildEnc.dispatchThreads(MTLSize(width: pairs * numTrees, height: 1, depth: 1),
                                     threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))

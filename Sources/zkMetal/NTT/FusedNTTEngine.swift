@@ -135,27 +135,15 @@ public class FusedNTTEngine {
     }
 
     private static func compileShaders(device: MTLDevice) throws -> MTLLibrary {
+        // The fused shader already has M31 and Poseidon2 code fully inlined.
+        // We only need the fused shader source itself - no need to prepend
+        // mersenne31.metal or poseidon2.metal (that would cause duplicate definitions).
         let shaderDir = findShaderDir()
-        let m31Source = try String(contentsOfFile: shaderDir + "/fields/mersenne31.metal", encoding: .utf8)
-        let poseidon2Source = try String(contentsOfFile: shaderDir + "/hash/poseidon2_m31.metal", encoding: .utf8)
         let fusedSource = try String(contentsOfFile: shaderDir + "/ntt/fused_intt_ntt_leafhash.metal", encoding: .utf8)
 
-        // Clean sources by removing includes and guard macros
-        let cleanM31 = m31Source
-            .replacingOccurrences(of: "#ifndef MERSENNE31_METAL", with: "")
-            .replacingOccurrences(of: "#define MERSENNE31_METAL", with: "")
-            .replacingOccurrences(of: "#endif // MERSENNE31_METAL", with: "")
-
-        let cleanPoseidon = poseidon2Source
-            .replacingOccurrences(of: "#ifndef POSEIDON2_M31_METAL", with: "")
-            .replacingOccurrences(of: "#define POSEIDON2_M31_METAL", with: "")
-            .replacingOccurrences(of: "#endif // POSEIDON2_M31_METAL", with: "")
-
-        let cleanFused = fusedSource
-            .replacingOccurrences(of: "#include \"../fields/mersenne31.metal\"", with: "")
-            .replacingOccurrences(of: "#include \"../hash/poseidon2_m31.metal\"", with: "")
-
-        let combined = cleanM31 + "\n" + cleanPoseidon + "\n" + cleanFused
+        // The fused shader has no #include directives - everything is already inlined.
+        // Just use it directly.
+        let combined = fusedSource
 
         let options = MTLCompileOptions()
         options.fastMathEnabled = true

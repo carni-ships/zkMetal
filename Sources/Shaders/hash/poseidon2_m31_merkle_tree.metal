@@ -891,34 +891,30 @@ kernel void poseidon2_m31_merkle_tree_batch_v2(
     device uint* output           [[buffer(1)]],
     constant uint* rc            [[buffer(2)]],
     constant uint& numTrees       [[buffer(3)]],
-    constant uint& digestsPerTree [[buffer(4)]],  // e.g., 8 at level 0, 4 at level 1
-    constant uint& digestStride   [[buffer(5)]],  // spacing between digests: 1, 2, 4, 8
+    constant uint& digestsPerTree [[buffer(4)]],  // nodes at this level
+    constant uint& digestStride   [[buffer(5)]],  // treeSize * nodeSize bytes per tree section
+    constant uint& inputOffset   [[buffer(6)]],  // byte offset to input level within tree section
+    constant uint& outputOffset   [[buffer(7)]],  // byte offset to output level within tree section
     uint tid                      [[thread_position_in_threadgroup]],
     uint gid                      [[thread_position_in_grid]]
 ) {
-    uint treeIdx = gid;
+    // Grid: pairsPerTree * numTrees threads, treeIdx computed from gid
+    uint pairsPerTree = digestsPerTree / 2;
+    uint treeIdx = gid / pairsPerTree;
     if (treeIdx >= numTrees) return;
 
     uint pairIdx = tid;
-    uint numPairsPerTree = digestsPerTree / 2;
-    if (pairIdx >= numPairsPerTree) return;
+    if (pairIdx >= pairsPerTree) return;
 
-    // For pairing, we need 2 digests from the previous level
-    // Digest indices within tree: 2*pairIdx and 2*pairIdx+1
-    // Offset from tree start: (2*pairIdx) * digestStride * 8 + (2*pairIdx+1) * digestStride * 8
-    // But they're consecutive, so just: 2 * pairIdx * digestStride * 8
+    // Buffer layout: [tree0 treeSize nodes][tree1 treeSize nodes][tree2 treeSize nodes]...
+    // Each tree section starts at treeIdx * digestStride bytes
+    uint treeBase = treeIdx * digestStride;
 
-    // Actually, the two digests are consecutive in memory (digestStride=1 means consecutive)
-    uint leftDigestIdx = 2 * pairIdx;
-    uint rightDigestIdx = 2 * pairIdx + 1;
+    // Input children at inputOffset within tree section
+    uint leftOffset = treeBase + inputOffset + (2 * pairIdx) * 8;
+    uint rightOffset = leftOffset + 8;  // next digest
 
-    // Each digest is 8 M31s
-    // Tree's digests start at: treeIdx * digestsPerTree * 8
-    uint treeDigestsBase = treeIdx * digestsPerTree * 8;
-
-    uint leftOffset = treeDigestsBase + leftDigestIdx * 8;
-    uint rightOffset = treeDigestsBase + rightDigestIdx * 8;
-
+    // Load and hash
     M31 s[P2M31_T];
     for (uint i = 0; i < 8; i++) {
         s[i] = M31{input[leftOffset + i]};
@@ -929,10 +925,8 @@ kernel void poseidon2_m31_merkle_tree_batch_v2(
 
     p2m31_permute(s, rc);
 
-    // Output: new digests are consecutive within each tree
-    // Tree's new digests start at: treeIdx * numPairsPerTree * 8
-    uint outBase = treeIdx * numPairsPerTree * 8;
-    uint outOffset = outBase + pairIdx * 8;
+    // Output parent at outputOffset within tree section
+    uint outOffset = treeBase + outputOffset + pairIdx * 8;
 
     for (uint i = 0; i < 8; i++) {
         output[outOffset + i] = s[i].v;

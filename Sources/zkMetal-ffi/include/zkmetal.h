@@ -47,6 +47,9 @@ typedef void* ZkMetalFRIEngine;
 typedef void* ZkMetalPairingEngine;
 typedef void* ZkMetalPastaNTTEngine;
 typedef void* ZkMetalPastaPoseidonEngine;
+typedef void* ZkMetalCircleNTTEngine;
+typedef void* ZkMetalBatchCircleNTTEngine;
+typedef void* ZkMetalAdditiveFFTEngine;
 
 // ============================================================================
 // Engine lifecycle
@@ -107,11 +110,111 @@ ZkMetalStatus zkmetal_pasta_poseidon_engine_create(ZkMetalPastaPoseidonEngine* o
 /// Destroy a Pasta Poseidon engine.
 void zkmetal_pasta_poseidon_engine_destroy(ZkMetalPastaPoseidonEngine engine);
 
+/// Create a Batch Circle NTT engine (M31 field, GPU-accelerated).
+ZkMetalStatus zkmetal_batch_circle_ntt_engine_create(ZkMetalBatchCircleNTTEngine* out);
+
+/// Destroy a Batch Circle NTT engine.
+void zkmetal_batch_circle_ntt_engine_destroy(ZkMetalBatchCircleNTTEngine engine);
+
 /// Create a BN254 pairing engine.
 ZkMetalStatus zkmetal_pairing_engine_create(ZkMetalPairingEngine* out);
 
 /// Destroy a pairing engine.
 void zkmetal_pairing_engine_destroy(ZkMetalPairingEngine engine);
+
+/// Create a Circle NTT engine (Mersenne31 field, GPU-accelerated).
+ZkMetalStatus zkmetal_circle_ntt_engine_create(ZkMetalCircleNTTEngine* out);
+
+/// Destroy a Circle NTT engine.
+void zkmetal_circle_ntt_engine_destroy(ZkMetalCircleNTTEngine engine);
+
+/// Create an Additive FFT engine over GF(2^8).
+/// Populates the 256x256 multiplication LUT at init time.
+ZkMetalStatus zkmetal_additive_fft_engine_create(ZkMetalAdditiveFFTEngine* out);
+
+/// Destroy an Additive FFT engine, releasing GPU resources.
+void zkmetal_additive_fft_engine_destroy(ZkMetalAdditiveFFTEngine engine);
+
+// ============================================================================
+// Additive FFT (GF(2^8) — GPU-accelerated)
+// ============================================================================
+// Additive FFT over GF(2^8) with irreducible polynomial x^8 + x^4 + x^3 + x + 1 (0x11B).
+// Each GF(2^8) element is 1 byte (uint8_t).
+// Uses a 256x256 multiplication LUT (64KB) for GPU multiply operations.
+//
+// API:
+//   - forward:  in-place forward additive FFT
+//   - pointwise_mul: element-wise GF(2^8) multiply (out[i] = a[i] * b[i])
+//   - multiply: full polynomial multiply via FFT (forward + pointwise + inverse)
+
+/// Forward additive FFT in-place (engine-based).
+/// - data:  n bytes (n = 2^k GF(2^8) elements), modified in-place
+/// - n:     transform size (power of 2)
+/// - k:     log2(n)
+/// - basis: k GF(2^8) basis elements
+ZkMetalStatus zkmetal_additive_fft_forward(
+    ZkMetalAdditiveFFTEngine engine,
+    uint8_t* data,
+    uint32_t n,
+    uint32_t k,
+    const uint8_t* basis
+);
+
+/// Convenience forward additive FFT using a lazy singleton engine.
+ZkMetalStatus zkmetal_additive_fft_forward_auto(
+    uint8_t* data,
+    uint32_t n,
+    uint32_t k,
+    const uint8_t* basis
+);
+
+/// GF(2^8) pointwise multiply: out[i] = a[i] * b[i] in GF(2^8) (engine-based).
+/// - a, b: n bytes each (input)
+/// - n:    number of elements
+/// - out:  n bytes (output)
+ZkMetalStatus zkmetal_additive_fft_pointwise_mul(
+    ZkMetalAdditiveFFTEngine engine,
+    const uint8_t* a,
+    const uint8_t* b,
+    uint32_t n,
+    uint8_t* out
+);
+
+/// Convenience GF(2^8) pointwise multiply using a lazy singleton engine.
+ZkMetalStatus zkmetal_additive_fft_pointwise_mul_auto(
+    const uint8_t* a,
+    const uint8_t* b,
+    uint32_t n,
+    uint8_t* out
+);
+
+/// Full polynomial multiply over GF(2^8) via additive FFT (engine-based).
+/// Computes: c = a * b using forward FFT + pointwise multiply + inverse FFT.
+/// Both polynomials padded to n coefficients, result has at most n coefficients.
+/// - a, b:  at most n bytes each (input polynomials)
+/// - n:     transform size (power of 2, must be >= a.len + b.len - 1)
+/// - k:     log2(n)
+/// - basis: k GF(2^8) basis elements
+/// - out:   n bytes (product polynomial, degree < n)
+ZkMetalStatus zkmetal_additive_fft_multiply(
+    ZkMetalAdditiveFFTEngine engine,
+    const uint8_t* a,
+    const uint8_t* b,
+    uint32_t n,
+    uint32_t k,
+    const uint8_t* basis,
+    uint8_t* out
+);
+
+/// Convenience full polynomial multiply using a lazy singleton engine.
+ZkMetalStatus zkmetal_additive_fft_multiply_auto(
+    const uint8_t* a,
+    const uint8_t* b,
+    uint32_t n,
+    uint32_t k,
+    const uint8_t* basis,
+    uint8_t* out
+);
 
 // ============================================================================
 // MSM — Multi-Scalar Multiplication (BN254 G1)
@@ -268,6 +371,41 @@ ZkMetalStatus zkmetal_vesta_intt_auto(
 );
 
 // ============================================================================
+// Circle NTT (Mersenne31 field — GPU-accelerated)
+// ============================================================================
+// Circle NTT operates over the Mersenne31 field (p = 2^31 - 1).
+// Each M31 element is 4 bytes. Data layout is 2^log_n * 4 bytes.
+// The circle group has order p+1 = 2^31, giving full 2-adicity.
+// Layer 0 uses y-coordinate twiddles; layers 1..k-1 use x-coordinate twiddles.
+
+/// Forward Circle NTT in-place (engine-based).
+/// data is n field elements (n = 2^log_n), each 4 bytes (Mersenne31).
+ZkMetalStatus zkmetal_circle_ntt(
+    ZkMetalCircleNTTEngine engine,
+    uint8_t* data,
+    uint32_t log_n
+);
+
+/// Inverse Circle NTT in-place (engine-based).
+ZkMetalStatus zkmetal_circle_intt(
+    ZkMetalCircleNTTEngine engine,
+    uint8_t* data,
+    uint32_t log_n
+);
+
+/// Convenience forward Circle NTT using a lazy singleton engine.
+ZkMetalStatus zkmetal_circle_ntt_auto(
+    uint8_t* data,
+    uint32_t log_n
+);
+
+/// Convenience inverse Circle NTT using a lazy singleton engine.
+ZkMetalStatus zkmetal_circle_intt_auto(
+    uint8_t* data,
+    uint32_t log_n
+);
+
+// ============================================================================
 // Poseidon2 Hash (BN254 Fr)
 // ============================================================================
 
@@ -356,6 +494,49 @@ ZkMetalStatus zkmetal_fri_fold_auto(
     uint32_t log_n,
     const uint8_t* beta,
     uint8_t* result
+);
+
+// ============================================================================
+// Batch Circle NTT (M31 field — GPU-accelerated)
+// ============================================================================
+// Batch Circle NTT processes multiple columns in a single GPU dispatch.
+// Data Layout: columns sequential in one buffer [col0: N][col1: N]...[colN-1: N]
+// Total buffer size = num_columns * (1 << log_n) * 4 bytes (M31).
+// All columns share the same size (1 << log_n).
+
+/// Forward batch Circle NTT on multiple columns (in-place).
+///
+/// - engine:      Batch Circle NTT engine handle
+/// - data:        num_columns * 2^log_n M31 elements (4 bytes each), sequential layout
+/// - num_columns: number of columns to process
+/// - log_n:       log2 of transform size (each column has 2^log_n elements)
+ZkMetalStatus zkmetal_batch_circle_ntt(
+    ZkMetalBatchCircleNTTEngine engine,
+    uint8_t* data,
+    uint32_t num_columns,
+    uint32_t log_n
+);
+
+/// Inverse batch Circle NTT on multiple columns (in-place).
+ZkMetalStatus zkmetal_batch_circle_intt(
+    ZkMetalBatchCircleNTTEngine engine,
+    uint8_t* data,
+    uint32_t num_columns,
+    uint32_t log_n
+);
+
+/// Convenience forward batch Circle NTT using a lazy singleton engine.
+ZkMetalStatus zkmetal_batch_circle_ntt_auto(
+    uint8_t* data,
+    uint32_t num_columns,
+    uint32_t log_n
+);
+
+/// Convenience inverse batch Circle NTT using a lazy singleton engine.
+ZkMetalStatus zkmetal_batch_circle_intt_auto(
+    uint8_t* data,
+    uint32_t num_columns,
+    uint32_t log_n
 );
 
 // ============================================================================

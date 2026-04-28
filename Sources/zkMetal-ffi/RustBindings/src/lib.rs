@@ -91,6 +91,10 @@ mod ffi {
         pub fn zkmetal_fri_engine_destroy(engine: *mut std::ffi::c_void);
         pub fn zkmetal_pairing_engine_create(out: *mut *mut std::ffi::c_void) -> i32;
         pub fn zkmetal_pairing_engine_destroy(engine: *mut std::ffi::c_void);
+        pub fn zkmetal_circle_ntt_engine_create(out: *mut *mut std::ffi::c_void) -> i32;
+        pub fn zkmetal_circle_ntt_engine_destroy(engine: *mut std::ffi::c_void);
+        pub fn zkmetal_batch_circle_ntt_engine_create(out: *mut *mut std::ffi::c_void) -> i32;
+        pub fn zkmetal_batch_circle_ntt_engine_destroy(engine: *mut std::ffi::c_void);
 
         // -- MSM --
         pub fn zkmetal_bn254_msm(
@@ -123,6 +127,75 @@ mod ffi {
         pub fn zkmetal_pallas_intt_auto(data: *mut u8, log_n: u32) -> i32;
         pub fn zkmetal_vesta_ntt_auto(data: *mut u8, log_n: u32) -> i32;
         pub fn zkmetal_vesta_intt_auto(data: *mut u8, log_n: u32) -> i32;
+
+        // -- Circle NTT (Mersenne31, GPU-accelerated) --
+        pub fn zkmetal_circle_ntt(engine: *mut std::ffi::c_void, data: *mut u8, log_n: u32) -> i32;
+        pub fn zkmetal_circle_intt(engine: *mut std::ffi::c_void, data: *mut u8, log_n: u32) -> i32;
+        pub fn zkmetal_circle_ntt_auto(data: *mut u8, log_n: u32) -> i32;
+        pub fn zkmetal_circle_intt_auto(data: *mut u8, log_n: u32) -> i32;
+
+        // -- Batch Circle NTT (Mersenne31, GPU-accelerated) --
+        pub fn zkmetal_batch_circle_ntt(
+            engine: *mut std::ffi::c_void,
+            data: *mut u8,
+            num_columns: u32,
+            log_n: u32,
+        ) -> i32;
+        pub fn zkmetal_batch_circle_intt(
+            engine: *mut std::ffi::c_void,
+            data: *mut u8,
+            num_columns: u32,
+            log_n: u32,
+        ) -> i32;
+        pub fn zkmetal_batch_circle_ntt_auto(data: *mut u8, num_columns: u32, log_n: u32) -> i32;
+        pub fn zkmetal_batch_circle_intt_auto(data: *mut u8, num_columns: u32, log_n: u32) -> i32;
+
+        // -- Additive FFT (GF(2^8), GPU-accelerated) --
+        pub fn zkmetal_additive_fft_engine_create(out: *mut *mut std::ffi::c_void) -> i32;
+        pub fn zkmetal_additive_fft_engine_destroy(engine: *mut std::ffi::c_void);
+        pub fn zkmetal_additive_fft_forward(
+            engine: *mut std::ffi::c_void,
+            data: *mut u8,
+            n: u32,
+            k: u32,
+            basis: *const u8,
+        ) -> i32;
+        pub fn zkmetal_additive_fft_forward_auto(
+            data: *mut u8,
+            n: u32,
+            k: u32,
+            basis: *const u8,
+        ) -> i32;
+        pub fn zkmetal_additive_fft_pointwise_mul(
+            engine: *mut std::ffi::c_void,
+            a: *const u8,
+            b: *const u8,
+            n: u32,
+            out: *mut u8,
+        ) -> i32;
+        pub fn zkmetal_additive_fft_pointwise_mul_auto(
+            a: *const u8,
+            b: *const u8,
+            n: u32,
+            out: *mut u8,
+        ) -> i32;
+        pub fn zkmetal_additive_fft_multiply(
+            engine: *mut std::ffi::c_void,
+            a: *const u8,
+            b: *const u8,
+            n: u32,
+            k: u32,
+            basis: *const u8,
+            out: *mut u8,
+        ) -> i32;
+        pub fn zkmetal_additive_fft_multiply_auto(
+            a: *const u8,
+            b: *const u8,
+            n: u32,
+            k: u32,
+            basis: *const u8,
+            out: *mut u8,
+        ) -> i32;
 
         // -- Poseidon2 --
         pub fn zkmetal_bn254_poseidon2_hash_pairs(
@@ -573,6 +646,179 @@ impl Drop for PairingEngine {
     }
 }
 
+/// Circle NTT engine handle (Mersenne31 field, GPU-accelerated).
+pub struct CircleNttEngine {
+    raw: *mut std::ffi::c_void,
+}
+
+unsafe impl Send for CircleNttEngine {}
+
+impl CircleNttEngine {
+    pub fn new() -> Result<Self> {
+        let mut raw = std::ptr::null_mut();
+        check_status(unsafe { ffi::zkmetal_circle_ntt_engine_create(&mut raw) })?;
+        Ok(Self { raw })
+    }
+
+    /// Forward Circle NTT in-place. `data` must be `2^log_n * 4` bytes (Mersenne31).
+    pub fn ntt(&self, data: &mut [u8], log_n: u32) -> Result<()> {
+        assert_eq!(data.len(), (1usize << log_n) * 4);
+        check_status(unsafe { ffi::zkmetal_circle_ntt(self.raw, data.as_mut_ptr(), log_n) })
+    }
+
+    /// Inverse Circle NTT in-place.
+    pub fn intt(&self, data: &mut [u8], log_n: u32) -> Result<()> {
+        assert_eq!(data.len(), (1usize << log_n) * 4);
+        check_status(unsafe { ffi::zkmetal_circle_intt(self.raw, data.as_mut_ptr(), log_n) })
+    }
+}
+
+impl Drop for CircleNttEngine {
+    fn drop(&mut self) {
+        unsafe { ffi::zkmetal_circle_ntt_engine_destroy(self.raw) }
+    }
+}
+
+/// Batch Circle NTT engine handle (Mersenne31 field, GPU-accelerated).
+/// Processes multiple columns in a single GPU dispatch.
+pub struct BatchCircleNttEngine {
+    raw: *mut std::ffi::c_void,
+}
+
+unsafe impl Send for BatchCircleNttEngine {}
+
+impl BatchCircleNttEngine {
+    pub fn new() -> Result<Self> {
+        let mut raw = std::ptr::null_mut();
+        check_status(unsafe { ffi::zkmetal_batch_circle_ntt_engine_create(&mut raw) })?;
+        Ok(Self { raw })
+    }
+
+    /// Forward batch Circle NTT in-place.
+    /// `data` must be `num_columns * 2^log_n * 4` bytes (sequential column layout).
+    pub fn ntt(&self, data: &mut [u8], num_columns: u32, log_n: u32) -> Result<()> {
+        let expected = (num_columns as usize) * (1usize << log_n) * 4;
+        assert_eq!(data.len(), expected, "data must be num_columns * 2^log_n * 4 bytes");
+        check_status(unsafe {
+            ffi::zkmetal_batch_circle_ntt(self.raw, data.as_mut_ptr(), num_columns, log_n)
+        })
+    }
+
+    /// Inverse batch Circle NTT in-place.
+    pub fn intt(&self, data: &mut [u8], num_columns: u32, log_n: u32) -> Result<()> {
+        let expected = (num_columns as usize) * (1usize << log_n) * 4;
+        assert_eq!(data.len(), expected, "data must be num_columns * 2^log_n * 4 bytes");
+        check_status(unsafe {
+            ffi::zkmetal_batch_circle_intt(self.raw, data.as_mut_ptr(), num_columns, log_n)
+        })
+    }
+}
+
+impl Drop for BatchCircleNttEngine {
+    fn drop(&mut self) {
+        unsafe { ffi::zkmetal_batch_circle_ntt_engine_destroy(self.raw) }
+    }
+}
+
+/// Additive FFT engine handle (GF(2^8), GPU-accelerated).
+/// Additive FFT over GF(2^8) with irreducible polynomial x^8 + x^4 + x^3 + x + 1 (0x11B).
+/// Uses a 256x256 multiplication LUT (64KB) for GPU multiply operations.
+pub struct AdditiveFFTEngine {
+    raw: *mut std::ffi::c_void,
+}
+
+unsafe impl Send for AdditiveFFTEngine {}
+
+impl AdditiveFFTEngine {
+    pub fn new() -> Result<Self> {
+        let mut raw = std::ptr::null_mut();
+        check_status(unsafe { ffi::zkmetal_additive_fft_engine_create(&mut raw) })?;
+        Ok(Self { raw })
+    }
+
+    /// Forward additive FFT in-place.
+    ///
+    /// - `data`:  `n` bytes (GF(2^8) elements), modified in-place
+    /// - `n`:     transform size (power of 2)
+    /// - `k`:     log2(n)
+    /// - `basis`: `k` GF(2^8) basis elements
+    pub fn forward(&self, data: &mut [u8], n: u32, k: u32, basis: &[u8]) -> Result<()> {
+        assert_eq!(data.len(), n as usize, "data must be n bytes");
+        assert_eq!(basis.len(), k as usize, "basis must be k bytes");
+        check_status(unsafe {
+            ffi::zkmetal_additive_fft_forward(
+                self.raw,
+                data.as_mut_ptr(),
+                n,
+                k,
+                basis.as_ptr(),
+            )
+        })
+    }
+
+    /// GF(2^8) pointwise multiply: out[i] = a[i] * b[i] in GF(2^8).
+    ///
+    /// - `a`, `b`: `n` bytes each (input)
+    /// - `n`:      number of elements
+    /// - `out`:    `n` bytes (output)
+    pub fn pointwise_mul(&self, a: &[u8], b: &[u8], n: u32, out: &mut [u8]) -> Result<()> {
+        assert_eq!(a.len(), n as usize);
+        assert_eq!(b.len(), n as usize);
+        assert_eq!(out.len(), n as usize);
+        check_status(unsafe {
+            ffi::zkmetal_additive_fft_pointwise_mul(
+                self.raw,
+                a.as_ptr(),
+                b.as_ptr(),
+                n,
+                out.as_mut_ptr(),
+            )
+        })
+    }
+
+    /// Full polynomial multiply over GF(2^8) via additive FFT.
+    ///
+    /// Computes: c = a * b using forward FFT + pointwise multiply + inverse FFT.
+    /// Both polynomials padded to n coefficients, result has at most n coefficients.
+    ///
+    /// - `a`, `b`:  at most `n` bytes each (input polynomials)
+    /// - `n`:       transform size (power of 2, must be >= a.len + b.len - 1)
+    /// - `k`:       log2(n)
+    /// - `basis`:   `k` GF(2^8) basis elements
+    /// - `out`:     `n` bytes (product polynomial, degree < n)
+    pub fn multiply(
+        &self,
+        a: &[u8],
+        b: &[u8],
+        n: u32,
+        k: u32,
+        basis: &[u8],
+        out: &mut [u8],
+    ) -> Result<()> {
+        assert!(a.len() <= n as usize);
+        assert!(b.len() <= n as usize);
+        assert!(out.len() == n as usize);
+        assert_eq!(basis.len(), k as usize);
+        check_status(unsafe {
+            ffi::zkmetal_additive_fft_multiply(
+                self.raw,
+                a.as_ptr(),
+                b.as_ptr(),
+                n,
+                k,
+                basis.as_ptr(),
+                out.as_mut_ptr(),
+            )
+        })
+    }
+}
+
+impl Drop for AdditiveFFTEngine {
+    fn drop(&mut self) {
+        unsafe { ffi::zkmetal_additive_fft_engine_destroy(self.raw) }
+    }
+}
+
 // ============================================================================
 // Additional MsmEngine methods
 // ============================================================================
@@ -737,6 +983,37 @@ pub fn vesta_intt_auto(data: &mut [u8], log_n: u32) -> Result<()> {
     check_status(unsafe { ffi::zkmetal_vesta_intt_auto(data.as_mut_ptr(), log_n) })
 }
 
+/// Convenience forward Circle NTT in-place. `data` must be `2^log_n * 4` bytes (Mersenne31).
+pub fn circle_ntt_auto(data: &mut [u8], log_n: u32) -> Result<()> {
+    assert_eq!(data.len(), (1usize << log_n) * 4);
+    check_status(unsafe { ffi::zkmetal_circle_ntt_auto(data.as_mut_ptr(), log_n) })
+}
+
+/// Convenience inverse Circle NTT in-place.
+pub fn circle_intt_auto(data: &mut [u8], log_n: u32) -> Result<()> {
+    assert_eq!(data.len(), (1usize << log_n) * 4);
+    check_status(unsafe { ffi::zkmetal_circle_intt_auto(data.as_mut_ptr(), log_n) })
+}
+
+/// Convenience forward batch Circle NTT in-place.
+/// `data` must be `num_columns * 2^log_n * 4` bytes (sequential column layout).
+pub fn batch_circle_ntt_auto(data: &mut [u8], num_columns: u32, log_n: u32) -> Result<()> {
+    let expected = (num_columns as usize) * (1usize << log_n) * 4;
+    assert_eq!(data.len(), expected, "data must be num_columns * 2^log_n * 4 bytes");
+    check_status(unsafe {
+        ffi::zkmetal_batch_circle_ntt_auto(data.as_mut_ptr(), num_columns, log_n)
+    })
+}
+
+/// Convenience inverse batch Circle NTT in-place.
+pub fn batch_circle_intt_auto(data: &mut [u8], num_columns: u32, log_n: u32) -> Result<()> {
+    let expected = (num_columns as usize) * (1usize << log_n) * 4;
+    assert_eq!(data.len(), expected, "data must be num_columns * 2^log_n * 4 bytes");
+    check_status(unsafe {
+        ffi::zkmetal_batch_circle_intt_auto(data.as_mut_ptr(), num_columns, log_n)
+    })
+}
+
 /// Convenience Poseidon2 batch hash pairs.
 pub fn bn254_poseidon2_hash_pairs_auto(input: &[u8], n_pairs: u32, output: &mut [u8]) -> Result<()> {
     assert_eq!(input.len(), n_pairs as usize * 64);
@@ -889,6 +1166,76 @@ pub fn bn254_msm_batch_auto(
         )
     })?;
     Ok(results)
+}
+
+// ============================================================================
+// Additive FFT (GF(2^8)) Convenience Functions
+// ============================================================================
+
+/// Convenience forward additive FFT using a lazy singleton engine.
+/// - `data`:  `n` bytes (GF(2^8) elements), modified in-place
+/// - `n`:     transform size (power of 2)
+/// - `k`:     log2(n)
+/// - `basis`: `k` GF(2^8) basis elements
+pub fn additive_fft_forward_auto(data: &mut [u8], n: u32, k: u32, basis: &[u8]) -> Result<()> {
+    assert_eq!(data.len(), n as usize, "data must be n bytes");
+    assert_eq!(basis.len(), k as usize, "basis must be k bytes");
+    check_status(unsafe {
+        ffi::zkmetal_additive_fft_forward_auto(
+            data.as_mut_ptr(),
+            n,
+            k,
+            basis.as_ptr(),
+        )
+    })
+}
+
+/// Convenience GF(2^8) pointwise multiply using a lazy singleton engine.
+/// - `a`, `b`: `n` bytes each (input)
+/// - `n`:      number of elements
+/// - `out`:    `n` bytes (output)
+pub fn additive_fft_pointwise_mul_auto(a: &[u8], b: &[u8], n: u32, out: &mut [u8]) -> Result<()> {
+    assert_eq!(a.len(), n as usize);
+    assert_eq!(b.len(), n as usize);
+    assert_eq!(out.len(), n as usize);
+    check_status(unsafe {
+        ffi::zkmetal_additive_fft_pointwise_mul_auto(
+            a.as_ptr(),
+            b.as_ptr(),
+            n,
+            out.as_mut_ptr(),
+        )
+    })
+}
+
+/// Convenience full polynomial multiply over GF(2^8) using a lazy singleton engine.
+/// - `a`, `b`:  at most `n` bytes each (input polynomials)
+/// - `n`:       transform size (power of 2, must be >= a.len + b.len - 1)
+/// - `k`:       log2(n)
+/// - `basis`:   `k` GF(2^8) basis elements
+/// - `out`:     `n` bytes (product polynomial, degree < n)
+pub fn additive_fft_multiply_auto(
+    a: &[u8],
+    b: &[u8],
+    n: u32,
+    k: u32,
+    basis: &[u8],
+    out: &mut [u8],
+) -> Result<()> {
+    assert!(a.len() <= n as usize);
+    assert!(b.len() <= n as usize);
+    assert!(out.len() == n as usize);
+    assert_eq!(basis.len(), k as usize);
+    check_status(unsafe {
+        ffi::zkmetal_additive_fft_multiply_auto(
+            a.as_ptr(),
+            b.as_ptr(),
+            n,
+            k,
+            basis.as_ptr(),
+            out.as_mut_ptr(),
+        )
+    })
 }
 
 // ============================================================================
