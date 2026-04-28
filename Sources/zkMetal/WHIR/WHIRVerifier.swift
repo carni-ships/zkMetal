@@ -94,7 +94,7 @@ public class WHIRVerifier {
             var used = Set<UInt32>()
             for _ in 0..<effectiveQ {
                 let c = ts.squeeze()
-                var idx = UInt32(frToInt(c)[0] % UInt64(foldedN))
+                var idx = UInt32(frToUInt64(c) % UInt64(foldedN))
                 while used.contains(idx) {
                     idx = (idx + 1) % UInt32(foldedN)
                 }
@@ -237,7 +237,7 @@ public class WHIRVerifier {
             var used = Set<UInt32>()
             for _ in 0..<effectiveQ {
                 let c = ts.squeeze()
-                var idx = UInt32(frToInt(c)[0] % UInt64(foldedN))
+                var idx = UInt32(frToUInt64(c) % UInt64(foldedN))
                 while used.contains(idx) { idx = (idx + 1) % UInt32(foldedN) }
                 queryIndices.append(idx)
                 used.insert(idx)
