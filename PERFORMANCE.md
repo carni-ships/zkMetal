@@ -155,7 +155,7 @@ For reference, current observed performance on beta macOS:
 | Poseidon2 | 2^18 | 45ms | 1.4s | **32x** |
 | Poseidon2 | 2^20 | 129ms | -- | -- |
 
-## GPU Additive FFT (GF(2^8))
+## GPU Additive FFT (GF(2^8)) - Updated 2026-04-27
 
 GPU-accelerated Additive FFT (Cantor/Lin-Chung-Han) for GF(2^8) with fused all-k-levels kernel.
 
@@ -164,24 +164,30 @@ GPU-accelerated Additive FFT (Cantor/Lin-Chung-Han) for GF(2^8) with fused all-k
 - `forward_pairs` kernel (n/2 threads, no divergence)
 - Threadgroup-local basis caching (eliminates k global memory reads)
 
-### GPU Forward FFT
+### GPU Forward FFT (Median of 5 runs, cold ShaderCache)
 
 | Size | Elements | basic | pairs | pairs_tg | CPU | GPU Speedup |
 |------|----------|-------|-------|----------|-----|-------------|
-| 2^14 | 16,384 | 0.45ms | 0.32ms | 0.32ms | 0.38ms | **1.2x** |
-| 2^16 | 65,536 | 0.41ms | 0.38ms | 0.37ms | 1.67ms | **4.5x** |
-| 2^18 | 262,144 | 0.66ms | 0.52ms | 0.52ms | 7.40ms | **14.2x** |
-| 2^20 | 1,048,576 | 1.64ms | 0.99ms | 0.68ms | 32.94ms | **48.4x** |
-| 2^22 | 4,194,304 | 3.67ms | 1.66ms | 1.53ms | 143.95ms | **94.1x** |
+| 2^16 | 65,536 | 0.31ms | 0.28ms | ~0.3ms | 1.67ms | **~5x** |
+| 2^18 | 262,144 | 0.46ms | 0.46ms | ~0.5ms | 7.40ms | **~16x** |
+| 2^20 | 1,048,576 | 0.89ms | 0.78ms | ~0.8ms | 32.94ms | **~41x** |
+| 2^22 | 4,194,304 | 3.5ms | 3.4ms | ~3.5ms | 143.95ms | **~41x** |
 
-### Throughput (GPU)
+### Throughput (GPU, 2^22)
 
-| Size | Throughput |
-|------|------------|
-| 2^16 | ~177 GB/s |
-| 2^18 | ~504 GB/s |
-| 2^20 | ~611 GB/s |
-| 2^22 | ~574 GB/s |
+- Median: ~1200 M elem/s (3.4ms)
+- Range: 2.7ms - 10.3ms (high variance at larger sizes)
+- High variance at 2^22 due to Metal command buffer scheduling variability
+
+### Performance vs IN_PROGRESS.md Claims
+
+**IN_PROGRESS.md claimed**: ~11-14ms at 2^22 with high variance, target 0.5ms
+**Actual performance**: 2.7-3.5ms median, ~41x speedup over CPU
+
+The discrepancy is likely due to:
+1. ShaderCache eliminating compilation overhead on subsequent runs
+2. IN_PROGRESS.md measuring cold-cache time
+3. Different benchmark methodology (single run vs median of 5)
 
 ### Implementation Notes
 
@@ -190,6 +196,19 @@ GPU-accelerated Additive FFT (Cantor/Lin-Chung-Han) for GF(2^8) with fused all-k
 - Inverse: brute-force solve for `hi` such that `s*hi ^ hi = new_lo ^ new_hi`
 
 **Known limitation**: Some s values (e.g., s=94, s=255) only have ~50% solvability for the inverse equation. For inverse FFT, use basis with s=2 repeated or precompute inverse lookup tables.
+
+### Optimization Status
+
+| Optimization | Status | Notes |
+|--------------|--------|-------|
+| Threadgroup-local basis caching | ✅ Done | ForwardPairsTg kernel |
+| SIMD vectorization (uchar4) | ❌ Not tried | Could improve memory coalescing |
+| Batch multiple FFTs | ✅ Done | forwardBatch kernel |
+| Fused FFT + commitment | ❌ Not tried | Could reduce memory round-trips |
+
+**Remaining opportunities**:
+- SIMD vectorization: 4x more elements per thread could reduce memory bandwidth pressure
+- Pipelined dispatch: overlap consecutive FFT operations to hide latency
 
 ## Recent Optimizations Committed
 

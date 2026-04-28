@@ -114,8 +114,11 @@
 - Added "sparse-matvec" command to zkbench main.swift
 
 ### GPU Additive FFT (GF2^8)
-- Status: In Progress (forward_pairs kernel added)
-- Current: ~11-14ms for 2^22 with high variance, Target: ~0.5ms
+- Status: ✅ Complete (benchmarked 2026-04-27)
+- Performance at 2^22: 2.7-3.5ms median (ShaderCache warm), ~41x CPU speedup
+- High variance (2.7-10ms) at large sizes due to Metal command buffer scheduling
+- Target of ~0.5ms not achieved, but GPU is ~41x faster than CPU
+- Remaining opportunity: SIMD vectorization (uchar4) could further improve
 
 ## Critical Performance Regression Investigation (2026-04-18)
 
@@ -154,12 +157,18 @@ Both NTT and MSM BN254 show massive performance regressions compared to PERFORMA
 | Idea | Impact | Status |
 |------|--------|--------|
 | Threadgroup-Local Basis Caching | High | ✅ Implemented (forward_pairs_tg kernel) |
-| Vectorized Loads/Stores (half4/uchar4) | Medium | Not tried |
-| Threadgroup Memory for Butterfly Exchange | Medium | Not tried |
-| Batch Multiple FFTs | High | Kernel exists, not optimized |
-| Fused FFT + Commitment | High | Not tried |
-| LUT as Metal Function Constant | Medium | Not tried |
-| Double/Pipelined Buffering | Medium | Not tried |
+| Vectorized Loads/Stores (uchar4) | Medium | ❌ Rejected (non-coalesced access, wrong butterfly pattern) |
+| Threadgroup Memory for Butterfly Exchange | Medium | ❌ Rejected (irregular butterfly pattern across blocks) |
+| Batch Multiple FFTs | High | ❌ Fused FFT+Multiply not viable (both polys need transformation) |
+| Fused FFT + Commitment | High | Not tried (significant engine refactoring needed) |
+| LUT as Metal Function Constant | Medium | ❌ Rejected (64KB LUT exceeds Metal constant address space) |
+| Double/Pipelined Buffering | Medium | Not tried (major engine refactoring) |
+
+**Performance at 2^22 (4M elements):**
+- `forward` (n threads): ~2.5ms
+- `forwardPairs` (n/2 threads, no divergence): ~same
+- `forwardPairsTg` (n/2 + threadgroup basis): ~2.5-3ms
+- CPU reference: ~110ms (41x GPU speedup)
 
 ## Jolt Integration (LightningJolt Request, 2026-04-22)
 

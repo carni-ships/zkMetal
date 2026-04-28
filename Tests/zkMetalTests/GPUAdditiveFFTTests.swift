@@ -120,10 +120,7 @@ public func runGPUAdditiveFFTTests() {
 
         var basis = [UInt8](repeating: 0, count: k)
         var elem: UInt8 = 0x02
-        for i in 0..<k {
-            basis[i] = elem
-            elem = elem &* elem
-        }
+        for i in 0..<k { basis[i] = elem; elem = elem &* elem }
 
         let t0 = CFAbsoluteTimeGetCurrent()
         guard let fwd = try? engine.forward(data: original, n: n, k: k, basis: basis) else { continue }
@@ -133,6 +130,43 @@ public func runGPUAdditiveFFTTests() {
         let throughput = Double(n) / (t1 - t0) / 1e6
         print(String(format: "  GF(2^8) GPU 2^%d (%d elements): %.2fms (%.1f M elem/s)", k, n, (t1 - t0) * 1000, throughput))
         expect(true, "GPU forward 2^\(k) completed")
+
+        // Compare with forwardPairs (n/2 threads)
+        if let _ = engine.forwardPairsFn {
+            let t0p = CFAbsoluteTimeGetCurrent()
+            guard let fwdPairs = try? engine.forwardPairs(data: original, n: n, k: k, basis: basis) else { continue }
+            let t1p = CFAbsoluteTimeGetCurrent()
+            if fwdPairs != nil && fwdPairs == fwd {
+                let speedup = (t1 - t0) / (t1p - t0p)
+                print(String(format: "    forwardPairs: %.2fms [%.2fx]", (t1p - t0p) * 1000, speedup))
+            }
+        }
+
+        // Compare with forwardPairsTg
+        if let _ = engine.forwardPairsTgFn {
+            let t0tg = CFAbsoluteTimeGetCurrent()
+            guard let fwdTg = try? engine.forwardPairsTg(data: original, n: n, k: k, basis: basis) else { continue }
+            let t1tg = CFAbsoluteTimeGetCurrent()
+            if fwdTg != nil && fwdTg == fwd {
+                let speedup = (t1 - t0) / (t1tg - t0tg)
+                print(String(format: "    forwardPairsTg: %.2fms [%.2fx]", (t1tg - t0tg) * 1000, speedup))
+            }
+        }
+
+        // Compare with forwardVec4 (n/8 threads)
+        if let _ = engine.forwardVec4Fn {
+            let t0v = CFAbsoluteTimeGetCurrent()
+            guard let fwdVec4 = try? engine.forwardVec4(data: original, n: n, k: k, basis: basis) else { continue }
+            let t1v = CFAbsoluteTimeGetCurrent()
+            if fwdVec4 != nil {
+                if fwdVec4 == fwd {
+                    let speedup = (t1 - t0) / (t1v - t0v)
+                    print(String(format: "    forwardVec4: %.2fms [%.2fx]", (t1v - t0v) * 1000, speedup))
+                } else {
+                    print(String(format: "    forwardVec4: MISMATCH (correctness error!)"))
+                }
+            }
+        }
 
         // Compare with SIMD shuffle version
         if let shuffleFn = engine.forwardShuffleFn {

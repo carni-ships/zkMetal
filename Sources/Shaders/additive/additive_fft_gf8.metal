@@ -357,6 +357,127 @@ kernel void additive_fft_gf8_forward_pairs_tg(
 }
 #endif
 
+// SIMD vectorized forward additive FFT: 4 butterfly pairs per thread.
+// Each thread handles 4 consecutive pairs: gid*4, gid*4+1, gid*4+2, gid*4+3.
+// This is a SIMD-width reduction of forward_pairs, maintaining the same
+// pair indexing but processing 4 pairs per thread instead of 1.
+//
+// At depth d: block_size=n>>d, halfSize=block_size>>1
+// Total pairs = n/2, threads = n/8, 4 pairs per thread = coverage of all pairs.
+//
+// buffer(0): 256x256 GF(2^8) LUT
+// buffer(1): data array (modified in-place)
+// buffer(2): basis elements
+// buffer(3): n (total elements)
+// buffer(4): k (log₂(n))
+#ifdef USE_LUT
+kernel void additive_fft_gf8_forward_vec4(
+    device const uint8_t* lut  [[buffer(0)]],
+    device uint8_t* data       [[buffer(1)]],
+    constant uint8_t* basis   [[buffer(2)]],
+    constant uint32_t& n       [[buffer(3)]],
+    constant uint32_t& k       [[buffer(4)]],
+    uint gid                  [[thread_position_in_grid]]
+) {
+    uint nPairs = n >> 1;        // total butterfly pairs
+    uint nVec4 = nPairs >> 2;   // n/8 (4 pairs per thread)
+    if (gid >= nVec4) return;
+
+    // Each thread processes 4 consecutive pairs: basePair = gid*4
+    uint basePair = gid << 2;    // gid * 4
+
+    for (uint depth = 0; depth < k; depth++) {
+        uint block_size = n >> depth;
+        uint halfSize = block_size >> 1;
+
+        // Process 4 pairs starting from basePair
+        // Pair indices must be < nPairs
+        for (uint i = 0; i < 4; i++) {
+            uint pairIdx = basePair + i;
+            if (pairIdx >= nPairs) break;
+
+            // Compute which block this pair belongs to
+            uint block_idx = pairIdx / halfSize;
+            uint t = pairIdx % halfSize;
+
+            uint lo_idx = block_idx * block_size + t;
+            uint hi_idx = lo_idx + halfSize;
+
+            uint8_t lo_val = data[lo_idx];
+            uint8_t hi_val = data[hi_idx];
+            uint8_t s = basis[depth];
+
+            uint8_t twisted = lo_val ^ lut[uint(s) * 256 + hi_val];
+            uint8_t propagated = lo_val ^ hi_val;
+
+            data[lo_idx] = twisted;
+            data[hi_idx] = propagated;
+        }
+    }
+}
+#else
+kernel void additive_fft_gf8_forward_vec4(
+    device uint8_t* data       [[buffer(1)]],
+    constant uint8_t* basis   [[buffer(2)]],
+    constant uint32_t& n       [[buffer(3)]],
+    constant uint32_t& k       [[buffer(4)]],
+    uint gid                  [[thread_position_in_grid]]
+) {
+    uint nPairs = n >> 1;
+    uint nVec4 = nPairs >> 2;
+    if (gid >= nVec4) return;
+
+    uint basePair = gid << 2;
+
+    for (uint depth = 0; depth < k; depth++) {
+        uint block_size = n >> depth;
+        uint halfSize = block_size >> 1;
+
+        for (uint i = 0; i < 4; i++) {
+            uint pairIdx = basePair + i;
+            if (pairIdx >= nPairs) break;
+
+            uint block_idx = pairIdx / halfSize;
+            uint t = pairIdx % halfSize;
+
+            uint lo_idx = block_idx * block_size + t;
+            uint hi_idx = lo_idx + halfSize;
+
+            uint8_t lo_val = data[lo_idx];
+            uint8_t hi_val = data[hi_idx];
+            uint8_t s = basis[depth];
+
+            // Shift-XOR multiply
+            uint16_t p = 0;
+            p ^= ((uint16_t)(s & 1)  ) * ((uint16_t)(hi_val)       );
+            p ^= ((uint16_t)(s & 2)  ) * ((uint16_t)(hi_val << 1) );
+            p ^= ((uint16_t)(s & 4)  ) * ((uint16_t)(hi_val << 2) );
+            p ^= ((uint16_t)(s & 8)  ) * ((uint16_t)(hi_val << 3) );
+            p ^= ((uint16_t)(s & 16) ) * ((uint16_t)(hi_val << 4) );
+            p ^= ((uint16_t)(s & 32) ) * ((uint16_t)(hi_val << 5) );
+            p ^= ((uint16_t)(s & 64) ) * ((uint16_t)(hi_val << 6) );
+            p ^= ((uint16_t)(s & 128)) * ((uint16_t)(hi_val << 7) );
+            uint16_t h = p >> 8;
+            if (h & 0x01) p ^= 0x11B << 0;
+            if (h & 0x02) p ^= 0x11B << 1;
+            if (h & 0x04) p ^= 0x11B << 2;
+            if (h & 0x08) p ^= 0x11B << 3;
+            if (h & 0x10) p ^= 0x11B << 4;
+            if (h & 0x20) p ^= 0x11B << 5;
+            if (h & 0x40) p ^= 0x11B << 6;
+            if (h & 0x80) p ^= 0x11B << 7;
+            uint8_t product = (uint8_t)(p & 0xFF);
+
+            uint8_t twisted = lo_val ^ product;
+            uint8_t propagated = lo_val ^ hi_val;
+
+            data[lo_idx] = twisted;
+            data[hi_idx] = propagated;
+        }
+    }
+}
+#endif
+
 // Inverse additive FFT over GF(2^8).
 // Fused: processes all k levels in one dispatch.
 // DIT: small stride first = reverse depth order.
@@ -509,8 +630,23 @@ kernel void gf28_pointwise_mul(
 }
 
 // Fused: forward additive FFT then pointwise multiply, in one dispatch.
-// Avoids an intermediate global memory round-trip between the two stages.
-// buffer(0): LUT, buffer(1): a (in/out), buffer(2): basis, buffer(3): n, buffer(4): k, buffer(5): b (second polynomial)
+// Uses n/2 threads (forward_pairs pattern) for divergence-free execution.
+// Each thread processes one butterfly pair per level, then does pointwise mul.
+//
+// NOTE: This kernel is designed for use cases where 'b' is ALREADY in frequency
+// domain (e.g., pre-transformed twiddle factors or constants). For polynomial
+// multiplication where both a and b need transformation, use separate kernels.
+//
+// Stage 1: FFT on a (in-place, pairs pattern)
+// Stage 2: Pointwise multiply a[lo_idx] *= b[lo_idx] and a[hi_idx] *= b[hi_idx]
+//
+// buffer(0): LUT, buffer(1): a (in/out), buffer(2): basis, buffer(3): n, buffer(4): k, buffer(5): b (pre-transformed)
+// #ifdef USE_LUT
+// DEPRECATED: This kernel is incorrect for general polynomial multiplication.
+// Use separate forward() calls + pointwiseMultiply() instead.
+// kernel void additive_fft_gf8_forward_pairs_then_mul(...)
+// #endif
+
 #ifdef USE_LUT
 kernel void additive_fft_gf8_forward_then_pointwise_mul(
     device const uint8_t* lut   [[buffer(0)]],
