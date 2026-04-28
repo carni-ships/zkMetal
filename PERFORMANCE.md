@@ -359,6 +359,48 @@ Example: 180 columns × 2^20 elements
 - Before: 180 × 2 × 20 = 7,200 dispatches
 - After: 40 dispatches
 
+## Circle FRI (Mersenne31)
+
+GPU-accelerated Circle FRI over Mersenne31 field for Circle STARKs.
+
+**Architecture:**
+- First fold: y-coordinate twin-coset decomposition (pairs (x,y) and (x,-y))
+- Subsequent folds: x-coordinate squaring map (x → 2x² - 1)
+- Merkle commitment: CPU simple hash (m31SimpleHash) — not GPU-accelerated
+
+**Bottleneck Analysis:**
+The commit phase is dominated by CPU Merkle tree hashing, NOT GPU folding:
+- GPU fold for 2^20: ~0.4ms
+- CPU Merkle hashing for 2^20: ~111ms (99.6% of time)
+
+GPU fold operations are highly optimized. The bottleneck is the CPU simple hash building Merkle trees for each FRI layer.
+
+### Circle FRI Commit Phase
+
+| Size | Rounds | Fold (GPU) | Merkle (CPU) | Total |
+|------|--------|------------|--------------|-------|
+| 2^14 | 13 | ~0.1ms | ~2ms | **~2ms** |
+| 2^18 | 17 | ~0.2ms | ~28ms | **~28ms** |
+| 2^20 | 19 | ~0.4ms | ~111ms | **~111ms** |
+
+### Circle FRI Multi-fold (GPU only, no Merkle)
+
+| Size | Single Fold | Multi-fold (all rounds → 2) |
+|------|-------------|---------------------------|
+| 2^14 | 0.12ms | 0.16ms |
+| 2^18 | 0.29ms | 0.31ms |
+| 2^20 | 0.37ms | 0.71ms |
+
+**Optimization Opportunities (Unexplored):**
+
+1. **GPU Merkle (Poseidon2-M31)**: Attempted but SLOWER than CPU due to per-layer GPU dispatch overhead dominating for FRI's relatively small layers. Total FRI work is ~2M elements across 19 layers — GPU overhead (~0.5-1ms per layer) exceeds CPU hash time (~110ms total).
+
+2. **foldFused2 kernel**: Exists in `circle_fri.metal` to fuse y-fold + x-fold in one dispatch, but has correctness issues when integrated into `multiFold`. The kernel indexing appears correct but the twiddle buffer preparation for the post-y-fold x-fold domain may be incorrect.
+
+3. **In-place tree building**: Rejected — 2x worse due to cache pressure from larger working set (8MB vs ~4MB for largest level).
+
+**Conclusion**: The CPU Merkle is the bottleneck but GPU acceleration is impractical due to FRI's specific tree structure and per-layer processing pattern. For a real improvement, would need a fundamentally different approach (e.g., single GPU dispatch for all FRI layers' Merkle trees).
+
 ## Reed-Solomon Erasure Coding
 
 ### NTT-Based RS (BabyBear)

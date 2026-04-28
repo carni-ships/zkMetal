@@ -443,7 +443,7 @@ public class CircleFRIEngine {
         }
         let foldTime = (CFAbsoluteTimeGetCurrent() - foldT0) * 1000
 
-        // Read back layers and compute Merkle roots (CPU)
+        // Read back layers and compute Merkle roots (CPU, using simple hash)
         let merkleT0 = CFAbsoluteTimeGetCurrent()
         var layers: [[M31]] = [evals]
         var roots: [M31] = []
@@ -454,7 +454,7 @@ public class CircleFRIEngine {
             let layer = Array(UnsafeBufferPointer(start: ptr, count: count))
             layers.append(layer)
 
-            // CPU Merkle root: hash M31 values by treating as UInt32 bytes
+            // CPU Merkle root: hash M31 values using simple hash
             let root = cpuM31MerkleRoot(layer)
             roots.append(root)
         }
