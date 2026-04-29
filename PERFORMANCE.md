@@ -462,23 +462,25 @@ let verifier = CircleSTARKVerifier(transcriptType: .keccak)
 
 | Config | Size | Rounds | Prove | Verify | Proof Size | Verify Correct |
 |--------|------|--------|-------|--------|------------|----------------|
-| q=4, r=4 | 2^10 | 3 | 2.7ms | 1.9ms | 14.3 KB | ✅ OK |
-| q=2, r=4 | 2^10 | 3 | 2.6ms | 1.1ms | 7.6 KB | ✅ OK |
-| q=4, r=4 | 2^14 | 5 | 19.2ms | 4.0ms | 28.5 KB | ✅ OK |
-| q=2, r=4 | 2^14 | 5 | 18.3ms | 2.0ms | 14.8 KB | ✅ OK |
+| q=4, r=4 | 2^10 | 3 | 2.7ms | 2.0ms | 14.3 KB | ✅ OK |
+| q=2, r=4 | 2^10 | 3 | 2.6ms | 1.0ms | 7.6 KB | ✅ OK |
+| q=4, r=4 | 2^14 | 5 | 20.0ms | 4.1ms | 28.5 KB | ✅ OK |
+| q=2, r=4 | 2^14 | 5 | 19.6ms | 2.1ms | 14.8 KB | ✅ OK |
+| q=4, r=4 | 2^18 | 7 | 153.7ms | 6.7ms | 46.8 KB | ✅ OK |
+| q=2, r=4 | 2^18 | 7 | 165.3ms | 3.4ms | 24.0 KB | ✅ OK |
 
 **Before GPU Merkle (useGPU: false):**
 - 2^14 prove was 1342.5ms (70x slower)
 - 2^18 prove was prohibitively slow
 
-**Performance vs FRI and WHIR at 2^14:**
-| Protocol | Prove | Proof Size |
-|----------|-------|------------|
-| STIR (q=4,r=4) | 19.2ms | 28.5 KB |
-| WHIR (q=4,r=4) | 16.6ms | 31.1 KB |
-| FRI (GPU foldBy8) | 20.0ms | ~3.8 KB |
+**Performance vs FRI and WHIR at 2^18:**
+| Protocol | Rounds | Prove | Proof Size |
+|----------|--------|-------|------------|
+| STIR (q=4,r=4) | 7 | 153.7ms | 46.8 KB |
+| WHIR (q=4,r=4) | 7 | 147.7ms | 50.4 KB |
+| FRI (GPU foldBy8) | 6 | 35.0ms | ~5.1 KB |
 
-**Bottleneck at large sizes**: Domain shift (NTT/iNTT) is CPU-based. GPU NTT would further improve 2^18 performance.
+**Note**: 2^20 benchmark skipped — CPU NTT/iNTT for domain shift takes >30s. GPU NTT engine required for production use at 2^20+.
 
 ### Soundness Comparison
 
