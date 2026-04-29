@@ -194,7 +194,9 @@ kernel void batch_eval_bb(
 // Used in STIR domain shifts: iNTT -> coeff[j] *= alpha^j -> NTT.
 // Algorithm: binary exponentiation per thread.
 // Each thread computes alpha^gid using O(log n) multiplications.
-// For n=2^20, this means ~20 multiplications per thread × 1M threads.
+//
+// Note: This is O(n log n) total - works correctly but slow for large n.
+// TODO: Implement proper O(n) kernel with threadgroup cooperation.
 kernel void batch_mul_geometric_bn254(
     device const Fr* a         [[buffer(0)]],
     device Fr* out              [[buffer(1)]],

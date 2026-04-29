@@ -66,7 +66,7 @@ public func runSTIRBench() {
         fputs("  STIR queries needed: \(stirQ) (\(String(format: "%.0f", (1.0 - Double(stirQ)/Double(friQ)) * 100))%% fewer)\n", stderr)
 
         // --- Performance benchmarks ---
-        for logN in [10, 14] {  // 2^18+ requires O(n) GPU kernel optimization
+        for logN in [10, 14] {  // 2^18+ requires further GPU kernel optimization
             let benchN = 1 << logN
             let benchEvals = randomEvals(benchN)
 
