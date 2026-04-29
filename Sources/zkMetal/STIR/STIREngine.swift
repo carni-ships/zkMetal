@@ -46,6 +46,10 @@ public class STIRProver {
     /// If nil, CPU-only shifts are used.
     private var nttEngine: NTTEngine?
 
+    /// Optional batch field engine for GPU-accelerated geometric progression multiply.
+    /// Used for the alpha^j step in domain shifts.
+    private var batchEngine: BatchFieldEngine?
+
     /// CPU Merkle threshold: use CPU Poseidon2 for small trees to avoid
     /// GPU command buffer overhead (~5-9ms per dispatch).
     /// GCD dispatch_apply gives near-zero threading overhead, so CPU is
@@ -66,6 +70,7 @@ public class STIRProver {
         self.merkleEngine = try Poseidon2MerkleEngine()
         if useGPU {
             self.nttEngine = try NTTEngine()
+            self.batchEngine = try BatchFieldEngine()
         }
     }
 
@@ -111,7 +116,7 @@ public class STIRProver {
         precondition(n > 0 && (n & (n - 1)) == 0)
         let logN = Int(log2(Double(n)))
 
-        // Get coefficients via iNTT
+        // Get coefficients via iNTT (GPU-accelerated)
         var coeffs: [Fr]
         if let ntt = nttEngine {
             coeffs = try ntt.intt(evals)
@@ -121,14 +126,20 @@ public class STIRProver {
             coeffs = STIRProver.cpuINTT(evals: evals, omegaInv: omegaInv, n: n)
         }
 
-        // Multiply coefficient j by alpha^j
-        var alphaPow = Fr.one
-        for j in 0..<n {
-            coeffs[j] = frMul(coeffs[j], alphaPow)
-            alphaPow = frMul(alphaPow, alpha)
+        // Multiply coefficient j by alpha^j using GPU when available.
+        // GPU kernel uses binary exponentiation per thread (O(n log n) total).
+        // For large n (2^18+), this becomes slow - TODO: implement O(n) GPU kernel.
+        if let batch = batchEngine {
+            coeffs = try batch.batchMulGeometric(coeffs, alpha: alpha)
+        } else {
+            var alphaPow = Fr.one
+            for j in 0..<n {
+                coeffs[j] = frMul(coeffs[j], alphaPow)
+                alphaPow = frMul(alphaPow, alpha)
+            }
         }
 
-        // NTT back to evaluation domain
+        // NTT back to evaluation domain (GPU-accelerated)
         if let ntt = nttEngine {
             return try ntt.ntt(coeffs)
         } else {

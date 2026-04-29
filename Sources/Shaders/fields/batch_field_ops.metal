@@ -189,3 +189,33 @@ kernel void batch_eval_bb(
     }
     results[gid] = result;
 }
+
+// Geometric progression multiply: out[j] = a[j] * alpha^j for j=0..n-1.
+// Used in STIR domain shifts: iNTT -> coeff[j] *= alpha^j -> NTT.
+// Algorithm: binary exponentiation per thread.
+// Each thread computes alpha^gid using O(log n) multiplications.
+// For n=2^20, this means ~20 multiplications per thread × 1M threads.
+kernel void batch_mul_geometric_bn254(
+    device const Fr* a         [[buffer(0)]],
+    device Fr* out              [[buffer(1)]],
+    constant Fr& alpha          [[buffer(2)]],
+    constant uint& n            [[buffer(3)]],
+    uint gid                    [[thread_position_in_grid]]
+) {
+    if (gid >= n) return;
+
+    // Binary exponentiation: alpha^gid = product of alpha^{2^i} for set bits i in gid
+    Fr result = fr_one();
+    Fr base = alpha;
+    uint exp = gid;
+
+    while (exp > 0) {
+        if (exp & 1u) {
+            result = fr_mul(result, base);
+        }
+        base = fr_mul(base, base);
+        exp >>= 1u;
+    }
+
+    out[gid] = fr_mul(a[gid], result);
+}

@@ -26,6 +26,7 @@ public class BatchFieldEngine {
     private let batchMulBN254: MTLComputePipelineState
     private let batchAddBN254: MTLComputePipelineState
     private let batchEvalBN254: MTLComputePipelineState
+    private let batchMulGeometricBN254: MTLComputePipelineState
 
     // BabyBear kernels
     private let batchInverseBB: MTLComputePipelineState
@@ -56,6 +57,7 @@ public class BatchFieldEngine {
               let mulBN254 = library.makeFunction(name: "batch_mul_bn254"),
               let addBN254 = library.makeFunction(name: "batch_add_bn254"),
               let evalBN254 = library.makeFunction(name: "batch_eval_bn254"),
+              let mulGeometricBN254 = library.makeFunction(name: "batch_mul_geometric_bn254"),
               let invBB = library.makeFunction(name: "batch_inverse_bb"),
               let mulBB = library.makeFunction(name: "batch_mul_bb"),
               let addBB = library.makeFunction(name: "batch_add_bb"),
@@ -67,6 +69,7 @@ public class BatchFieldEngine {
         self.batchMulBN254 = try device.makeComputePipelineState(function: mulBN254)
         self.batchAddBN254 = try device.makeComputePipelineState(function: addBN254)
         self.batchEvalBN254 = try device.makeComputePipelineState(function: evalBN254)
+        self.batchMulGeometricBN254 = try device.makeComputePipelineState(function: mulGeometricBN254)
         self.batchInverseBB = try device.makeComputePipelineState(function: invBB)
         self.batchMulBB = try device.makeComputePipelineState(function: mulBB)
         self.batchAddBB = try device.makeComputePipelineState(function: addBB)
@@ -361,6 +364,88 @@ public class BatchFieldEngine {
             }
             return result
         }
+    }
+
+    // MARK: - Geometric Progression Multiply (STIR Domain Shift)
+
+    /// Multiply each element by alpha^j where j is the index: out[j] = a[j] * alpha^j.
+    ///
+    /// This is the key operation in STIR domain shifts (iNTT -> coeff[j] *= alpha^j -> NTT).
+    /// Uses GPU for large arrays, falls back to CPU for small ones.
+    ///
+    /// - Parameters:
+    ///   - a: input array of field elements
+    ///   - alpha: the base of the geometric progression
+    /// - Returns: array where out[j] = a[j] * alpha^j
+    public func batchMulGeometric(_ a: [Fr], alpha: Fr) throws -> [Fr] {
+        let n = a.count
+        guard n > 0 else { return [] }
+
+        if n < gpuThreshold {
+            return batchMulGeometricCPU_BN254(a, alpha: alpha)
+        }
+
+        let aBuf = createFrBuffer(a)
+        let outBuf = pool.allocate(size: n * MemoryLayout<Fr>.stride)!
+
+        guard let cmdBuf = commandQueue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
+        let enc = cmdBuf.makeComputeCommandEncoder()!
+        enc.setComputePipelineState(batchMulGeometricBN254)
+        enc.setBuffer(aBuf, offset: 0, index: 0)
+        enc.setBuffer(outBuf, offset: 0, index: 1)
+        var alphaVal = alpha
+        enc.setBytes(&alphaVal, length: MemoryLayout<Fr>.stride, index: 2)
+        var nVal = UInt32(n)
+        enc.setBytes(&nVal, length: 4, index: 3)
+        let tg = min(256, Int(batchMulGeometricBN254.maxTotalThreadsPerThreadgroup))
+        enc.dispatchThreads(MTLSize(width: n, height: 1, depth: 1),
+                           threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+        enc.endEncoding()
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+        if let error = cmdBuf.error {
+            pool.release(buffer: aBuf); pool.release(buffer: outBuf)
+            throw MSMError.gpuError(error.localizedDescription)
+        }
+        let result = readFrBuffer(outBuf, count: n)
+        pool.release(buffer: aBuf); pool.release(buffer: outBuf)
+        return result
+    }
+
+    /// Encode geometric progression multiply into an existing command buffer.
+    /// out[j] = input[j] * alpha^j for j=0..n-1.
+    /// All dispatches go into cmdBuf — caller commits and waits.
+    public func encodeMulGeometric(
+        input: MTLBuffer, output: MTLBuffer,
+        alpha: Fr, n: Int, cmdBuf: MTLCommandBuffer
+    ) throws {
+        let enc = cmdBuf.makeComputeCommandEncoder()!
+        enc.setComputePipelineState(batchMulGeometricBN254)
+        enc.setBuffer(input, offset: 0, index: 0)
+        enc.setBuffer(output, offset: 0, index: 1)
+        var alphaVal = alpha
+        enc.setBytes(&alphaVal, length: MemoryLayout<Fr>.stride, index: 2)
+        var nVal = UInt32(n)
+        enc.setBytes(&nVal, length: 4, index: 3)
+        let tg = min(256, Int(batchMulGeometricBN254.maxTotalThreadsPerThreadgroup))
+        enc.dispatchThreads(MTLSize(width: n, height: 1, depth: 1),
+                           threadsPerThreadgroup: MTLSize(width: tg, height: 1, depth: 1))
+        enc.endEncoding()
+    }
+
+    /// CPU fallback: geometric progression multiply.
+    /// Computes result[j] = a[j] * alpha^j for each j by accumulating powers.
+    private func batchMulGeometricCPU_BN254(_ a: [Fr], alpha: Fr) -> [Fr] {
+        let n = a.count
+        guard n > 0 else { return [] }
+
+        var result = [Fr](repeating: Fr.zero, count: n)
+        var alphaPow = Fr.one
+        for j in 0..<n {
+            result[j] = frMul(a[j], alphaPow)
+            alphaPow = frMul(alphaPow, alpha)
+        }
+        return result
     }
 
     // ================================================================
