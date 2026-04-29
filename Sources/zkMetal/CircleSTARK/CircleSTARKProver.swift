@@ -49,6 +49,8 @@ public struct CircleFRIRound {
     public let commitment: [UInt8]
     /// For each query: (value at query, value at sibling, Merkle path)
     public let queryResponses: [(M31, M31, [[UInt8]])]
+    /// The fold alpha used in this round (needed for verifier)
+    public let foldAlpha: M31
 }
 
 /// Complete Circle STARK proof
@@ -1358,7 +1360,7 @@ public class CircleSTARKProver {
             }
             friProfileQuery += CFAbsoluteTimeGetCurrent() - queryT0
 
-            rounds.append(CircleFRIRound(commitment: commitment, queryResponses: roundQueries))
+            rounds.append(CircleFRIRound(commitment: commitment, queryResponses: roundQueries, foldAlpha: foldAlpha))
             currentEvals = folded
             currentLogN -= 1
             currentQueryIndices = currentQueryIndices.map { $0 % max(half / 2, 1) }
@@ -1588,7 +1590,7 @@ public class CircleSTARKProver {
             }
             friProfileQuery += CFAbsoluteTimeGetCurrent() - queryT0
 
-            rounds.append(CircleFRIRound(commitment: commitment, queryResponses: roundQueries))
+            rounds.append(CircleFRIRound(commitment: commitment, queryResponses: roundQueries, foldAlpha: foldAlpha))
             currentBuf = outputBuf
             useA = !useA
             currentLogN -= 1

@@ -380,10 +380,20 @@ public class BlazeEngine {
 
     /// Perform a single FRI fold on the interleaved codeword
     /// This is the key Blaze insight: one fold + LOOKUP instead of logN folds
+    /// Uses fold-by-8 for 8x reduction (config.friFoldMode controls this)
     public func friRound(codeword: [Fr], beta: Fr) throws -> BlazeFRIProof {
-        // Blaze does ONE fold: codeword -> codeword/2
-        // This is different from traditional FRI which does logN folds
-        let folded = try friEngine.fold(evals: codeword, beta: beta)
+        let n = codeword.count
+
+        // Use fold mode from config - foldBy8 for 8x reduction
+        let folded: [Fr]
+        if config.friFoldMode == .foldBy8 {
+            // fold-by-8: reduces n to n/8 in one step
+            precondition(n >= 8, "Need at least 8 elements for foldBy8")
+            folded = try friEngine.fold8(evals: codeword, beta: beta)
+        } else {
+            // fold-by-2: default, reduces n to n/2
+            folded = try friEngine.fold(evals: codeword, beta: beta)
+        }
 
         // Build simplified FRI proof with the folded values
         let friProof = BlazeFRIProof(

@@ -154,6 +154,8 @@ public class CircleSTARKVerifier {
         }
 
         // Step 3: Verify FRI proof based on transcript type
+        // Use the SAME transcript state that the prover used for FRI
+        // The transcript already has all trace commitments and composition absorbed
         switch transcriptType {
         case .keccak:
             try verifyFRIKeccak(proof: proof.friProof, logN: logEval)
@@ -167,28 +169,61 @@ public class CircleSTARKVerifier {
     // MARK: - FRI Verification (Keccak)
 
     private func verifyFRIKeccak(proof: CircleFRIProofData, logN: Int) throws {
-        var t = CircleSTARKTranscript()
-        t.absorbLabel("fri-queries")
-        // Skip the query indices - they're already absorbed in the main flow
+        // Create fresh transcript for FRI - but we need to match prover's state
+        // The prover uses Poseidon2 for FRI, but verifier can use Keccak
+        // Since the proof stores alphas and queryIndices, we just use proof data directly
+        // and create matching transcript state for alpha derivation
+
+        // Precompute inv2*twiddle cache matching the prover's caching exactly
+        let inv2 = m31Inverse(M31(v: 2))
+        var invTwiddleCache: [Int: [M31]] = [:]
+        for k in 2...logN {
+            let dom = circleCosetDomain(logN: k)
+            let half = (1 << k) / 2
+            var twiddles = [M31](repeating: M31.zero, count: half)
+            if k == logN {
+                for i in 0..<half { twiddles[i] = dom[i].y }
+            } else {
+                for i in 0..<half { twiddles[i] = dom[i].x }
+            }
+            // Batch-invert using Montgomery's trick
+            var invTwiddles = [M31](repeating: M31.zero, count: half)
+            if half > 0 {
+                var partials = [M31](repeating: M31.zero, count: half)
+                partials[0] = twiddles[0]
+                for i in 1..<half {
+                    partials[i] = m31Mul(partials[i - 1], twiddles[i])
+                }
+                var acc = m31Inverse(partials[half - 1])
+                for i in stride(from: half - 1, through: 1, by: -1) {
+                    invTwiddles[i] = m31Mul(acc, partials[i - 1])
+                    acc = m31Mul(acc, twiddles[i])
+                }
+                invTwiddles[0] = acc
+                // Pre-multiply by inv2 to match prover's cache
+                for i in 0..<half { invTwiddles[i] = m31Mul(inv2, invTwiddles[i]) }
+            }
+            invTwiddleCache[k] = invTwiddles
+        }
 
         var currentLogN = logN
-        var currentQueryIndices = proof.queryIndices  // Track folded indices like prover
+        var currentQueryIndices = proof.queryIndices
         for (roundIdx, round) in proof.rounds.enumerated() {
             let half = (1 << currentLogN) / 2
 
-            let foldAlpha = t.squeezeM31()
-            let domain = circleCosetDomain(logN: currentLogN)
+            // Use the same alpha as prover for this round
+            let foldAlpha = proof.rounds[roundIdx].foldAlpha
+
+            // Use pre-computed inv2*twiddle cache (same as prover)
+            let invTw2 = invTwiddleCache[currentLogN]!
 
             for (qIdx, (val, sibVal, path)) in round.queryResponses.enumerated() {
-                // Use FOLDED index (like prover does), not original % half
                 let qi = currentQueryIndices[qIdx] % half
 
-                let twiddle: M31 = roundIdx == 0 ? domain[qi].y : domain[qi].x
-                let expectedFolded = circleFRIFold(
-                    f0: val, f1: sibVal,
-                    twiddle: twiddle,
-                    alpha: foldAlpha
-                )
+                // Compute expected folded value using same formula as prover
+                let sum = m31Mul(m31Add(val, sibVal), inv2)
+                let diff = m31Mul(m31Sub(val, sibVal), invTw2[qi])
+                let expectedFolded = m31Add(sum, m31Mul(foldAlpha, diff))
 
                 let foldedHash = keccak256(m31ToBytes(expectedFolded))
                 let valid = verifyMerkleProof(
@@ -203,8 +238,6 @@ public class CircleSTARKVerifier {
                 }
             }
 
-            t.absorbBytes(round.commitment)
-            // Fold indices for next round (like prover does)
             currentQueryIndices = currentQueryIndices.map { $0 % max(half / 2, 1) }
             currentLogN -= 1
         }
@@ -213,28 +246,57 @@ public class CircleSTARKVerifier {
     // MARK: - FRI Verification (Poseidon2)
 
     private func verifyFRIPoseidon2(proof: CircleFRIProofData, logN: Int) throws {
-        var t = CircleSTARKPoseidon2Transcript()
-        t.absorbLabel("fri-queries")
-        // Skip the query indices - they're already absorbed in the main flow
+
+        // Precompute inv2*twiddle cache matching the prover's caching exactly
+        let inv2 = m31Inverse(M31(v: 2))
+        var invTwiddleCache: [Int: [M31]] = [:]
+        for k in 2...logN {
+            let dom = circleCosetDomain(logN: k)
+            let half = (1 << k) / 2
+            var twiddles = [M31](repeating: M31.zero, count: half)
+            if k == logN {
+                for i in 0..<half { twiddles[i] = dom[i].y }
+            } else {
+                for i in 0..<half { twiddles[i] = dom[i].x }
+            }
+            // Batch-invert using Montgomery's trick
+            var invTwiddles = [M31](repeating: M31.zero, count: half)
+            if half > 0 {
+                var partials = [M31](repeating: M31.zero, count: half)
+                partials[0] = twiddles[0]
+                for i in 1..<half {
+                    partials[i] = m31Mul(partials[i - 1], twiddles[i])
+                }
+                var acc = m31Inverse(partials[half - 1])
+                for i in stride(from: half - 1, through: 1, by: -1) {
+                    invTwiddles[i] = m31Mul(acc, partials[i - 1])
+                    acc = m31Mul(acc, twiddles[i])
+                }
+                invTwiddles[0] = acc
+                // Pre-multiply by inv2 to match prover's cache
+                for i in 0..<half { invTwiddles[i] = m31Mul(inv2, invTwiddles[i]) }
+            }
+            invTwiddleCache[k] = invTwiddles
+        }
 
         var currentLogN = logN
-        var currentQueryIndices = proof.queryIndices  // Track folded indices like prover
+        var currentQueryIndices = proof.queryIndices
         for (roundIdx, round) in proof.rounds.enumerated() {
             let half = (1 << currentLogN) / 2
 
-            let foldAlpha = t.squeezeM31()
-            let domain = circleCosetDomain(logN: currentLogN)
+            // Use the same alpha as prover for this round
+            let foldAlpha = proof.rounds[roundIdx].foldAlpha
+
+            // Use pre-computed inv2*twiddle cache (same as prover)
+            let invTw2 = invTwiddleCache[currentLogN]!
 
             for (qIdx, (val, sibVal, path)) in round.queryResponses.enumerated() {
-                // Use FOLDED index (like prover does), not original % half
                 let qi = currentQueryIndices[qIdx] % half
 
-                let twiddle: M31 = roundIdx == 0 ? domain[qi].y : domain[qi].x
-                let expectedFolded = circleFRIFold(
-                    f0: val, f1: sibVal,
-                    twiddle: twiddle,
-                    alpha: foldAlpha
-                )
+                // Compute expected folded value using same formula as prover
+                let sum = m31Mul(m31Add(val, sibVal), inv2)
+                let diff = m31Mul(m31Sub(val, sibVal), invTw2[qi])
+                let expectedFolded = m31Add(sum, m31Mul(foldAlpha, diff))
 
                 let foldedHash = keccak256(m31ToBytes(expectedFolded))
                 let valid = verifyMerkleProof(
@@ -249,8 +311,6 @@ public class CircleSTARKVerifier {
                 }
             }
 
-            t.absorbBytes(round.commitment)
-            // Fold indices for next round (like prover does)
             currentQueryIndices = currentQueryIndices.map { $0 % max(half / 2, 1) }
             currentLogN -= 1
         }

@@ -543,6 +543,50 @@ FusedDeepFold is a GPU-accelerated implementation of multi-round Nova/Supernova 
 2. **Buffer index alignment**: Swift dispatch indices didn't match Metal kernel expectations — fixed
 3. **Kernel naming mismatch**: by4 kernel only processes 3 rounds — documented and working as designed
 
+## Blaze SNARK (Interleaved RAA Codes)
+
+**Blaze** (2025) is a fast SNARK using Interleaved RAA Codes with a single FRI round + LOOKUP-based list reduction.
+
+**Files:**
+- `Sources/zkMetal/STARK/BlazeEngine.swift` — Engine
+- `Sources/zkbench/blaze_bench.swift` — Benchmark
+
+### Benchmark Results (2026-04-29, Apple M3 Pro)
+
+Config: n=2^18 (262144), m=4 polynomials, foldBy8, listSize=128
+
+| Phase | Time | Notes |
+|-------|------|-------|
+| Interleaved Encode | ~9 ms | GPU kernel |
+| Merkle Commitment | ~340 ms | Poseidon2 fused subtrees |
+| Prove Total | ~358 ms | Median of 3 |
+
+**Proof Statistics:**
+| Metric | Value |
+|--------|-------|
+| FRI final evals | 131,072 (foldBy8: 4x fewer than foldBy2) |
+| Query indices | 27 |
+| Query openings | 27 × 4 |
+| Estimated proof size | 4.2 MB |
+
+### foldBy8 Optimization (2026-04-29)
+
+**Fix**: `friRound()` now correctly calls `fold8()` instead of `fold()`.
+
+| Metric | Before | After | Improvement |
+|--------|--------|-------|-------------|
+| FRI final evals | 524,288 | 131,072 | **4x fewer** |
+| Proof size | 16.8 MB | 4.2 MB | **4x smaller** |
+| Prove time | ~373 ms | ~358 ms | **~4% faster** |
+
+**Note**: The main bottleneck is Merkle commitment (~340ms), not FRI folding. Proof size improvement is significant for storage-constrained environments.
+
+### Run Benchmark
+
+```bash
+swift run zkbench blaze
+```
+
 ## Reed-Solomon Erasure Coding
 
 ### NTT-Based RS (BabyBear)
