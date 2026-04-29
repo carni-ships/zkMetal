@@ -308,7 +308,7 @@ public func runGPUSTARKBench() {
         do {
             let air = FibonacciAIR(logTraceLength: logN)
 
-            // GPU prover
+            // GPU prover (fast config)
             let proverGPU = GPUCircleSTARKProverEngine(config: .fast)
             proverGPU.profileProve = false
             let _ = try proverGPU.prove(air: air)  // warmup
@@ -324,14 +324,12 @@ public func runGPUSTARKBench() {
             let cpuMs = (CFAbsoluteTimeGetCurrent() - t1) * 1000
 
             let speedup = gpuMs / cpuMs
-            fputs(String(format: "    2^%-2d: GPU %7.1fms | CPU %6.1fms | %.2fx (CPU faster)\n",
+            fputs(String(format: "    2^%-2d: GPU(fast) %7.1fms | CPU %6.1fms | %.2fx (CPU faster)\n",
                         logN, gpuMs, cpuMs, speedup), stderr)
         } catch {
             fputs("    2^\(logN): ERROR - \(error)\n", stderr)
         }
     }
 
-    fputs("\n  CONCLUSION:\n", stderr)
-    fputs("  GPU prover is SLOWER than CPU prover due to Poseidon2-M31 Merkle trees.\n", stderr)
-    fputs("  GPU acceleration would help at larger scales or with GPU-friendly hash.\n\n", stderr)
+    fputs("\n", stderr)
 }

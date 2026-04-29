@@ -385,14 +385,14 @@ From benchmarks:
 | GPU Circle NTT | ✅ Working | ~30ms at 2^20 (fused kernel pending fix) |
 | GPU Poseidon2 Merkle | ✅ Working | Replaced CPU path |
 | Fused Merkle tree | ✅ Working | Single cmd buffer with barriers |
-| GPU constraint eval | ⚠️ Partial | GPU kernel exists (`circle_constraint_m31.metal`) but NOT integrated into prover engine — CPU path still used |
+| GPU constraint eval | ✅ Integrated (2026-04-28) | GPU kernel `circle_fibonacci_constraint_eval` now called via `evaluateConstraintsGPUIfAvailable()` — prover engine uses GPU path when available, falls back to CPU |
 | verify() method | ⚠️ Partial | Implemented but has limitation: only verifies FRI, doesn't fully re-evaluate constraints at query points (relies on FRI soundness) |
 
 ### Verification
 
 The GPU Circle NTT and Merkle are working. However:
 
-1. **Constraint eval**: GPU kernel `circle_fibonacci_constraint_eval` exists in `Sources/Shaders/constraint/circle_constraint_m31.metal` but is NOT called by `GPUCircleSTARKProverEngine`. The prover uses CPU `evaluateConstraints()` at line 1572.
+1. **Constraint eval**: GPU kernel `circle_fibonacci_constraint_eval` now integrated via `GPUCircleConstraintEvalEngine.evaluateFibonacci()` and called from `GPUCircleSTARKProverEngine.evaluateConstraintsGPUIfAvailable()` at line 1239 (previously line 1572). GPU path used when `gpuAvailable && evalLen >= config.gpuConstraintThreshold`, falls back to CPU otherwise.
 
 2. **verify()**: Full implementation exists in `CircleSTARKVerifier.swift:54`. However, at lines 132-154 it admits: "We verify the composition polynomial's degree via FRI instead" rather than fully re-evaluating constraints at query points. This is a soundness vs completeness tradeoff — FRI catches cheating but doesn't verify constraint satisfaction directly.
 

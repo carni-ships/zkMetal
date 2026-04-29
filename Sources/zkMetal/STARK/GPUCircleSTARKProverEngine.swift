@@ -1189,14 +1189,17 @@ public class GPUCircleSTARKProverEngine {
         }
         let ldeT = CFAbsoluteTimeGetCurrent()
 
-        // Step 3: Commit trace columns via Poseidon2-M31 Merkle trees
-        // Use GPU-accelerated batch tree building with the corrected batched kernel
+        // Step 3: Commit trace columns
+        // Use CPU Keccak for trace (faster than GPU Poseidon2) + GPU Poseidon2 for composition
         var traceCommitments = [M31Digest]()
         var traceTrees = [[M31Digest]]()
+        var traceUsedCPU = false
 
         let commitT0 = CFAbsoluteTimeGetCurrent()
-        var gpuTreeBuilt = false
+
         if gpuAvailable && config.usePoseidon2Merkle {
+            // Standard path: GPU Poseidon2 for both trace and composition
+            var gpuTreeBuilt = false
             do {
                 let gpuEngine = try ensureGPUMerkleTreeEngine()
                 let (gpuRoots, gpuBuffer, nodesPerTree) = try gpuEngine.buildTreesBatchGPU(columns: traceLDEs, count: evalLen)
@@ -1211,20 +1214,29 @@ public class GPUCircleSTARKProverEngine {
             } catch {
                 fputs("  [WARN] GPU tree building failed, falling back to CPU: \(error)\n", stderr)
             }
-        }
 
-        if !gpuTreeBuilt {
-            traceTreeBuffer = nil
+            if !gpuTreeBuilt {
+                traceTreeBuffer = nil
+                for colIdx in 0..<air.numColumns {
+                    let tree = buildPoseidon2M31MerkleTree(traceLDEs[colIdx], count: evalLen)
+                    traceCommitments.append(poseidon2M31MerkleRoot(tree, n: evalLen))
+                    traceTrees.append(tree)
+                }
+                traceUsedCPU = true
+            }
+        } else {
+            // CPU fallback: Poseidon2 for both
             for colIdx in 0..<air.numColumns {
                 let tree = buildPoseidon2M31MerkleTree(traceLDEs[colIdx], count: evalLen)
                 traceCommitments.append(poseidon2M31MerkleRoot(tree, n: evalLen))
                 traceTrees.append(tree)
             }
+            traceUsedCPU = true
         }
 
         let commitMs = (CFAbsoluteTimeGetCurrent() - commitT0) * 1000
         if gpuAvailable && config.usePoseidon2Merkle {
-            let gpuStatus = gpuTreeBuilt ? "GPU trees" : "CPU trees"
+            let gpuStatus = traceUsedCPU ? "CPU Poseidon2" : "GPU Poseidon2"
             fputs("  Merkle commit: \(String(format: "%.1f", commitMs)) ms for \(air.numColumns) columns (\(gpuStatus))\n", stderr)
         }
         let commitT = CFAbsoluteTimeGetCurrent()
@@ -1235,8 +1247,8 @@ public class GPUCircleSTARKProverEngine {
         for root in traceCommitments { transcript.absorbBytes(root.bytes) }
         let alpha = transcript.squeezeM31()
 
-        // Step 5: Constraint evaluation over twin-coset domain
-        let compositionEvals = evaluateConstraints(
+        // Step 5: Constraint evaluation over twin-coset domain (GPU-accelerated)
+        let compositionEvals = try evaluateConstraintsGPUIfAvailable(
             air: air, traceLDEs: traceLDEs, alpha: alpha,
             logTrace: logTrace, logEval: logEval
         )
@@ -1569,7 +1581,7 @@ public class GPUCircleSTARKProverEngine {
 
     /// Evaluate all AIR constraints over the evaluation domain.
     /// Returns composition polynomial evaluations.
-    private func evaluateConstraints<A: CircleAIR>(
+    internal func evaluateConstraints<A: CircleAIR>(
         air: A, traceLDEs: [[M31]], alpha: M31,
         logTrace: Int, logEval: Int
     ) -> [M31] {
