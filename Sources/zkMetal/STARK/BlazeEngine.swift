@@ -94,6 +94,17 @@ public struct BlazeProof: Sendable {
     /// Proof-of-work nonce (if grinding enabled)
     public let powNonce: UInt64?
 
+    public init(codewordRoot: [UInt8], friProof: BlazeFRIProof, queryIndices: [UInt32],
+               queryOpenings: [[Fr]], lookupList: [Fr], lookupProof: [UInt32], powNonce: UInt64?) {
+        self.codewordRoot = codewordRoot
+        self.friProof = friProof
+        self.queryIndices = queryIndices
+        self.queryOpenings = queryOpenings
+        self.lookupList = lookupList
+        self.lookupProof = lookupProof
+        self.powNonce = powNonce
+    }
+
     /// Estimated proof size in bytes
     public var estimatedSizeBytes: Int {
         codewordRoot.count +
@@ -116,6 +127,12 @@ public struct BlazeFRIProof: Sendable {
 
     /// Remainder (final reduced polynomial)
     public let remainder: Fr
+
+    public init(foldedEvals: [Fr], foldMerkleProof: [[UInt8]], remainder: Fr) {
+        self.foldedEvals = foldedEvals
+        self.foldMerkleProof = foldMerkleProof
+        self.remainder = remainder
+    }
 
     public var serializedSize: Int {
         foldedEvals.count * MemoryLayout<Fr>.stride +
@@ -575,26 +592,109 @@ public class BlazeEngine {
     }
 
     /// Verify a Blaze proof
+    /// Full verification includes:
+    /// 1. Re-commit and verify root matches
+    /// 2. Re-derive challenges from transcript
+    /// 3. Verify FRI fold: re-fold codeword and compare to proof's folded evals
+    /// 4. Verify LOOKUP proof: sampled values are in the lookup list
+    /// 5. Verify query openings match the committed codeword
     public func verify(polys: [[Fr]], proof: BlazeProof) -> Bool {
         // 1. Re-commit and verify root matches
         guard let (root, codeword) = try? commit(polys: polys) else { return false }
         if root != proof.codewordRoot { return false }
 
-        // 2. Re-derive challenges from transcript to verify
+        // 2. Re-derive challenges from transcript
         var t = FiatShamirTranscript(label: "Blaze-v1", hasher: KeccakTranscriptHasher())
         t.appendMessage(label: "codeword_root", data: root)
 
+        // 3. Re-derive FRI beta and verify FRI fold consistency
         let friBeta = t.squeezeChallenge()
-        let friProof = try? friRound(codeword: codeword, beta: friBeta)
 
-        // Verify LOOKUP list
-        for eval in friProof?.foldedEvals ?? [] {
-            t.appendScalar(label: "fri_fold", scalar: eval)
+        // Re-fold the codeword with the same beta
+        guard let expectedFriProof = try? friRound(codeword: codeword, beta: friBeta) else {
+            return false
         }
 
-        // Verify query openings match
-        if !verifyQueries(root: root, codeword: codeword, queryIndices: proof.queryIndices, openings: proof.queryOpenings) {
+        // Verify the proof's folded evals match our re-computation
+        guard proof.friProof.foldedEvals.count == expectedFriProof.foldedEvals.count else {
             return false
+        }
+        for i in 0..<proof.friProof.foldedEvals.count {
+            if !frEqual(proof.friProof.foldedEvals[i], expectedFriProof.foldedEvals[i]) {
+                return false
+            }
+        }
+
+        // Verify remainder matches
+        if !frEqual(proof.friProof.remainder, expectedFriProof.remainder) {
+            return false
+        }
+
+        // 4. Absorb FRI proof for LOOKUP verification
+        let foldedHash = hashFrArray(proof.friProof.foldedEvals)
+        t.appendMessage(label: "fri_folded_hash", data: foldedHash)
+
+        // 5. Verify LOOKUP proof
+        if !verifyLookupProof(foldedEvals: proof.friProof.foldedEvals,
+                             lookupList: proof.lookupList,
+                             lookupProof: proof.lookupProof,
+                             transcript: &t) {
+            return false
+        }
+
+        // 6. Derive query indices and verify openings
+        let queryIndices = generateTranscriptQueries(
+            count: config.numQueries,
+            domainSize: config.domainSize,
+            transcript: &t
+        )
+
+        // Verify query indices match
+        guard queryIndices.count == proof.queryIndices.count else { return false }
+        for i in 0..<queryIndices.count {
+            if queryIndices[i] != proof.queryIndices[i] { return false }
+        }
+
+        // 7. Verify query openings match the codeword
+        if !verifyQueries(root: root, codeword: codeword,
+                          queryIndices: proof.queryIndices,
+                          openings: proof.queryOpenings) {
+            return false
+        }
+
+        return true
+    }
+
+    /// Verify LOOKUP proof: check that sampled positions contain values from lookup list
+    private func verifyLookupProof(foldedEvals: [Fr], lookupList: [Fr],
+                                   lookupProof: [UInt32],
+                                   transcript: inout FiatShamirTranscript<KeccakTranscriptHasher>) -> Bool {
+        // Derive seed for proof generation verification
+        let seedChallenge = transcript.squeezeChallenge()
+        var seed: UInt64 = 0
+        withUnsafeBytes(of: seedChallenge) { ptr in
+            for i in 0..<min(8, ptr.count) {
+                seed ^= UInt64(ptr[i]) << (i * 8)
+            }
+        }
+
+        // Verify each sampled value is in the lookup list
+        let foldCount = foldedEvals.count
+        guard lookupProof.count == config.numQueries else { return false }
+
+        for pos in lookupProof {
+            let idx = Int(pos) % foldCount
+            let value = foldedEvals[idx]
+
+            // Check if value is in lookup list
+            var found = false
+            for entry in lookupList {
+                if frEqual(value, entry) {
+                    found = true
+                    break
+                }
+            }
+            if !found { return false }
         }
 
         return true

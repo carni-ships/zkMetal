@@ -24,6 +24,7 @@ public func runBlazeTests() {
 
     suite("Blaze -- Prove/Verify")
     blazeTestProveVerify()
+    blazeTestFullVerify()
 
     suite("Blaze -- RAA Interleaving Correctness")
     blazeTestInterleavedVsRowwise()
@@ -323,7 +324,10 @@ func blazeTestProveVerify() {
         expect(proof.codewordRoot.count > 0, "Blaze proof has root")
         expect(proof.queryIndices.count > 0, "Blaze proof has queries")
         expect(proof.queryOpenings.count > 0, "Blaze proof has openings")
-        expect(true, "Blaze prove generated")
+
+        // Full verification - FRI fold + LOOKUP + query openings
+        let isValid = engine.verify(polys: polys, proof: proof)
+        expect(isValid, "Blaze prove/verify round-trip")
     } catch {
         expect(false, "Blaze prove threw: \(error)")
     }
@@ -374,9 +378,91 @@ func blazeBenchmark() {
         proveTimes.sort()
         fputs(String(format: "    Prove:     %.2f ms (median of 3)\n", proveTimes[1]), stderr)
 
+        // Benchmark verify
+        let proof = try engine.prove(polys: polys)
+        var verifyTimes = [Double]()
+        for _ in 0..<3 {
+            let t0 = CFAbsoluteTimeGetCurrent()
+            let _ = engine.verify(polys: polys, proof: proof)
+            let dt = (CFAbsoluteTimeGetCurrent() - t0) * 1000
+            verifyTimes.append(dt)
+        }
+        verifyTimes.sort()
+        fputs(String(format: "    Verify:     %.2f ms (median of 3)\n", verifyTimes[1]), stderr)
+
         fputs(String(format: "  Blaze version: %@\n", BlazeEngine.version.description), stderr)
     } catch {
         fputs("  Blaze benchmark error: \(error)\n", stderr)
+    }
+}
+
+// MARK: - Full Verify Test with Tamper Detection
+
+func blazeTestFullVerify() {
+    do {
+        let engine = try BlazeEngine(config: .fast)
+        let n = engine.config.domainSize
+        let m = engine.config.numPolynomials
+
+        // Create test polynomials
+        var polys = [[Fr]]()
+        for j in 0..<m {
+            var poly = [Fr](repeating: .zero, count: n)
+            for i in 0..<n {
+                poly[i] = frFromInt(UInt64(j * 1000 + i * 7))
+            }
+            polys.append(poly)
+        }
+
+        // Generate valid proof
+        let proof = try engine.prove(polys: polys)
+
+        // Verify should pass
+        let isValid = engine.verify(polys: polys, proof: proof)
+        expect(isValid, "Blaze full verify passes for valid proof")
+
+        // Tamper with the proof - change a folded eval
+        var tamperedProof = proof
+        var tamperedFolded = proof.friProof.foldedEvals
+        if tamperedFolded.count > 1 {
+            // Flip a bit in the second folded eval
+            tamperedFolded[1] = frAdd(tamperedFolded[1], frFromInt(1))
+        }
+
+        // Re-create BlazeFRIProof with tampered values
+        let tamperedFriProof = BlazeFRIProof(
+            foldedEvals: tamperedFolded,
+            foldMerkleProof: proof.friProof.foldMerkleProof,
+            remainder: proof.friProof.remainder
+        )
+        tamperedProof = BlazeProof(
+            codewordRoot: proof.codewordRoot,
+            friProof: tamperedFriProof,
+            queryIndices: proof.queryIndices,
+            queryOpenings: proof.queryOpenings,
+            lookupList: proof.lookupList,
+            lookupProof: proof.lookupProof,
+            powNonce: proof.powNonce
+        )
+
+        // Verify should fail
+        let isValidTampered = engine.verify(polys: polys, proof: tamperedProof)
+        expect(!isValidTampered, "Blaze full verify rejects tampered proof")
+
+        // Also test with wrong polynomials
+        var wrongPolys = [[Fr]]()
+        for j in 0..<m {
+            var poly = [Fr](repeating: .zero, count: n)
+            for i in 0..<n {
+                poly[i] = frFromInt(UInt64(j * 2000 + i * 11))  // Different values
+            }
+            wrongPolys.append(poly)
+        }
+
+        let isValidWrong = engine.verify(polys: wrongPolys, proof: proof)
+        expect(!isValidWrong, "Blaze full verify rejects proof for wrong polynomials")
+    } catch {
+        expect(false, "Blaze full verify threw: \(error)")
     }
 }
 
