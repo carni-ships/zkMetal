@@ -445,6 +445,71 @@ let verifier = CircleSTARKVerifier(transcriptType: .keccak)
 - `Sources/zkMetal/CircleSTARK/CircleSTARKVerifier.swift` — Configurable transcript type
 - `Sources/zkMetal/CircleSTARK/CircleSTARKProver.swift` — Always uses Poseidon2
 
+## STIR (Shift To Improve Rate)
+
+**STIR** (Shift To Improve Rate) is a FRI variant that applies domain shifting after each fold, improving soundness per query from ~1 bit to ~1.5 bits.
+
+**Key advantages:**
+- 33% fewer queries needed vs FRI for same security (43 vs 64 queries at 128-bit, rate=1/4)
+- Domain shift decorrelates errors across rounds multiplicatively (rho^1.5 vs rho)
+- Succinct verification (without original evaluations) is sound via implicit shift check
+
+**Implementation:** `Sources/zkMetal/STIR/STIREngine.swift`, `STIRVerifier.swift`
+
+### Benchmark Results (2026-04-29, Apple M3 Pro)
+
+| Config | Size | Rounds | Prove | Verify | Proof Size | Verify Correct |
+|--------|------|--------|-------|--------|------------|----------------|
+| q=4, r=4 | 2^10 | 3 | 8.7ms | 2.3ms | 14.3 KB | ✅ OK |
+| q=2, r=4 | 2^10 | 3 | 8.7ms | 1.1ms | 7.6 KB | ✅ OK |
+| q=4, r=4 | 2^14 | 5 | 1342.5ms | 4.0ms | 28.5 KB | ✅ OK |
+| q=2, r=4 | 2^14 | 5 | 1358.0ms | 2.0ms | 14.8 KB | ✅ OK |
+
+**Note**: STIR prove is slow at large sizes due to CPU-based Merkle tree construction. The verify path is efficient.
+
+### Soundness Comparison
+
+| Protocol | Queries (128-bit, rate=1/4) | Improvement |
+|----------|---------------------------|-------------|
+| FRI | 64 | baseline |
+| STIR | 43 | **33% fewer** |
+
+### Verify Modes
+
+STIRVerifier provides two verification modes:
+
+1. **verify(proof)** — Succinct verification without original evaluations
+   - Checks: fold challenges, Merkle paths, fold consistency, final degree
+   - Shift consistency is **implicitly** checked: a wrong shift causes fold failure at the next round
+   - For explicit shift verification, use verifyFull()
+
+2. **verifyFull(proof, evaluations)** — Full verification with original evaluations
+   - Recomputes entire fold+shift chain and verifies every step
+   - Required when explicit shift verification is needed
+
+### Files
+
+- `Sources/zkMetal/STIR/STIREngine.swift` — Prover
+- `Sources/zkMetal/STIR/STIRVerifier.swift` — Verifier
+- `Sources/zkMetal/STIR/STIRProof.swift` — Proof data structures
+- `Sources/zkbench/stir_bench.swift` — Benchmark
+
+### Run Benchmark
+
+```bash
+swift run zkbench stir
+```
+
+### Performance vs FRI and WHIR
+
+| Protocol | Size | Prove | Proof Size |
+|----------|------|-------|------------|
+| STIR (q=4,r=4) | 2^14 | 1342.5ms | 28.5 KB |
+| WHIR (q=4,r=4) | 2^14 | 16.9ms | 31.1 KB |
+| FRI (GPU foldBy8) | 2^14 | 19.7ms | ~3.8 KB |
+
+**Note**: STIR is significantly slower at large sizes due to CPU Merkle. GPU acceleration would close this gap.
+
 ## WHIR (Weighted Hash IOP for Reed-Solomon Proximity Testing)
 
 **WHIR** (Arnon, Chiesa, Fenzi, Yogev — eprint 2024/1586) is a modern proximity testing protocol that replaces FRI with a sumcheck + hashing approach.

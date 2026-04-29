@@ -42,6 +42,14 @@ public class STIRVerifier {
     ///   - Fold consistency: opened values produce the correct folded value
     ///   - Final polynomial has small degree
     ///
+    /// **Shift Consistency Note**:
+    /// This method does NOT explicitly verify shift correctness (iNTT -> coeff*alpha^j -> NTT).
+    /// Instead, shift errors are implicitly caught: if shift was wrong, the resulting layer r+1
+    /// would have incorrect values, causing fold verification at round r+1 to fail.
+    /// This implicit check is sufficient for soundness.
+    ///
+    /// For explicit shift verification, use verifyFull() with original evaluations.
+    ///
     /// - Parameters:
     ///   - proof: the STIR proof to verify
     ///   - domainSize: size of the original evaluation domain (if nil, inferred from proof)
