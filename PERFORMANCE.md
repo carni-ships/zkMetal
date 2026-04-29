@@ -458,14 +458,27 @@ let verifier = CircleSTARKVerifier(transcriptType: .keccak)
 
 ### Benchmark Results (2026-04-29, Apple M3 Pro)
 
+**Note**: With GPU Merkle acceleration (`useGPU: true`), STIR is now competitive with WHIR and FRI.
+
 | Config | Size | Rounds | Prove | Verify | Proof Size | Verify Correct |
 |--------|------|--------|-------|--------|------------|----------------|
-| q=4, r=4 | 2^10 | 3 | 8.7ms | 2.3ms | 14.3 KB | ✅ OK |
-| q=2, r=4 | 2^10 | 3 | 8.7ms | 1.1ms | 7.6 KB | ✅ OK |
-| q=4, r=4 | 2^14 | 5 | 1342.5ms | 4.0ms | 28.5 KB | ✅ OK |
-| q=2, r=4 | 2^14 | 5 | 1358.0ms | 2.0ms | 14.8 KB | ✅ OK |
+| q=4, r=4 | 2^10 | 3 | 2.7ms | 1.9ms | 14.3 KB | ✅ OK |
+| q=2, r=4 | 2^10 | 3 | 2.6ms | 1.1ms | 7.6 KB | ✅ OK |
+| q=4, r=4 | 2^14 | 5 | 19.2ms | 4.0ms | 28.5 KB | ✅ OK |
+| q=2, r=4 | 2^14 | 5 | 18.3ms | 2.0ms | 14.8 KB | ✅ OK |
 
-**Note**: STIR prove is slow at large sizes due to CPU-based Merkle tree construction. The verify path is efficient.
+**Before GPU Merkle (useGPU: false):**
+- 2^14 prove was 1342.5ms (70x slower)
+- 2^18 prove was prohibitively slow
+
+**Performance vs FRI and WHIR at 2^14:**
+| Protocol | Prove | Proof Size |
+|----------|-------|------------|
+| STIR (q=4,r=4) | 19.2ms | 28.5 KB |
+| WHIR (q=4,r=4) | 16.6ms | 31.1 KB |
+| FRI (GPU foldBy8) | 20.0ms | ~3.8 KB |
+
+**Bottleneck at large sizes**: Domain shift (NTT/iNTT) is CPU-based. GPU NTT would further improve 2^18 performance.
 
 ### Soundness Comparison
 

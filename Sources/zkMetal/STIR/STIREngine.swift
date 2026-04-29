@@ -56,8 +56,8 @@ public class STIRProver {
     /// - Parameters:
     ///   - numQueries: queries per round (default 4; more = higher security)
     ///   - reductionFactor: degree reduction per round (default 4; must be power of 2)
-    ///   - useGPU: whether to use Metal GPU for NTT domain shifts (default false)
-    public init(numQueries: Int = 4, reductionFactor: Int = 4, useGPU: Bool = false) throws {
+    ///   - useGPU: whether to use Metal GPU for NTT domain shifts and Merkle (default true)
+    public init(numQueries: Int = 4, reductionFactor: Int = 4, useGPU: Bool = true) throws {
         precondition(reductionFactor >= 2 && (reductionFactor & (reductionFactor - 1)) == 0,
                      "reductionFactor must be a power of 2")
         self.numQueries = numQueries

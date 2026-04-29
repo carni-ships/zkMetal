@@ -66,7 +66,7 @@ public func runSTIRBench() {
         fputs("  STIR queries needed: \(stirQ) (\(String(format: "%.0f", (1.0 - Double(stirQ)/Double(friQ)) * 100))%% fewer)\n", stderr)
 
         // --- Performance benchmarks ---
-        for logN in [10, 14, 18] {
+        for logN in [10, 14] {  // Skip 18 - takes too long without GPU NTT for shift
             let benchN = 1 << logN
             let benchEvals = randomEvals(benchN)
 
@@ -75,7 +75,7 @@ public func runSTIRBench() {
             let configs: [(String, Int, Int)] = [("q=4,r=4", 4, 4), ("q=2,r=4", 2, 4)]
             for cfg in configs {
                 let (qLabel, q, r) = cfg
-                let stirEng = try STIRProver(numQueries: q, reductionFactor: r)
+                let stirEng = try STIRProver(numQueries: q, reductionFactor: r, useGPU: true)
                 let _ = try stirEng.prove(evaluations: benchEvals)  // warmup
 
                 var pt = [Double](); var ps = 0; var pnr = 0
