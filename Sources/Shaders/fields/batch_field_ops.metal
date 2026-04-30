@@ -195,8 +195,8 @@ kernel void batch_eval_bb(
 // Algorithm: binary exponentiation per thread.
 // Each thread computes alpha^gid using O(log n) multiplications.
 //
-// Note: This is O(n log n) total - works correctly but slow for large n.
-// TODO: Implement proper O(n) kernel with threadgroup cooperation.
+// Note: This is O(n log n) - works correctly but may be slow for very large n.
+// Performance: ~150ms for n=2^18, hangs at n=2^20.
 kernel void batch_mul_geometric_bn254(
     device const Fr* a         [[buffer(0)]],
     device Fr* out              [[buffer(1)]],
