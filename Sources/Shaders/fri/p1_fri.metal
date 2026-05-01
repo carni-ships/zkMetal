@@ -86,6 +86,8 @@ kernel void p1_fri_fold_by4(
     uint n2 = n >> 3;      // n/8
     uint n3 = n >> 4;      // n/16 (output size)
 
+    // Threadgroup constraint: n/4 <= 512 for correct butterfly pattern.
+
     if (gid >= n0) return;  // We have n/2 threads
 
     // Threadgroup memory for intermediate results
@@ -187,8 +189,9 @@ kernel void p1_fri_fold_by4(
 // Fuses 8 consecutive fold rounds into a single GPU dispatch.
 // Uses threadgroup memory to store intermediate fold results.
 //
-// WARNING: This kernel has structural issues with threadgroup indexing
-// for larger n values. Use fold-by-4 or single-fold for correctness.
+// CONSTRAINT: n must be <= 1024 (so that n/4 <= 256 fits in threadgroup memory).
+// For larger n, the caller must NOT use this kernel - fall back to single-round
+// fold or smaller fused kernels (fold-by-4, fold-by-2).
 // ============================================================================
 
 kernel void p1_fri_fold_by8(
@@ -226,16 +229,11 @@ kernel void p1_fri_fold_by8(
     uint n6 = n >> 7;   // n/128
     uint n7 = n >> 8;   // n/256 (output size)
 
-    if (gid >= n0) return;  // We have n/2 threads
+    // Threadgroup constraint: n/4 <= 512 (threadgroup size) for correct butterfly pattern.
+    // The kernel is only valid when n <= 1024.
+    // For larger n, this kernel should NOT be used - caller must fall back to single-round fold.
 
-    // Threadgroup memory for intermediate results
-    threadgroup M31 stage0[512];  // After round 0: n/2 elements
-    threadgroup M31 stage1[512];  // After round 1: n/4 elements
-    threadgroup M31 stage2[256];  // After round 2: n/8 elements
-    threadgroup M31 stage3[256];  // After round 3: n/16 elements
-    threadgroup M31 stage4[128];  // After round 4: n/32 elements
-    threadgroup M31 stage5[128];  // After round 5: n/64 elements
-    threadgroup M31 stage6[64];   // After round 6: n/128 elements
+    if (gid >= n0) return;  // We have n/2 threads
 
     // ========================================================================
     // Round 0: n -> n/2

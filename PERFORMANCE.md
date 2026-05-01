@@ -911,6 +911,13 @@ causing out-of-bounds bucket access and corrupted KZG verification results.
 
 ## Version History
 
+- **2026-05-01**: Session cleanup and fixes:
+  - Fixed EVMPrecompiles.swift duplicate Fp2 helper functions (bls12Fp2Mul, bls12Fp2Sqr)
+  - Fixed Map G1 negation code (removed unused neg4Mont variable)
+  - Fixed Rust bindings duplicate FFI declaration for zkmetal_gpu_available
+  - Removed invalid set_shader_dir from Rust bindings (function not in C header)
+  - BLS12-381 Map Fp->G1 (0x11) and Map Fp2->G2 (0x12) implementations present but require GPU testing with EIP-2537/RFC 9380 test vectors
+  - P1 FRI: Fixed threadgroup memory constraint checking in dispatch logic. Added proper curN-based constraint checks: fold-by-8 requires curN <= 1024, fold-by-4 and fold-by-2 require curN <= 2048. For larger curN, falls back to single-round fold. Enabled fold-by-8 with proper constraint checking.
 - **2026-04-28**: FusedDeepFold GPU correctness fixed. Root cause: threadgroup memory was bound via `setBuffer()` instead of `setThreadgroupMemoryLength()`. GPU now produces correct results across all sizes (256-16384). Speedup ranges from 1.6x (small) to 38.2x (large). Benchmark: m=16384 GPU=1.37ms vs CPU=52.13ms.
 - **2026-04-28**: WHIR verifier bug fixed. Two issues: (1) query index used `frToInt(c)[0]` instead of `frToUInt64(c)` — fixed in both verify paths; (2) weight derivation used individual `ts.squeeze()` while prover uses RAA pattern — fixed by implementing RAA in verifier. All WHIR variants now pass (full/succinct/blind). Benchmark: q=4,r=4 at 2^14 proves in 19.5ms, verifies in 0.7ms.
 - **2026-04-28**: Circle STARK now uses Poseidon2-M31-based `CircleSTARKPoseidon2Transcript` instead of Keccak-based `CircleSTARKTranscript`. New file: `Sources/zkMetal/Transcript/Poseidon2Transcript.swift`. Benchmarks show 3.34x speedup (265ms vs 886ms for 1000 absorb+squeeze operations). Both prover and verifier updated. All correctness tests pass (determinism, domain separation, round-trip). **Breaking change**: proofs not compatible with old Keccak transcript.

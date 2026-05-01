@@ -473,7 +473,8 @@ pub fn set_shader_dir(path: &str) {
 /// Check if a Metal GPU is available.
 #[cfg(feature = "gpu")]
 pub fn gpu_available() -> bool {
-    unsafe { ffi::zkmetal_gpu_available() == 1 }
+    // zkmetal_gpu_available() returns 0 when GPU is available, 1 when not
+    unsafe { ffi::zkmetal_gpu_available() == 0 }
 }
 
 /// Get the zkMetal library version string.

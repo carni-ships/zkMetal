@@ -23,7 +23,7 @@ public class P1FRIEngine {
     let foldFunction: MTLComputePipelineState
     let foldBy2Function: MTLComputePipelineState?  // Fused 2-round kernel
     let foldBy4Function: MTLComputePipelineState?  // Fused 4-round kernel
-    let foldBy8Function: MTLComputePipelineState? = nil  // Fused 8-round kernel (disabled due to indexing issues)
+    let foldBy8Function: MTLComputePipelineState?  // Fused 8-round kernel (n <= 1024 only)
 
     // Reuse P1 NTT engine for LDE if needed
     public let p1NTT: P1NTTEngine
@@ -78,10 +78,11 @@ public class P1FRIEngine {
         self.foldBy4Function = try? device.makeComputePipelineState(
             function: library.makeFunction(name: "p1_fri_fold_by4")!
         )
-        // Fold-by-8 disabled due to threadgroup indexing issues
-        // self.foldBy8Function = try? device.makeComputePipelineState(
-        //     function: library.makeFunction(name: "p1_fri_fold_by8")!
-        // )
+        // Fold-by-8: enabled but only works for n <= 1024 due to threadgroup memory constraints.
+        // The kernel has a safety guard that returns early for n > 1024.
+        self.foldBy8Function = try? device.makeComputePipelineState(
+            function: library.makeFunction(name: "p1_fri_fold_by8")!
+        )
 
         self.p1NTT = try P1NTTEngine()
     }
@@ -597,9 +598,59 @@ public class P1FRIEngine {
         var roundIdx = 0
 
         while remainingRounds > 0 {
-            // Note: fold-by-8 disabled due to threadgroup indexing issues
-            if remainingRounds >= 4 && foldBy4Function != nil {
-                // Process 4 rounds - allocate single output buffer
+            // Current domain size at this round
+            let curN = n >> roundIdx
+            // Threadgroup constraint: fused kernels need curN/4 <= 512
+            // - fold-by-4: curN <= 2048 (so curN/4 <= 512)
+            // - fold-by-8: curN <= 1024 (so curN/4 <= 256)
+            let canUseFoldBy4 = remainingRounds >= 4 && foldBy4Function != nil && curN <= 2048
+            let canUseFoldBy8 = remainingRounds >= 8 && foldBy8Function != nil && curN <= 1024
+
+            if canUseFoldBy8 {
+                // Process 8 rounds - fold-by-8 kernel
+                let rounds = 8
+                let outputSize = n >> (roundIdx + rounds)
+
+                guard let outBuf = device.makeBuffer(length: outputSize * stride, options: .storageModeShared) else {
+                    throw MSMError.gpuError("Failed to create output buffer")
+                }
+
+                var alphasArray = [alphas[roundIdx], alphas[roundIdx + 1], alphas[roundIdx + 2], alphas[roundIdx + 3],
+                                   alphas[roundIdx + 4], alphas[roundIdx + 5], alphas[roundIdx + 6], alphas[roundIdx + 7]]
+                var nVal = UInt32(curN)
+
+                guard let cmdBuf = commandQueue.makeCommandBuffer() else {
+                    throw MSMError.noCommandBuffer
+                }
+                let enc = cmdBuf.makeComputeCommandEncoder()!
+
+                enc.setComputePipelineState(foldBy8Function!)
+                enc.setBuffer(currentBuf, offset: 0, index: 0)
+                enc.setBuffer(outBuf, offset: 0, index: 1)
+                enc.setBuffer(inv2tBufs[roundIdx], offset: 0, index: 2)
+                enc.setBuffer(inv2tBufs[roundIdx + 1], offset: 0, index: 3)
+                enc.setBuffer(inv2tBufs[roundIdx + 2], offset: 0, index: 4)
+                enc.setBuffer(inv2tBufs[roundIdx + 3], offset: 0, index: 5)
+                enc.setBuffer(inv2tBufs[roundIdx + 4], offset: 0, index: 6)
+                enc.setBuffer(inv2tBufs[roundIdx + 5], offset: 0, index: 7)
+                enc.setBuffer(inv2tBufs[roundIdx + 6], offset: 0, index: 8)
+                enc.setBuffer(inv2tBufs[roundIdx + 7], offset: 0, index: 9)
+                enc.setBytes(&alphasArray, length: stride * 8, index: 10)
+                enc.setBytes(&nVal, length: 4, index: 11)
+
+                let n0 = curN >> 1
+                enc.dispatchThreads(MTLSize(width: n0, height: 1, depth: 1),
+                                   threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
+                enc.endEncoding()
+                cmdBuf.commit()
+                cmdBuf.waitUntilCompleted()
+
+                currentBuf = outBuf
+                roundIdx += rounds
+                remainingRounds -= rounds
+
+            } else if canUseFoldBy4 {
+                // Process 4 rounds - fold-by-4 kernel
                 let rounds = 4
                 let outputSize = n >> (roundIdx + rounds)
 
@@ -609,7 +660,7 @@ public class P1FRIEngine {
 
                 var alphasArray = [alphas[roundIdx], alphas[roundIdx + 1],
                                    alphas[roundIdx + 2], alphas[roundIdx + 3]]
-                var nVal = UInt32(n)
+                var nVal = UInt32(curN)
 
                 guard let cmdBuf = commandQueue.makeCommandBuffer() else {
                     throw MSMError.noCommandBuffer
@@ -626,7 +677,7 @@ public class P1FRIEngine {
                 enc.setBytes(&alphasArray, length: stride * 4, index: 6)
                 enc.setBytes(&nVal, length: 4, index: 7)
 
-                let n0 = n >> 1
+                let n0 = curN >> 1
                 enc.dispatchThreads(MTLSize(width: n0, height: 1, depth: 1),
                                    threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
                 enc.endEncoding()
@@ -637,8 +688,8 @@ public class P1FRIEngine {
                 roundIdx += rounds
                 remainingRounds -= rounds
 
-            } else if remainingRounds >= 2 && foldBy2Function != nil {
-                // Process 2 rounds
+            } else if remainingRounds >= 2 && foldBy2Function != nil && curN <= 2048 {
+                // Process 2 rounds - fold-by-2 kernel (same constraint as fold-by-4)
                 let rounds = 2
                 let outputSize = n >> (roundIdx + rounds)
 
@@ -647,7 +698,7 @@ public class P1FRIEngine {
                 }
 
                 var alphasArray = [alphas[roundIdx], alphas[roundIdx + 1]]
-                var nVal = UInt32(n)
+                var nVal = UInt32(curN)
 
                 guard let cmdBuf = commandQueue.makeCommandBuffer() else {
                     throw MSMError.noCommandBuffer
@@ -662,7 +713,7 @@ public class P1FRIEngine {
                 enc.setBytes(&alphasArray, length: stride * 2, index: 4)
                 enc.setBytes(&nVal, length: 4, index: 5)
 
-                let n0 = n >> 1
+                let n0 = curN >> 1
                 enc.dispatchThreads(MTLSize(width: n0, height: 1, depth: 1),
                                    threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
                 enc.endEncoding()

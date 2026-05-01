@@ -1,30 +1,16 @@
 [package]
-name = "zkmetal-sys"
+name = "zkmetal-rs"
 version = "0.1.0"
 edition = "2021"
-description = "Raw FFI bindings for zkMetal — GPU-accelerated ZK primitives on Apple Silicon (Metal + NEON)"
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/example/zkMetal"
-readme = "README.md"
-keywords = ["zk", "metal", "gpu", "msm", "ntt", "ffi"]
-categories = ["cryptography", "external-ffi-bindings"]
-
-[lib]
-name = "zkmetal_sys"
+description = "zkMetal GPU-accelerated ZK library bindings"
+authors = ["carni-ships"]
 
 [dependencies]
-libc = "0.2"
-ark-bn254 = { version = "0.4", optional = true }
-ark-ff = { version = "0.4", optional = true }
-ark-ec = { version = "0.4", optional = true }
-
-[build-dependencies]
+zkmetal-sys = { path = "zkmetal-sys", features = ["gpu", "neon"] }
 
 [features]
 default = ["gpu"]
-# Link against the Metal GPU library (zkMetal-ffi). Disable for CPU-only (NeonFieldOps).
 gpu = []
-# Link against NeonFieldOps for CPU-accelerated field arithmetic.
 neon = []
-# Arkworks compatibility layer: From conversions + ArkMSM/ArkNTT wrappers.
-arkworks = ["ark-bn254", "ark-ff", "ark-ec"]
+
+[workspace]

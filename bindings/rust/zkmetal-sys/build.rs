@@ -45,16 +45,28 @@ fn main() {
         build.compile("neon_field_ops");
     }
 
-    // Link against zkMetal GPU library
-    let zkmetal_lib_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    // Try debug first, then release
+    let debug_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..")
         .join("..")
         .join(".build")
         .join("arm64-apple-macosx")
-        .join("release");
-
-    println!("cargo:rustc-link-search=native={}", zkmetal_lib_dir.display());
+        .join("debug");
+        
+    if debug_dir.exists() {
+        println!("cargo:rustc-link-search=native={}", debug_dir.display());
+    } else {
+        // Fallback to release
+        let release_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("..")
+            .join(".build")
+            .join("arm64-apple-macosx")
+            .join("release");
+        println!("cargo:rustc-link-search=native={}", release_dir.display());
+    }
     println!("cargo:rustc-link-lib=dylib=zkMetal-ffi");
 
     println!("cargo:rerun-if-changed=build.rs");

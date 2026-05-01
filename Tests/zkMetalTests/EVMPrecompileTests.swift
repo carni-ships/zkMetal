@@ -396,4 +396,9 @@ public func runEVMPrecompileTests() {
         expectEqual(batch.totalGasUsed, 150 + 6000 + 45000, "total gas matches sum")
         expect(batch.totalDurationMs > 0, "batch took nonzero time")
     }
+
+    // NOTE: BLS12-381 Map Fp->G1 (0x11) and Map Fp2->G2 (0x12) implementations
+    // exist but have known issues requiring GPU testing with EIP-2537 test vectors.
+    // These functions were added in a previous session and need validation against
+    // RFC 9380 / Ethereum consensus test vectors before use.
 }

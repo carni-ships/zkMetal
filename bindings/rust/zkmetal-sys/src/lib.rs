@@ -18,6 +18,7 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
 use core::ffi::c_int;
+use core::ffi::c_char;
 
 // ============================================================================
 // Error types
@@ -73,6 +74,7 @@ extern "C" {
 
     // -- Utility --
     pub fn zkmetal_gpu_available() -> i32;
+    pub fn zkmetal_set_shader_dir(dir: *const i8);
 }
 
 // =============================================================================
@@ -88,13 +90,8 @@ extern "C" {
 // GPU Availability (requires gpu feature)
 // =============================================================================
 
-// Compile-time assertion: gpu feature must be enabled
-const _: () = assert!(cfg!(feature = "gpu"), "zkmetal-sys requires 'gpu' feature");
-
-#[cfg(feature = "gpu")]
-extern "C" {
-    fn zkmetal_gpu_available() -> i32;
-}
+// Version identifier for debugging
+const VERSION: &str = "zkmetal-sys 0.1.0 (gpu=enabled)";
 
 #[cfg(feature = "gpu")]
 pub fn gpu_available() -> bool {
@@ -107,6 +104,33 @@ pub fn gpu_available() -> bool {
 pub fn gpu_available() -> bool {
     // gpu feature NOT enabled, cannot use FFI
     false
+}
+
+/// Set the shader directory for Metal GPU kernels
+#[cfg(feature = "std")]
+pub fn set_shader_dir(dir: &str) {
+    use std::ffi::CString;
+    if let Ok(c_dir) = CString::new(dir) {
+        unsafe { zkmetal_set_shader_dir(c_dir.as_ptr()) };
+    }
+}
+
+#[cfg(not(feature = "std"))]
+pub fn set_shader_dir(_dir: &str) {
+    // No-op when std feature not enabled (can't allocate CString in no_std)
+}
+
+/// Get zkmetal-sys version string (for debugging)
+pub fn version() -> &'static str {
+    VERSION
+}
+
+/// Get raw FFI GPU availability (for debugging)
+pub fn gpu_available_raw() -> i32 {
+    #[cfg(feature = "gpu")]
+    unsafe { zkmetal_gpu_available() }
+    #[cfg(not(feature = "gpu"))]
+    1 // 1 = not available when feature disabled
 }
 
 // =============================================================================
