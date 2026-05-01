@@ -359,6 +359,70 @@ Example: 180 columns × 2^20 elements
 - Before: 180 × 2 × 20 = 7,200 dispatches
 - After: 40 dispatches
 
+## Batch NTT (BN254)
+
+GPU batch NTT for processing multiple transforms in a single dispatch using grid Y dimension.
+
+For K transforms of size 2^logN each, laid out sequentially in one buffer:
+`[transform 0: 2^logN] [transform 1: 2^logN] ... [transform K-1: 2^logN]`
+
+### Optimization Summary (2026-04-30 / Updated 2026-05-01)
+
+**Bugs Fixed:**
+- Forward NTT stage loop was using `stage += 2` instead of `stage += 1`, skipping half the butterfly stages
+- Inverse NTT had similar issue with `stage -= 2` instead of `stage -= 1`
+- Inverse NTT `stage == 1` check was missing, causing crash on logN=10 (stage underflowed to UInt32.max)
+
+**Optimizations Implemented:**
+1. **Fused bitrev + butterfly kernel** (`ntt_fused_bitrev_batch`) — Processes bit-reversal permutation and first 8 DIT stages in threadgroup memory, reducing memory bandwidth and kernel launch overhead
+2. **Radix-4 batch kernel (forward)** (`ntt_butterfly_radix4_batch`) — Processes 2 butterfly stages in one dispatch, halving kernel launch overhead for remaining stages
+3. **Radix-4 batch kernel (inverse)** (`intt_butterfly_radix4_batch`) — Processes 2 DIF stages (s, s-1) in one dispatch during inverse transform
+
+### Performance (Single Transform, 2^18 = 262,144 elements)
+
+| Implementation | Time | Throughput |
+|----------------|------|------------|
+| Sequential NTT | ~1.9ms | ~137 M elem/s |
+| Batch NTT (1 transform) | ~2.0ms | ~130 M elem/s |
+
+Single-transform batch is slightly slower due to less efficient memory access patterns vs. four-step FFT.
+
+### Multi-Transform Performance
+
+| Transforms | Size (total) | Time | Per-Transform | Throughput |
+|------------|--------------|------|--------------|------------|
+| 1 | 2^18 | 2.0ms | 2.0ms | 129 M elem/s |
+| 4 | 4 × 2^18 | 7.5ms | 1.9ms | 139 M elem/s |
+| 8 | 8 × 2^18 | 14.4ms | 1.8ms | 146 M elem/s |
+| 16 | 16 × 2^18 | 28.4ms | 1.8ms | 148 M elem/s |
+| 32 | 32 × 2^18 | 55.0ms | 1.7ms | 153 M elem/s |
+
+**Key insight:** Multi-transform batch processing amortizes kernel launch overhead, providing 15-20% throughput improvement over sequential processing of K transforms.
+
+### Kernel Launch Reduction
+
+Sequential processing of K transforms of size N:
+- K × (2 × logN) dispatches (bitrev + stages for forward + inverse)
+
+Batch processing:
+- Fused stage: 1 dispatch per transform group
+- Remaining stages: (logN - fusedStages) / 2 radix-4 dispatches
+
+For K=32 transforms with logN=18:
+- Before: 32 × 36 = 1,152 dispatches
+- After: ~10 dispatches
+
+### Optimization Status (2026-05-01)
+
+| Optimization | Status | Notes |
+|-------------|--------|-------|
+| Fused bitrev + butterfly kernel | ✅ Done | `ntt_fused_bitrev_batch` processes first 8 stages in threadgroup memory |
+| Radix-4 forward butterflies | ✅ Done | `ntt_butterfly_radix4_batch` processes 2 stages per dispatch |
+| Radix-4 inverse butterflies | ✅ Done | `intt_butterfly_radix4_batch` processes 2 stages per dispatch |
+| Async command buffer API | ✅ Done | `nttAsync`, `inttAsync`, `nttBatch` methods using MTLSharedEvent |
+| Fused inverse kernel | ❌ Failed | `intt_fused_batch` kernel uses different grid decomposition (no batch Y dimension) |
+| Four-step FFT path | ❌ Not attempted | Would require significant refactoring for batch case with transposition buffers |
+
 ## Circle FRI (Mersenne31)
 
 GPU-accelerated Circle FRI over Mersenne31 field for Circle STARKs.
