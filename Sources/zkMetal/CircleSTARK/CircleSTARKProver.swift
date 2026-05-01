@@ -25,6 +25,15 @@ public struct CircleSTARKQueryResponse {
     public let compositionPath: [[UInt8]]
     /// The query index in the evaluation domain
     public let queryIndex: Int
+
+    public init(traceValues: [M31], tracePaths: [[[UInt8]]], compositionValue: M31, compositionPath: [[UInt8]],
+                queryIndex: Int) {
+        self.traceValues = traceValues
+        self.tracePaths = tracePaths
+        self.compositionValue = compositionValue
+        self.compositionPath = compositionPath
+        self.queryIndex = queryIndex
+    }
 }
 
 /// Circle FRI proof data
@@ -51,6 +60,12 @@ public struct CircleFRIRound {
     public let queryResponses: [(M31, M31, [[UInt8]])]
     /// The fold alpha used in this round (needed for verifier)
     public let foldAlpha: M31
+
+    public init(commitment: [UInt8], queryResponses: [(M31, M31, [[UInt8]])], foldAlpha: M31) {
+        self.commitment = commitment
+        self.queryResponses = queryResponses
+        self.foldAlpha = foldAlpha
+    }
 }
 
 /// Complete Circle STARK proof
