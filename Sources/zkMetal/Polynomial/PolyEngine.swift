@@ -36,6 +36,10 @@ public class PolyEngine {
     // Keyed by slot name → (buffer, capacity in bytes)
     private var bufferCache: [String: (MTLBuffer, Int)] = [:]
 
+    // Subproduct tree cache: keyed by points hash → tree buffers
+    // Only caches small trees (logN <= 10) where caching provides benefit
+    var subproductTreeCache: [Int: [MTLBuffer]] = [:]
+
     /// Get or grow a cached buffer for the given slot. Reuses existing buffer if large enough.
     func getCachedBuffer(slot: String, minBytes: Int) -> MTLBuffer {
         if let (buf, cap) = bufferCache[slot], cap >= minBytes {

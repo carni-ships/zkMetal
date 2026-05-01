@@ -563,6 +563,16 @@ extension PolyEngine {
 
     private func buildSubproductTree(_ points: [Fr], logN: Int) throws -> [MTLBuffer] {
         let N = 1 << logN
+
+        // Check cache for small trees (logN <= 10, ~1K points max)
+        // Tree depends only on points, not coefficients - safe to cache
+        if logN <= 10 {
+            let pointsHash = points.hashValue
+            if let cachedTree = subproductTreeCache[pointsHash] {
+                return cachedTree
+            }
+        }
+
         var tree = [MTLBuffer]()
 
         // Level 0: linear factors (x - p_i), stored as N × 2 elements
@@ -659,6 +669,12 @@ extension PolyEngine {
             let outBuf = try nttMultiplyLevel(prev: tree[k - 1], numPolys: numPolys,
                                                inSize: inSize, outSize: outSize, outDeg: outDeg)
             tree.append(outBuf)
+        }
+
+        // Cache small trees for reuse
+        if logN <= 10 {
+            let pointsHash = points.hashValue
+            subproductTreeCache[pointsHash] = tree
         }
 
         return tree

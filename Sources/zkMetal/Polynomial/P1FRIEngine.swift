@@ -751,6 +751,12 @@ public class P1FRIEngine {
     /// Generate query proofs: for each query index, extract evaluation pairs
     /// and Merkle paths at each layer.
     public func queryPhase(commitment: P1FRICommitment, queryIndices: [UInt32]) -> [P1FRIQueryProof] {
+        // Pre-build trees for all layers (once per commitment)
+        var trees: [[M31]] = []
+        for layer in 0..<(commitment.layers.count - 1) {
+            trees.append(p1M31BuildTree(commitment.layers[layer]))
+        }
+
         var proofs = [P1FRIQueryProof]()
         proofs.reserveCapacity(queryIndices.count)
 
@@ -771,8 +777,8 @@ public class P1FRIEngine {
                 let evalB = evals[Int(upperIdx)]
                 layerEvals.append((evalA, evalB))
 
-                // Merkle path for this layer
-                let path = p1M31MerklePath(evals, index: Int(idx))
+                // Merkle path for this layer (use pre-built tree)
+                let path = p1M31ExtractPath(tree: trees[layer], n: n, index: Int(idx))
                 merklePaths.append(path)
 
                 // Next layer index: fold maps to lower half
@@ -963,6 +969,33 @@ public class P1FRIEngine {
             i -= 1
         }
         // Extract path
+        var path = [M31]()
+        var idx = n + index
+        while idx > 1 {
+            let sibling = idx ^ 1
+            path.append(tree[sibling])
+            idx >>= 1
+        }
+        return path
+    }
+
+    /// Build full Merkle tree from leaves. Returns tree array where tree[n+i] = leaf i.
+    /// This allows O(log n) path extraction without rebuilding tree.
+    private func p1M31BuildTree(_ leaves: [M31]) -> [M31] {
+        let n = leaves.count
+        var tree = [M31](repeating: M31.zero, count: 2 * n)
+        for i in 0..<n { tree[n + i] = leaves[i] }
+        var i = n - 1
+        while i >= 1 {
+            tree[i] = p1M31Hash(tree[2 * i], tree[2 * i + 1])
+            i -= 1
+        }
+        return tree
+    }
+
+    /// Extract Merkle path from pre-built tree in O(log n).
+    private func p1M31ExtractPath(tree: [M31], n: Int, index: Int) -> [M31] {
+        if n <= 1 { return [] }
         var path = [M31]()
         var idx = n + index
         while idx > 1 {

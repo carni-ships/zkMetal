@@ -12,8 +12,7 @@ keywords = ["zk", "metal", "apple-silicon", "cryptography", "neon"]
 cc = "1"
 
 [features]
-default = []
-# Link against the zkMetal C library (zkMetal-ffi) for GPU engine API (MSM, NTT, Poseidon2, Keccak, FRI, Pairing).
+default = ["gpu", "std"]
+std = []
 gpu = []
-# Link against NeonFieldOps for CPU-accelerated field arithmetic and NTT.
 neon = []

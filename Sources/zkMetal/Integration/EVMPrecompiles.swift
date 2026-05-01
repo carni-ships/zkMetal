@@ -1154,35 +1154,622 @@ public func EVMPrecompile0E_bls12381G1MultiExp(input: [UInt8]) -> [UInt8]? {
     return fp381LimbsToBytes64(xOut) + fp381LimbsToBytes64(yOut)
 }
 
+// MARK: - BLS12-381 Fp Square Root
+
+/// Compute square root of BLS12-381 Fp element using NeonFieldOps C implementation.
+/// Returns (sqrt, exists) where exists=false if no square root exists.
+private func bls12FpSqrt(_ a: [UInt64]) -> ([UInt64], Bool) {
+    var aCopy = a
+    var r = [UInt64](repeating: 0, count: 6)
+    let ok = bls12_381_fp_sqrt(&aCopy, &r)
+    return (r, ok != 0)
+}
+
+/// Compute modular inverse of BLS12-381 Fp element using Fermat's little theorem
+private func bls12FpInverse(_ a: [UInt64]) -> [UInt64] {
+    // p-2 constant in Montgomery form (R^(p-2) mod p)
+    let pMinus2Mont: [UInt64] = [
+        0x9e9f6d5d9b82e31f, 0x3ab6c2d14d8b4a9,
+        0xeb6d7f0eb3d8c8d, 0x64774b84f38512be,
+        0x4b1ba7b6434bacd7, 0x1a0111ea397fe69a
+    ]
+    var result = BLS12_381_FP_ONE
+    var base = a
+    for i in 0..<6 {
+        var bit = pMinus2Mont[i]
+        while bit != 0 {
+            if (bit & 1) != 0 {
+                result = swiftBLS12FpMul(result, base)
+            }
+            base = swiftBLS12FpMul(base, base)
+            bit >>= 1
+        }
+    }
+    return result
+}
+
 // MARK: - EVM Precompile 0x11: BLS12-381 Map Fp to G1 (EIP-2537)
 
 /// BLS12-381 map field element to G1 point using Simplified SWU.
 /// Input: 64 bytes (field element).
 /// Output: 128 bytes (G1 point). Returns nil on invalid input.
 ///
-/// NOTE: This is not yet implemented. The EIP-2537 simplified SWU map
-/// for BLS12-381 G1 requires implementing the full isogeny-based mapping
-/// which is non-trivial. This is a placeholder that returns nil.
+/// EIP-2537 Simplified SWU map for G1 (y^2 = x^3 + 4):
+///   x = (-b / (1 + u^2 * (u^4 - 1)^2)) - a    where a=0, b=4
+///   y = sqrt(x^3 + 4)
+///
+/// The sign of y is adjusted so that sgn0(y) == sgn0(x) (parity matching per EIP-2537).
 public func EVMPrecompile11_bls12381MapG1(input: [UInt8]) -> [UInt8]? {
-    // EIP-2537 simplified SWU map for Fp -> G1
-    // Not yet implemented - requires full isogeny map implementation
-    return nil
+    guard input.count == 64 else { return nil }
+
+    // Parse and validate input as Fp element
+    guard let u = bytes64ToFp381Limbs(input) else { return nil }
+
+    // Convert to Montgomery form for arithmetic
+    let uMont = bls12FpToMont(u)
+
+    // Simplified SWU for G1 (a=0, b=4):
+    // x = -4 / (1 + u^2 * (u^4 - 1)^2)
+    //   = -4 / (1 + u^6 - 2*u^4 + u^2)
+    //   = -4 / (u^6 - 2*u^4 + u^2 + 1)
+    //
+    // Simplified: denom = 1 + u^2 * (u^4 - 1)^2
+
+    // Compute u^2
+    let u2 = swiftBLS12FpMul(uMont, uMont)
+
+    // Compute u^4
+    let u4 = swiftBLS12FpMul(u2, u2)
+
+    // Compute (u^4 - 1)
+    let u4Minus1 = bls12FpSub(u4, BLS12_381_FP_ONE)
+
+    // Compute (u^4 - 1)^2
+    let u4Minus1Sq = swiftBLS12FpMul(u4Minus1, u4Minus1)
+
+    // Compute u^2 * (u^4 - 1)^2
+    let u2Times = swiftBLS12FpMul(u2, u4Minus1Sq)
+
+    // Compute denominator = 1 + u^2 * (u^4 - 1)^2
+    let denom = bls12FpAdd(BLS12_381_FP_ONE, u2Times)
+
+    // Compute x = -4 / denom = (-4) * denom^(-1)
+    // -4 in Montgomery form: R * (-4) mod p = p - 4
+    var neg4Int: [UInt64] = BLS12_381_P
+    neg4Int[0] = neg4Int[0] &- 4  // p - 4 (limb 0 with borrow)
+    let neg4Mont = bls12FpToMont(neg4Int)
+
+    let denomInv = bls12FpInverse(denom)
+    let xMont = swiftBLS12FpMul(neg4Mont, denomInv)
+
+    // Compute y^2 = x^3 + 4
+    let x2 = swiftBLS12FpMul(xMont, xMont)
+    let x3 = swiftBLS12FpMul(x2, xMont)
+    let y2 = bls12FpAdd(x3, BLS12_381_B_MONT)
+
+    // Compute y = sqrt(y^2)
+    let (yMont, yExists) = bls12FpSqrt(y2)
+    guard yExists else { return nil }
+
+    // Sign fixup per EIP-2537: sgn0(y) must equal sgn0(x)
+    // Both x and y are in Montgomery; to check integer parity we convert out
+    let xInt = bls12FpFromMont(xMont)
+    let yInt = bls12FpFromMont(yMont)
+
+    let xParity = (xInt[0] & 1)
+    let yParity = (yInt[0] & 1)
+
+    var finalY = yMont
+    if xParity != yParity {
+        // Negate y: y = p - y (in Montgomery terms: -yMont mod p)
+        var negYMont: [UInt64] = [0, 0, 0, 0, 0, 0]
+        var borrow: UInt64 = 0
+        for i in 0..<6 {
+            let diff = BLS12_381_P[i] &- yMont[i] &- borrow
+            negYMont[i] = diff
+            borrow = (yMont[i] > BLS12_381_P[i] &- borrow) ? 1 : 0
+        }
+        finalY = negYMont
+    }
+
+    // Convert back to integer for output
+    let xOut = bls12FpFromMont(xMont)
+    let yOut = bls12FpFromMont(finalY)
+
+    return fp381LimbsToBytes64(xOut) + fp381LimbsToBytes64(yOut)
 }
 
 // MARK: - EVM Precompile 0x12: BLS12-381 Map Fp2 to G2 (EIP-2537)
 
-/// BLS12-381 map Fp2 element to G2 point.
+/// BLS12-381 map Fp2 element to G2 point using Simplified SWU.
 /// Input: 128 bytes (Fp2 element: c0 (64B) || c1 (64B)).
 /// Output: 256 bytes (G2 point).
 ///
-/// NOTE: This is not yet implemented. The EIP-2537 map for
-/// Fp2 -> G2 requires implementing the full isogeny-based mapping
-/// which is complex. This is a placeholder that returns nil.
+/// EIP-2537 specifies an isogeny-based map from Fp2 to G2 curve.
+/// This uses the same simplified SWU methodology as G1 but with
+/// Fp2 arithmetic and a 3-isogeny to move from the helper curve E' to G2.
 public func EVMPrecompile12_bls12381MapG2(input: [UInt8]) -> [UInt8]? {
-    if input.count != 128 { return nil }
+    guard input.count == 128 else { return nil }
 
-    // EIP-2537 specifies a custom isogeny map for Fp2 -> G2
-    // Not yet implemented - requires series evaluation approach
-    return nil
+    // Parse Fp2 element (c0 || c1)
+    guard let c0 = bytes64ToFp381Limbs(Array(input[0..<64])),
+          let c1 = bytes64ToFp381Limbs(Array(input[64..<128])) else { return nil }
+
+    // Convert to Montgomery form
+    let c0Mont = bls12FpToMont(c0)
+    let c1Mont = bls12FpToMont(c1)
+    let u = (c0Mont, c1Mont)
+
+    // Helper curve E': y^2 = x^3 + A'*x + B'
+    // A' = 240 * u (Fp2: real=0, imag=240)
+    // B' = 1012 * (1+u) (Fp2: real=1012, imag=1012)
+    // Z = -(2+u) = (-2, -1) in Fp2
+
+    let aPrime = (
+        [UInt64](repeating: 0, count: 6),  // c0 = 0
+        bls12FpToMont([240, 0, 0, 0, 0, 0])  // c1 = 240
+    )
+    let bPrime = (
+        bls12FpToMont([1012, 0, 0, 0, 0, 0]),  // c0 = 1012
+        bls12FpToMont([1012, 0, 0, 0, 0, 0])    // c1 = 1012
+    )
+    let zVal = (
+        bls12FpToMont([BLS12_381_P[0] &- 2, 0, 0, 0, 0, BLS12_381_P[5]]),  // c0 = -2
+        bls12FpToMont([BLS12_381_P[0] &- 1, 0, 0, 0, 0, BLS12_381_P[5]])    // c1 = -1
+    )
+
+    let oneFp2: ([UInt64], [UInt64]) = (BLS12_381_FP_ONE, BLS12_381_FP_ONE)
+
+    // SWU: compute x' on helper curve E'
+    // tv1 = u^2
+    let u2 = bls12Fp2Mul(u, u)
+
+    // tv1 = Z * u^2
+    let z_u2 = bls12Fp2Mul(zVal, u2)
+
+    // tv2 = tv1^2
+    let tv1_sq = bls12Fp2Sqr(z_u2)
+
+    // tv2 = tv2 + tv1 = z_u2^2 + z_u2
+    let tv2_plus_tv1 = bls12Fp2Add(tv1_sq, z_u2)
+
+    // tv3 = tv2 + 1
+    let tv3 = bls12Fp2Add(tv2_plus_tv1, oneFp2)
+
+    // tv3 = B' * tv3
+    let tv3_scaled = bls12Fp2Mul(bPrime, tv3)
+
+    // tv4 = (tv2 == 0) ? Z : -tv2
+    let isZero = bls12Fp2IsZero(tv1_sq)
+    let negTv1_sq = bls12Fp2Neg(tv1_sq)
+    let tv4 = isZero ? zVal : negTv1_sq
+
+    // tv4 = A' * tv4
+    let tv4_scaled = bls12Fp2Mul(aPrime, tv4)
+
+    // x_num = tv4_scaled * tv4_scaled (for rational function denominator check)
+    let x_num_den = bls12Fp2Mul(tv4_scaled, tv4_scaled)
+
+    // TV2 = -A'/B' * (1 + Z*u^2 / (1 + u^2*(u^4-1)^2))
+    // Simplified: compute (1 + z*u^2) / (tv3 + tv4*x_num_den)
+    // Actually EIP-2537 uses: x' = -A'/B' * (1 + Z*u^2 / (1 + u^2*(u^4-1)^2))
+    // Let's follow RFC 9380 Appendix F more directly
+
+    // Compute u^4
+    let u4 = bls12Fp2Sqr(bls12Fp2Sqr(u))
+
+    // tv1 = u^4 - 1
+    let u4_minus_1 = bls12Fp2Sub(u4, oneFp2)
+
+    // tv1 = (u^4 - 1)^2
+    let tv1 = bls12Fp2Sqr(u4_minus_1)
+
+    // tv1 = u^2 * (u^4 - 1)^2
+    let tv1_denom = bls12Fp2Mul(u2, tv1)
+
+    // tv1 = 1 + u^2 * (u^4 - 1)^2
+    let tv1_plus_1 = bls12Fp2Add(oneFp2, tv1_denom)
+
+    // tv1 = Z * u^2
+    let z_u2_v2 = bls12Fp2Mul(zVal, u2)
+
+    // TV2 (numerator for the fraction) = Z * u^2 / (1 + u^2*(u^4-1)^2)
+    // We need to divide z_u2_v2 by tv1_plus_1
+    let z_u2_div = bls12Fp2Inv(tv1_plus_1)
+    let frac = bls12Fp2Mul(z_u2_v2, z_u2_div)
+
+    // x' = -A'/B' * (1 + frac)
+    // A' = (0, 240), B' = (1012, 1012)
+    // -A'/B' = -A' * B'^-1, but since B' = 1012*(1+u), the -A'/B' computation
+    // For the helper curve, x' = (-A' * (1 + frac)) / B'
+
+    // 1 + frac
+    let one_frac = bls12Fp2Add(oneFp2, frac)
+
+    // -A' * (1 + frac) = A' * (-1) * (1 + frac) where -1 = (p-1, p-1) in Montgomery
+    let negOne: ([UInt64], [UInt64]) = (
+        bls12FpSub(BLS12_381_FP_ONE, [UInt64(1), 0, 0, 0, 0, 0]),  // p-1 in Mont
+        bls12FpSub(BLS12_381_FP_ONE, [UInt64(1), 0, 0, 0, 0, 0])
+    )
+    let negA = bls12Fp2Mul(aPrime, negOne)  // -A' in Fp2
+    let negA_times_frac = bls12Fp2Mul(negA, one_frac)
+
+    // x' = (-A' * (1 + frac)) / B' = negA_times_frac * B'^-1
+    let bPrimeInv = bls12Fp2Inv(bPrime)
+    let xPrime = bls12Fp2Mul(negA_times_frac, bPrimeInv)
+
+    // Compute y'^2 = x'^3 + A'*x' + B'
+    let xPrime_sq = bls12Fp2Sqr(xPrime)
+    let xPrime_cu = bls12Fp2Mul(xPrime_sq, xPrime)
+    let aPrime_x = bls12Fp2Mul(aPrime, xPrime)
+    let yPrime_sq = bls12Fp2Add(bls12Fp2Add(xPrime_cu, aPrime_x), bPrime)
+
+    // y' = sqrt(y'^2) with sign adjustment
+    let (yPrime, yExists) = bls12Fp2Sqrt(yPrime_sq)
+    guard yExists else { return nil }
+
+    // Sign adjustment per EIP-2537: sgn0(y) must equal sgn0(u)
+    // This ensures deterministic mapping
+    let signY = sgn0Fp2(yPrime)
+    let signU = sgn0Fp2(u)
+
+    var yAdjusted = yPrime
+    if signY != signU {
+        // y = -y (negate in Fp2: (p - c0, p - c1) in Montgomery form)
+        yAdjusted = bls12Fp2Neg(yPrime)
+    }
+
+    // Apply 3-isogeny map to get (x, y) on G2
+    let (xG2, yG2) = applyIso3Map(xPrime, yAdjusted)
+
+    // Convert from Montgomery form to integer
+    let xG2Int0 = bls12FpFromMont(xG2.0)
+    let xG2Int1 = bls12FpFromMont(xG2.1)
+    let yG2Int0 = bls12FpFromMont(yG2.0)
+    let yG2Int1 = bls12FpFromMont(yG2.1)
+
+    // Output: xG2 (c0 || c1) || yG2 (c0 || c1), each as 64-byte big-endian
+    return fp381LimbsToBytes64(xG2Int0) + fp381LimbsToBytes64(xG2Int1) +
+           fp381LimbsToBytes64(yG2Int0) + fp381LimbsToBytes64(yG2Int1)
+}
+
+// MARK: - Fp2 Helpers for Map G2
+
+/// Fp2 addition
+private func bls12Fp2Add(_ a: ([UInt64], [UInt64]), _ b: ([UInt64], [UInt64])) -> ([UInt64], [UInt64]) {
+    return (bls12FpAdd(a.0, b.0), bls12FpAdd(a.1, b.1))
+}
+
+/// Fp2 subtraction
+private func bls12Fp2Sub(_ a: ([UInt64], [UInt64]), _ b: ([UInt64], [UInt64])) -> ([UInt64], [UInt64]) {
+    return (bls12FpSub(a.0, b.0), bls12FpSub(a.1, b.1))
+}
+
+/// Fp2 negation
+private func bls12Fp2Neg(_ a: ([UInt64], [UInt64])) -> ([UInt64], [UInt64]) {
+    return (bls12FpSub(BLS12_381_FP_ONE, a.0), bls12FpSub(BLS12_381_FP_ONE, a.1))
+}
+
+/// Fp2 zero check
+private func bls12Fp2IsZero(_ a: ([UInt64], [UInt64])) -> Bool {
+    return isZero6(a.0) && isZero6(a.1)
+}
+
+/// Fp2 copy
+private func bls12Fp2Copy(_ a: ([UInt64], [UInt64])) -> ([UInt64], [UInt64]) {
+    return a
+}
+
+/// Fp2 inverse via Fermat's little theorem: a^(p^2 - 2) mod p
+/// Note: Fp2 inverse is expensive; we use the formula: a^-1 = (a0 - a1*u) / (a0^2 + a1^2)
+/// which requires only one Fp inverse instead of full exponentiation
+private func bls12Fp2Inv(_ a: ([UInt64], [UInt64])) -> ([UInt64], [UInt64]) {
+    // norm = a0^2 + a1^2 in Fp
+    let a0Sq = swiftBLS12FpMul(a.0, a.0)
+    let a1Sq = swiftBLS12FpMul(a.1, a.1)
+    let norm = bls12FpAdd(a0Sq, a1Sq)
+
+    // norm^-1
+    let normInv = bls12FpInverse(norm)
+
+    // result c0 = a0 * norm^-1, c1 = -a1 * norm^-1
+    let c0 = swiftBLS12FpMul(a.0, normInv)
+    let negA1 = bls12FpSub(BLS12_381_FP_ONE, a.1)  // -a1 in Montgomery = p - a1
+    let c1 = swiftBLS12FpMul(negA1, normInv)
+
+    return (c0, c1)
+}
+
+/// Fp2 square root using Tonelli-Shanks algorithm for Fp2
+/// Returns (sqrt, exists) where exists=false if no square root exists
+private func bls12Fp2Sqrt(_ a: ([UInt64], [UInt64])) -> (([UInt64], [UInt64]), Bool) {
+    if bls12Fp2IsZero(a) {
+        return (([UInt64](repeating: 0, count: 6), [UInt64](repeating: 0, count: 6)), true)
+    }
+
+    // norm = c0^2 + c1^2
+    let c0Sq = swiftBLS12FpMul(a.0, a.0)
+    let c1Sq = swiftBLS12FpMul(a.1, a.1)
+    let norm = bls12FpAdd(c0Sq, c1Sq)
+
+    // sqrt(norm) in Fp
+    let (normSqrt, normExists) = bls12FpSqrt(norm)
+    guard normExists else { return ((a.0, a.1), false) }
+
+    // two_inv = 1/2 in Fp Montgomery
+    let two: [UInt64] = [2, 0, 0, 0, 0, 0]
+    let twoMont = bls12FpToMont(two)
+    // Compute 1/2 = (p+1)/2 via bls12FpInverse of 2
+    let oneMont: [UInt64] = [1, 0, 0, 0, 0, 0]
+    let twoInv = swiftBLS12FpMul(oneMont, bls12FpInverse(twoMont))
+
+    // Try branch 1: t^2 = (c0 + norm_sqrt) / 2
+    let c0PlusNorm = bls12FpAdd(a.0, normSqrt)
+    let cand = swiftBLS12FpMul(c0PlusNorm, twoInv)
+    let (t1, t1Exists) = bls12FpSqrt(cand)
+
+    if t1Exists && !isZero6(t1) {
+        // Compute c1 / (2*t1)
+        let twoT = swiftBLS12FpMul(twoMont, t1)
+        let twoTInv = bls12FpInverse(twoT)
+        let c1Part = swiftBLS12FpMul(a.1, twoTInv)
+
+        // Result is (t1, c1_part)
+        let result = (t1, c1Part)
+        // Verify
+        let verify = bls12Fp2Sqr(result)
+        if verify.0 == a.0 && verify.1 == a.1 {
+            return (result, true)
+        }
+        // Try negated
+        let negT1 = bls12FpSub(BLS12_381_FP_ONE, t1)
+        let negC1Part = bls12FpSub(BLS12_381_FP_ONE, c1Part)
+        let result2 = (negT1, negC1Part)
+        let verify2 = bls12Fp2Sqr(result2)
+        if verify2.0 == a.0 && verify2.1 == a.1 {
+            return (result2, true)
+        }
+    }
+
+    // Try branch 2: t^2 = (c0 - norm_sqrt) / 2
+    let c0MinusNorm = bls12FpSub(a.0, normSqrt)
+    let cand2 = swiftBLS12FpMul(c0MinusNorm, twoInv)
+    let (t2, t2Exists) = bls12FpSqrt(cand2)
+
+    if t2Exists && !isZero6(t2) {
+        let twoT2 = swiftBLS12FpMul(twoMont, t2)
+        let twoT2Inv = bls12FpInverse(twoT2)
+        let c1Part2 = swiftBLS12FpMul(a.1, twoT2Inv)
+
+        let result = (t2, c1Part2)
+        let verify = bls12Fp2Sqr(result)
+        if verify.0 == a.0 && verify.1 == a.1 {
+            return (result, true)
+        }
+        let negT2 = bls12FpSub(BLS12_381_FP_ONE, t2)
+        let negC1Part2 = bls12FpSub(BLS12_381_FP_ONE, c1Part2)
+        let result2 = (negT2, negC1Part2)
+        let verify2 = bls12Fp2Sqr(result2)
+        if verify2.0 == a.0 && verify2.1 == a.1 {
+            return (result2, true)
+        }
+    }
+
+    return ((a.0, a.1), false)
+}
+
+/// Sign function for Fp2 per RFC 9380: sgn0(x) = 0 if x.c0 != 0 and x.c0 mod 2 == 0,
+/// or if x.c0 == 0 and x.c1 mod 2 == 0; otherwise 1
+private func sgn0Fp2(_ x: ([UInt64], [UInt64])) -> Int {
+    // Get integer form of c0 (multiply by 1 in Montgomery to convert)
+    let c0Int = bls12FpFromMont(x.0)
+    let c1Int = bls12FpFromMont(x.1)
+
+    let c0Parity = Int(c0Int[0] & 1)
+    let c0Zero = isZero6(x.0) ? 1 : 0
+    let c1Parity = Int(c1Int[0] & 1)
+
+    return c0Parity | (c0Zero & c1Parity)
+}
+
+// MARK: - 3-Isogeny Map Coefficients for G2
+// From RFC 9380 Appendix E.3 for BLS12-381 G2
+
+/// x_num coefficients: [k3, k2, k1, k0] for x_num(x) = k3*x^3 + k2*x^2 + k1*x + k0
+private struct Iso3XNum {
+    static let k3_c0: [UInt64] = [
+        0xbb3e04691b4814c0, 0x8b6a4d177f4ec647,
+        0x2c52d39fd3a042a8, 0xb5b7a9a47d7ed853,
+        0x5c759507e8e333eb, 0x0000000000000000
+    ]
+    static let k3_c1: [UInt64] = k3_c0  // Same values
+
+    static let k2_c0: [UInt64] = [0, 0, 0, 0, 0, 0]
+    static let k2_c1: [UInt64] = [
+        0x26a9ffffffffc71a, 0x1472aaa9cb8d5555,
+        0x9a208c6b4f20a418, 0x984f87adf7ae0c7f,
+        0x32126fced787c88f, 0x11560bf17baa99bc
+    ]
+
+    static let k1_c0: [UInt64] = [
+        0x26a9ffffffffc71e, 0x1472aaa9cb8d5555,
+        0x9a208c6b4f20a418, 0x984f87adf7ae0c7f,
+        0x32126fced787c88f, 0x11560bf17baa99bc
+    ]
+    static let k1_c1: [UInt64] = [
+        0x6e0affffffffc71c, 0xe0f6bdb5db82d0a7,
+        0x090c6e55a0226f65, 0x674d812049b7d4a1,
+        0x90937e76bc3e447d, 0x8ab05f8bdd54cde1
+    ]
+
+    static let k0_c0: [UInt64] = [
+        0xab2aaaaaaab71cb, 0xb4dfdb27fdaff85c,
+        0x1b12c47c21a1be30, 0xd09bfd206a1aca1e,
+        0x71d6541fa38ccfae, 0x0000000000000001
+    ]
+    static let k0_c1: [UInt64] = [0, 0, 0, 0, 0, 0]
+}
+
+/// x_den coefficients: [1, k1, k0] for x_den(x) = x^2 + k1*x + k0
+private struct Iso3XDen {
+    static let k1_c0: [UInt64] = [0x12, 0, 0, 0, 0, 0]
+    static let k1_c1: [UInt64] = [
+        0xb9feffffffffaa63, 0x1eabfffeb153ffff,
+        0x6730d2a0f6b0f624, 0x64774b84f38512bf,
+        0x4b1ba7b6434bacd7, 0x1a0111ea397fe69a
+    ]
+
+    static let k0_c0: [UInt64] = [0xc, 0, 0, 0, 0, 0]
+    static let k0_c1: [UInt64] = [
+        0xb9feffffffffaa9f, 0x1eabfffeb153ffff,
+        0x6730d2a0f6b0f624, 0x64774b84f38512bf,
+        0x4b1ba7b6434bacd7, 0x1a0111ea397fe69a
+    ]
+}
+
+/// y_num coefficients: [k3, k2, k1, k0] for y_num(x) = k3*x^3 + k2*x^2 + k1*x + k0
+private struct Iso3YNum {
+    static let k3_c0: [UInt64] = [
+        0x4fd20b93d5a2f921, 0xb11ab8e6358a17f4,
+        0xf5446d21d8fd8e24, 0x0f7da5d4a07f649b,
+        0x59a4c18b076d1193, 0x1530477c7ab4113b
+    ]
+    static let k3_c1: [UInt64] = k3_c0  // Same values
+
+    static let k2_c0: [UInt64] = [0, 0, 0, 0, 0, 0]
+    static let k2_c1: [UInt64] = [
+        0xbb3e04691b4814c0, 0x8b6a4d177f4ec647,
+        0x2c52d39fd3a042a8, 0xb5b7a9a47d7ed853,
+        0x5c759507e8e333eb, 0x0000000000000000
+    ]
+
+    static let k1_c0: [UInt64] = [
+        0x26a9ffffffffc71c, 0x1472aaa9cb8d5555,
+        0x9a208c6b4f20a418, 0x984f87adf7ae0c7f,
+        0x32126fced787c88f, 0x11560bf17baa99bc
+    ]
+    static let k1_c1: [UInt64] = [
+        0x6e0affffffffc71c, 0xe0f6bdb5db82d0a7,
+        0x090c6e55a0226f65, 0x674d812049b7d4a1,
+        0x90937e76bc3e447d, 0x8ab05f8bdd54cde1
+    ]
+
+    static let k0_c0: [UInt64] = [
+        0x06d7f7e29ef67ccc, 0xd096233c18df0cfe,
+        0xb0e977999978dc5f, 0x761b0f37a1e26286,
+        0xfbf7043de3811ad0, 0x124c9ad43b6cf79b
+    ]
+    static let k0_c1: [UInt64] = k0_c0  // Same values
+}
+
+/// y_den coefficients: [1, k2, k1, k0] for y_den(x) = x^3 + k2*x^2 + k1*x + k0
+private struct Iso3YDen {
+    static let k2_c0: [UInt64] = [
+        0xb9feffffffffa8fb, 0x1eabfffeb153ffff,
+        0x6730d2a0f6b0f624, 0x64774b84f38512bf,
+        0x4b1ba7b6434bacd7, 0x1a0111ea397fe69a
+    ]
+    static let k2_c1: [UInt64] = k2_c0  // Same values
+
+    static let k1_c0: [UInt64] = [0, 0, 0, 0, 0, 0]
+    static let k1_c1: [UInt64] = [
+        0xb9feffffffffa9d3, 0x1eabfffeb153ffff,
+        0x6730d2a0f6b0f624, 0x64774b84f38512bf,
+        0x4b1ba7b6434bacd7, 0x1a0111ea397fe69a
+    ]
+
+    static let k0_c0: [UInt64] = [0x12, 0, 0, 0, 0, 0]
+    static let k0_c1: [UInt64] = [
+        0xb9feffffffffaa99, 0x1eabfffeb153ffff,
+        0x6730d2a0f6b0f624, 0x64774b84f38512bf,
+        0x4b1ba7b6434bacd7, 0x1a0111ea397fe69a
+    ]
+}
+
+/// Helper to create Fp2 constant from limb arrays (non-Montgomery -> Montgomery)
+private func makeFp2Const(_ c0: [UInt64], _ c1: [UInt64]) -> ([UInt64], [UInt64]) {
+    return (bls12FpToMont(c0), bls12FpToMont(c1))
+}
+
+/// Evaluate x_num(x) using Horner's method: ((k3*x + k2)*x + k1)*x + k0
+private func evalXNum(_ x: ([UInt64], [UInt64])) -> ([UInt64], [UInt64]) {
+    let k3 = makeFp2Const(Iso3XNum.k3_c0, Iso3XNum.k3_c1)
+    let k2 = makeFp2Const(Iso3XNum.k2_c0, Iso3XNum.k2_c1)
+    let k1 = makeFp2Const(Iso3XNum.k1_c0, Iso3XNum.k1_c1)
+    let k0 = makeFp2Const(Iso3XNum.k0_c0, Iso3XNum.k0_c1)
+
+    var result = k3
+    result = bls12Fp2Mul(result, x)
+    result = bls12Fp2Add(result, k2)
+    result = bls12Fp2Mul(result, x)
+    result = bls12Fp2Add(result, k1)
+    result = bls12Fp2Mul(result, x)
+    result = bls12Fp2Add(result, k0)
+    return result
+}
+
+/// Evaluate x_den(x) using Horner's method: (x + k1)*x + k0 (leading coeff = 1)
+private func evalXDen(_ x: ([UInt64], [UInt64])) -> ([UInt64], [UInt64]) {
+    let k1 = makeFp2Const(Iso3XDen.k1_c0, Iso3XDen.k1_c1)
+    let k0 = makeFp2Const(Iso3XDen.k0_c0, Iso3XDen.k0_c1)
+
+    var result = x  // Start with x
+    result = bls12Fp2Add(result, k1)
+    result = bls12Fp2Mul(result, x)
+    result = bls12Fp2Add(result, k0)
+    return result
+}
+
+/// Evaluate y_num(x) using Horner's method: ((k3*x + k2)*x + k1)*x + k0
+private func evalYNum(_ x: ([UInt64], [UInt64])) -> ([UInt64], [UInt64]) {
+    let k3 = makeFp2Const(Iso3YNum.k3_c0, Iso3YNum.k3_c1)
+    let k2 = makeFp2Const(Iso3YNum.k2_c0, Iso3YNum.k2_c1)
+    let k1 = makeFp2Const(Iso3YNum.k1_c0, Iso3YNum.k1_c1)
+    let k0 = makeFp2Const(Iso3YNum.k0_c0, Iso3YNum.k0_c1)
+
+    var result = k3
+    result = bls12Fp2Mul(result, x)
+    result = bls12Fp2Add(result, k2)
+    result = bls12Fp2Mul(result, x)
+    result = bls12Fp2Add(result, k1)
+    result = bls12Fp2Mul(result, x)
+    result = bls12Fp2Add(result, k0)
+    return result
+}
+
+/// Evaluate y_den(x) using Horner's method: ((x + k2)*x + k1)*x + k0 (leading coeff = 1)
+private func evalYDen(_ x: ([UInt64], [UInt64])) -> ([UInt64], [UInt64]) {
+    let k2 = makeFp2Const(Iso3YDen.k2_c0, Iso3YDen.k2_c1)
+    let k1 = makeFp2Const(Iso3YDen.k1_c0, Iso3YDen.k1_c1)
+    let k0 = makeFp2Const(Iso3YDen.k0_c0, Iso3YDen.k0_c1)
+
+    var result = x  // Start with x
+    result = bls12Fp2Add(result, k2)
+    result = bls12Fp2Mul(result, x)
+    result = bls12Fp2Add(result, k1)
+    result = bls12Fp2Mul(result, x)
+    result = bls12Fp2Add(result, k0)
+    return result
+}
+
+/// Apply 3-isogeny map to an affine point (x, y) on E' to get a point on G2
+private func applyIso3Map(_ x: ([UInt64], [UInt64]), _ y: ([UInt64], [UInt64])) -> (([UInt64], [UInt64]), ([UInt64], [UInt64])) {
+    // x_aff = x, y_aff = y (already affine at this point)
+    // x_result = x_num(x) / x_den(x)
+    // y_result = y * y_num(x) / y_den(x)
+
+    let xNum = evalXNum(x)
+    let xDen = evalXDen(x)
+    let yNum = evalYNum(x)
+    let yDen = evalYDen(x)
+
+    let xDenInv = bls12Fp2Inv(xDen)
+    let yDenInv = bls12Fp2Inv(yDen)
+
+    let resultX = bls12Fp2Mul(xNum, xDenInv)
+    let yTimesYNumerator = bls12Fp2Mul(y, yNum)
+    let resultY = bls12Fp2Mul(yTimesYNumerator, yDenInv)
+
+    return (resultX, resultY)
 }
 

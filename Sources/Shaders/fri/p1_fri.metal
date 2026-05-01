@@ -299,7 +299,7 @@ kernel void p1_fri_fold_by8(
 
     // Write stage 2 output
     if (tid < n3) {
-        stage2_out[tid + tgid * n3] = stage3[tid];
+        stage2_out[tid + tgid * n3] = stage2[tid];
     }
 
     // ========================================================================
@@ -391,7 +391,7 @@ kernel void p1_fri_fold_by8(
 
     // Write stage 6 output
     if (tid < n7) {
-        stage6_out[tid + tgid * n6] = stage6[tid];
+        stage6_out[tid + tgid * n7] = stage6[tid];
     }
 
     // ========================================================================

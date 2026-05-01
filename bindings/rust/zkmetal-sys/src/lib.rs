@@ -8,14 +8,14 @@
 //!
 //! ## Features
 //!
-//! - `gpu` (default) -- Metal GPU kernels via `zkmetal.h` (MSM, NTT, Poseidon2, Keccak, FRI, Pairing)
+//! - `gpu` -- Metal GPU kernels via `zkmetal.h` (MSM, NTT, Poseidon2, Keccak, FRI, Pairing)
 //!
 //! Field elements are represented as arrays of `u64` limbs in little-endian
 //! Montgomery form unless otherwise noted. Scalars for curve operations
 //! use `u32` limbs in non-Montgomery integer form.
 
-#![no_std]
 #![allow(non_camel_case_types)]
+#![cfg_attr(not(feature = "std"), no_std)]
 
 use core::ffi::c_int;
 
@@ -82,6 +82,31 @@ extern "C" {
 extern "C" {
     pub fn babybear_ntt_neon(data: *mut u32, logN: c_int);
     pub fn babybear_intt_neon(data: *mut u32, logN: c_int);
+}
+
+// =============================================================================
+// GPU Availability (requires gpu feature)
+// =============================================================================
+
+// Compile-time assertion: gpu feature must be enabled
+const _: () = assert!(cfg!(feature = "gpu"), "zkmetal-sys requires 'gpu' feature");
+
+#[cfg(feature = "gpu")]
+extern "C" {
+    fn zkmetal_gpu_available() -> i32;
+}
+
+#[cfg(feature = "gpu")]
+pub fn gpu_available() -> bool {
+    // gpu feature is enabled, call FFI
+    // zkmetal_gpu_available() returns 0 when GPU is available
+    unsafe { zkmetal_gpu_available() == 0 }
+}
+
+#[cfg(not(feature = "gpu"))]
+pub fn gpu_available() -> bool {
+    // gpu feature NOT enabled, cannot use FFI
+    false
 }
 
 // =============================================================================
