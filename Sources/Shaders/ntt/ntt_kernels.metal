@@ -990,20 +990,21 @@ kernel void ntt_column_fused(
 
         uint block_idx = tid / half_block;
         uint local_idx = tid % half_block;
-        uint i = block_idx * local_block_size + local_idx;
-        uint j = i + half_block;
 
         // Twiddle: omega_N1^(local_idx * N1/local_block_size) = omega_N^(local_idx * N2 * N1/local_block_size)
         uint twiddle_idx = local_idx * (n1 / local_block_size) * n2;
 
+        uint i = block_idx * local_block_size + local_idx;
+        uint j = i + half_block;
+
         Fr a = shared[i];
         Fr b = shared[j];
+        // All threads with same local_idx get same twiddle factor
         if (twiddle_idx == 0) {
             shared[i] = fr_add(a, b);
             shared[j] = fr_sub(a, b);
         } else {
-            Fr w = twiddles[twiddle_idx];
-            Fr wb = fr_mul(w, b);
+            Fr wb = fr_mul(twiddles[twiddle_idx], b);
             shared[i] = fr_add(a, wb);
             shared[j] = fr_sub(a, wb);
         }
@@ -1050,21 +1051,22 @@ kernel void ntt_row_fused(
 
         uint block_idx = tid / half_block;
         uint local_idx = tid % half_block;
-        uint i = block_idx * local_block_size + local_idx;
-        uint j = i + half_block;
 
         // Twiddle: for N2-point NTT stage s, using N-point table
         uint global_block_size = 1u << (s + 1);
         uint twiddle_idx = local_idx * (n / global_block_size);
 
+        uint i = block_idx * local_block_size + local_idx;
+        uint j = i + half_block;
+
         Fr a = shared[i];
         Fr b = shared[j];
+        // All threads with same local_idx get same twiddle factor
         if (twiddle_idx == 0) {
             shared[i] = fr_add(a, b);
             shared[j] = fr_sub(a, b);
         } else {
-            Fr w = twiddles[twiddle_idx];
-            Fr wb = fr_mul(w, b);
+            Fr wb = fr_mul(twiddles[twiddle_idx], b);
             shared[i] = fr_add(a, wb);
             shared[j] = fr_sub(a, wb);
         }
@@ -1100,7 +1102,7 @@ kernel void ntt_row_fused_twiddle(
     uint rev_hi = bitrev(idx_hi, local_stages);
 
     // Load with twiddle multiply: val *= omega_N^(row * col)
-    // row = tgid, col = idx
+    // row = tgid, col = idx (this twiddle can't be cached - depends on row AND col)
     if (base + idx_lo < n) {
         Fr val = data[base + idx_lo];
         uint tw_idx = (uint)((ulong(tgid) * ulong(idx_lo)) % ulong(n));
@@ -1115,18 +1117,19 @@ kernel void ntt_row_fused_twiddle(
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    // DIT butterfly stages (identical to ntt_row_fused)
+    // DIT butterfly stages
     for (uint s = 0; s < local_stages; s++) {
         uint half_block = 1u << s;
         uint local_block_size = half_block << 1;
 
         uint block_idx = tid / half_block;
         uint local_idx = tid % half_block;
-        uint i = block_idx * local_block_size + local_idx;
-        uint j = i + half_block;
 
         uint global_block_size = 1u << (s + 1);
         uint twiddle_idx = local_idx * (n / global_block_size);
+
+        uint i = block_idx * local_block_size + local_idx;
+        uint j = i + half_block;
 
         Fr a = shared[i];
         Fr b = shared[j];
@@ -1134,8 +1137,7 @@ kernel void ntt_row_fused_twiddle(
             shared[i] = fr_add(a, b);
             shared[j] = fr_sub(a, b);
         } else {
-            Fr w = twiddles[twiddle_idx];
-            Fr wb = fr_mul(w, b);
+            Fr wb = fr_mul(twiddles[twiddle_idx], b);
             shared[i] = fr_add(a, wb);
             shared[j] = fr_sub(a, wb);
         }
@@ -1194,11 +1196,12 @@ kernel void ntt_row_fused_twiddle_transpose(
 
         uint block_idx = tid / half_block;
         uint local_idx = tid % half_block;
-        uint i = block_idx * local_block_size + local_idx;
-        uint j = i + half_block;
 
         uint global_block_size = 1u << (s + 1);
         uint twiddle_idx = local_idx * (n / global_block_size);
+
+        uint i = block_idx * local_block_size + local_idx;
+        uint j = i + half_block;
 
         Fr a = shared[i];
         Fr b = shared[j];
@@ -1206,8 +1209,7 @@ kernel void ntt_row_fused_twiddle_transpose(
             shared[i] = fr_add(a, b);
             shared[j] = fr_sub(a, b);
         } else {
-            Fr w = twiddles[twiddle_idx];
-            Fr wb = fr_mul(w, b);
+            Fr wb = fr_mul(twiddles[twiddle_idx], b);
             shared[i] = fr_add(a, wb);
             shared[j] = fr_sub(a, wb);
         }
