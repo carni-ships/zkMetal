@@ -6,8 +6,7 @@
 - **File**: `Sources/zkMetal/Polynomial/FRIEngine.swift`
 - **Lines**: 719-724, 1123-1126, 1463-1466, 1488-1490, 1741-1747, 2196-2201, 2219-2221, 2270-2272
 - **Pattern**: `frRootOfUnity(logN)`, `frInverse(omega)`, `frPow(omegaInv, UInt64(quarter))` computed repeatedly
-- **Status**: `frRootOfUnity` already cached via `_rootOfUnityCache` at module load
-- **Issue**: `frPow(omegaInv, quarter)` still computed per-fold, could cache w4_inv, w8_inv
+- **Status**: ✅ Done (2026-05-01) - Added `getW4Inv()`, `getW8Inv()`, `getW8Inv3()` cached helpers
 - **Impact**: Reduces O(n) repeated root computations per fold round
 
 ### 2. Reed-Solomon Engine - Lagrange Interpolation Denominators
@@ -21,9 +20,9 @@
 
 ### 3. WHIR Proximity Engine - Domain Weight Recomputation
 - **File**: `Sources/zkMetal/Polynomial/WHIRProximityEngine.swift`
-- **Lines**: 327-333, 353-360
+- **Lines**: 327-336, 349-367
 - **Pattern**: `frPow(omega, UInt64(index))` called in loop for each evaluation point
-- **Fix**: Precompute all `omega^i` powers once, compute weights as `gamma / (gamma - omega^i)` using batch inverse
+- **Status**: ✅ Done (2026-05-01) - Uses `frPowOmega()` with cached twiddles + batch inverse
 - **Impact**: O(n) to O(1) for domain weight computation
 
 ### 4. STARK Provers - Repeated Omega Powers in OOD Evaluation
@@ -31,8 +30,8 @@
   - `Sources/zkMetal/STARK/Stark252STARK.swift` (lines 718-721)
   - `Sources/zkMetal/STARK/GPUBabyBearSTARKProver.swift` (lines 446-451)
 - **Pattern**: Omega powers `omega^i` recomputed for each proof
-- **Fix**: Cache omega powers for `(logTrace, logLDE)` combinations
-- **Impact**: Once per proof, but adds up in batch proving
+- **Status**: ❌ Low impact (2026-05-01) - Only called a few times per verification, not worth special caching
+- **Impact**: Minimal - verification happens rarely compared to proving
 
 ### 5. Subproduct Tree - Polynomial Tree Building
 - **File**: `Sources/zkMetal/Polynomial/SubproductTree.swift`

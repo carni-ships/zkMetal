@@ -269,6 +269,68 @@ public func frPowOmega(_ omega: Fr, _ idx: UInt64, logN: Int) -> Fr {
     return frPow(omega, idx)
 }
 
+// MARK: - FRI Omega Power Cache
+
+/// Cached derived omega powers for FRI (w4_inv, w8_inv, etc.)
+/// Key: (logN, type) where type is "w4_inv", "w8_inv", etc.
+private var _omegaPowerCache: [String: Fr] = [:]
+private let _omegaPowerCacheLock = NSLock()
+
+private func omegaPowerCacheKey(_ logN: Int, _ type: String) -> String {
+    return "\(logN):\(type)"
+}
+
+/// Get cached w4_inv = omega^{-N/4} for given logN.
+/// Used in FRI fold-by-4 operations.
+public func getW4Inv(logN: Int) -> Fr {
+    _omegaPowerCacheLock.lock()
+    defer { _omegaPowerCacheLock.unlock() }
+    let key = omegaPowerCacheKey(logN, "w4_inv")
+    if let cached = _omegaPowerCache[key] {
+        return cached
+    }
+    let n = 1 << logN
+    let quarter = n >> 2
+    let omega = frRootOfUnity(logN: logN)
+    let omegaInv = frInverse(omega)
+    let w4_inv = frPow(omegaInv, UInt64(quarter))
+    _omegaPowerCache[key] = w4_inv
+    return w4_inv
+}
+
+/// Get cached w8_inv = omega^{-N/8} for given logN.
+/// Used in FRI fold-by-8 operations.
+public func getW8Inv(logN: Int) -> Fr {
+    _omegaPowerCacheLock.lock()
+    defer { _omegaPowerCacheLock.unlock() }
+    let key = omegaPowerCacheKey(logN, "w8_inv")
+    if let cached = _omegaPowerCache[key] {
+        return cached
+    }
+    let n = 1 << logN
+    let eighth = n >> 3
+    let omega = frRootOfUnity(logN: logN)
+    let omegaInv = frInverse(omega)
+    let w8_inv = frPow(omegaInv, UInt64(eighth))
+    _omegaPowerCache[key] = w8_inv
+    return w8_inv
+}
+
+/// Get cached w8_inv3 = omega^{-3N/8} for given logN.
+/// Used in FRI fold-by-8 operations.
+public func getW8Inv3(logN: Int) -> Fr {
+    _omegaPowerCacheLock.lock()
+    defer { _omegaPowerCacheLock.unlock() }
+    let key = omegaPowerCacheKey(logN, "w8_inv3")
+    if let cached = _omegaPowerCache[key] {
+        return cached
+    }
+    let w8_inv = getW8Inv(logN: logN)
+    let w8_inv3 = frMul(w8_inv, frMul(w8_inv, w8_inv))
+    _omegaPowerCache[key] = w8_inv3
+    return w8_inv3
+}
+
 /// Precompute inverse twiddle factors for iNTT.
 /// Full N entries needed for four-step iFFT inverse twiddle multiply.
 public func precomputeInverseTwiddles(logN: Int) -> [Fr] {

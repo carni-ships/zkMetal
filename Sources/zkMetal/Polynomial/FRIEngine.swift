@@ -721,7 +721,7 @@ public class FRIEngine {
 
         // w4 = omega^{N/4} is the primitive 4th root of unity
         // w4_inv = omega^{-N/4}
-        let w4_inv = frPow(omegaInv, UInt64(quarter))
+        let w4_inv = getW4Inv(logN: logN)
 
         var folded = [Fr](repeating: Fr.zero, count: quarter)
         var inv_x = Fr.one  // omega^{-i}, starts at omega^0 = 1
@@ -1487,7 +1487,7 @@ public class FRIEngine {
                     // Replicate the cpuFold4 logic
                     let omega = frRootOfUnity(logN: logN)
                     let omegaInv = frInverse(omega)
-                    let w4_inv = frPow(omegaInv, UInt64(quarterN))
+                    let w4_inv = getW4Inv(logN: logN)
 
                     let s02 = frAdd(e0, e2)
                     let d02 = frSub(e0, e2)
@@ -1744,9 +1744,9 @@ public class FRIEngine {
         // w8 = omega^{N/8}, w8_inv = omega^{-N/8}
         // w4_inv = omega^{-N/4} = w8_inv^2
         // w8_inv3 = omega^{-3N/8}
-        let w8_inv = frPow(omegaInv, UInt64(eighth))
-        let w4_inv = frMul(w8_inv, w8_inv)
-        let w8_inv3 = frMul(w4_inv, w8_inv)
+        let w8_inv = getW8Inv(logN: logN)
+        let w4_inv = getW4Inv(logN: logN)  // Same as w8_inv * w8_inv
+        let w8_inv3 = getW8Inv3(logN: logN)
 
         var folded = [Fr](repeating: Fr.zero, count: eighth)
         var inv_x = Fr.one
@@ -2218,7 +2218,7 @@ public class FRIEngine {
 
                     let omega = frRootOfUnity(logN: logN)
                     let omegaInv = frInverse(omega)
-                    let w4_inv = frPow(omegaInv, UInt64(quarterN))
+                    let w4_inv = getW4Inv(logN: logN)
 
                     let s02 = frAdd(e0, e2)
                     let d02 = frSub(e0, e2)
@@ -2269,9 +2269,9 @@ public class FRIEngine {
 
                     let omega = frRootOfUnity(logN: logN)
                     let omegaInv = frInverse(omega)
-                    let w8_inv = frPow(omegaInv, UInt64(eighthN))
-                    let w4_inv = frMul(w8_inv, w8_inv)
-                    let w8_inv3 = frMul(w4_inv, w8_inv)
+                    let w8_inv = getW8Inv(logN: logN)
+                    let w4_inv = getW4Inv(logN: logN)
+                    let w8_inv3 = getW8Inv3(logN: logN)
 
                     // Same DFT as cpuFold8
                     let s0 = frAdd(e0, e4)

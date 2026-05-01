@@ -38,7 +38,7 @@ if (tid < half_block) {
 
 ## Priority 3: Lazy Reduction
 
-**Status**: Not started
+**Status**: ❌ Rejected (2026-05-01) - Too complex/high-risk
 
 **Idea**: Delay modular reduction in BN254 field operations.
 
@@ -46,6 +46,8 @@ if (tid < half_block) {
 - Use `fr_add_lazy` which skips modular reduction
 - Accumulate 2-3 operations before reducing
 - Reduces branch mispredictions and reduction overhead
+
+**Issue**: Requires ensuring `a + b < 2^256` to avoid overflow. Butterfly operations have complex data dependencies. Risk of subtle correctness bugs.
 
 **Expected impact**: ~5-10% improvement in field-heavy code
 
@@ -69,7 +71,7 @@ if (tid < half_block) {
 
 ## Priority 5: Higher Radix (Radix-8)
 
-**Status**: Not started
+**Status**: ❌ Rejected (2026-05-01) - Complex, four-step FFT provides similar benefits
 
 **Idea**: Process 3 stages at once using radix-8 butterflies.
 
@@ -77,6 +79,8 @@ if (tid < half_block) {
 - Radix-8 butterfly processes 8 elements with 3 twiddle multiplications
 - Reduces loop overhead and memory access by ~33%
 - More complex twiddle factor computation
+
+**Issue**: Requires 7 twiddle multiplications per butterfly with complex data access patterns. Four-step FFT already provides ~20% improvement with lower complexity.
 
 **Expected impact**: ~15-20% improvement
 

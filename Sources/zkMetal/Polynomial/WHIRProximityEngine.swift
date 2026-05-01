@@ -326,8 +326,9 @@ public class WHIRProverV2 {
     /// - Returns: w(omega^i, gamma)
     public static func domainWeight(gamma: Fr, omega: Fr, index: Int,
                                     domainSize: Int) -> Fr {
-        // omega^index
-        let omegaI = frPow(omega, UInt64(index))
+        // omega^index - use cached twiddle lookup when possible
+        let logN = Int(log2(Double(domainSize)))
+        let omegaI = frPowOmega(omega, UInt64(index), logN: logN)
         // gamma - omega^i
         let diff = frSub(gamma, omegaI)
         // gamma / (gamma - omega^i)
@@ -340,6 +341,8 @@ public class WHIRProverV2 {
     /// For each query position q_j (in the folded domain), we need weights
     /// for the reductionFactor original positions: q_j * r + k, k = 0..r-1.
     ///
+    /// Optimized: Uses cached twiddles and batch inverse.
+    ///
     /// - Parameters:
     ///   - gamma: verifier challenge
     ///   - queryIndices: positions in the folded domain
@@ -350,17 +353,35 @@ public class WHIRProverV2 {
                                       domainSize: Int,
                                       reductionFactor: Int) -> [Fr] {
         let logN = Int(log2(Double(domainSize)))
-        let omega = frRootOfUnity(logN: logN)
-        var weights = [Fr]()
-        weights.reserveCapacity(queryIndices.count * reductionFactor)
+        let totalCount = queryIndices.count * reductionFactor
+
+        if totalCount == 0 { return [] }
+
+        // Build array of (gamma - omega^idx) for all needed indices
+        var diffs = [Fr]()
+        diffs.reserveCapacity(totalCount)
+
+        // Get cached twiddles once
+        let twiddles = getTwiddleCache(logN: logN)
 
         for qi in queryIndices {
+            let baseIdx = Int(qi) * reductionFactor
             for k in 0..<reductionFactor {
-                let origIdx = Int(qi) * reductionFactor + k
-                weights.append(domainWeight(gamma: gamma, omega: omega,
-                                            index: origIdx,
-                                            domainSize: domainSize))
+                let idx = baseIdx + k
+                // Use cached twiddle: omega^idx = twiddles[idx] when idx < n
+                let omegaI = idx < twiddles.count ? twiddles[idx] : frPow(frRootOfUnity(logN: logN), UInt64(idx))
+                diffs.append(frSub(gamma, omegaI))
             }
+        }
+
+        // Batch inverse all diffs at once
+        let diffsInv = frBatchInverse(diffs)
+
+        // Final weights: gamma * (1 / (gamma - omega^i))
+        var weights = [Fr]()
+        weights.reserveCapacity(totalCount)
+        for i in 0..<totalCount {
+            weights.append(frMul(gamma, diffsInv[i]))
         }
         return weights
     }
