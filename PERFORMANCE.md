@@ -436,6 +436,16 @@ Threshold is set to 12 global stages (`logN - maxFusedLogN >= 12`), triggering a
 
 Kernels: `ntt_column_fused_batch`, `ntt_row_fused_twiddle_transpose_batch`, `ntt_transpose_batch`, `intt_row_fused_twiddle_transpose_batch`, `intt_column_fused_batch`
 
+### Caching Optimizations (2026-05-01)
+
+**Twiddle Cache for BN254:**
+- Added global `_twiddleCache` with NSLock for thread-safe access
+- `getTwiddleCache(logN)` retrieves cached twiddle factors or computes on demand
+- `frPowOmega(omega, idx, logN)` uses cached twiddles for `idx < n`
+- Updated RSEngine to use `frPowOmega` instead of `frPow(omega, idx)`
+
+This reduces repeated omega power computations in RS encoding operations.
+
 ## Circle FRI (Mersenne31)
 
 GPU-accelerated Circle FRI over Mersenne31 field for Circle STARKs.

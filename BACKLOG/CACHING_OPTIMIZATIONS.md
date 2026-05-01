@@ -6,7 +6,8 @@
 - **File**: `Sources/zkMetal/Polynomial/FRIEngine.swift`
 - **Lines**: 719-724, 1123-1126, 1463-1466, 1488-1490, 1741-1747, 2196-2201, 2219-2221, 2270-2272
 - **Pattern**: `frRootOfUnity(logN)`, `frInverse(omega)`, `frPow(omegaInv, UInt64(quarter))` computed repeatedly
-- **Fix**: Cache `omega` and `omegaInv` per `(logN)`. Precompute `w4_inv`, `w8_inv` powers.
+- **Status**: `frRootOfUnity` already cached via `_rootOfUnityCache` at module load
+- **Issue**: `frPow(omegaInv, quarter)` still computed per-fold, could cache w4_inv, w8_inv
 - **Impact**: Reduces O(n) repeated root computations per fold round
 
 ### 2. Reed-Solomon Engine - Lagrange Interpolation Denominators
@@ -15,9 +16,7 @@
 - **Pattern**:
   - `omega^i` powers recomputed for each evaluation
   - Lagrange denominators `prod_{j!=i}(x_i - x_j)` computed O(n^2) without caching
-- **Fix**:
-  - Cache `omega^i` powers for common `(logN)` values
-  - Cache Lagrange denominators for common point sets
+- **Status**: ✅ Done (2026-05-01) - Added `getTwiddleCache()` and `frPowOmega()` in BN254Fr.swift
 - **Impact**: High for repeated RS encoding/decoding operations
 
 ### 3. WHIR Proximity Engine - Domain Weight Recomputation
