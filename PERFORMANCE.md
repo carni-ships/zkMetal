@@ -421,13 +421,20 @@ For K=32 transforms with logN=18:
 | Radix-4 inverse butterflies | ✅ Done | `intt_butterfly_radix4_batch` processes 2 stages per dispatch |
 | Fused inverse + bitrev kernel | ✅ Done | `intt_fused_bitrev_batch` with proper grid Y for batch processing |
 | Async command buffer API | ✅ Done | `nttAsync`, `inttAsync`, `nttBatch` methods using MTLSharedEvent |
-| Four-step FFT path | ✅ Done | Implemented in `encodeNTTBatchFourStep`/`encodeINTTBatchFourStep`, threshold=22 (logN>=30) |
+| Four-step FFT path | ✅ Done | Implemented in `encodeNTTBatchFourStep`/`encodeINTTBatchFourStep`, threshold=12 (logN>=20) |
 
-**Four-Step FFT Notes:**
-- Threshold is set to 22 global stages (`logN - maxFusedLogN >= 22`), meaning it triggers for `logN >= 30`
-- At this threshold, the four-step path is intended for very large transforms (>1B elements) where the standard approach would exceed threadgroup memory capacity
-- For typical use cases (logN <= 24), the standard fused + radix-4 path provides better performance
-- Kernels: `ntt_column_fused_batch`, `ntt_row_fused_twiddle_transpose_batch`, `ntt_transpose_batch`, `intt_row_fused_twiddle_transpose_batch`, `intt_column_fused_batch`
+**Four-Step FFT Performance (2026-05-01):**
+
+At logN=20 (1M elements), four-step FFT is ~20-23% faster than standard path:
+
+| Transform Count | Standard Path | Four-Step FFT | Speedup |
+|-----------------|-------------|---------------|---------|
+| 1 transform | 8.25ms | 6.73ms | **1.23x** |
+| 4 transforms | 30.2ms | 24.9ms | **1.21x** |
+
+Threshold is set to 12 global stages (`logN - maxFusedLogN >= 12`), triggering at `logN >= 20`.
+
+Kernels: `ntt_column_fused_batch`, `ntt_row_fused_twiddle_transpose_batch`, `ntt_transpose_batch`, `intt_row_fused_twiddle_transpose_batch`, `intt_column_fused_batch`
 
 ## Circle FRI (Mersenne31)
 
