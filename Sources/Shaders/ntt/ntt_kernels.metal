@@ -2203,3 +2203,351 @@ kernel void intt_row_subblock_fused(
     if (tid + tg_size < sub_size)
         data[row_base + sub_base + tid + tg_size] = fr_mul(shared[rev_hi], scale);
 }
+
+// =============================================================================
+// BATCH FOUR-STEP FFT KERNELS
+// =============================================================================
+// For processing batch NTTs using four-step FFT decomposition.
+// Transforms data from sequential layout [t0][t1]...[tK-1] to matrix layout
+// and performs column FFTs, row FFTs with twiddles, and transpose.
+//
+// Data layout transformation:
+//   Sequential (before): [transform_k: N elements] (contiguous)
+//   Matrix (during):     [transform_k: N1 rows x N2 cols] (row-major within transform)
+//   Back to Sequential   (after)
+
+// Batch column FFT for four-step: each threadgroup = one column of N1 elements
+// within one transform. Grid: X = n2, Y = num_transforms
+kernel void ntt_column_fused_batch(
+    device Fr* data                [[buffer(0)]],
+    device const Fr* twiddles      [[buffer(1)]],
+    constant uint& n               [[buffer(2)]],    // total size N = N1 * N2
+    constant uint& n1              [[buffer(3)]],    // N1 (column size)
+    constant uint& n2              [[buffer(4)]],    // N2 (number of columns)
+    constant uint& local_stages    [[buffer(5)]],    // log2(N1)
+    constant uint& num_transforms  [[buffer(6)]],
+    uint tid                       [[thread_index_in_threadgroup]],
+    uint2 tgid                      [[threadgroup_position_in_grid]],
+    uint2 tg_size                   [[threads_per_threadgroup]]
+) {
+    uint k = tgid.y;  // transform index
+    if (k >= num_transforms) return;
+
+    uint col = tgid.x;  // column index within transform
+    threadgroup Fr shared[1024];
+
+    uint idx_lo = tid;
+    uint idx_hi = tid + tg_size.x;
+    uint rev_lo = bitrev(idx_lo, local_stages);
+    uint rev_hi = bitrev(idx_hi, local_stages);
+
+    uint base_offset = k * n;
+
+    if (idx_lo < n1)
+        shared[rev_lo] = data[base_offset + col + idx_lo * n2];
+    if (idx_hi < n1)
+        shared[rev_hi] = data[base_offset + col + idx_hi * n2];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // DIT butterfly stages
+    for (uint s = 0; s < local_stages; s++) {
+        uint half_block = 1u << s;
+        uint local_block_size = half_block << 1;
+
+        uint block_idx = tid / half_block;
+        uint local_idx = tid % half_block;
+        uint i = block_idx * local_block_size + local_idx;
+        uint j = i + half_block;
+
+        uint twiddle_idx = local_idx * (n1 / local_block_size) * n2;
+
+        Fr a = shared[i];
+        Fr b = shared[j];
+        if (twiddle_idx == 0) {
+            shared[i] = fr_add(a, b);
+            shared[j] = fr_sub(a, b);
+        } else {
+            Fr w = twiddles[twiddle_idx];
+            Fr wb = fr_mul(w, b);
+            shared[i] = fr_add(a, wb);
+            shared[j] = fr_sub(a, wb);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    // Write back (strided)
+    if (tid < n1)
+        data[base_offset + col + tid * n2] = shared[tid];
+    if (tid + tg_size.x < n1)
+        data[base_offset + col + (tid + tg_size.x) * n2] = shared[tid + tg_size.x];
+}
+
+// Batch row FFT + twiddle + transpose for four-step
+// Each threadgroup = one row of N2 elements, but writes transposed
+// Grid: X = n1, Y = num_transforms
+kernel void ntt_row_fused_twiddle_transpose_batch(
+    device Fr* data                [[buffer(0)]],
+    device const Fr* twiddles      [[buffer(1)]],
+    constant uint& n               [[buffer(2)]],    // total size N
+    constant uint& n1              [[buffer(3)]],    // N1 (rows)
+    constant uint& n2              [[buffer(4)]],    // N2 (cols)
+    constant uint& local_stages    [[buffer(5)]],    // log2(N2)
+    constant uint& num_transforms  [[buffer(6)]],
+    uint tid                       [[thread_index_in_threadgroup]],
+    uint2 tgid                      [[threadgroup_position_in_grid]],
+    uint2 tg_size                   [[threads_per_threadgroup]]
+) {
+    uint k = tgid.y;  // transform index
+    if (k >= num_transforms) return;
+
+    uint row = tgid.x;  // row index (transforms n1 rows)
+    uint block_size = tg_size.x << 1;
+    uint base_offset = k * n;
+    uint base = row * n2;  // base index for this row
+
+    threadgroup Fr shared[1024];
+
+    uint idx_lo = tid;
+    uint idx_hi = tid + tg_size.x;
+    uint rev_lo = bitrev(idx_lo, local_stages);
+    uint rev_hi = bitrev(idx_hi, local_stages);
+
+    if (base + idx_lo < base_offset + n)
+        shared[rev_lo] = data[base + idx_lo];
+    if (base + idx_hi < base_offset + n)
+        shared[rev_hi] = data[base + idx_hi];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // DIT butterfly stages with twiddles
+    for (uint s = 0; s < local_stages; s++) {
+        uint half_block = 1u << s;
+        uint local_block_size = half_block << 1;
+
+        uint block_idx = tid / half_block;
+        uint local_idx = tid % half_block;
+        uint i = block_idx * local_block_size + local_idx;
+        uint j = i + half_block;
+
+        // Twiddle for row FFT stage s: omega_N^(row * local_idx * N/n2)
+        uint twiddle_idx = row * local_idx * (n / local_block_size);
+
+        Fr a = shared[i];
+        Fr b = shared[j];
+        if (twiddle_idx == 0) {
+            shared[i] = fr_add(a, b);
+            shared[j] = fr_sub(a, b);
+        } else {
+            Fr w = twiddles[twiddle_idx];
+            Fr wb = fr_mul(w, b);
+            shared[i] = fr_add(a, wb);
+            shared[j] = fr_sub(a, wb);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    // Write back transposed: position is col * n1 + row
+    if (base + idx_lo < base_offset + n) {
+        uint out_idx = idx_lo * n1 + row;
+        data[base_offset + out_idx] = shared[idx_lo];
+    }
+    if (base + idx_hi < base_offset + n) {
+        uint out_idx = idx_hi * n1 + row;
+        data[base_offset + out_idx] = shared[idx_hi];
+    }
+}
+
+// Batch transpose for restoring sequential layout
+// Transposes N1×N2 matrix back to sequential N elements
+// Grid: X = n, Y = num_transforms (same as standard transpose)
+kernel void ntt_transpose_batch(
+    device Fr* data                [[buffer(0)]],
+    constant uint& n1              [[buffer(1)]],    // N1 (rows)
+    constant uint& n2              [[buffer(2)]],    // N2 (cols)
+    constant uint& num_transforms  [[buffer(3)]],
+    uint tid                       [[thread_index_in_threadgroup]],
+    uint2 tgid                      [[threadgroup_position_in_grid]],
+    uint2 tg_size                   [[threads_per_threadgroup]]
+) {
+    uint k = tgid.y;  // transform index
+    if (k >= num_transforms) return;
+
+    uint n = n1 * n2;
+    uint base_offset = k * n;
+    uint row = tgid.x / n2;
+    uint col = tgid.x % n2;
+
+    threadgroup Fr shared[1024];
+
+    uint idx_lo = tid;
+    uint idx_hi = tid + tg_size.x;
+    uint src_lo = row * n2 + idx_lo;
+    uint src_hi = row * n2 + idx_hi;
+
+    if (src_lo < n)
+        shared[idx_lo] = data[base_offset + src_lo];
+    if (src_hi < n)
+        shared[idx_hi] = data[base_offset + src_hi];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Write back transposed
+    uint dst_lo = idx_lo * n2 + col;
+    uint dst_hi = idx_hi * n2 + col;
+    if (dst_lo < n)
+        data[base_offset + dst_lo] = shared[idx_lo];
+    if (dst_hi < n)
+        data[base_offset + dst_hi] = shared[idx_hi];
+}
+
+// =============================================================================
+// BATCH INVERSE FOUR-STEP FFT KERNELS
+// =============================================================================
+
+// Batch inverse row FFT + twiddle + transpose (for iNTT four-step)
+// Grid: X = n1, Y = num_transforms
+kernel void intt_row_fused_twiddle_transpose_batch(
+    device Fr* data                [[buffer(0)]],
+    device const Fr* twiddles_inv  [[buffer(1)]],
+    constant uint& n               [[buffer(2)]],    // total size N
+    constant uint& n1              [[buffer(3)]],    // N1 (rows)
+    constant uint& n2              [[buffer(4)]],    // N2 (cols)
+    constant uint& local_stages    [[buffer(5)]],    // log2(N2)
+    constant uint& num_transforms  [[buffer(6)]],
+    uint tid                       [[thread_index_in_threadgroup]],
+    uint2 tgid                      [[threadgroup_position_in_grid]],
+    uint2 tg_size                   [[threads_per_threadgroup]]
+) {
+    uint k = tgid.y;  // transform index
+    if (k >= num_transforms) return;
+
+    uint row = tgid.x;  // row index
+    uint block_size = tg_size.x << 1;
+    uint base_offset = k * n;
+    uint base = row * n2;
+
+    threadgroup Fr shared[1024];
+
+    uint idx_lo = tid;
+    uint idx_hi = tid + tg_size.x;
+
+    // Load from transposed position: input[col * n1 + row]
+    uint src_lo = idx_lo * n1 + row;
+    uint src_hi = idx_hi * n1 + row;
+
+    if (src_lo < n)
+        shared[idx_lo] = data[base_offset + src_lo];
+    if (src_hi < n)
+        shared[idx_hi] = data[base_offset + src_hi];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // DIF butterfly stages with inverse twiddles
+    for (uint s = 0; s < local_stages; s++) {
+        uint stage = local_stages - 1 - s;
+        uint half_block = 1u << stage;
+        uint local_block_size = half_block << 1;
+
+        uint block_idx = tid / half_block;
+        uint local_idx = tid % half_block;
+        uint i = block_idx * local_block_size + local_idx;
+        uint j = i + half_block;
+
+        uint global_block_size = 1u << (stage + 1);
+        uint twiddle_idx = row * local_idx * (n / global_block_size);
+
+        Fr a = shared[i];
+        Fr b = shared[j];
+        Fr sum = fr_add(a, b);
+        Fr diff = fr_sub(a, b);
+        shared[i] = sum;
+        if (twiddle_idx == 0) {
+            shared[j] = diff;
+        } else {
+            Fr w = twiddles_inv[twiddle_idx];
+            shared[j] = fr_mul(diff, w);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    // Write back to row position
+    if (base + idx_lo < base_offset + n)
+        data[base_offset + base + idx_lo] = shared[idx_lo];
+    if (base + idx_hi < base_offset + n)
+        data[base_offset + base + idx_hi] = shared[idx_hi];
+}
+
+// Batch inverse column FFT for four-step (DIF)
+// Each threadgroup = one column of N1 elements
+// Grid: X = n2, Y = num_transforms
+kernel void intt_column_fused_batch(
+    device Fr* data                [[buffer(0)]],
+    device const Fr* twiddles_inv  [[buffer(1)]],
+    device const Fr* inv_n         [[buffer(2)]],    // 1/N scaling
+    constant uint& n               [[buffer(3)]],    // total size N
+    constant uint& n1              [[buffer(4)]],    // N1 (column size)
+    constant uint& n2              [[buffer(5)]],    // N2 (cols)
+    constant uint& local_stages    [[buffer(6)]],    // log2(N1)
+    constant uint& num_transforms  [[buffer(7)]],
+    uint tid                       [[thread_index_in_threadgroup]],
+    uint2 tgid                      [[threadgroup_position_in_grid]],
+    uint2 tg_size                   [[threads_per_threadgroup]]
+) {
+    uint k = tgid.y;
+    if (k >= num_transforms) return;
+
+    uint col = tgid.x;
+    threadgroup Fr shared[1024];
+
+    uint idx_lo = tid;
+    uint idx_hi = tid + tg_size.x;
+    uint rev_lo = bitrev(idx_lo, local_stages);
+    uint rev_hi = bitrev(idx_hi, local_stages);
+
+    uint base_offset = k * n;
+
+    if (idx_lo < n1)
+        shared[idx_lo] = data[base_offset + col + idx_lo * n2];
+    if (idx_hi < n1)
+        shared[idx_hi] = data[base_offset + col + idx_hi * n2];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // DIF butterfly stages (high to low)
+    for (uint s = 0; s < local_stages; s++) {
+        uint stage = local_stages - 1 - s;
+        uint half_block = 1u << (local_stages - 1 - s);
+        uint local_block_size = half_block << 1;
+
+        uint block_idx = tid / half_block;
+        uint local_idx = tid % half_block;
+        uint i = block_idx * local_block_size + local_idx;
+        uint j = i + half_block;
+
+        uint global_block_size = 1u << (stage + 1);
+        uint twiddle_idx = local_idx * (n1 / local_block_size) * n2;
+
+        Fr a = shared[i];
+        Fr b = shared[j];
+        Fr sum = fr_add(a, b);
+        Fr diff = fr_sub(a, b);
+        shared[i] = sum;
+        if (twiddle_idx == 0) {
+            shared[j] = diff;
+        } else {
+            Fr w = twiddles_inv[twiddle_idx];
+            shared[j] = fr_mul(diff, w);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    // Write back with bit-reversal and scale by 1/N for DC
+    if (tid < n1) {
+        Fr result = shared[tid];
+        if (tid == 0)
+            result = fr_mul(result, inv_n[0]);
+        data[base_offset + col + tid * n2] = result;
+    }
+    if (tid + tg_size.x < n1) {
+        Fr result = shared[tid + tg_size.x];
+        if (tid + tg_size.x == 0)
+            result = fr_mul(result, inv_n[0]);
+        data[base_offset + col + (tid + tg_size.x) * n2] = result;
+    }
+}

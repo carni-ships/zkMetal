@@ -31,6 +31,14 @@ public class BatchNTTEngine {
     private let fusedInverseBatchFunction: MTLComputePipelineState
     private let fusedInverseBitrevBatchFunction: MTLComputePipelineState
 
+    // Four-step FFT kernels for batch processing
+    private let columnFusedBatchFunction: MTLComputePipelineState
+    private let rowFusedTwiddleTransposeBatchFunction: MTLComputePipelineState
+    private let transposeBatchFunction: MTLComputePipelineState
+    // Inverse four-step kernels for batch processing
+    private let inttRowFusedTwiddleTransposeBatchFunction: MTLComputePipelineState
+    private let inttColumnFusedBatchFunction: MTLComputePipelineState
+
     // Max stages that can be fused in threadgroup memory
     private static let maxFusedLogN = 8  // 2^8 = 256 threads per threadgroup
 
@@ -39,8 +47,14 @@ public class BatchNTTEngine {
     private var invTwiddleCache: [Int: MTLBuffer] = [:]
     private var invNCache: [Int: MTLBuffer] = [:]
 
+    // Scratch buffer for four-step FFT transpose operations
+    private var scratchBuffer: MTLBuffer?
+
     // Tuning
     private let tuning: TuningConfig
+
+    // Threshold for using four-step FFT (same as NTTEngine)
+    private var fourStepMinGlobalStages: Int { tuning.nttFourStepThreshold }
 
     public init(nttEngine: NTTEngine? = nil) throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
@@ -80,7 +94,12 @@ public class BatchNTTEngine {
               let bitrevScaleFn = library.makeFunction(name: "ntt_bitrev_scale_batch"),
               let fusedBitrevFn = library.makeFunction(name: "ntt_fused_bitrev_batch"),
               let fusedInverseFn = library.makeFunction(name: "intt_fused_batch"),
-              let fusedInverseBitrevFn = library.makeFunction(name: "intt_fused_bitrev_batch") else {
+              let fusedInverseBitrevFn = library.makeFunction(name: "intt_fused_bitrev_batch"),
+              let columnFusedFn = library.makeFunction(name: "ntt_column_fused_batch"),
+              let rowTwiddleTransposeFn = library.makeFunction(name: "ntt_row_fused_twiddle_transpose_batch"),
+              let transposeFn = library.makeFunction(name: "ntt_transpose_batch"),
+              let inttRowTwiddleTransposeFn = library.makeFunction(name: "intt_row_fused_twiddle_transpose_batch"),
+              let inttColumnFusedFn = library.makeFunction(name: "intt_column_fused_batch") else {
             throw MSMError.missingKernel
         }
 
@@ -93,6 +112,11 @@ public class BatchNTTEngine {
         self.fusedBitrevBatchFunction = try device.makeComputePipelineState(function: fusedBitrevFn)
         self.fusedInverseBatchFunction = try device.makeComputePipelineState(function: fusedInverseFn)
         self.fusedInverseBitrevBatchFunction = try device.makeComputePipelineState(function: fusedInverseBitrevFn)
+        self.columnFusedBatchFunction = try device.makeComputePipelineState(function: columnFusedFn)
+        self.rowFusedTwiddleTransposeBatchFunction = try device.makeComputePipelineState(function: rowTwiddleTransposeFn)
+        self.transposeBatchFunction = try device.makeComputePipelineState(function: transposeFn)
+        self.inttRowFusedTwiddleTransposeBatchFunction = try device.makeComputePipelineState(function: inttRowTwiddleTransposeFn)
+        self.inttColumnFusedBatchFunction = try device.makeComputePipelineState(function: inttColumnFusedFn)
 
         self.tuning = TuningManager.shared.config(device: device)
 
@@ -195,6 +219,14 @@ public class BatchNTTEngine {
     ///   - logN: Log of transform size (each transform has 2^logN elements)
     ///   - cmdBuf: Existing command buffer (NOT committed by this function)
     public func encodeNTTBatch(buffer: MTLBuffer, numTransforms: Int, logN: Int, cmdBuf: MTLCommandBuffer) {
+        let globalStages = logN - BatchNTTEngine.maxFusedLogN
+
+        // Use four-step FFT for very large transforms
+        if globalStages >= fourStepMinGlobalStages {
+            encodeNTTBatchFourStep(buffer: buffer, numTransforms: numTransforms, logN: logN, cmdBuf: cmdBuf)
+            return
+        }
+
         let n = UInt32(1 << logN)
         let nInt = Int(n)
         let twiddles = getTwiddles(logN: logN)
@@ -209,7 +241,6 @@ public class BatchNTTEngine {
 
         // Use fused kernel for better performance when logN > maxFusedLogN
         let fusedStages = min(logN, BatchNTTEngine.maxFusedLogN)
-        let hasGlobal = fusedStages < logN
 
         if fusedStages > 1 {
             // Fused bitrev + DIT stages: single kernel launch handles both
@@ -282,6 +313,14 @@ public class BatchNTTEngine {
     ///   - logN: Log of transform size (each transform has 2^logN elements)
     ///   - cmdBuf: Existing command buffer (NOT committed by this function)
     public func encodeINTTBatch(buffer: MTLBuffer, numTransforms: Int, logN: Int, cmdBuf: MTLCommandBuffer) {
+        let globalStages = logN - BatchNTTEngine.maxFusedLogN
+
+        // Use four-step FFT for very large transforms
+        if globalStages >= fourStepMinGlobalStages {
+            encodeINTTBatchFourStep(buffer: buffer, numTransforms: numTransforms, logN: logN, cmdBuf: cmdBuf)
+            return
+        }
+
         let n = UInt32(1 << logN)
         let nInt = Int(n)
         let invTwiddles = getInvTwiddles(logN: logN)
@@ -349,6 +388,156 @@ public class BatchNTTEngine {
         enc.setBytes(&numK, length: 4, index: 4)
         enc.dispatchThreads(MTLSize(width: nInt, height: numTransforms, depth: 1),
                            threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
+
+        enc.endEncoding()
+    }
+
+    // MARK: - Four-Step FFT Batch Kernels
+
+    /// Encode batch forward NTT using four-step FFT algorithm.
+    /// Decomposes large transforms into column FFTs, row FFTs with twiddles, and transpose.
+    ///
+    /// - Parameters:
+    ///   - buffer: Single buffer containing all transforms (sequential layout)
+    ///   - numTransforms: Number of transforms to process
+    ///   - logN: Log of transform size (each transform has 2^logN elements)
+    ///   - cmdBuf: Existing command buffer (NOT committed by this function)
+    private func encodeNTTBatchFourStep(buffer: MTLBuffer, numTransforms: Int, logN: Int, cmdBuf: MTLCommandBuffer) {
+        let n = UInt32(1 << logN)
+        let nInt = Int(n)
+        let twiddles = getTwiddles(logN: logN)
+
+        // Four-step decomposition: N = N1 * N2
+        // Balanced split where both sub-FFTs fit in shared memory
+        let logN1 = (logN + 1) / 2
+        let logN2 = logN - logN1
+        let n1 = UInt32(1 << logN1)
+        let n2 = UInt32(1 << logN2)
+
+        var nVal = n
+        var n1Val = n1
+        var n2Val = n2
+        var logN1Val = UInt32(logN1)
+        var logN2Val = UInt32(logN2)
+        var numK = UInt32(numTransforms)
+
+        let enc = cmdBuf.makeComputeCommandEncoder()!
+
+        // Step 1: Column FFT (DIT on N1 elements)
+        // Grid: X = n2, Y = num_transforms
+        // threadsPerThreadgroup: n1/2 (fused, handles logN1 stages)
+        enc.setComputePipelineState(columnFusedBatchFunction)
+        enc.setBuffer(buffer, offset: 0, index: 0)
+        enc.setBuffer(twiddles, offset: 0, index: 1)
+        enc.setBytes(&nVal, length: 4, index: 2)
+        enc.setBytes(&n1Val, length: 4, index: 3)
+        enc.setBytes(&n2Val, length: 4, index: 4)
+        enc.setBytes(&logN1Val, length: 4, index: 5)
+        enc.setBytes(&numK, length: 4, index: 6)
+        enc.dispatchThreadgroups(MTLSize(width: Int(n2), height: numTransforms, depth: 1),
+                                 threadsPerThreadgroup: MTLSize(width: Int(n1) / 2, height: 1, depth: 1))
+        enc.memoryBarrier(scope: .buffers)
+
+        // Step 2: Row FFT + twiddle + transpose
+        // Grid: X = n1, Y = num_transforms
+        // threadsPerThreadgroup: n2/2 (fused, handles logN2 stages with twiddle)
+        enc.setComputePipelineState(rowFusedTwiddleTransposeBatchFunction)
+        enc.setBuffer(buffer, offset: 0, index: 0)
+        enc.setBuffer(twiddles, offset: 0, index: 1)
+        enc.setBytes(&nVal, length: 4, index: 2)
+        enc.setBytes(&n1Val, length: 4, index: 3)
+        enc.setBytes(&n2Val, length: 4, index: 4)
+        enc.setBytes(&logN2Val, length: 4, index: 5)
+        enc.setBytes(&numK, length: 4, index: 6)
+        enc.dispatchThreadgroups(MTLSize(width: Int(n1), height: numTransforms, depth: 1),
+                                 threadsPerThreadgroup: MTLSize(width: Int(n2) / 2, height: 1, depth: 1))
+        enc.memoryBarrier(scope: .buffers)
+
+        // Step 3: Transpose (restore sequential layout)
+        // Grid: X = n, Y = num_transforms
+        let tgSize = min(tuning.nttThreadgroupSize, Int(transposeBatchFunction.maxTotalThreadsPerThreadgroup))
+        enc.setComputePipelineState(transposeBatchFunction)
+        enc.setBuffer(buffer, offset: 0, index: 0)
+        enc.setBytes(&n1Val, length: 4, index: 1)
+        enc.setBytes(&n2Val, length: 4, index: 2)
+        enc.setBytes(&numK, length: 4, index: 3)
+        enc.dispatchThreads(MTLSize(width: nInt, height: numTransforms, depth: 1),
+                            threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
+
+        enc.endEncoding()
+    }
+
+    /// Encode batch inverse NTT using four-step inverse FFT algorithm.
+    ///
+    /// - Parameters:
+    ///   - buffer: Single buffer containing all transforms (sequential layout)
+    ///   - numTransforms: Number of transforms to process
+    ///   - logN: Log of transform size (each transform has 2^logN elements)
+    ///   - cmdBuf: Existing command buffer (NOT committed by this function)
+    private func encodeINTTBatchFourStep(buffer: MTLBuffer, numTransforms: Int, logN: Int, cmdBuf: MTLCommandBuffer) {
+        let n = UInt32(1 << logN)
+        let nInt = Int(n)
+        let invTwiddles = getInvTwiddles(logN: logN)
+        let invN = getInvN(logN: logN)
+
+        // Four-step decomposition: N = N1 * N2 (same as forward)
+        let logN1 = (logN + 1) / 2
+        let logN2 = logN - logN1
+        let n1 = UInt32(1 << logN1)
+        let n2 = UInt32(1 << logN2)
+
+        var nVal = n
+        var n1Val = n1
+        var n2Val = n2
+        var logN1Val = UInt32(logN1)
+        var logN2Val = UInt32(logN2)
+        var numK = UInt32(numTransforms)
+
+        let enc = cmdBuf.makeComputeCommandEncoder()!
+
+        // Inverse four-step: transpose -> row iFFT with twiddle -> column iFFT with scale
+
+        // Step 1: Transpose (prepare for row-wise inverse FFT)
+        // Grid: X = n, Y = num_transforms
+        let tgSize = min(tuning.nttThreadgroupSize, Int(transposeBatchFunction.maxTotalThreadsPerThreadgroup))
+        enc.setComputePipelineState(transposeBatchFunction)
+        enc.setBuffer(buffer, offset: 0, index: 0)
+        enc.setBytes(&n1Val, length: 4, index: 1)
+        enc.setBytes(&n2Val, length: 4, index: 2)
+        enc.setBytes(&numK, length: 4, index: 3)
+        enc.dispatchThreads(MTLSize(width: nInt, height: numTransforms, depth: 1),
+                            threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
+        enc.memoryBarrier(scope: .buffers)
+
+        // Step 2: Inverse row FFT + twiddle (DIF)
+        // Grid: X = n1, Y = num_transforms
+        // threadsPerThreadgroup: n2/2
+        enc.setComputePipelineState(inttRowFusedTwiddleTransposeBatchFunction)
+        enc.setBuffer(buffer, offset: 0, index: 0)
+        enc.setBuffer(invTwiddles, offset: 0, index: 1)
+        enc.setBytes(&nVal, length: 4, index: 2)
+        enc.setBytes(&n1Val, length: 4, index: 3)
+        enc.setBytes(&n2Val, length: 4, index: 4)
+        enc.setBytes(&logN2Val, length: 4, index: 5)
+        enc.setBytes(&numK, length: 4, index: 6)
+        enc.dispatchThreadgroups(MTLSize(width: Int(n1), height: numTransforms, depth: 1),
+                                 threadsPerThreadgroup: MTLSize(width: Int(n2) / 2, height: 1, depth: 1))
+        enc.memoryBarrier(scope: .buffers)
+
+        // Step 3: Inverse column FFT with 1/N scaling
+        // Grid: X = n2, Y = num_transforms
+        // threadsPerThreadgroup: n1/2
+        enc.setComputePipelineState(inttColumnFusedBatchFunction)
+        enc.setBuffer(buffer, offset: 0, index: 0)
+        enc.setBuffer(invTwiddles, offset: 0, index: 1)
+        enc.setBuffer(invN, offset: 0, index: 2)
+        enc.setBytes(&nVal, length: 4, index: 3)
+        enc.setBytes(&n1Val, length: 4, index: 4)
+        enc.setBytes(&n2Val, length: 4, index: 5)
+        enc.setBytes(&logN1Val, length: 4, index: 6)
+        enc.setBytes(&numK, length: 4, index: 7)
+        enc.dispatchThreadgroups(MTLSize(width: Int(n2), height: numTransforms, depth: 1),
+                                 threadsPerThreadgroup: MTLSize(width: Int(n1) / 2, height: 1, depth: 1))
 
         enc.endEncoding()
     }
