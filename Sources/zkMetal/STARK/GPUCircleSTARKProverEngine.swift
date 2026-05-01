@@ -272,6 +272,8 @@ public func buildPoseidon2M31MerkleTree(_ values: [M31], count n: Int) -> [M31Di
     DispatchQueue.concurrentPerform(iterations: numThreads) { threadIdx in
         let start = threadIdx * chunkSize
         let end = min(start + chunkSize, n)
+        // Guard against empty ranges when n < numThreads
+        guard start < n else { return }
         for i in start..<end {
             let val = i < values.count ? values[i] : M31.zero
             let leafInput = [val, M31(v: UInt32(i)), M31.zero, M31.zero,
