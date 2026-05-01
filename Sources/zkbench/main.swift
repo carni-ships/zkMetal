@@ -311,6 +311,12 @@ if cmd == "calibrate" {
     Versions.printAll()
 } else if cmd == "test" {
     runAllCorrectnessTests()
+} else if cmd == "batch-ntt" || cmd == "bntt" {
+    try runBatchNTTTest()
+} else if cmd == "batch-ntt-bench" || cmd == "bntt-bench" {
+    try runBatchNTTBench()
+} else if cmd == "batch-ntt-debug" {
+    try runBatchNTTMinimalDebug()
 } else if cmd == "field-ops" || cmd == "fieldops" || cmd == "fo" {
     runFieldOpsBench()
 } else if cmd == "asm" || cmd == "asm-mont" {

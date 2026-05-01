@@ -170,6 +170,26 @@ public final class GPUEVMPrecompileEngine {
         return EVMPrecompile10_bls12381Pairing(input: input)
     }
 
+    /// Execute BLS12-381 G2 Scalar Multiplication (precompile 0x0C).
+    public func bls12381G2Mul(input: [UInt8]) -> [UInt8]? {
+        return EVMPrecompile0C_bls12381G2Mul(input: input)
+    }
+
+    /// Execute BLS12-381 G1 Multi-Exp (precompile 0x0E).
+    public func bls12381G1MultiExp(input: [UInt8]) -> [UInt8]? {
+        return EVMPrecompile0E_bls12381G1MultiExp(input: input)
+    }
+
+    /// Execute BLS12-381 Map Fp to G1 (precompile 0x11).
+    public func bls12381MapG1(input: [UInt8]) -> [UInt8]? {
+        return EVMPrecompile11_bls12381MapG1(input: input)
+    }
+
+    /// Execute BLS12-381 Map Fp2 to G2 (precompile 0x12).
+    public func bls12381MapG2(input: [UInt8]) -> [UInt8]? {
+        return EVMPrecompile12_bls12381MapG2(input: input)
+    }
+
     // MARK: - Batch Execution
 
     /// Execute a batch of precompile calls. Uses GPU dispatch for homogeneous batches
@@ -257,7 +277,13 @@ public final class GPUEVMPrecompileEngine {
         case blake2f      = 0x09
         case bls12381G1Add     = 0x0A
         case bls12381G1Mul     = 0x0B
+        case bls12381G2Mul     = 0x0C
+        case pairing12          = 0x0D
+        case bls12381G1MultiExp = 0x0E
+        case bls12381G2MultiExp = 0x0F
         case bls12381Pairing   = 0x10
+        case bls12381MapG1      = 0x11
+        case bls12381MapG2      = 0x12
     }
 
     /// Execute any supported precompile by extended ID.
@@ -274,7 +300,13 @@ public final class GPUEVMPrecompileEngine {
         case .blake2f:        return blake2f(input: input)
         case .bls12381G1Add:  return bls12381G1Add(input: input)
         case .bls12381G1Mul:  return bls12381G1Mul(input: input)
+        case .bls12381G2Mul:  return bls12381G2Mul(input: input)
+        case .pairing12:      return nil // Same as pairing, not separately implemented
+        case .bls12381G1MultiExp: return bls12381G1MultiExp(input: input)
+        case .bls12381G2MultiExp: return nil // Not yet implemented
         case .bls12381Pairing: return bls12381Pairing(input: input)
+        case .bls12381MapG1:  return bls12381MapG1(input: input)
+        case .bls12381MapG2:  return bls12381MapG2(input: input)
         }
     }
 
@@ -298,9 +330,19 @@ public final class GPUEVMPrecompileEngine {
             return rounds
         case .bls12381G1Add: return BLS12381Gas.g1Add
         case .bls12381G1Mul: return BLS12381Gas.g1Mul
+        case .bls12381G2Mul: return 24000  // EIP-2537: 24000 gas
+        case .pairing12:      return 28000 + 8000 * UInt64((input.count + 287) / 288)  // EIP-2537
+        case .bls12381G1MultiExp:
+            let n = input.count / 96
+            return 12000 + 12000 * UInt64(n)  // EIP-2537
+        case .bls12381G2MultiExp:
+            let n = input.count / 192
+            return 24000 + 24000 * UInt64(n)  // EIP-2537
         case .bls12381Pairing:
             let n = input.count / 384
             return BLS12381Gas.pairingBase + UInt64(n) * BLS12381Gas.pairingPerPair
+        case .bls12381MapG1: return 5500  // EIP-2537
+        case .bls12381MapG2: return 11000  // EIP-2537
         }
     }
 

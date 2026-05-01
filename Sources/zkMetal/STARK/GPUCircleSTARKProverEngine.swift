@@ -948,6 +948,104 @@ public class GPUMerkleTreeM31Engine {
         return (roots, treeBuf, treeSize)
     }
 
+    /// Build multiple Merkle trees from pre-hashed digests using GPU.
+    ///
+    /// This is similar to buildTreesBatchGPU but SKIPS the leaf hashing step.
+    /// Use this when leaves are already hashed (e.g., from cpuProver.hashLeavesBatchPerColumn
+    /// or when trace data is already in digest form).
+    ///
+    /// The tree buffer uses TREE-FIRST layout (levels grouped per tree):
+    ///   Tree 0 level 0 (leaves): byte offsets 0 to n*8*4-1
+    ///   Tree 0 level 1: byte offsets n*8*4 to (n+n/2)*8*4-1
+    ///   Tree 1 level 0: follows immediately after tree 0's all levels
+    ///
+    /// - Parameters:
+    ///   - columns: Array of pre-hashed digest arrays, one per tree.
+    ///              Each inner array has numLeaves * 8 M31 elements (8 M31 per digest).
+    ///   - n: Number of leaves per tree (must be power of 2)
+    /// - Returns: Tuple of (roots, combined buffer with all trees, nodes per tree)
+    public func buildTreesBatchFromPrehashedGPU(columns: [[M31]], count n: Int) throws -> (roots: [M31Digest], buffer: MTLBuffer, nodesPerTree: Int) {
+        let t0 = CFAbsoluteTimeGetCurrent()
+        let numTrees = columns.count
+        let treeSize = 2 * n - 1
+        let stride = MemoryLayout<UInt32>.stride
+
+        // Allocate combined tree buffer for all trees (TREE-FIRST layout)
+        let treeBytes = numTrees * treeSize * nodeSize * stride
+        guard let treeBuf = device.makeBuffer(length: treeBytes, options: .storageModeShared) else {
+            throw MSMError.gpuError("Failed to allocate tree buffer")
+        }
+        let treePtr = treeBuf.contents().bindMemory(to: UInt32.self, capacity: numTrees * treeSize * nodeSize)
+
+        // Copy pre-hashed digests directly to tree buffer (tree-first layout)
+        // Each tree's leaves are stored compactly: treeIdx * n * nodeSize elements
+        for treeIdx in 0..<numTrees {
+            let treeBase = treeIdx * n * nodeSize
+            let col = columns[treeIdx]
+            for leafIdx in 0..<n {
+                for i in 0..<nodeSize {
+                    let srcIdx = leafIdx * nodeSize + i
+                    treePtr[treeBase + leafIdx * nodeSize + i] = srcIdx < col.count ? col[srcIdx].v : 0
+                }
+            }
+        }
+
+        // Build internal nodes level-by-level using per-tree dispatch
+        for treeIdx in 0..<numTrees {
+            let treeBase = treeIdx * treeSize * nodeSize
+
+            var currentLevelNodes = n
+            var levelStart = 0
+
+            while currentLevelNodes > 1 {
+                let pairs = currentLevelNodes / 2
+                let inputOffset = treeBase + levelStart * nodeSize
+                let outputOffset = treeBase + (levelStart + currentLevelNodes) * nodeSize
+
+                guard let cmdBuf = commandQueue.makeCommandBuffer() else {
+                    throw MSMError.noCommandBuffer
+                }
+                let enc = cmdBuf.makeComputeCommandEncoder()!
+
+                enc.setComputePipelineState(hashPairsFunction)
+                enc.setBuffer(treeBuf, offset: inputOffset * stride, index: 0)
+                enc.setBuffer(treeBuf, offset: outputOffset * stride, index: 1)
+                enc.setBuffer(rcBuffer, offset: 0, index: 2)
+                var pairCount = UInt32(pairs)
+                enc.setBytes(&pairCount, length: 4, index: 3)
+                let tgSize = min(tuning.hashThreadgroupSize, Int(hashPairsFunction.maxTotalThreadsPerThreadgroup))
+                enc.dispatchThreads(MTLSize(width: pairs, height: 1, depth: 1),
+                                        threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
+                enc.endEncoding()
+                cmdBuf.commit()
+                cmdBuf.waitUntilCompleted()
+
+                levelStart += currentLevelNodes
+                currentLevelNodes = pairs
+            }
+        }
+
+        // Extract roots from all trees
+        let rootPtr = treeBuf.contents().bindMemory(to: UInt32.self, capacity: numTrees * treeSize * nodeSize)
+
+        var roots = [M31Digest]()
+        roots.reserveCapacity(numTrees)
+        for treeIdx in 0..<numTrees {
+            let rootOffset = treeIdx * treeSize * nodeSize + (2 * n - 2) * nodeSize
+            var rootValues = [M31]()
+            rootValues.reserveCapacity(nodeSize)
+            for i in 0..<nodeSize {
+                rootValues.append(M31(v: rootPtr[rootOffset + i]))
+            }
+            roots.append(M31Digest(values: rootValues))
+        }
+
+        let elapsed = CFAbsoluteTimeGetCurrent() - t0
+        print("[GPUMerkleTreeM31Engine] buildTreesBatchFromPrehashedGPU: \(numTrees) trees x \(n) leaves in \(String(format: "%.3f", elapsed * 1000))ms")
+
+        return (roots, treeBuf, treeSize)
+    }
+
     /// Generate Merkle proofs for multiple trees on GPU in a single dispatch.
     ///
     /// This uses the poseidon2_m31_merkle_proof_batch kernel to generate proofs

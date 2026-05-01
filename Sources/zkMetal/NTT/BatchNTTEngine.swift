@@ -29,6 +29,7 @@ public class BatchNTTEngine {
     private let bitrevScaleBatchFunction: MTLComputePipelineState
     private let fusedBitrevBatchFunction: MTLComputePipelineState
     private let fusedInverseBatchFunction: MTLComputePipelineState
+    private let fusedInverseBitrevBatchFunction: MTLComputePipelineState
 
     // Max stages that can be fused in threadgroup memory
     private static let maxFusedLogN = 8  // 2^8 = 256 threads per threadgroup
@@ -78,7 +79,8 @@ public class BatchNTTEngine {
               let invButterflyRadix4Fn = library.makeFunction(name: "intt_butterfly_radix4_batch"),
               let bitrevScaleFn = library.makeFunction(name: "ntt_bitrev_scale_batch"),
               let fusedBitrevFn = library.makeFunction(name: "ntt_fused_bitrev_batch"),
-              let fusedInverseFn = library.makeFunction(name: "intt_fused_batch") else {
+              let fusedInverseFn = library.makeFunction(name: "intt_fused_batch"),
+              let fusedInverseBitrevFn = library.makeFunction(name: "intt_fused_bitrev_batch") else {
             throw MSMError.missingKernel
         }
 
@@ -90,6 +92,7 @@ public class BatchNTTEngine {
         self.bitrevScaleBatchFunction = try device.makeComputePipelineState(function: bitrevScaleFn)
         self.fusedBitrevBatchFunction = try device.makeComputePipelineState(function: fusedBitrevFn)
         self.fusedInverseBatchFunction = try device.makeComputePipelineState(function: fusedInverseFn)
+        self.fusedInverseBitrevBatchFunction = try device.makeComputePipelineState(function: fusedInverseBitrevFn)
 
         self.tuning = TuningManager.shared.config(device: device)
 
@@ -314,19 +317,26 @@ public class BatchNTTEngine {
         }
 
         // Handle final stage 1 and/or stage 0
-        // Use radix-4 to process stages 1 and 0 together (they share twiddle patterns)
+        // Use fused kernel for stages 1 and 0 together with threadgroup memory
         if stage == 1 {
             enc.memoryBarrier(scope: .buffers)
-            enc.setComputePipelineState(invButterflyRadix4BatchFunction)
+            enc.setComputePipelineState(fusedInverseBitrevBatchFunction)
             enc.setBuffer(buffer, offset: 0, index: 0)
             enc.setBuffer(invTwiddles, offset: 0, index: 1)
-            enc.setBytes(&nVal, length: 4, index: 2)
-            var stageVal: UInt32 = 1
-            enc.setBytes(&stageVal, length: 4, index: 3)
-            enc.setBytes(&numK, length: 4, index: 4)
-            let numQuads = nInt / 4
-            enc.dispatchThreads(MTLSize(width: numQuads, height: numTransforms, depth: 1),
-                              threadsPerThreadgroup: MTLSize(width: tgSize, height: 1, depth: 1))
+            enc.setBuffer(invN, offset: 0, index: 2)
+            enc.setBytes(&nVal, length: 4, index: 3)
+            var localStages: UInt32 = 2  // Process stages 1 and 0
+            enc.setBytes(&localStages, length: 4, index: 4)
+            var stageOffset: UInt32 = 1  // Highest stage is 1
+            enc.setBytes(&stageOffset, length: 4, index: 5)
+            enc.setBytes(&logNVal, length: 4, index: 6)
+            enc.setBytes(&numK, length: 4, index: 7)
+            // Dispatch: each threadgroup handles block_elems=4 elements
+            // threads_per_threadgroup = block_elems / 2 = 2
+            let tgThreads = 2
+            let numGroups = (nInt >> 2) * numTransforms  // n/4 blocks per transform
+            enc.dispatchThreadgroups(MTLSize(width: numGroups, height: numTransforms, depth: 1),
+                                   threadsPerThreadgroup: MTLSize(width: tgThreads, height: 1, depth: 1))
         }
 
         // Final: bit-reversal + scale

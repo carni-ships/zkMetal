@@ -419,8 +419,8 @@ For K=32 transforms with logN=18:
 | Fused bitrev + butterfly kernel | ✅ Done | `ntt_fused_bitrev_batch` processes first 8 stages in threadgroup memory |
 | Radix-4 forward butterflies | ✅ Done | `ntt_butterfly_radix4_batch` processes 2 stages per dispatch |
 | Radix-4 inverse butterflies | ✅ Done | `intt_butterfly_radix4_batch` processes 2 stages per dispatch |
+| Fused inverse + bitrev kernel | ✅ Done | `intt_fused_bitrev_batch` with proper grid Y for batch processing |
 | Async command buffer API | ✅ Done | `nttAsync`, `inttAsync`, `nttBatch` methods using MTLSharedEvent |
-| Fused inverse kernel | ❌ Failed | `intt_fused_batch` kernel uses different grid decomposition (no batch Y dimension) |
 | Four-step FFT path | ❌ Not attempted | Would require significant refactoring for batch case with transposition buffers |
 
 ## Circle FRI (Mersenne31)

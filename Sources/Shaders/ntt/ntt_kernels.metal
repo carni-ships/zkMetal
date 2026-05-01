@@ -141,6 +141,56 @@ kernel void ntt_butterfly_radix4(
     data[base + 3 * h] = fr_sub(b1, wb3);
 }
 
+// Batch radix-4 DIF butterfly for iNTT: processes 2 stages at once
+// grid X = num_quads = n/4, grid Y = num_transforms
+kernel void intt_butterfly_radix4_batch(
+    device Fr* data                [[buffer(0)]],
+    device const Fr* twiddles_inv [[buffer(1)]],
+    constant uint& n              [[buffer(2)]],
+    constant uint& stage          [[buffer(3)]],    // start stage (high stage, processes stage and stage-1)
+    constant uint& num_transforms [[buffer(4)]],
+    uint2 gid                      [[thread_position_in_grid]]
+) {
+    uint k = gid.y;
+    if (k >= num_transforms) return;
+
+    uint gid_x = gid.x;
+    uint h_hi = 1u << stage;
+    uint h_lo = h_hi >> 1;
+    uint block4 = h_hi << 1;
+    uint num_quads = n >> 2;
+    if (gid_x >= num_quads) return;
+
+    uint block_idx = gid_x / h_lo;
+    uint local_idx = gid_x % h_lo;
+    uint base = block_idx * block4 + local_idx;
+    uint base_offset = k * n;
+
+    Fr a0 = data[base_offset + base];
+    Fr a1 = data[base_offset + base + h_lo];
+    Fr a2 = data[base_offset + base + h_hi];
+    Fr a3 = data[base_offset + base + h_hi + h_lo];
+
+    // Stage s (DIF): pairs (a0,a2) and (a1,a3)
+    uint tw_s_lo = local_idx * (n / block4);
+    uint tw_s_hi = (local_idx + h_lo) * (n / block4);
+    Fr b0 = fr_add(a0, a2);
+    Fr diff02 = fr_sub(a0, a2);
+    Fr b2 = (tw_s_lo == 0) ? diff02 : fr_mul(diff02, twiddles_inv[tw_s_lo]);
+    Fr b1 = fr_add(a1, a3);
+    Fr diff13 = fr_sub(a1, a3);
+    Fr b3 = (tw_s_hi == 0) ? diff13 : fr_mul(diff13, twiddles_inv[tw_s_hi]);
+
+    // Stage s-1 (DIF): pairs (b0,b1) and (b2,b3)
+    uint tw_s1 = local_idx * (n / (2 * h_lo));
+    Fr diff_b01 = fr_sub(b0, b1);
+    Fr diff_b23 = fr_sub(b2, b3);
+    data[base_offset + base]              = fr_add(b0, b1);
+    data[base_offset + base + h_lo]       = (tw_s1 == 0) ? diff_b01 : fr_mul(diff_b01, twiddles_inv[tw_s1]);
+    data[base_offset + base + h_hi]       = fr_add(b2, b3);
+    data[base_offset + base + h_hi + h_lo] = (tw_s1 == 0) ? diff_b23 : fr_mul(diff_b23, twiddles_inv[tw_s1]);
+}
+
 // Radix-4 DIF butterfly for BN254 iNTT: processes 2 stages at once.
 kernel void intt_butterfly_radix4(
     device Fr* data                [[buffer(0)]],
@@ -454,6 +504,439 @@ kernel void ntt_bitrev_scale(
     } else if (gid == rev) {
         data[gid] = fr_mul(data[gid], s);
     }
+}
+
+// ============================================================================
+// Batch NTT kernels: process K independent NTTs in a single GPU dispatch
+// Data layout: [transform0: N][transform1: N]...[transformK-1: N]
+// Dispatch: 2D grid where gid.x = butterfly index, gid.y = transform index
+// ============================================================================
+
+// Batch bit-reversal permutation (first step for forward NTT)
+kernel void ntt_bitrev_batch(
+    device Fr* data                [[buffer(0)]],
+    constant uint& n               [[buffer(1)]],
+    constant uint& log_n           [[buffer(2)]],
+    constant uint& num_transforms   [[buffer(3)]],
+    uint2 gid                      [[thread_position_in_grid]]
+) {
+    uint k = gid.y;
+    if (k >= num_transforms) return;
+
+    uint gid_x = gid.x;
+    if (gid_x >= n) return;
+
+    uint rev = 0;
+    uint val = gid_x;
+    for (uint i = 0; i < log_n; i++) {
+        rev = (rev << 1) | (val & 1);
+        val >>= 1;
+    }
+
+    uint base = k * n;
+    if (gid_x < rev) {
+        Fr tmp = data[base + gid_x];
+        data[base + gid_x] = data[base + rev];
+        data[base + rev] = tmp;
+    }
+}
+
+// Batch forward NTT butterfly (DIT): a' = a + w*b, b' = a - w*b
+kernel void ntt_butterfly_batch(
+    device Fr* data                [[buffer(0)]],
+    device const Fr* twiddles      [[buffer(1)]],
+    constant uint& n               [[buffer(2)]],
+    constant uint& stage           [[buffer(3)]],
+    constant uint& num_transforms  [[buffer(4)]],
+    uint2 gid                      [[thread_position_in_grid]]
+) {
+    uint k = gid.y;
+    if (k >= num_transforms) return;
+
+    uint gid_x = gid.x;
+    uint half_block = 1u << stage;
+    uint block_size = half_block << 1;
+    uint num_butterflies = n >> 1;
+
+    if (gid_x >= num_butterflies) return;
+
+    uint block_idx = gid_x / half_block;
+    uint local_idx = gid_x % half_block;
+    uint i = block_idx * block_size + local_idx;
+    uint j = i + half_block;
+    uint twiddle_idx = local_idx * (n / block_size);
+
+    uint base = k * n;
+    Fr a = data[base + i];
+    Fr b = data[base + j];
+    if (twiddle_idx == 0) {
+        data[base + i] = fr_add(a, b);
+        data[base + j] = fr_sub(a, b);
+    } else {
+        Fr w = twiddles[twiddle_idx];
+        Fr wb = fr_mul(w, b);
+        data[base + i] = fr_add(a, wb);
+        data[base + j] = fr_sub(a, wb);
+    }
+}
+
+// Batch inverse NTT butterfly (DIF): a' = a + b, b' = (a - b) * w_inv
+kernel void intt_butterfly_batch(
+    device Fr* data                [[buffer(0)]],
+    device const Fr* twiddles_inv  [[buffer(1)]],
+    constant uint& n               [[buffer(2)]],
+    constant uint& stage           [[buffer(3)]],
+    constant uint& num_transforms   [[buffer(4)]],
+    uint2 gid                      [[thread_position_in_grid]]
+) {
+    uint k = gid.y;
+    if (k >= num_transforms) return;
+
+    uint gid_x = gid.x;
+    uint half_block = 1u << stage;
+    uint block_size = half_block << 1;
+    uint num_butterflies = n >> 1;
+
+    if (gid_x >= num_butterflies) return;
+
+    uint block_idx = gid_x / half_block;
+    uint local_idx = gid_x % half_block;
+    uint i = block_idx * block_size + local_idx;
+    uint j = i + half_block;
+    uint twiddle_idx = local_idx * (n / block_size);
+
+    uint base = k * n;
+    Fr a = data[base + i];
+    Fr b = data[base + j];
+
+    Fr sum = fr_add(a, b);
+    Fr diff = fr_sub(a, b);
+    data[base + i] = sum;
+    if (twiddle_idx == 0) {
+        data[base + j] = diff;
+    } else {
+        Fr w = twiddles_inv[twiddle_idx];
+        data[base + j] = fr_mul(diff, w);
+    }
+}
+
+// Batch final bit-reversal + scale by 1/N
+kernel void ntt_bitrev_scale_batch(
+    device Fr* data                [[buffer(0)]],
+    device const Fr* inv_n         [[buffer(1)]],
+    constant uint& n               [[buffer(2)]],
+    constant uint& log_n           [[buffer(3)]],
+    constant uint& num_transforms  [[buffer(4)]],
+    uint2 gid                      [[thread_position_in_grid]]
+) {
+    uint k = gid.y;
+    if (k >= num_transforms) return;
+
+    uint gid_x = gid.x;
+    if (gid_x >= n) return;
+
+    uint src = gid_x;
+    uint rev = 0;
+    for (uint i = 0; i < log_n; i++) {
+        rev = (rev << 1) | (src & 1);
+        src >>= 1;
+    }
+
+    uint base = k * n;
+    Fr scale = inv_n[0];
+
+    if (rev == gid_x) {
+        // Midpoint: only one element, just scale
+        data[base + gid_x] = fr_mul(data[base + gid_x], scale);
+    } else if (rev > gid_x) {
+        // First of pair: swap and scale both
+        Fr tmp = data[base + gid_x];
+        data[base + gid_x] = fr_mul(data[base + rev], scale);
+        data[base + rev] = fr_mul(tmp, scale);
+    }
+    // else rev < gid_x: already swapped by smaller index, do nothing
+}
+
+// Batch radix-4 DIT butterfly: processes 2 stages at once
+// grid X = num_quads = n/4, grid Y = num_transforms
+kernel void ntt_butterfly_radix4_batch(
+    device Fr* data                [[buffer(0)]],
+    device const Fr* twiddles      [[buffer(1)]],
+    constant uint& n               [[buffer(2)]],
+    constant uint& stage           [[buffer(3)]],    // start stage (processes stage and stage+1)
+    constant uint& num_transforms  [[buffer(4)]],
+    uint2 gid                       [[thread_position_in_grid]]
+) {
+    uint k = gid.y;
+    if (k >= num_transforms) return;
+
+    uint gid_x = gid.x;
+    uint h = 1u << stage;
+    uint block4 = h << 2;
+    uint num_quads = n >> 2;
+    if (gid_x >= num_quads) return;
+
+    uint block_idx = gid_x / h;
+    uint local_idx = gid_x % h;
+    uint base = block_idx * block4 + local_idx;
+    uint base_offset = k * n;
+
+    Fr a0 = data[base_offset + base];
+    Fr a1 = data[base_offset + base + h];
+    Fr a2 = data[base_offset + base + 2 * h];
+    Fr a3 = data[base_offset + base + 3 * h];
+
+    // Stage s twiddle
+    uint tw_s = local_idx * (n / (2 * h));
+    Fr b0, b1, b2, b3;
+    if (tw_s == 0) {
+        b0 = fr_add(a0, a1);
+        b1 = fr_sub(a0, a1);
+        b2 = fr_add(a2, a3);
+        b3 = fr_sub(a2, a3);
+    } else {
+        Fr ws = twiddles[tw_s];
+        Fr ws_a1 = fr_mul(ws, a1);
+        Fr ws_a3 = fr_mul(ws, a3);
+        b0 = fr_add(a0, ws_a1);
+        b1 = fr_sub(a0, ws_a1);
+        b2 = fr_add(a2, ws_a3);
+        b3 = fr_sub(a2, ws_a3);
+    }
+
+    // Stage s+1 twiddles
+    uint tw_lo = local_idx * (n / block4);
+    uint tw_hi = (local_idx + h) * (n / block4);
+    Fr wb2, wb3;
+    if (tw_lo == 0) { wb2 = b2; } else { wb2 = fr_mul(twiddles[tw_lo], b2); }
+    if (tw_hi == 0) { wb3 = b3; } else { wb3 = fr_mul(twiddles[tw_hi], b3); }
+
+    data[base_offset + base]         = fr_add(b0, wb2);
+    data[base_offset + base + 2 * h] = fr_sub(b0, wb2);
+    data[base_offset + base + h]     = fr_add(b1, wb3);
+    data[base_offset + base + 3 * h] = fr_sub(b1, wb3);
+}
+
+// Batch fused bitrev + DIT butterfly stages
+// Processes 'local_stages' stages in threadgroup memory, then writes to global memory
+// Each threadgroup handles one block (2^local_stages elements) within one transform
+kernel void ntt_fused_bitrev_batch(
+    device const Fr* input         [[buffer(0)]],   // source data (natural order)
+    device Fr* output               [[buffer(1)]],   // destination (after bitrev + fused stages)
+    device const Fr* twiddles       [[buffer(2)]],
+    constant uint& n                [[buffer(3)]],    // size per transform
+    constant uint& local_stages    [[buffer(4)]],    // number of stages to fuse
+    constant uint& logN            [[buffer(5)]],     // log2(n)
+    constant uint& num_transforms  [[buffer(6)]],
+    uint tid                        [[thread_index_in_threadgroup]],
+    uint tgid                       [[threadgroup_position_in_grid]],
+    uint tg_size                    [[threads_per_threadgroup]]
+) {
+    uint block_elems = 1u << local_stages;
+    uint num_blocks_per_col = n >> local_stages;
+    uint total_blocks = num_blocks_per_col * num_transforms;
+
+    if (tgid >= total_blocks) return;
+
+    uint block_idx = tgid % num_blocks_per_col;
+    uint k = tgid / num_blocks_per_col;  // transform index
+    uint base_offset = k * n;
+    uint base = block_idx * block_elems;
+
+    threadgroup Fr shared[1024];
+
+    uint idx_lo = tid;
+    uint idx_hi = tid + tg_size;
+    uint global_lo = base + idx_lo;
+    uint global_hi = base + idx_hi;
+
+    // Load from input with bit-reversed indices
+    if (global_lo < n)
+        shared[idx_lo] = input[bitrev(global_lo, logN)];
+    if (global_hi < n)
+        shared[idx_hi] = input[bitrev(global_hi, logN)];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // DIT butterfly stages
+    for (uint s = 0; s < local_stages; s++) {
+        uint half_block = 1u << s;
+        uint local_block_size = half_block << 1;
+
+        uint block_index = tid / half_block;
+        uint local_idx = tid % half_block;
+        uint i = block_index * local_block_size + local_idx;
+        uint j = i + half_block;
+
+        uint global_block_size = 1u << (s + 1);
+        uint twiddle_idx = local_idx * (n / global_block_size);
+
+        Fr a = shared[i];
+        Fr b = shared[j];
+        if (twiddle_idx == 0) {
+            shared[i] = fr_add(a, b);
+            shared[j] = fr_sub(a, b);
+        } else {
+            Fr w = twiddles[twiddle_idx];
+            Fr wb = fr_mul(w, b);
+            shared[i] = fr_add(a, wb);
+            shared[j] = fr_sub(a, wb);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    // Write to output buffer (sequential positions)
+    if (global_lo < n)
+        output[base_offset + global_lo] = shared[idx_lo];
+    if (global_hi < n)
+        output[base_offset + global_hi] = shared[idx_hi];
+}
+
+// Batch fused inverse butterfly stages (DIF - Gentleman-Sande)
+// Processes multiple high-to-low DIF stages in threadgroup memory
+// Then applies bit-reversal + scale at the end
+kernel void intt_fused_batch(
+    device Fr* data                [[buffer(0)]],
+    device const Fr* twiddles_inv  [[buffer(1)]],
+    device const Fr* inv_n         [[buffer(2)]],     // 1/N for scaling
+    constant uint& n               [[buffer(3)]],     // size per transform
+    constant uint& local_stages    [[buffer(4)]],     // number of stages to fuse
+    constant uint& stage_offset    [[buffer(5)]],     // highest stage index (e.g., logN - 1)
+    constant uint& log_n           [[buffer(6)]],     // log2(n)
+    constant uint& num_transforms  [[buffer(7)]],
+    uint tid                        [[thread_index_in_threadgroup]],
+    uint tgid                       [[threadgroup_position_in_grid]],
+    uint tg_size                    [[threads_per_threadgroup]]
+) {
+    uint block_elems = tg_size << 1;  // 2 * threads_per_threadgroup
+    uint num_blocks_per_col = n >> (local_stages + 1);  // n / (2^local_stages)
+    uint total_blocks = num_blocks_per_col * num_transforms;
+
+    if (tgid >= total_blocks) return;
+
+    uint block_idx = tgid % num_blocks_per_col;
+    uint k = tgid / num_blocks_per_col;  // transform index
+    uint base_offset = k * n;
+    uint base = block_idx * block_elems;
+
+    threadgroup Fr shared[1024];
+    if (base + tid < n)
+        shared[tid] = data[base_offset + base + tid];
+    if (base + tid + tg_size < n)
+        shared[tid + tg_size] = data[base_offset + base + tid + tg_size];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // DIF stages from high to low (stage_offset down to stage_offset - local_stages + 1)
+    for (uint s = 0; s < local_stages; s++) {
+        uint stage = stage_offset - s;
+        uint half_block = 1u << (local_stages - 1 - s);  // local half_block (decreases)
+        uint local_block_size = half_block << 1;
+
+        uint block_index = tid / half_block;
+        uint local_idx = tid % half_block;
+        uint i = block_index * local_block_size + local_idx;
+        uint j = i + half_block;
+
+        uint global_block_size = 1u << (stage + 1);
+        uint twiddle_idx = local_idx * (n / global_block_size);
+
+        Fr a = shared[i];
+        Fr b = shared[j];
+        Fr sum = fr_add(a, b);
+        Fr diff = fr_sub(a, b);
+        shared[i] = sum;
+        if (twiddle_idx == 0) {
+            shared[j] = diff;
+        } else {
+            Fr w = twiddles_inv[twiddle_idx];
+            shared[j] = fr_mul(diff, w);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    // Write back
+    if (base + tid < n)
+        data[base_offset + base + tid] = shared[tid];
+    if (base + tid + tg_size < n)
+        data[base_offset + base + tid + tg_size] = shared[tid + tg_size];
+}
+
+// Batch fused inverse DIF butterfly stages + bit-reversal + scale
+// Processes 'local_stages' DIF stages (high to low) in threadgroup memory
+// Then applies bit-reversal permutation and scales by 1/N
+// Each threadgroup handles one block (2^local_stages elements) within one transform
+// Grid: X = num_blocks_per_col = n >> local_stages, Y = num_transforms
+kernel void intt_fused_bitrev_batch(
+    device Fr* data                [[buffer(0)]],   // in-place data
+    device const Fr* twiddles_inv  [[buffer(1)]],   // inverse twiddles
+    device const Fr* inv_n         [[buffer(2)]],    // 1/N for scaling
+    constant uint& n               [[buffer(3)]],    // size per transform
+    constant uint& local_stages    [[buffer(4)]],    // number of stages to fuse
+    constant uint& stage_offset    [[buffer(5)]],    // highest stage index (e.g., logN - 1)
+    constant uint& logN            [[buffer(6)]],    // log2(n)
+    constant uint& num_transforms  [[buffer(7)]],
+    uint tid                        [[thread_index_in_threadgroup]],
+    uint2 tgid                      [[threadgroup_position_in_grid]],
+    uint2 tg_size                   [[threads_per_threadgroup]]
+) {
+    uint k = tgid.y;  // transform index
+    if (k >= num_transforms) return;
+
+    uint block_elems = 1u << local_stages;
+    uint num_blocks_per_col = n >> local_stages;
+    uint block_idx = tgid.x;
+
+    uint base_offset = k * n;
+    uint base = block_idx * block_elems;
+
+    threadgroup Fr shared[1024];
+
+    uint idx_lo = tid;
+    uint idx_hi = tid + tg_size.x;
+    uint global_lo = base + idx_lo;
+    uint global_hi = base + idx_hi;
+
+    // Load from data
+    if (global_lo < n)
+        shared[idx_lo] = data[base_offset + global_lo];
+    if (global_hi < n)
+        shared[idx_hi] = data[base_offset + global_hi];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // DIF butterfly stages (high to low)
+    for (uint s = 0; s < local_stages; s++) {
+        uint stage = stage_offset - s;
+        uint half_block = 1u << (local_stages - 1 - s);
+        uint local_block_size = half_block << 1;
+
+        uint block_index = tid / half_block;
+        uint local_idx = tid % half_block;
+        uint i = block_index * local_block_size + local_idx;
+        uint j = i + half_block;
+
+        uint global_block_size = 1u << (stage + 1);
+        uint twiddle_idx = local_idx * (n / global_block_size);
+
+        Fr a = shared[i];
+        Fr b = shared[j];
+        Fr sum = fr_add(a, b);
+        Fr diff = fr_sub(a, b);
+        shared[i] = sum;
+        if (twiddle_idx == 0) {
+            shared[j] = diff;
+        } else {
+            Fr w = twiddles_inv[twiddle_idx];
+            shared[j] = fr_mul(diff, w);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    // After DIF butterflies, data is in natural order within each block
+    // Write back to same positions (in-place). Bit-reversal and scaling
+    // are handled separately by bitrevScale kernel for correctness.
+    if (global_lo < n)
+        data[base_offset + global_lo] = shared[idx_lo];
+    if (global_hi < n)
+        data[base_offset + global_hi] = shared[idx_hi];
 }
 
 // --- Four-step FFT kernels ---

@@ -975,3 +975,214 @@ public func EVMPrecompile10_bls12381Pairing(input: [UInt8]) -> [UInt8]? {
     result[31] = checkResult == 1 ? 1 : 0
     return result
 }
+
+// MARK: - EVM Precompile 0x0C: BLS12-381 G2 Scalar Mul (EIP-2537)
+
+/// BLS12-381 G2 scalar multiplication. Input: 256 bytes (192 byte G2 point + 32 byte scalar).
+/// G2 point is encoded as: x_c0 (64B) || x_c1 (64B) || y_c0 (64B) || y_c1 (64B)
+/// Output: 256 bytes (G2 point). Returns nil on invalid input.
+public func EVMPrecompile0C_bls12381G2Mul(input: [UInt8]) -> [UInt8]? {
+    if input.count != 256 { return nil }
+
+    // G2 point: x_c0, x_c1, y_c0, y_c1 (each 64 bytes -> 48 bytes field element)
+    guard let xc0 = bytes64ToFp381Limbs(Array(input[0..<64])),
+          let xc1 = bytes64ToFp381Limbs(Array(input[64..<128])),
+          let yc0 = bytes64ToFp381Limbs(Array(input[128..<192])),
+          let yc1 = bytes64ToFp381Limbs(Array(input[192..<256])) else { return nil }
+
+    // Scalar: 32 bytes big-endian
+    let sInt = bytes32ToLimbs4(Array(input[224..<256]))
+
+    // Validate coordinates are in field
+    if bls12FpGEP(xc0) || bls12FpGEP(xc1) { return nil }
+    if bls12FpGEP(yc0) || bls12FpGEP(yc1) { return nil }
+
+    // Check if point is identity
+    let isInf = isZero6(xc0) && isZero6(xc1) && isZero6(yc0) && isZero6(yc1)
+
+    if isInf || isZero4(sInt) {
+        return [UInt8](repeating: 0, count: 256)
+    }
+
+    // Convert to Montgomery and verify on curve
+    let xc0Mont = bls12FpToMont(xc0)
+    let xc1Mont = bls12FpToMont(xc1)
+    let yc0Mont = bls12FpToMont(yc0)
+    let yc1Mont = bls12FpToMont(yc1)
+
+    if !bls12G2IsOnCurve((xc0Mont, xc1Mont), (yc0Mont, yc1Mont)) { return nil }
+
+    // Build projective G2 point: (x, y, 1) in Fp2 coordinates
+    var projPoint = xc0Mont + xc1Mont + yc0Mont + yc1Mont + BLS12_381_FP_ONE
+    var scalar = sInt
+
+    var result = [UInt64](repeating: 0, count: 36)
+    projPoint.withUnsafeBufferPointer { pP in
+        scalar.withUnsafeBufferPointer { sP in
+            result.withUnsafeMutableBufferPointer { rP in
+                bls12_381_g2_scalar_mul(pP.baseAddress!, sP.baseAddress!, rP.baseAddress!)
+            }
+        }
+    }
+
+    // Projective -> affine
+    let zMont = Array(result[24..<36])
+    if isZero6(zMont) {
+        return [UInt8](repeating: 0, count: 256)
+    }
+
+    // z_inv = z^(p-2) mod p
+    var zInv = [UInt64](repeating: 0, count: 6)
+    zMont.withUnsafeBufferPointer { zP in
+        zInv.withUnsafeMutableBufferPointer { rP in
+            bls12_381_fp_inv_ext(zP.baseAddress!, rP.baseAddress!)
+        }
+    }
+
+    // Fp2 inversion
+    var zInvFp2 = [UInt64](repeating: 0, count: 12)
+    zInvFp2.withUnsafeMutableBufferPointer { zFp2P in
+        zInv.withUnsafeBufferPointer { zP in
+            bls12_381_fp2_inv(zP.baseAddress!, zFp2P.baseAddress!)
+        }
+    }
+
+    // x_aff = x * z_inv^2, y_aff = y * z_inv^3
+    let zInv2 = swiftBLS12FpMul(zInv, zInv)
+    let zInv3 = swiftBLS12FpMul(zInv2, zInv)
+    let xc0Aff = swiftBLS12FpMul(Array(result[0..<6]), zInv2)
+    let xc1Aff = swiftBLS12FpMul(Array(result[6..<12]), zInv2)
+    let yc0Aff = swiftBLS12FpMul(Array(result[12..<18]), zInv3)
+    let yc1Aff = swiftBLS12FpMul(Array(result[18..<24]), zInv3)
+
+    let xc0Out = bls12FpFromMont(xc0Aff)
+    let xc1Out = bls12FpFromMont(xc1Aff)
+    let yc0Out = bls12FpFromMont(yc0Aff)
+    let yc1Out = bls12FpFromMont(yc1Aff)
+
+    return fp381LimbsToBytes64(xc0Out) + fp381LimbsToBytes64(xc1Out) +
+           fp381LimbsToBytes64(yc0Out) + fp381LimbsToBytes64(yc1Out)
+}
+
+// MARK: - EVM Precompile 0x0D: BLS12-381 G1+G2 Pairing Check (EIP-2537)
+
+/// BLS12-381 G1 x G2 pairing check (variant for G1 in Fp, G2 in Fp2).
+/// Input: 384 bytes (G1 (128B) || G2 (256B)).
+/// Output: 32 bytes (0 or 1). Returns nil on invalid input.
+public func EVMPrecompile0D_pairing12(input: [UInt8]) -> [UInt8]? {
+    // Identical input format to 0x10, but different gas cost (handled by caller)
+    // Reuse the same pairing check logic
+    return EVMPrecompile10_bls12381Pairing(input: input)
+}
+
+// MARK: - EVM Precompile 0x0E: BLS12-381 G1 Multi-Exp (EIP-2537)
+
+/// BLS12-381 G1 multi-exponential. Input: variable (N * 160 bytes).
+/// Each item: G1 point (128B) || scalar (32B).
+/// Output: 128 bytes (G1 point). Returns nil on invalid input.
+public func EVMPrecompile0E_bls12381G1MultiExp(input: [UInt8]) -> [UInt8]? {
+    if input.isEmpty || input.count % 160 != 0 { return nil }
+    let n = input.count / 160
+
+    // Parse points and scalars
+    var flatScalars = [UInt32]()
+    var points = [UInt64]()
+
+    for i in 0..<n {
+        let off = i * 160
+
+        // G1 point
+        guard let xInt = bytes64ToFp381Limbs(Array(input[off..<off+64])),
+              let yInt = bytes64ToFp381Limbs(Array(input[off+64..<off+128])) else { return nil }
+
+        if bls12FpGEP(xInt) || bls12FpGEP(yInt) { return nil }
+        let isInf = isZero6(xInt) && isZero6(yInt)
+
+        if !isInf {
+            let xMont = bls12FpToMont(xInt)
+            let yMont = bls12FpToMont(yInt)
+            if !bls12G1IsOnCurve(xMont, yMont) { return nil }
+            points.append(contentsOf: xMont)
+            points.append(contentsOf: yMont)
+            points.append(contentsOf: BLS12_381_FP_ONE)
+        } else {
+            // Identity point - add zero point
+            points.append(contentsOf: [UInt64](repeating: 0, count: 18))
+        }
+
+        // Scalar: 32 bytes big-endian -> 8 UInt32
+        let scalarBytes = Array(input[off+128..<off+160])
+        for j in 0..<8 {
+            let w = UInt32(scalarBytes[28-j*4]) |
+                    (UInt32(scalarBytes[29-j*4]) << 8) |
+                    (UInt32(scalarBytes[30-j*4]) << 16) |
+                    (UInt32(scalarBytes[31-j*4]) << 24)
+            flatScalars.append(w)
+        }
+    }
+
+    var result = [UInt64](repeating: 0, count: 18)
+    flatScalars.withUnsafeBufferPointer { sP in
+        points.withUnsafeBufferPointer { pP in
+            result.withUnsafeMutableBufferPointer { rP in
+                bls12_381_g1_pippenger_msm(pP.baseAddress!, sP.baseAddress!, Int32(n), rP.baseAddress!)
+            }
+        }
+    }
+
+    // Convert to affine and return
+    let zMont = Array(result[12..<18])
+    if isZero6(zMont) {
+        return [UInt8](repeating: 0, count: 128)
+    }
+
+    var zInv = [UInt64](repeating: 0, count: 6)
+    zMont.withUnsafeBufferPointer { zP in
+        zInv.withUnsafeMutableBufferPointer { rP in
+            bls12_381_fp_inv_ext(zP.baseAddress!, rP.baseAddress!)
+        }
+    }
+
+    let zInv2 = swiftBLS12FpMul(zInv, zInv)
+    let zInv3 = swiftBLS12FpMul(zInv2, zInv)
+    let xAff = swiftBLS12FpMul(Array(result[0..<6]), zInv2)
+    let yAff = swiftBLS12FpMul(Array(result[6..<12]), zInv3)
+
+    let xOut = bls12FpFromMont(xAff)
+    let yOut = bls12FpFromMont(yAff)
+
+    return fp381LimbsToBytes64(xOut) + fp381LimbsToBytes64(yOut)
+}
+
+// MARK: - EVM Precompile 0x11: BLS12-381 Map Fp to G1 (EIP-2537)
+
+/// BLS12-381 map field element to G1 point using Simplified SWU.
+/// Input: 64 bytes (field element).
+/// Output: 128 bytes (G1 point). Returns nil on invalid input.
+///
+/// NOTE: This is not yet implemented. The EIP-2537 simplified SWU map
+/// for BLS12-381 G1 requires implementing the full isogeny-based mapping
+/// which is non-trivial. This is a placeholder that returns nil.
+public func EVMPrecompile11_bls12381MapG1(input: [UInt8]) -> [UInt8]? {
+    // EIP-2537 simplified SWU map for Fp -> G1
+    // Not yet implemented - requires full isogeny map implementation
+    return nil
+}
+
+// MARK: - EVM Precompile 0x12: BLS12-381 Map Fp2 to G2 (EIP-2537)
+
+/// BLS12-381 map Fp2 element to G2 point.
+/// Input: 128 bytes (Fp2 element: c0 (64B) || c1 (64B)).
+/// Output: 256 bytes (G2 point).
+///
+/// NOTE: This is not yet implemented. The EIP-2537 map for
+/// Fp2 -> G2 requires implementing the full isogeny-based mapping
+/// which is complex. This is a placeholder that returns nil.
+public func EVMPrecompile12_bls12381MapG2(input: [UInt8]) -> [UInt8]? {
+    if input.count != 128 { return nil }
+
+    // EIP-2537 specifies a custom isogeny map for Fp2 -> G2
+    // Not yet implemented - requires series evaluation approach
+    return nil
+}
+
