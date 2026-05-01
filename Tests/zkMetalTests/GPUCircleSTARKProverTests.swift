@@ -636,10 +636,11 @@ private func gpuCsTestTamperedProofRejected() {
         let engine = GPUCircleSTARKProverEngine(config: .fast)
         let result = try engine.prove(air: air)
 
-        // The GPU verify() validates proof structure, not deep Merkle paths.
-        // Full verification with Merkle path check requires GPU tree buffers.
+        // GPU verify() validates proof structure and metadata.
+        // Deep Merkle path verification is not yet implemented.
+        // Test that valid proofs pass structural validation.
         let valid = engine.verify(air: air, proof: result.proof)
-        expect(valid, "Valid proof accepted by verifier")
+        expect(valid, "Valid proof passes structural verification")
     } catch {
         expect(false, "Tampered proof test error: \(error)")
     }
@@ -651,10 +652,11 @@ private func testWrongAlphaRejected() {
         let engine = GPUCircleSTARKProverEngine(config: .fast)
         let result = try engine.prove(air: air)
 
-        // The GPU verify() validates proof structure, not deep Merkle paths.
-        // Full verification with alpha check requires GPU tree buffers.
+        // GPU verify() validates proof structure and metadata.
+        // Deep alpha verification is not yet implemented.
+        // Test that valid proofs pass structural validation.
         let valid = engine.verify(air: air, proof: result.proof)
-        expect(valid, "Valid proof with correct alpha accepted")
+        expect(valid, "Valid proof passes structural verification")
     } catch {
         expect(false, "Wrong alpha test error: \(error)")
     }

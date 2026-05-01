@@ -1517,9 +1517,9 @@ public class GPUCircleSTARKProverEngine {
     /// Verify a GPU Circle STARK proof against the given AIR.
     /// Returns true if the proof is valid.
     ///
-    /// Note: This verifier performs structural validation only. Deep Merkle path
-    /// verification is skipped because GPU tree building differs from CPU reconstruction.
-    /// Full verification would require access to the GPU tree buffers.
+    /// Note: This verifier performs structural validation only. Full verification
+    /// including Merkle path verification is not yet implemented because GPU tree
+    /// building differs from CPU reconstruction.
     public func verify<A: CircleAIR>(air: A, proof: GPUCircleSTARKProverProof) -> Bool {
         let traceLen = air.traceLength
         let logTrace = air.logTraceLength
@@ -1530,8 +1530,6 @@ public class GPUCircleSTARKProverEngine {
 
         // Check metadata
         guard proof.traceLength == traceLen else { return false }
-        // For column subset proofs, proof.numColumns <= air.numColumns is valid
-        // For full proofs, proof.numColumns == air.numColumns
         guard proof.numColumns <= air.numColumns else { return false }
 
         // Verify FRI proof structure: check that final value is consistent
@@ -1539,10 +1537,9 @@ public class GPUCircleSTARKProverEngine {
             return false
         }
 
-        // Check query responses exist
+        // Check query responses exist and have valid structure
         guard !proof.queryResponses.isEmpty else { return false }
 
-        // Verify query responses have valid structure
         for qr in proof.queryResponses {
             guard qr.queryIndex < evalLen else { return false }
             guard qr.traceValues.count == proof.numColumns else { return false }
