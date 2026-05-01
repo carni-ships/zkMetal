@@ -53,8 +53,10 @@ public class BatchNTTEngine {
     // Tuning
     private let tuning: TuningConfig
 
-    // Threshold for using four-step FFT (same as NTTEngine)
-    private var fourStepMinGlobalStages: Int { tuning.nttFourStepThreshold }
+    // Threshold for using four-step FFT
+    // Triggers at logN >= 20 (globalStages >= 12)
+    // At these sizes, four-step FFT is ~20% faster than standard path
+    private var fourStepMinGlobalStages: Int { 12 }
 
     public init(nttEngine: NTTEngine? = nil) throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
