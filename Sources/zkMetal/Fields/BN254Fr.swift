@@ -241,6 +241,34 @@ public func precomputeTwiddles(logN: Int) -> [Fr] {
     return twiddles
 }
 
+/// Global twiddle cache keyed by logN
+private var _twiddleCache: [Int: [Fr]] = [:]
+private let _twiddleCacheLock = NSLock()
+
+/// Get cached twiddle factors for given logN, computing if needed.
+public func getTwiddleCache(logN: Int) -> [Fr] {
+    _twiddleCacheLock.lock()
+    defer { _twiddleCacheLock.unlock() }
+    if let cached = _twiddleCache[logN] {
+        return cached
+    }
+    let twiddles = precomputeTwiddles(logN: logN)
+    _twiddleCache[logN] = twiddles
+    return twiddles
+}
+
+/// Get omega^idx using cached twiddle factors when possible.
+/// Falls back to frPow for indices >= n or when cache miss.
+public func frPowOmega(_ omega: Fr, _ idx: UInt64, logN: Int) -> Fr {
+    let n = 1 << logN
+    if idx < n {
+        let twiddles = getTwiddleCache(logN: logN)
+        return twiddles[Int(idx)]
+    }
+    // idx >= n, need to compute omega^idx mod p
+    return frPow(omega, idx)
+}
+
 /// Precompute inverse twiddle factors for iNTT.
 /// Full N entries needed for four-step iFFT inverse twiddle multiply.
 public func precomputeInverseTwiddles(logN: Int) -> [Fr] {

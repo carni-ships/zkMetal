@@ -146,7 +146,7 @@ public class ReedSolomonEngine {
 
         // Compute evaluation points: x_i = omega^(index_i)
         let points = usable.map { (idx, _) -> Fr in
-            frPow(omega, UInt64(idx))
+            frPowOmega(omega, UInt64(idx), logN: logN)
         }
         let values = usable.map { $0.1 }
 
