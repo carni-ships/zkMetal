@@ -53,16 +53,20 @@ These kernels combine steps 2+3+4 of four-step FFT into a single dispatch.
 
 ## Priority 6: Vectorized Montgomery Multiplication
 
-**Status**: Not implemented
+**Status**: ❌ Rejected - Not viable for GPU
 
-**Idea**: Use 2x or 4x vectorized loads/stores for Fr elements.
+**Analysis**:
+- Metal shaders don't have ARM NEON equivalents for 64-bit operations
+- The `fr_mul` CIOS inner loops are already fully unrolled with `#pragma unroll`
+- Fr is 256-bit (8x32-bit limbs), requiring carry-handling that doesn't vectorize
+- Karatsuba multiplication IS implemented (`fr_mul_karatsuba`) but not wired up in NTT kernels
+- The actual bottleneck is memory bandwidth (twiddle reads), not compute
 
-**Implementation**:
-- Pack 2 Fr elements into 64 bytes for vector load
-- Use Metal's simdgroup operations
-- Batch Montgomery multiplications
+**Alternative**: The fused kernels already minimize memory reads. Four-step FFT fused row+twiddle+transpose is the more effective optimization (already implemented).
 
-**Expected impact**: Depends on memory bandwidth vs compute
+**Benchmarks show**:
+- BN254 NTT is memory-bound, not compute-bound
+- 8.7x headroom at 2^22 is from algorithm improvements, not compute optimization
 
 ## Rejected Ideas
 
