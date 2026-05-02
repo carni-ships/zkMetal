@@ -96,29 +96,21 @@ public class DilithiumEngine {
         let s1_hat = try nttEngine.batchDilithiumNTT(s1)
         let s2_hat = try nttEngine.batchDilithiumNTT(s2)
 
-        // t = A * s1 + s2
-        var t_hat = [[DilithiumField]]()
+        // t = A * s1 + s2 — use GPU matvec for A*s1, then add s2
+        let A_flat = A_hat.flatMap { $0.map { $0.value } }
+        let s1_flat = s1_hat.flatMap { $0.map { $0.value } }
+        let t_flat = try nttEngine.dilithiumMatvec(A_flat, s1_flat, k: k)
+        var t = [[DilithiumField]]()
         for i in 0..<k {
-            var ti = [DilithiumField](repeating: DilithiumField.zero, count: DilithiumParams.n)
-            for j in 0..<l {
-                let aij = A_hat[i * l + j]
-                let s1j = s1_hat[j]
-                for c in 0..<DilithiumParams.n {
-                    let prod = dilithiumMul(aij[c], s1j[c])
-                    ti[c] = dilithiumAdd(ti[c], prod)
-                }
-            }
-            t_hat.append(ti)
+            let start = i * 256
+            t.append(Array(t_flat[start..<start+256]).map { DilithiumField(value: $0) })
         }
-
-        // INTT to get A*s1, then add s2 — GPU batch INTT
-        var As1 = try nttEngine.batchDilithiumINTT(t_hat)
+        // Add s2
         for i in 0..<k {
             for c in 0..<DilithiumParams.n {
-                As1[i][c] = dilithiumAdd(As1[i][c], s2[i][c])
+                t[i][c] = dilithiumAdd(t[i][c], s2[i][c])
             }
         }
-        let t = As1
 
         let pk = DilithiumPublicKey(A_hat: A_hat, t: t)
         return DilithiumSecretKey(s1: s1, s2: s2, s1_hat: s1_hat, s2_hat: s2_hat, publicKey: pk)
@@ -139,20 +131,17 @@ public class DilithiumEngine {
                 y.append(sampleMasking())
             }
 
-            // w = A * y (via NTT) — GPU batch NTT
+            // w = A * y (via NTT) — GPU batch NTT + GPU matvec
             let y_hat = try nttEngine.batchDilithiumNTT(y)
+
+            // A*y in NTT domain using GPU matvec
+            let A_flat = sk.publicKey.A_hat.flatMap { $0.map { $0.value } }
+            let y_flat = y_hat.flatMap { $0.map { $0.value } }
+            let w_flat = try nttEngine.dilithiumMatvec(A_flat, y_flat, k: k)
             var w_hat = [[DilithiumField]]()
             for i in 0..<k {
-                var wi = [DilithiumField](repeating: DilithiumField.zero, count: DilithiumParams.n)
-                for j in 0..<l {
-                    let aij = sk.publicKey.A_hat[i * l + j]
-                    let yj = y_hat[j]
-                    for c in 0..<DilithiumParams.n {
-                        let prod = dilithiumMul(aij[c], yj[c])
-                        wi[c] = dilithiumAdd(wi[c], prod)
-                    }
-                }
-                w_hat.append(wi)
+                let start = i * 256
+                w_hat.append(Array(w_flat[start..<start+256]).map { DilithiumField(value: $0) })
             }
             let w = try nttEngine.batchDilithiumINTT(w_hat)
 
@@ -162,16 +151,27 @@ public class DilithiumEngine {
             // Generate challenge c from hash of (message, w1)
             let c = generateChallenge(message: message, w1: w1)
 
-            // z = y + c * s1 — use GPU batch INTT for cs1
+            // z = y + c * s1 — use GPU pointwise mul for c*s1
             var c_hat = c
             dilithiumNTTCPU(&c_hat)
 
-            // Compute c*s1 in NTT domain, then batch INTT
+            // Compute c*s1 in NTT domain using GPU pointwise mul (c_hat broadcast to l polys)
+            let c_flat = c_hat.map { $0.value }  // [UInt32] (256 elements)
+            let s1_flat = sk.s1_hat.flatMap { $0.map { $0.value } }
+            // Broadcast c across l polynomials: [c0,c1,...,c255, c0,c1,...,c255, ...]
+            let l = DilithiumParams.l
+            var c_broadcast = [UInt32](repeating: 0, count: l * 256)
+            for j in 0..<l {
+                for c_idx in 0..<256 {
+                    c_broadcast[j * 256 + c_idx] = c_flat[c_idx]
+                }
+            }
+            let cs1_pointwise = try nttEngine.dilithiumPointwiseMul(c_broadcast, s1_flat)  // l*256 result
             var cs1_hat = [[DilithiumField]]()
             for j in 0..<l {
-                var cs1j = [DilithiumField](repeating: DilithiumField.zero, count: DilithiumParams.n)
-                for c_idx in 0..<DilithiumParams.n {
-                    cs1j[c_idx] = dilithiumMul(c_hat[c_idx], sk.s1_hat[j][c_idx])
+                var cs1j = [DilithiumField](repeating: DilithiumField.zero, count: 256)
+                for c_idx in 0..<256 {
+                    cs1j[c_idx] = DilithiumField(value: cs1_pointwise[j * 256 + c_idx])
                 }
                 cs1_hat.append(cs1j)
             }
@@ -229,26 +229,36 @@ public class DilithiumEngine {
             }
         }
 
-        // Compute A*z - c*t (in NTT domain) — use GPU batch NTT
+        // w_prime_hat = A*z - c*t (in NTT domain) — use GPU for c*t pointwise, then CPU subtract
         let z_hat = try nttEngine.batchDilithiumNTT(signature.z)
         var c_hat = signature.c
         dilithiumNTTCPU(&c_hat)  // c is 1 polynomial, batch not worth it
         let t_hat = try nttEngine.batchDilithiumNTT(pk.t)
 
+        // A*z using GPU matvec
+        let A_flat = pk.A_hat.flatMap { $0.map { $0.value } }
+        let z_flat = z_hat.flatMap { $0.map { $0.value } }
+        let Az_flat = try nttEngine.dilithiumMatvec(A_flat, z_flat, k: k)
+
+        // Compute c*t using GPU pointwise mul (c broadcast to k polynomials)
+        let c_flat = c_hat.map { $0.value }  // [UInt32] (256 elements)
+        let t_flat = t_hat.flatMap { $0.map { $0.value } }
+        var c_broadcast = [UInt32](repeating: 0, count: k * 256)
+        for i in 0..<k {
+            for c_idx in 0..<256 {
+                c_broadcast[i * 256 + c_idx] = c_flat[c_idx]
+            }
+        }
+        let ct_pointwise = try nttEngine.dilithiumPointwiseMul(c_broadcast, t_flat)  // k*256 result
+
+        // Subtract ct from Az: w_prime_hat[i*256+c] = Az_flat[i*256+c] - ct_pointwise[i*256+c]
         var w_prime_hat = [[DilithiumField]]()
         for i in 0..<k {
-            var wi = [DilithiumField](repeating: DilithiumField.zero, count: DilithiumParams.n)
-            for j in 0..<l {
-                let aij = pk.A_hat[i * l + j]
-                let zj = z_hat[j]
-                for c_idx in 0..<DilithiumParams.n {
-                    let prod = dilithiumMul(aij[c_idx], zj[c_idx])
-                    wi[c_idx] = dilithiumAdd(wi[c_idx], prod)
-                }
-            }
-            for c_idx in 0..<DilithiumParams.n {
-                let ct = dilithiumMul(c_hat[c_idx], t_hat[i][c_idx])
-                wi[c_idx] = dilithiumSub(wi[c_idx], ct)
+            var wi = [DilithiumField](repeating: DilithiumField.zero, count: 256)
+            for c_idx in 0..<256 {
+                let az_val = DilithiumField(value: Az_flat[i * 256 + c_idx])
+                let ct_val = DilithiumField(value: ct_pointwise[i * 256 + c_idx])
+                wi[c_idx] = dilithiumSub(az_val, ct_val)
             }
             w_prime_hat.append(wi)
         }
