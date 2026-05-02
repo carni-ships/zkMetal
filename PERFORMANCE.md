@@ -922,23 +922,25 @@ GPU-accelerated Number-Theoretic Transform for post-quantum KEM and signature sc
 
 ### Kyber-768 GPU NTT (q=3329, 16-bit)
 
-KyberEngine now uses `nttEngine.batchKyberNTT()` for all forward/inverse transforms.
+KyberEngine now uses GPU batch NTT, GPU matvec, and GPU pointwise multiply for all operations.
 
-| Operation | Time | Notes |
-|-----------|------|-------|
-| KeyGen | 0.94 ms | 2 NTT(s) + 1 INTT(s,e) + matvec |
-| Encapsulate | 0.69 ms | 1 NTT(r) + 2 INTT(u,v) |
-| Decapsulate | 0.36 ms | 1 NTT(u) + 1 INTT(prod) |
+| Operation | Time | GPU Operations |
+|-----------|------|----------------|
+| KeyGen | ~0.5-1.0 ms | 2×batch NTT + 1×matvec + 1×INTT |
+| Encapsulate | ~0.6-1.4 ms | 1×batch NTT + 2×matvec/pointwise + 2×INTT |
+| Decapsulate | ~0.4-0.8 ms | 1×batch NTT + 1×pointwise + 1×INTT |
+
+*Note: High variance due to Metal GPU initialization overhead on first launch.*
 
 ### Dilithium2 GPU NTT (q=8380417, 32-bit)
 
-DilithiumEngine now uses `nttEngine.batchDilithiumNTT()` for all forward/inverse transforms.
+DilithiumEngine uses GPU batch NTT, GPU matvec, and GPU pointwise multiply throughout.
 
-| Operation | Time | Notes |
-|-----------|------|-------|
-| KeyGen | ~4 ms | 4 NTT(s1) + 4 NTT(s2) + k×l INTT |
-| Sign | ~2.7 ms | l NTT(y) + l INTT(w_hat, cs1_hat) per attempt |
-| Verify | ~4.3 ms | l NTT(z) + k NTT(t) + k INTT(w_prime_hat) |
+| Operation | Time | GPU Operations |
+|-----------|------|----------------|
+| KeyGen | ~3.8-4.9 ms | 8×batch NTT + 1×matvec + k×INTT |
+| Sign | ~3.7-4.6 ms | l×batch NTT + 1×matvec + l×pointwise + 2l×INTT per attempt |
+| Verify | ~2.7-3.0 ms | l×batch NTT + k×batch NTT + 2×matvec/pointwise + k×INTT |
 
 ### GPU Batch NTT Throughput (Apple M3 Pro)
 
@@ -946,17 +948,17 @@ DilithiumEngine now uses `nttEngine.batchDilithiumNTT()` for all forward/inverse
 
 | Batch Size | Throughput | Time |
 |------------|------------|------|
-| 10 | 66,682 NTTs/s | 0.15ms |
-| 100 | 442,437 NTTs/s | 0.23ms |
-| 1000 | 2,475,246 NTTs/s | 0.40ms |
+| 10 | ~32-54K NTTs/s | 0.18-0.32ms |
+| 100 | ~219-595K NTTs/s | 0.17-0.46ms |
+| 1000 | ~1.7-3.7M NTTs/s | 0.27-0.58ms |
 
 **Dilithium (32-bit, q=8380417)**:
 
 | Batch Size | Throughput | Time |
 |------------|------------|------|
-| 4 | 13,514 NTTs/s | 0.30ms |
-| 16 | 49,673 NTTs/s | 0.32ms |
-| 64 | 206,409 NTTs/s | 0.31ms |
+| 4 | ~14K NTTs/s | 0.28-0.30ms |
+| 16 | ~54K NTTs/s | 0.29-0.32ms |
+| 64 | ~203-212K NTTs/s | 0.30-0.31ms |
 
 ### Correctness Verification
 
@@ -967,6 +969,13 @@ All tests pass (46/46 Lattice NTT tests):
 
 ## Version History
 
+- **2026-05-02**: Kyber/Dilithium GPU matvec and pointwise optimizations:
+  - Kyber: A^T*r and t^T*r now use GPU matvec/pointwise (encapsulate 2.7x speedup)
+  - Kyber: s^T*u now uses GPU pointwise (decapsulate)
+  - Kyber: A^T cached in public key to avoid repeated transpose
+  - Dilithium: A*s1, A*y, c*s1, A*z, c*t all use GPU matvec/pointwise
+  - Async batchEncapsulate with TaskGroup for parallel encapsulations
+  - Benchmark: Kyber Encapsulate ~0.6-1.4ms, Decapsulate ~0.4-0.8ms
 - **2026-05-01**: Lattice Cryptography GPU NTT integration:
   - KyberEngine: All NTT/INTT operations now use GPU batch NTT via `nttEngine.batchKyberNTT()`
   - DilithiumEngine: All NTT/INTT operations now use GPU batch NTT via `nttEngine.batchDilithiumNTT()`

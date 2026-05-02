@@ -28,6 +28,18 @@ All major optimizations are complete. System is near hardware limits.
 - Basefold fold-by-16 kernel (fused 4-round dispatch, SM-side ready)
 - BabyBear Barrett reduction — Not viable: naive `% UInt64(P)` is correct; Barrett approximation breaks for small products where v ≈ 0 (quotient ≈ 0, approximation ≈ 2^31). Products range [0, P²] so approximation error is unbounded. Field is not a bottleneck anyway.
 
+## Lattice Cryptography (Kyber/Dilithium) — Completed (2026-05-02)
+
+| Item | Status | Notes |
+|------|--------|-------|
+| Kyber GPU batch NTT | ✅ Complete | All keyGen/encapsulate/decap NTTs use GPU |
+| Kyber GPU matvec | ✅ Complete | A*s in keyGen, A^T*r in encapsulate |
+| Kyber GPU pointwise mul | ✅ Complete | t^T*r in encapsulate, s^T*u in decapsulate |
+| Kyber A^T caching | ✅ Complete | Pre-computed in keyGen, stored in public key |
+| Dilithium GPU matvec | ✅ Complete | A*s1 in keyGen, A*y in sign, A*z in verify |
+| Dilithium GPU pointwise mul | ✅ Complete | c*s1 in sign, c*t in verify |
+| Async batchEncapsulate | ✅ Complete | TaskGroup for parallel encapsulations |
+
 ## Blocked / Rejected
 
 - **MTLEvent infrastructure** — Not viable. Most waits are correctness-required.
