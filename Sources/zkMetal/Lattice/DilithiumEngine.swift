@@ -31,8 +31,10 @@ public enum DilithiumParams {
 public struct DilithiumPublicKey {
     /// Matrix A in NTT domain: k x l polynomials
     public let A_hat: [[DilithiumField]]  // k*l polynomials
-    /// Public key t = A*s1 + s2
+    /// Public key t = A*s1 + s2 (in non-NTT domain)
     public let t: [[DilithiumField]]      // k polynomials
+    /// t in NTT domain (cached, pre-computed in keyGen for verify efficiency)
+    let t_hat: [[DilithiumField]]         // k polynomials
 }
 
 public struct DilithiumSecretKey {
@@ -112,7 +114,10 @@ public class DilithiumEngine {
             }
         }
 
-        let pk = DilithiumPublicKey(A_hat: A_hat, t: t)
+        // Pre-compute t in NTT domain for verify (avoids repeated NTT of t)
+        let t_hat = try nttEngine.batchDilithiumNTT(t)
+
+        let pk = DilithiumPublicKey(A_hat: A_hat, t: t, t_hat: t_hat)
         return DilithiumSecretKey(s1: s1, s2: s2, s1_hat: s1_hat, s2_hat: s2_hat, publicKey: pk)
     }
 
@@ -233,7 +238,7 @@ public class DilithiumEngine {
         let z_hat = try nttEngine.batchDilithiumNTT(signature.z)
         var c_hat = signature.c
         dilithiumNTTCPU(&c_hat)  // c is 1 polynomial, batch not worth it
-        let t_hat = try nttEngine.batchDilithiumNTT(pk.t)
+        let t_hat = pk.t_hat  // Use cached t_hat from public key
 
         // A*z using GPU matvec
         let A_flat = pk.A_hat.flatMap { $0.map { $0.value } }
@@ -281,7 +286,7 @@ public class DilithiumEngine {
 
     // MARK: - Batch Operations
 
-    /// Batch key generation
+    /// Batch key generation (sequential)
     public func batchKeyGen(count: Int) throws -> [DilithiumSecretKey] {
         var keys = [DilithiumSecretKey]()
         keys.reserveCapacity(count)
@@ -289,6 +294,26 @@ public class DilithiumEngine {
             keys.append(try keyGen())
         }
         return keys
+    }
+
+    /// Batch signing: sign multiple messages in parallel using Swift concurrency
+    /// Each signing runs as an async task, enabling parallel rejection sampling attempts
+    public func batchSign(sk: DilithiumSecretKey, messages: [[UInt8]]) async throws -> [DilithiumSignature] {
+        try await withThrowingTaskGroup(of: (Int, DilithiumSignature).self) { group in
+            for (idx, message) in messages.enumerated() {
+                group.addTask {
+                    let sig = try await Task {
+                        try self.sign(sk: sk, message: message)
+                    }.value
+                    return (idx, sig)
+                }
+            }
+            var results = [DilithiumSignature](repeating: DilithiumSignature(z: [], c: [], hint: []), count: messages.count)
+            for try await (idx, sig) in group {
+                results[idx] = sig
+            }
+            return results
+        }
     }
 
     /// Batch verification: verify multiple signatures in parallel
@@ -299,6 +324,25 @@ public class DilithiumEngine {
             results.append(try verify(pk: pk, message: msg, signature: sig))
         }
         return results
+    }
+
+    /// Batch verification (async, parallel): verify multiple signatures in parallel using Swift concurrency
+    public func batchVerifyAsync(entries: [(DilithiumPublicKey, [UInt8], DilithiumSignature)]) async throws -> [Bool] {
+        try await withThrowingTaskGroup(of: (Int, Bool).self) { group in
+            for (idx, (pk, msg, sig)) in entries.enumerated() {
+                group.addTask {
+                    let result = try await Task {
+                        try self.verify(pk: pk, message: msg, signature: sig)
+                    }.value
+                    return (idx, result)
+                }
+            }
+            var results = [Bool](repeating: false, count: entries.count)
+            for try await (idx, result) in group {
+                results[idx] = result
+            }
+            return results
+        }
     }
 
     // MARK: - Helper functions
