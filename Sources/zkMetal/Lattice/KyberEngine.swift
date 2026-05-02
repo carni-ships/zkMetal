@@ -28,6 +28,8 @@ public enum KyberParams {
 public struct KyberPublicKey {
     /// Matrix A in NTT domain: k x k polynomials (flattened, row-major)
     public let A_hat: [[KyberField]]  // k*k polynomials, each 256 elements
+    /// Matrix A^T in NTT domain: transposed version for encapsulate (cached)
+    let A_T_hat: [[KyberField]]       // k*k polynomials, same data as A_hat but A^T[j][i] = A_hat[i*k+j]
     /// Public key vector t = A*s + e in NTT domain
     public let t_hat: [[KyberField]]  // k polynomials
 }
@@ -89,26 +91,32 @@ public class KyberEngine {
         let s_hat = try nttEngine.batchKyberNTT(s)
         let e_hat = try nttEngine.batchKyberNTT(e)
 
-        // t_hat = A_hat * s_hat + e_hat (in NTT domain, pointwise)
+        // t_hat = A_hat * s_hat + e_hat — use GPU matvec for A*s, then add e_hat
+        let A_flat = A_hat.flatMap { $0.map { $0.value } }
+        let s_flat = s_hat.flatMap { $0.map { $0.value } }
+        let t_flat = try nttEngine.kyberMatvec(A_flat, s_flat, k: k)
         var t_hat = [[KyberField]]()
         for i in 0..<k {
-            var ti = [KyberField](repeating: KyberField.zero, count: KyberParams.n)
-            for j in 0..<k {
-                let aij = A_hat[i * k + j]
-                let sj = s_hat[j]
-                for c in 0..<KyberParams.n {
-                    let prod = kyberMul(aij[c], sj[c])
-                    ti[c] = kyberAdd(ti[c], prod)
-                }
-            }
-            // Add e_hat[i]
+            let start = i * 256
+            t_hat.append(Array(t_flat[start..<start+256]).map { KyberField(value: $0) })
+        }
+        // Add e_hat[i]
+        for i in 0..<k {
             for c in 0..<KyberParams.n {
-                ti[c] = kyberAdd(ti[c], e_hat[i][c])
+                t_hat[i][c] = kyberAdd(t_hat[i][c], e_hat[i][c])
             }
-            t_hat.append(ti)
         }
 
-        let pk = KyberPublicKey(A_hat: A_hat, t_hat: t_hat)
+        // Pre-compute and cache A^T for encapsulate (avoids transpose on every call)
+        var A_T_hat = [[KyberField]]()
+        A_T_hat.reserveCapacity(k * k)
+        for i in 0..<k {
+            for j in 0..<k {
+                A_T_hat.append(A_hat[j * k + i])
+            }
+        }
+
+        let pk = KyberPublicKey(A_hat: A_hat, A_T_hat: A_T_hat, t_hat: t_hat)
         return KyberSecretKey(s_hat: s_hat, publicKey: pk)
     }
 
@@ -149,19 +157,13 @@ public class KyberEngine {
         // NTT(r) — GPU batch NTT
         let r_hat = try nttEngine.batchKyberNTT(r)
 
-        // u = INTT(A^T * r_hat) + e1
+        // u = INTT(A^T * r_hat) + e1 — use GPU matvec for A^T * r (using cached A_T_hat)
+        let A_T_flat = pk.A_T_hat.flatMap { $0.map { $0.value } }
+        let r_flat = r_hat.flatMap { $0.map { $0.value } }
+        let u_hat_flat = try nttEngine.kyberMatvec(A_T_flat, r_flat, k: k)
         var u_hat = [[KyberField]]()
         for i in 0..<k {
-            var ui = [KyberField](repeating: KyberField.zero, count: KyberParams.n)
-            for j in 0..<k {
-                let aji = pk.A_hat[j * k + i]
-                let rj = r_hat[j]
-                for c in 0..<KyberParams.n {
-                    let prod = kyberMul(aji[c], rj[c])
-                    ui[c] = kyberAdd(ui[c], prod)
-                }
-            }
-            u_hat.append(ui)
+            u_hat.append(Array(u_hat_flat[i*256..<(i+1)*256]).map { KyberField(value: $0) })
         }
         var u = try nttEngine.batchKyberINTT(u_hat)
         // Add e1
@@ -171,14 +173,15 @@ public class KyberEngine {
             }
         }
 
-        // v = INTT(t^T * r_hat) + e2 + encode(m)
+        // v = INTT(t^T * r_hat) + e2 + encode(m) — use GPU pointwise mul + CPU sum
+        // t^T * r: dot product of k polynomials, each 256 coefficients
+        let t_flat = pk.t_hat.flatMap { $0.map { $0.value } }
+        let v_hat_pointwise = try nttEngine.kyberPointwiseMul(t_flat, r_flat)  // k*256 result
+        // Sum across k polynomials to get 1×256 result
         var v_hat = [KyberField](repeating: KyberField.zero, count: KyberParams.n)
-        for j in 0..<k {
-            let tj = pk.t_hat[j]
-            let rj = r_hat[j]
+        for i in 0..<k {
             for c in 0..<KyberParams.n {
-                let prod = kyberMul(tj[c], rj[c])
-                v_hat[c] = kyberAdd(v_hat[c], prod)
+                v_hat[c] = kyberAdd(v_hat[c], KyberField(value: v_hat_pointwise[i * 256 + c]))
             }
         }
         var v = try nttEngine.batchKyberINTT([v_hat])[0]
@@ -203,14 +206,14 @@ public class KyberEngine {
         // NTT(u) — GPU batch NTT
         let u_hat = try nttEngine.batchKyberNTT(ct.u)
 
-        // s^T * NTT(u)
+        // s^T * NTT(u) — use GPU pointwise mul + CPU sum (same pattern as v in encapsulate)
+        let s_flat = sk.s_hat.flatMap { $0.map { $0.value } }
+        let u_flat = u_hat.flatMap { $0.map { $0.value } }
+        let s_u_pointwise = try nttEngine.kyberPointwiseMul(s_flat, u_flat)  // k*256 result
         var prod_hat = [KyberField](repeating: KyberField.zero, count: KyberParams.n)
-        for j in 0..<k {
-            let sj = sk.s_hat[j]
-            let uj = u_hat[j]
+        for i in 0..<k {
             for c in 0..<KyberParams.n {
-                let p = kyberMul(sj[c], uj[c])
-                prod_hat[c] = kyberAdd(prod_hat[c], p)
+                prod_hat[c] = kyberAdd(prod_hat[c], KyberField(value: s_u_pointwise[i * 256 + c]))
             }
         }
 
@@ -248,8 +251,28 @@ public class KyberEngine {
         return keys
     }
 
-    /// Batch encapsulation: encapsulate to multiple public keys
-    public func batchEncapsulate(publicKeys: [KyberPublicKey]) throws -> [(KyberCiphertext, [UInt8])] {
+    /// Batch encapsulation: encapsulate to multiple public keys in parallel using Swift concurrency
+    /// Each encapsulation runs as an async task, overlapping CPU sampling with GPU operations
+    public func batchEncapsulate(publicKeys: [KyberPublicKey]) async throws -> [(KyberCiphertext, [UInt8])] {
+        try await withThrowingTaskGroup(of: (Int, KyberCiphertext, [UInt8]).self) { group in
+            for (idx, pk) in publicKeys.enumerated() {
+                group.addTask {
+                    let result = try await Task {
+                        try self.encapsulate(pk: pk)
+                    }.value
+                    return (idx, result.0, result.1)
+                }
+            }
+            var results = [(KyberCiphertext, [UInt8])](repeating: (KyberCiphertext(u: [], v: []), []), count: publicKeys.count)
+            for try await (idx, ct, ss) in group {
+                results[idx] = (ct, ss)
+            }
+            return results
+        }
+    }
+
+    /// Batch encapsulation (synchronous, sequential) — for callers that need sync behavior
+    public func batchEncapsulateSync(publicKeys: [KyberPublicKey]) throws -> [(KyberCiphertext, [UInt8])] {
         var results = [(KyberCiphertext, [UInt8])]()
         results.reserveCapacity(publicKeys.count)
         for pk in publicKeys {
