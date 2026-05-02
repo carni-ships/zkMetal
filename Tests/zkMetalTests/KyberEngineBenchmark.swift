@@ -91,3 +91,95 @@ public func runKyberEngineBenchmark() {
 
     fputs("\n", stderr)
 }
+
+// MARK: - Dilithium Benchmark
+
+public func runDilithiumEngineBenchmark() {
+    fputs("\n=== CPU-only Dilithium (reference) ===\n", stderr)
+
+    guard let nttEngine = (try? LatticeNTTEngine()) else {
+        fputs("Failed to init LatticeNTTEngine\n", stderr)
+        return
+    }
+
+    let dil = DilithiumEngine(nttEngine: nttEngine)
+    let runs = 5
+
+    // Warmup
+    _ = try? dil.keyGen()
+
+    // KeyGen benchmark
+    var times = [Double]()
+    for _ in 0..<runs {
+        let start = CFAbsoluteTimeGetCurrent()
+        _ = try? dil.keyGen()
+        times.append(CFAbsoluteTimeGetCurrent() - start)
+    }
+    times.sort()
+    let median = times[runs / 2] * 1000
+    fputs("  KeyGen:       \(String(format: "%8.2f", median)) ms\n", stderr)
+
+    // Sign benchmark
+    if let sk = try? dil.keyGen() {
+        let message: [UInt8] = Array("Test message for Dilithium signing".utf8)
+
+        // Warmup
+        _ = try? dil.sign(sk: sk, message: message)
+
+        times = []
+        var lastSig: DilithiumSignature?
+        for _ in 0..<runs {
+            let start = CFAbsoluteTimeGetCurrent()
+            if let sig = try? dil.sign(sk: sk, message: message) {
+                times.append(CFAbsoluteTimeGetCurrent() - start)
+                lastSig = sig
+            }
+        }
+        times.sort()
+        let signMedian = times[runs / 2] * 1000
+        fputs("  Sign:         \(String(format: "%8.2f", signMedian)) ms\n", stderr)
+
+        // Verify benchmark
+        if let sig = lastSig {
+            let valid = try! dil.verify(pk: sk.publicKey, message: message, signature: sig)
+            fputs("  Correctness:  \(valid ? "PASS" : "FAIL") (signature \(valid ? "valid" : "INVALID"))\n", stderr)
+
+            times = []
+            for _ in 0..<runs {
+                let start = CFAbsoluteTimeGetCurrent()
+                _ = try? dil.verify(pk: sk.publicKey, message: message, signature: sig)
+                times.append(CFAbsoluteTimeGetCurrent() - start)
+            }
+            times.sort()
+            let verifyMedian = times[runs / 2] * 1000
+            fputs("  Verify:       \(String(format: "%8.2f", verifyMedian)) ms\n", stderr)
+        }
+    }
+
+    // Dilithium GPU NTT batch performance
+    fputs("\n--- Dilithium GPU NTT Batch ---\n", stderr)
+
+    let batchSizes = [4, 16, 64]  // Dilithium uses k=4, l=4 matrices
+
+    for batchSize in batchSizes {
+        let dFlat = [UInt32](repeating: 42, count: batchSize * 256)
+
+        // Warmup
+        _ = try? nttEngine.batchDilithiumNTT(dFlat, numPolys: batchSize)
+
+        let runs = 5
+        var times = [Double]()
+        for _ in 0..<runs {
+            let start = CFAbsoluteTimeGetCurrent()
+            _ = try? nttEngine.batchDilithiumNTT(dFlat, numPolys: batchSize)
+            times.append(CFAbsoluteTimeGetCurrent() - start)
+        }
+        times.sort()
+        let median = times[runs / 2]
+        let throughput = Double(batchSize) / median
+
+        fputs("  batch=\(String(format: "%5d", batchSize)): \(String(format: "%8.0f", throughput)) NTTs/s (\(String(format: "%.2f", median * 1000))ms)\n", stderr)
+    }
+
+    fputs("\n", stderr)
+}

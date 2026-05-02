@@ -77,6 +77,7 @@ let allTests: [(String, () -> Void)] = [
     ("cosetdomain", runCosetDomainTests),
     ("latticentt", runLatticeNTTTests),
     ("kyberengine", runKyberEngineBenchmark),
+    ("dilithiumengine", runDilithiumEngineBenchmark),
     ("whirprover", runWHIRProverTests),
     ("lookupsingularity", runLookupSingularityTests),
     ("spartanpolyiop", runSpartanPolyIOPTests),

@@ -1710,9 +1710,11 @@ public class GPUCircleSTARKProverEngine {
             let beta = transcript.squeezeM31()
 
             // Fold: f_new[i] = (f[i] + f[i + half]) + beta * (f[i] - f[i + half]) * inv_twiddle[i]
-            var twiddles = computeCircleFRITwiddles(logN: currentLogN, isFirst: rounds.isEmpty)
+            let twiddles = computeCircleFRITwiddles(logN: currentLogN, isFirst: rounds.isEmpty)
             var folded = [M31](repeating: M31.zero, count: half)
-            for i in 0..<half {
+
+            // Parallel FRI folding - each element is independent
+            DispatchQueue.concurrentPerform(iterations: half) { i in
                 let a = currentEvals[i]
                 let b = currentEvals[i + half]
                 let sum = m31Add(a, b)
@@ -1720,7 +1722,6 @@ public class GPUCircleSTARKProverEngine {
                 let tw = twiddles[i]
                 folded[i] = m31Add(sum, m31Mul(beta, m31Mul(diff, tw)))
             }
-            _ = twiddles  // suppress unused warning
 
             // Commit folded polynomial with Poseidon2-M31 Merkle
             let foldTree: [M31Digest]
@@ -1736,19 +1737,23 @@ public class GPUCircleSTARKProverEngine {
             }
             transcript.absorbBytes(foldRoot.bytes)
 
-            // Query responses for this round
-            var roundQueryResponses = [(M31, M31, [M31Digest])]()
-            for qi in queryIndices {
+            // Parallel query responses for this round
+            let numQueries = queryIndices.count
+            var roundQueryResponses = [(M31, M31, [M31Digest])?](repeating: nil, count: numQueries)
+
+            DispatchQueue.concurrentPerform(iterations: numQueries) { qIdx in
+                let qi = queryIndices[qIdx]
                 let idx = qi % half
                 let valA = currentEvals[idx]
                 let valB = currentEvals[idx + half]
                 let path = poseidon2M31MerkleProof(foldTree, n: half, index: idx)
-                roundQueryResponses.append((valA, valB, path))
+                roundQueryResponses[qIdx] = (valA, valB, path)
             }
 
+            let finalRoundResponses = roundQueryResponses.compactMap { $0 }
             rounds.append(GPUCircleFRIRound(
                 commitment: foldRoot,
-                queryResponses: roundQueryResponses
+                queryResponses: finalRoundResponses
             ))
 
             currentEvals = folded

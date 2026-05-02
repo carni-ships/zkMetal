@@ -92,19 +92,9 @@ public class DilithiumEngine {
             s2.append(sampleUniform(bound: DilithiumParams.eta))
         }
 
-        // NTT(s1), NTT(s2) — use CPU NTT for correctness
-        var s1_hat = [[DilithiumField]]()
-        for j in 0..<l {
-            var sj = s1[j]
-            dilithiumNTTCPU(&sj)
-            s1_hat.append(sj)
-        }
-        var s2_hat = [[DilithiumField]]()
-        for j in 0..<k {
-            var sj = s2[j]
-            dilithiumNTTCPU(&sj)
-            s2_hat.append(sj)
-        }
+        // NTT(s1), NTT(s2) — use GPU batch NTT for speed
+        let s1_hat = try nttEngine.batchDilithiumNTT(s1)
+        let s2_hat = try nttEngine.batchDilithiumNTT(s2)
 
         // t = A * s1 + s2
         var t_hat = [[DilithiumField]]()
@@ -121,13 +111,8 @@ public class DilithiumEngine {
             t_hat.append(ti)
         }
 
-        // INTT to get A*s1, then add s2
-        var As1 = [[DilithiumField]]()
-        for i in 0..<k {
-            var ti = t_hat[i]
-            dilithiumInvNTTCPU(&ti)
-            As1.append(ti)
-        }
+        // INTT to get A*s1, then add s2 — GPU batch INTT
+        var As1 = try nttEngine.batchDilithiumINTT(t_hat)
         for i in 0..<k {
             for c in 0..<DilithiumParams.n {
                 As1[i][c] = dilithiumAdd(As1[i][c], s2[i][c])
@@ -154,14 +139,8 @@ public class DilithiumEngine {
                 y.append(sampleMasking())
             }
 
-            // w = A * y (via NTT)
-            // Use CPU NTT for correctness (GPU NTT roundtrip has precision issues)
-            var y_hat = [[DilithiumField]]()
-            for j in 0..<l {
-                var yj = y[j]
-                dilithiumNTTCPU(&yj)
-                y_hat.append(yj)
-            }
+            // w = A * y (via NTT) — GPU batch NTT
+            let y_hat = try nttEngine.batchDilithiumNTT(y)
             var w_hat = [[DilithiumField]]()
             for i in 0..<k {
                 var wi = [DilithiumField](repeating: DilithiumField.zero, count: DilithiumParams.n)
@@ -175,12 +154,7 @@ public class DilithiumEngine {
                 }
                 w_hat.append(wi)
             }
-            var w = [[DilithiumField]]()
-            for i in 0..<k {
-                var wi = w_hat[i]
-                dilithiumInvNTTCPU(&wi)
-                w.append(wi)
-            }
+            let w = try nttEngine.batchDilithiumINTT(w_hat)
 
             // High bits of w for challenge generation
             let w1 = w.map { highBits($0) }
@@ -188,22 +162,26 @@ public class DilithiumEngine {
             // Generate challenge c from hash of (message, w1)
             let c = generateChallenge(message: message, w1: w1)
 
-            // z = y + c * s1
+            // z = y + c * s1 — use GPU batch INTT for cs1
             var c_hat = c
             dilithiumNTTCPU(&c_hat)
+
+            // Compute c*s1 in NTT domain, then batch INTT
+            var cs1_hat = [[DilithiumField]]()
+            for j in 0..<l {
+                var cs1j = [DilithiumField](repeating: DilithiumField.zero, count: DilithiumParams.n)
+                for c_idx in 0..<DilithiumParams.n {
+                    cs1j[c_idx] = dilithiumMul(c_hat[c_idx], sk.s1_hat[j][c_idx])
+                }
+                cs1_hat.append(cs1j)
+            }
+            let cs1 = try nttEngine.batchDilithiumINTT(cs1_hat)
 
             var z = [[DilithiumField]]()
             for j in 0..<l {
                 var zj = [DilithiumField](repeating: DilithiumField.zero, count: DilithiumParams.n)
-                // c * s1[j] in NTT domain
-                var cs1_hat = [DilithiumField](repeating: DilithiumField.zero, count: DilithiumParams.n)
                 for c_idx in 0..<DilithiumParams.n {
-                    cs1_hat[c_idx] = dilithiumMul(c_hat[c_idx], sk.s1_hat[j][c_idx])
-                }
-                var cs1 = cs1_hat
-                dilithiumInvNTTCPU(&cs1)
-                for c_idx in 0..<DilithiumParams.n {
-                    zj[c_idx] = dilithiumAdd(y[j][c_idx], cs1[c_idx])
+                    zj[c_idx] = dilithiumAdd(y[j][c_idx], cs1[j][c_idx])
                 }
                 z.append(zj)
             }
@@ -251,21 +229,11 @@ public class DilithiumEngine {
             }
         }
 
-        // Compute A*z - c*t (in NTT domain) — use CPU NTT for correctness
-        var z_hat = [[DilithiumField]]()
-        for j in 0..<l {
-            var zj = signature.z[j]
-            dilithiumNTTCPU(&zj)
-            z_hat.append(zj)
-        }
+        // Compute A*z - c*t (in NTT domain) — use GPU batch NTT
+        let z_hat = try nttEngine.batchDilithiumNTT(signature.z)
         var c_hat = signature.c
-        dilithiumNTTCPU(&c_hat)
-        var t_hat = [[DilithiumField]]()
-        for i in 0..<k {
-            var ti = pk.t[i]
-            dilithiumNTTCPU(&ti)
-            t_hat.append(ti)
-        }
+        dilithiumNTTCPU(&c_hat)  // c is 1 polynomial, batch not worth it
+        let t_hat = try nttEngine.batchDilithiumNTT(pk.t)
 
         var w_prime_hat = [[DilithiumField]]()
         for i in 0..<k {
@@ -285,12 +253,7 @@ public class DilithiumEngine {
             w_prime_hat.append(wi)
         }
 
-        var w_prime = [[DilithiumField]]()
-        for i in 0..<k {
-            var wi = w_prime_hat[i]
-            dilithiumInvNTTCPU(&wi)
-            w_prime.append(wi)
-        }
+        let w_prime = try nttEngine.batchDilithiumINTT(w_prime_hat)
 
         // Recompute challenge from (message, highBits(w'))
         let w1_prime = w_prime.map { highBits($0) }
