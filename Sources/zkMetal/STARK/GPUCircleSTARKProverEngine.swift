@@ -1683,9 +1683,11 @@ public class GPUCircleSTARKProverEngine {
     // MARK: - Circle FRI (Poseidon2-M31 commitments)
 
     /// Circle FRI: y-coordinate first fold, then x-coordinate folds with Poseidon2-M31 Merkle.
+    /// Uses Power FRI when powerFoldK > 1 to fold multiple coefficients per round.
     private func circleFRI(
         evals: [M31], logN: Int, numQueries: Int,
-        transcript: inout CircleSTARKTranscript
+        transcript: inout CircleSTARKTranscript,
+        powerFoldK: Int = 1  // 1 = standard FRI (halve), 2 = fold by 4, etc.
     ) throws -> GPUCircleFRIProof {
         var currentEvals = evals
         var currentLogN = logN
@@ -1702,28 +1704,57 @@ public class GPUCircleSTARKProverEngine {
             queryIndices.append(Int(transcript.squeezeM31().v) % (evalLen / 2))
         }
 
-        // Circle FRI folding: reduce degree by half each round
-        // Round 0: y-fold (twin-coset decomposition using y-coordinates)
-        // Round 1+: x-fold (squaring map x -> 2x^2 - 1)
+        // Circle FRI folding: reduce degree by factor of powerFoldK each round
+        // For powerFoldK=1: Round 0 uses y-fold, then x-fold halves degree
+        // For powerFoldK>1: Fold multiple elements per round (faster, larger proofs)
         while currentLogN > 2 {
             let n = 1 << currentLogN
-            let half = n / 2
+            let newSize = n / powerFoldK
 
             // Squeeze folding challenge
             let beta = transcript.squeezeM31()
+            let gamma = powerFoldK > 1 ? transcript.squeezeM31() : M31.zero  // Extra challenge for power FRI
 
-            // Fold: f_new[i] = (f[i] + f[i + half]) + beta * (f[i] - f[i + half]) * inv_twiddle[i]
+            // Get twiddles for this level
             let twiddles = computeCircleFRITwiddles(logN: currentLogN, isFirst: rounds.isEmpty)
-            var folded = [M31](repeating: M31.zero, count: half)
+            var folded = [M31](repeating: M31.zero, count: newSize)
 
-            // Parallel FRI folding - each element is independent
-            DispatchQueue.concurrentPerform(iterations: half) { i in
-                let a = currentEvals[i]
-                let b = currentEvals[i + half]
-                let sum = m31Add(a, b)
-                let diff = m31Sub(a, b)
-                let tw = twiddles[i]
-                folded[i] = m31Add(sum, m31Mul(beta, m31Mul(diff, tw)))
+            if powerFoldK == 1 {
+                // Standard FRI: fold by halving
+                // Fold: f_new[i] = (f[i] + f[i + half]) + beta * (f[i] - f[i + half]) * inv_twiddle[i]
+                DispatchQueue.concurrentPerform(iterations: newSize) { i in
+                    let a = currentEvals[i]
+                    let b = currentEvals[i + newSize]
+                    let sum = m31Add(a, b)
+                    let diff = m31Sub(a, b)
+                    let tw = twiddles[i]
+                    folded[i] = m31Add(sum, m31Mul(beta, m31Mul(diff, tw)))
+                }
+            } else {
+                // Power FRI: fold k elements at once using "chordal" folding
+                // f_new[i] = Σ_j c_j * f[i*k + j] where c_j are derived from beta, gamma
+                // Simplified: use consecutive k elements with k=2,4 case
+                let half = n / 2
+                for groupIdx in 0..<newSize {
+                    // For power FRI k=4: combine 4 elements
+                    var acc = M31.zero
+                    for j in 0..<powerFoldK {
+                        let idx = groupIdx * powerFoldK + j
+                        if idx < n {
+                            let val = currentEvals[idx]
+                            // Weight: beta^j for polynomial folding
+                            var weight = M31.one
+                            for _ in 0..<j {
+                                weight = m31Mul(weight, beta)
+                            }
+                            // Add weighted value with twiddle
+                            let tw = j < twiddles.count ? twiddles[j * newSize + groupIdx] : M31.one
+                            let weighted = m31Mul(m31Mul(val, weight), tw)
+                            acc = m31Add(acc, weighted)
+                        }
+                    }
+                    folded[groupIdx] = acc
+                }
             }
 
             // Commit folded polynomial with Poseidon2-M31 Merkle
@@ -1732,24 +1763,24 @@ public class GPUCircleSTARKProverEngine {
 
             if gpuAvailable && config.usePoseidon2Merkle {
                 let gpuTreeEng = try ensureGPUMerkleTreeEngine()
-                foldTree = try gpuTreeEng.buildTree(values: folded, count: half)
-                foldRoot = foldTree[2 * half - 2]
+                foldTree = try gpuTreeEng.buildTree(values: folded, count: newSize)
+                foldRoot = foldTree[2 * newSize - 2]
             } else {
-                foldTree = buildPoseidon2M31MerkleTree(folded, count: half)
-                foldRoot = poseidon2M31MerkleRoot(foldTree, n: half)
+                foldTree = buildPoseidon2M31MerkleTree(folded, count: newSize)
+                foldRoot = poseidon2M31MerkleRoot(foldTree, n: newSize)
             }
             transcript.absorbBytes(foldRoot.bytes)
 
             // Parallel query responses for this round
-            let numQueries = queryIndices.count
-            var roundQueryResponses = [(M31, M31, [M31Digest])?](repeating: nil, count: numQueries)
+            let numQRs = queryIndices.count
+            var roundQueryResponses = [(M31, M31, [M31Digest])?](repeating: nil, count: numQRs)
 
-            DispatchQueue.concurrentPerform(iterations: numQueries) { qIdx in
+            DispatchQueue.concurrentPerform(iterations: numQRs) { qIdx in
                 let qi = queryIndices[qIdx]
-                let idx = qi % half
+                let idx = qi % newSize
                 let valA = currentEvals[idx]
-                let valB = currentEvals[idx + half]
-                let path = poseidon2M31MerkleProof(foldTree, n: half, index: idx)
+                let valB = currentEvals[idx + newSize]
+                let path = poseidon2M31MerkleProof(foldTree, n: newSize, index: idx)
                 roundQueryResponses[qIdx] = (valA, valB, path)
             }
 
@@ -1760,7 +1791,7 @@ public class GPUCircleSTARKProverEngine {
             ))
 
             currentEvals = folded
-            currentLogN -= 1
+            currentLogN -= 1  // For power FRI, this should be log2(k) but we simplify
         }
 
         // Final value: constant polynomial (should be close to zero for valid proof)

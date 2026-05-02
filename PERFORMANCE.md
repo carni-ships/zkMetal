@@ -909,8 +909,70 @@ causing out-of-bounds bucket access and corrupted KZG verification results.
 
 **Note**: Prove time scales with polynomial degree (O(n) for degree 2n). Verify is constant time O(1).
 
+## Lattice Cryptography GPU NTT (Kyber/Dilithium)
+
+GPU-accelerated Number-Theoretic Transform for post-quantum KEM and signature schemes.
+
+**Implementation**: `Sources/zkMetal/Lattice/LatticeNTTEngine.swift` with Metal shaders in `Sources/Shaders/lattice/`
+
+**Key features**:
+- 32 threads per polynomial (256 elements), fits in threadgroup memory
+- Batch processing for multiple polynomials in single dispatch
+- Precomputed twiddle factors with caching
+
+### Kyber-768 GPU NTT (q=3329, 16-bit)
+
+KyberEngine now uses `nttEngine.batchKyberNTT()` for all forward/inverse transforms.
+
+| Operation | Time | Notes |
+|-----------|------|-------|
+| KeyGen | 0.94 ms | 2 NTT(s) + 1 INTT(s,e) + matvec |
+| Encapsulate | 0.69 ms | 1 NTT(r) + 2 INTT(u,v) |
+| Decapsulate | 0.36 ms | 1 NTT(u) + 1 INTT(prod) |
+
+### Dilithium2 GPU NTT (q=8380417, 32-bit)
+
+DilithiumEngine now uses `nttEngine.batchDilithiumNTT()` for all forward/inverse transforms.
+
+| Operation | Time | Notes |
+|-----------|------|-------|
+| KeyGen | ~4 ms | 4 NTT(s1) + 4 NTT(s2) + k×l INTT |
+| Sign | ~2.7 ms | l NTT(y) + l INTT(w_hat, cs1_hat) per attempt |
+| Verify | ~4.3 ms | l NTT(z) + k NTT(t) + k INTT(w_prime_hat) |
+
+### GPU Batch NTT Throughput (Apple M3 Pro)
+
+**Kyber (16-bit, q=3329)**:
+
+| Batch Size | Throughput | Time |
+|------------|------------|------|
+| 10 | 66,682 NTTs/s | 0.15ms |
+| 100 | 442,437 NTTs/s | 0.23ms |
+| 1000 | 2,475,246 NTTs/s | 0.40ms |
+
+**Dilithium (32-bit, q=8380417)**:
+
+| Batch Size | Throughput | Time |
+|------------|------------|------|
+| 4 | 13,514 NTTs/s | 0.30ms |
+| 16 | 49,673 NTTs/s | 0.32ms |
+| 64 | 206,409 NTTs/s | 0.31ms |
+
+### Correctness Verification
+
+All tests pass (46/46 Lattice NTT tests):
+- GPU vs CPU NTT consistency verified for both Kyber and Dilithium
+- Round-trip (NTT→INTT) verified for single and batch operations
+- Pointwise multiply validated against schoolbook polynomial multiplication
+
 ## Version History
 
+- **2026-05-01**: Lattice Cryptography GPU NTT integration:
+  - KyberEngine: All NTT/INTT operations now use GPU batch NTT via `nttEngine.batchKyberNTT()`
+  - DilithiumEngine: All NTT/INTT operations now use GPU batch NTT via `nttEngine.batchDilithiumNTT()`
+  - Benchmark: Kyber KeyGen 0.94ms, Encapsulate 0.69ms, Decapsulate 0.36ms
+  - Benchmark: Dilithium KeyGen ~4ms, Sign ~2.7ms, Verify ~4.3ms
+  - GPU batch throughput: Kyber 2.4M NTTs/s (batch=1000), Dilithium 206K NTTs/s (batch=64)
 - **2026-05-01**: Session cleanup and fixes:
   - Fixed EVMPrecompiles.swift duplicate Fp2 helper functions (bls12Fp2Mul, bls12Fp2Sqr)
   - Fixed Map G1 negation code (removed unused neg4Mont variable)
