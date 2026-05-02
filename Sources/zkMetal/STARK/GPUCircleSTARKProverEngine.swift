@@ -1401,9 +1401,6 @@ public class GPUCircleSTARKProverEngine {
         let friT = CFAbsoluteTimeGetCurrent()
 
         // Step 8: Query phase — use GPU-accelerated proof generation when available
-        var queryResponses = [GPUCircleSTARKQueryResponse]()
-        queryResponses.reserveCapacity(friProof.queryIndices.count)
-
         // Check if GPU proof generation is available
         let useGPUProofs = gpuAvailable && traceTreeBuffer != nil
         var gpuProofEng: GPUMerkleTreeM31Engine? = nil
@@ -1415,8 +1412,14 @@ public class GPUCircleSTARKProverEngine {
             }
         }
 
-        for qi in friProof.queryIndices {
-            guard qi < evalLen else { continue }
+        // Parallel query processing: each query is independent, process in parallel
+        let queryIndices = friProof.queryIndices
+        let numQueries = queryIndices.count
+        var queryResponseResults = [GPUCircleSTARKQueryResponse?](repeating: nil, count: numQueries)
+
+        DispatchQueue.concurrentPerform(iterations: numQueries) { qIdx in
+            let qi = queryIndices[qIdx]
+            guard qi < evalLen else { return }
 
             var traceVals = [M31]()
             var tracePaths = [[M31Digest]]()
@@ -1454,24 +1457,27 @@ public class GPUCircleSTARKProverEngine {
 
             // Quotient split values at query
             var qSplitVals = [M31]()
-            for (sIdx, split) in quotientSplits.enumerated() {
+            for (_, split) in quotientSplits.enumerated() {
                 let splitQI = qi % splitSize
                 if splitQI < split.count {
                     qSplitVals.append(split[splitQI])
                 } else {
                     qSplitVals.append(M31.zero)
                 }
-                _ = sIdx  // suppress unused warning
             }
 
-            queryResponses.append(GPUCircleSTARKQueryResponse(
+            queryResponseResults[qIdx] = GPUCircleSTARKQueryResponse(
                 traceValues: traceVals, tracePaths: tracePaths,
                 compositionValue: compositionEvals[qi],
                 compositionPath: compPath,
                 quotientSplitValues: qSplitVals,
                 queryIndex: qi
-            ))
+            )
         }
+
+        // Compact results (filter out any nil entries)
+        let finalQueryResponses = queryResponseResults.compactMap { $0 }
+
         let queryT = CFAbsoluteTimeGetCurrent()
 
         if profileProve {
@@ -1493,7 +1499,7 @@ public class GPUCircleSTARKProverEngine {
             compositionCommitment: compositionCommitment,
             quotientCommitments: quotientCommitments,
             friProof: friProof,
-            queryResponses: queryResponses,
+            queryResponses: finalQueryResponses,
             alpha: alpha,
             traceLength: traceLen,
             numColumns: air.numColumns,

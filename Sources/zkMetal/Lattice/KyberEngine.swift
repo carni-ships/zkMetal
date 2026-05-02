@@ -85,11 +85,9 @@ public class KyberEngine {
             e.append(sampleCBD(eta: KyberParams.eta1))
         }
 
-        // NTT(s) and NTT(e) — use CPU NTT for correctness
-        var s_hat = [[KyberField]]()
-        for j in 0..<k { var p = s[j]; kyberNTTCPU(&p); s_hat.append(p) }
-        var e_hat = [[KyberField]]()
-        for j in 0..<k { var p = e[j]; kyberNTTCPU(&p); e_hat.append(p) }
+        // NTT(s) and NTT(e) — use GPU batch NTT for speed
+        let s_hat = try nttEngine.batchKyberNTT(s)
+        let e_hat = try nttEngine.batchKyberNTT(e)
 
         // t_hat = A_hat * s_hat + e_hat (in NTT domain, pointwise)
         var t_hat = [[KyberField]]()
@@ -148,9 +146,8 @@ public class KyberEngine {
             }
         }
 
-        // NTT(r) — CPU
-        var r_hat = [[KyberField]]()
-        for j in 0..<k { var p = r[j]; kyberNTTCPU(&p); r_hat.append(p) }
+        // NTT(r) — GPU batch NTT
+        let r_hat = try nttEngine.batchKyberNTT(r)
 
         // u = INTT(A^T * r_hat) + e1
         var u_hat = [[KyberField]]()
@@ -166,8 +163,7 @@ public class KyberEngine {
             }
             u_hat.append(ui)
         }
-        var u = [[KyberField]]()
-        for i in 0..<k { var p = u_hat[i]; kyberInvNTTCPU(&p); u.append(p) }
+        var u = try nttEngine.batchKyberINTT(u_hat)
         // Add e1
         for i in 0..<k {
             for c in 0..<KyberParams.n {
@@ -185,8 +181,7 @@ public class KyberEngine {
                 v_hat[c] = kyberAdd(v_hat[c], prod)
             }
         }
-        var v = v_hat
-        kyberInvNTTCPU(&v)
+        var v = try nttEngine.batchKyberINTT([v_hat])[0]
         // Add e2 and encoded message
         for c in 0..<KyberParams.n {
             v[c] = kyberAdd(v[c], e2[c])
@@ -205,9 +200,8 @@ public class KyberEngine {
     public func decapsulate(sk: KyberSecretKey, ct: KyberCiphertext) throws -> [UInt8] {
         let k = KyberParams.k
 
-        // NTT(u) — CPU
-        var u_hat = [[KyberField]]()
-        for i in 0..<k { var p = ct.u[i]; kyberNTTCPU(&p); u_hat.append(p) }
+        // NTT(u) — GPU batch NTT
+        let u_hat = try nttEngine.batchKyberNTT(ct.u)
 
         // s^T * NTT(u)
         var prod_hat = [KyberField](repeating: KyberField.zero, count: KyberParams.n)
@@ -221,8 +215,7 @@ public class KyberEngine {
         }
 
         // INTT(s^T * u_hat) — CPU
-        var prod = prod_hat
-        kyberInvNTTCPU(&prod)
+        let prod = try nttEngine.batchKyberINTT([prod_hat])[0]
 
         // Recover message: m = decode(v - s^T * u)
         var mRecovered = [UInt8](repeating: 0, count: 32)
