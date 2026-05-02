@@ -1691,6 +1691,9 @@ public class GPUCircleSTARKProverEngine {
         var currentLogN = logN
         var rounds = [GPUCircleFRIRound]()
 
+        // Precompute twiddle domains for all FRI levels (optimization 4)
+        precomputeTwiddleDomains(maxLogN: logN)
+
         // Squeeze query indices upfront
         transcript.absorbLabel("fri-queries")
         let evalLen = 1 << logN
@@ -1768,11 +1771,39 @@ public class GPUCircleSTARKProverEngine {
         )
     }
 
+    private var cachedTwiddleDomains: [[CirclePoint]] = []
+
+    /// Precompute twiddle domains for all FRI levels to avoid repeated computation
+    /// Called once before FRI to cache all twiddle factors
+    private func precomputeTwiddleDomains(maxLogN: Int) {
+        cachedTwiddleDomains = []
+        for logN in 2...maxLogN {
+            let domain = circleCosetDomain(logN: logN)
+            cachedTwiddleDomains.append(domain)
+        }
+    }
+
+    /// Get twiddle factors from cache for given logN
+    private func getCachedTwiddleDomain(logN: Int) -> [CirclePoint]? {
+        guard logN >= 2 else { return nil }
+        let idx = logN - 2
+        guard idx < cachedTwiddleDomains.count else { return nil }
+        return cachedTwiddleDomains[idx]
+    }
+
     /// Twiddle factors: inv(2*y_i) for y-fold, inv(2*x_i) for x-fold.
-    private func computeCircleFRITwiddles(logN: Int, isFirst: Bool) -> [M31] {
+    /// Uses cached domain if available, otherwise computes on demand.
+    private func computeCircleFRITwiddles(logN: Int, isFirst: Bool, forceCompute: Bool = false) -> [M31] {
         let n = 1 << logN
         let half = n / 2
-        let domain = circleCosetDomain(logN: logN)
+
+        // Use cached domain if available and not forcing recompute
+        let domain: [CirclePoint]
+        if !forceCompute, let cached = getCachedTwiddleDomain(logN: logN) {
+            domain = cached
+        } else {
+            domain = circleCosetDomain(logN: logN)
+        }
 
         var twiddles = [M31](repeating: M31.zero, count: half)
         for i in 0..<half {
