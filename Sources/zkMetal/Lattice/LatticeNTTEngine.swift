@@ -382,6 +382,89 @@ public class LatticeNTTEngine {
         return Array(UnsafeBufferPointer(start: ptr, count: count))
     }
 
+    /// GPU matrix-vector multiply for Dilithium: out = A * s (both in NTT domain)
+    /// A is k×k matrix of 256-element polynomials, s is k-vector of 256-element polynomials
+    public func dilithiumMatvec(_ A: [UInt32], _ s: [UInt32], k: Int) throws -> [UInt32] {
+        let k256 = k * 256
+        precondition(A.count == k * k * 256)
+        precondition(s.count == k256)
+        let outCount = k256
+        let byteCount = outCount * MemoryLayout<UInt32>.stride
+
+        guard let ABuf = device.makeBuffer(length: A.count * MemoryLayout<UInt32>.stride, options: .storageModeShared),
+              let sBuf = device.makeBuffer(length: s.count * MemoryLayout<UInt32>.stride, options: .storageModeShared),
+              let outBuf = device.makeBuffer(length: byteCount, options: .storageModeShared) else {
+            throw MSMError.gpuError("Failed to create buffers for matvec")
+        }
+        A.withUnsafeBytes { src in memcpy(ABuf.contents(), src.baseAddress!, A.count * MemoryLayout<UInt32>.stride) }
+        s.withUnsafeBytes { src in memcpy(sBuf.contents(), src.baseAddress!, s.count * MemoryLayout<UInt32>.stride) }
+
+        guard let cmdBuf = commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
+        }
+
+        let enc = cmdBuf.makeComputeCommandEncoder()!
+        enc.setComputePipelineState(dilithiumMatvecFunction)
+        enc.setBuffer(ABuf, offset: 0, index: 0)
+        enc.setBuffer(sBuf, offset: 0, index: 1)
+        enc.setBuffer(outBuf, offset: 0, index: 2)
+        var kVal = UInt32(k)
+        enc.setBytes(&kVal, length: 4, index: 3)
+        enc.dispatchThreads(MTLSize(width: outCount, height: 1, depth: 1),
+                          threadsPerThreadgroup: MTLSize(width: min(256, Int(dilithiumMatvecFunction.maxTotalThreadsPerThreadgroup)), height: 1, depth: 1))
+        enc.endEncoding()
+
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+        if let error = cmdBuf.error {
+            throw MSMError.gpuError(error.localizedDescription)
+        }
+
+        let ptr = outBuf.contents().bindMemory(to: UInt32.self, capacity: outCount)
+        return Array(UnsafeBufferPointer(start: ptr, count: outCount))
+    }
+
+    /// GPU matrix-vector multiply for Kyber: out = A * s (both in NTT domain)
+    public func kyberMatvec(_ A: [UInt16], _ s: [UInt16], k: Int) throws -> [UInt16] {
+        let k256 = k * 256
+        precondition(A.count == k * k * 256)
+        precondition(s.count == k256)
+        let outCount = k256
+        let byteCount = outCount * MemoryLayout<UInt16>.stride
+
+        guard let ABuf = device.makeBuffer(length: A.count * MemoryLayout<UInt16>.stride, options: .storageModeShared),
+              let sBuf = device.makeBuffer(length: s.count * MemoryLayout<UInt16>.stride, options: .storageModeShared),
+              let outBuf = device.makeBuffer(length: byteCount, options: .storageModeShared) else {
+            throw MSMError.gpuError("Failed to create buffers for matvec")
+        }
+        A.withUnsafeBytes { src in memcpy(ABuf.contents(), src.baseAddress!, A.count * MemoryLayout<UInt16>.stride) }
+        s.withUnsafeBytes { src in memcpy(sBuf.contents(), src.baseAddress!, s.count * MemoryLayout<UInt16>.stride) }
+
+        guard let cmdBuf = commandQueue.makeCommandBuffer() else {
+            throw MSMError.noCommandBuffer
+        }
+
+        let enc = cmdBuf.makeComputeCommandEncoder()!
+        enc.setComputePipelineState(kyberMatvecFunction)
+        enc.setBuffer(ABuf, offset: 0, index: 0)
+        enc.setBuffer(sBuf, offset: 0, index: 1)
+        enc.setBuffer(outBuf, offset: 0, index: 2)
+        var kVal = UInt32(k)
+        enc.setBytes(&kVal, length: 4, index: 3)
+        enc.dispatchThreads(MTLSize(width: outCount, height: 1, depth: 1),
+                          threadsPerThreadgroup: MTLSize(width: min(256, Int(kyberMatvecFunction.maxTotalThreadsPerThreadgroup)), height: 1, depth: 1))
+        enc.endEncoding()
+
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+        if let error = cmdBuf.error {
+            throw MSMError.gpuError(error.localizedDescription)
+        }
+
+        let ptr = outBuf.contents().bindMemory(to: UInt16.self, capacity: outCount)
+        return Array(UnsafeBufferPointer(start: ptr, count: outCount))
+    }
+
     // MARK: - High-level API with KyberField/DilithiumField arrays
 
     /// NTT a batch of Kyber polynomials (each 256 KyberField elements)
