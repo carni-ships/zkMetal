@@ -406,7 +406,7 @@ public class BLS12381MSM {
                 windowBits = 15
             }
         } else {
-            // Non-GLV path: 255-bit scalars.
+            // Non-GLV path: 255-bit scalars. Tune for better GPU occupancy.
             if effectiveN <= 256 {
                 windowBits = 8
             } else if effectiveN <= 4096 {
@@ -728,22 +728,29 @@ public class BLS12381MSM {
 
         if let error = cb.error { throw MSMError.gpuError(error.localizedDescription) }
 
-        let winResultsPtr = windowResultsBuffer.contents().bindMemory(to: G1Projective381.self, capacity: nWindows)
-        var windowResults = [G1Projective381](repeating: g1_381Identity(), count: nWindows)
-        for w in 0..<nWindows {
-            windowResults[w] = winResultsPtr[w]
+        // Horner's method on GPU
+        var finalResult = g1_381Identity()
+        do {
+            guard let cb2 = commandQueue.makeCommandBuffer() else { throw MSMError.noCommandBuffer }
+            guard let finalBuf = finalResultBuffer else { throw MSMError.gpuError("No final result buffer") }
+            let enc = cb2.makeComputeCommandEncoder()!
+            enc.setComputePipelineState(hornerCombineFunction)
+            enc.setBuffer(windowResultsBuffer, offset: 0, index: 0)
+            enc.setBuffer(finalBuf, offset: 0, index: 1)
+            var nw = UInt32(nWindows)
+            enc.setBytes(&nw, length: MemoryLayout<UInt32>.stride, index: 2)
+            var wb = windowBits
+            enc.setBytes(&wb, length: MemoryLayout<UInt32>.stride, index: 3)
+            enc.dispatchThreads(MTLSize(width: 1, height: 1, depth: 1),
+                                threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1))
+            enc.endEncoding()
+            cb2.commit()
+            cb2.waitUntilCompleted()
+            if let error = cb2.error { throw MSMError.gpuError(error.localizedDescription) }
+            finalResult = finalBuf.contents().bindMemory(to: G1Projective381.self, capacity: 1).pointee
         }
 
-        // Horner's method on CPU
-        var result = windowResults.last!
-        for w in stride(from: nWindows - 2, through: 0, by: -1) {
-            for _ in 0..<windowBits {
-                result = g1_381Double(result)
-            }
-            result = g1_381Add(result, windowResults[w])
-        }
-
-        return result
+        return finalResult
     }
 
     /// Convenience MSM accepting Fr381 scalars (Montgomery form).
