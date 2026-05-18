@@ -60,6 +60,8 @@ public class BLS12381MSM {
     private var encodedDigitsCapacity = 0
 
     public var windowBitsOverride: UInt32?
+    /// Override number of segments for bucket sum phase. 0 = auto.
+    public var nSegmentsOverride: Int = 0
     // GLV endomorphism: halves scalar width (255→128 bits) at cost of 2× points
     public var useGLV = false
     private let tuning: TuningConfig
@@ -426,7 +428,14 @@ public class BLS12381MSM {
         let fullBuckets = 1 << Int(windowBits)
         let halfBuckets = fullBuckets >> 1
         let nBuckets = halfBuckets + 1
-        let nSegments = min(256, max(1, nBuckets / 2))
+        let nSegments: Int
+        if nSegmentsOverride > 0 {
+            nSegments = nSegmentsOverride
+        } else if tuning.msmNSegments > 0 {
+            nSegments = tuning.msmNSegments
+        } else {
+            nSegments = min(256, max(1, nBuckets / 2))
+        }
 
         ensureBuffers(n: n, nBuckets: nBuckets, nSegments: nSegments, nWindows: nWindows, isGLV: glvN > 0)
         guard let pointsBuffer = pointsBuffer,
@@ -440,6 +449,11 @@ public class BLS12381MSM {
               let countSortedMapBuffer = countSortedMapBuffer else {
             throw MSMError.gpuError("Failed to allocate Metal buffers")
         }
+
+        let allOffsets = allOffsetsBuffer.contents().bindMemory(to: UInt32.self, capacity: nBuckets * nWindows)
+        let allCounts = allCountsBuffer.contents().bindMemory(to: UInt32.self, capacity: nBuckets * nWindows)
+        let sortedIdxPtr = sortedIndicesBuffer.contents().bindMemory(to: UInt32.self, capacity: n * nWindows)
+        let countSortedMap = countSortedMapBuffer.contents().bindMemory(to: UInt32.self, capacity: nBuckets * nWindows)
 
         // Copy points to GPU buffer
         let gpuPtsPtr = pointsBuffer.contents().bindMemory(to: G1Affine381.self, capacity: n)

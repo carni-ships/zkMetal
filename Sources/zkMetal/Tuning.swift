@@ -12,6 +12,7 @@ public struct TuningConfig: Codable {
     public var nttFourStepThreshold: Int     // min global stages to trigger four-step FFT
     public var msmThreadgroupSize: Int       // threadgroup cap for MSM kernels
     public var msmWindowBitsLarge: Int       // window bits for large point counts (>32K)
+    public var msmNSegments: Int             // number of segments for bucket sum (nil = auto)
     public var hashThreadgroupSize: Int      // threadgroup cap for hash kernels
     public var friThreadgroupSize: Int       // threadgroup cap for FRI fold kernels
     public var sumcheckFusedTGSize: Int      // threads per threadgroup in fused sumcheck
@@ -24,6 +25,7 @@ public struct TuningConfig: Codable {
         nttFourStepThreshold: 10,
         msmThreadgroupSize: 256,
         msmWindowBitsLarge: 16,
+        msmNSegments: 0,  // 0 = auto (min 256, max buckets/2)
         hashThreadgroupSize: 256,  // was 64; synthetic XOR cal biased low — Poseidon2 S-box is register-heavy
         friThreadgroupSize: 256,
         sumcheckFusedTGSize: 128,
