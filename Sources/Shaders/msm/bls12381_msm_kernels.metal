@@ -524,7 +524,9 @@ kernel void msm381_signed_digit_extract_glv(
     }
 }
 
-// GPU counting sort: histogram phase
+// GPU counting sort: histogram phase (window-strided layout)
+// Layout: digits[w + i*n_windows] where w=window, i=point index
+// Thread layout: gid = w + i*n_windows for direct window-strided access
 kernel void msm381_sort_histogram(
     device const uint* digits          [[buffer(0)]],
     device atomic_uint* counts         [[buffer(1)]],
@@ -534,13 +536,15 @@ kernel void msm381_sort_histogram(
     uint gid                           [[thread_position_in_grid]]
 ) {
     if (gid >= n_points * n_windows) return;
-    uint w = gid / n_points;
-    uint i = gid % n_points;
-    uint digit = digits[w * n_points + i] & 0x7FFFFFFFu;
+    uint w = gid % n_windows;
+    uint i = gid / n_windows;
+    uint digit = digits[w + i * n_windows] & 0x7FFFFFFFu;
+    if (digit >= n_buckets) return;  // safety: skip invalid digits
     atomic_fetch_add_explicit(&counts[w * n_buckets + digit], 1u, memory_order_relaxed);
 }
 
-// GPU counting sort: scatter phase
+// GPU counting sort: scatter phase (window-strided layout matching CPU count-sort)
+// CPU layout: sortedIdxPtr[w * glvTotalPoints + pos], capacity n_windows * glvTotalPoints
 kernel void msm381_sort_scatter(
     device const uint* digits          [[buffer(0)]],
     device uint* sorted_indices        [[buffer(1)]],
@@ -551,18 +555,18 @@ kernel void msm381_sort_scatter(
     uint gid                           [[thread_position_in_grid]]
 ) {
     if (gid >= n_points * n_windows) return;
-    uint w = gid / n_points;
-    uint i = gid % n_points;
-    uint raw = digits[w * n_points + i];
+    uint w = gid % n_windows;
+    uint i = gid / n_windows;
+    uint raw = digits[w + i * n_windows];
     uint digit = raw & 0x7FFFFFFFu;
-    if (digit == 0) return;
+    if (digit == 0 || digit >= n_buckets) return;
     uint pos = atomic_fetch_add_explicit(&positions[w * n_buckets + digit], 1u, memory_order_relaxed);
     uint idx = i;
     if (raw & 0x80000000u) idx |= 0x80000000u;
-    sorted_indices[w * n_points + pos] = idx;
+    sorted_indices[w * n_points + pos] = idx;  // matches CPU layout: w * glvTotalPoints + pos
 }
 
-// GPU counting sort: build count-sorted map
+// GPU counting sort: build count-sorted map (window-strided layout)
 kernel void msm381_build_csm(
     device const uint* counts          [[buffer(0)]],
     device uint* csm                   [[buffer(1)]],

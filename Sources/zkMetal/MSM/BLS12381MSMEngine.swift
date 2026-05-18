@@ -19,7 +19,6 @@ public class BLS12381MSM {
     private let combineSegmentsFunction: MTLComputePipelineState
     private let hornerCombineFunction: MTLComputePipelineState
     private let signedDigitFunction: MTLComputePipelineState
-    private let glvSignedDigitFunction: MTLComputePipelineState?
     private let gpuSortHistogramFunction: MTLComputePipelineState
     private let gpuSortScatterFunction: MTLComputePipelineState
     private let gpuBuildCsmFunction: MTLComputePipelineState
@@ -54,6 +53,11 @@ public class BLS12381MSM {
     private var glvNeg2BufCached: MTLBuffer?
     private var glvEndoPointsBufCached: MTLBuffer?
     private var glvCachedN: Int = 0
+    private var glvEndoFlagBuffer: MTLBuffer?
+    private var glvSignedDigitBuf: MTLBuffer?
+    private var encodedDigitsBuffer: MTLBuffer?
+    private var encodedDigitsPtr: UnsafeMutablePointer<UInt32>?
+    private var encodedDigitsCapacity = 0
 
     public var windowBitsOverride: UInt32?
     // GLV endomorphism: halves scalar width (255→128 bits) at cost of 2× points
@@ -62,8 +66,9 @@ public class BLS12381MSM {
 
     // GLV kernel pipeline states
     private let glvCopyAndEndoFunction: MTLComputePipelineState?
-    private let glvReduceSortedGLVFunction: MTLComputePipelineState?
-    private let glvBucketSumGLVFunction: MTLComputePipelineState?
+    private var glvReduceSortedGLVFunction: MTLComputePipelineState?
+    private var glvBucketSumGLVFunction: MTLComputePipelineState?
+    private let glvSignedDigitFunction: MTLComputePipelineState?
 
     public static let cacheDir = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".zkmsm").appendingPathComponent("cache")
@@ -124,21 +129,25 @@ public class BLS12381MSM {
         self.combineSegmentsFunction = try device.makeComputePipelineState(function: combineFn)
         self.hornerCombineFunction = try device.makeComputePipelineState(function: hornerFn)
         self.signedDigitFunction = try device.makeComputePipelineState(function: signedDigitFn)
-        self.glvSignedDigitFunction = try? device.makeComputePipelineState(
-            function: library.makeFunction(name: "msm381_signed_digit_extract_glv")!)
         self.gpuSortHistogramFunction = try device.makeComputePipelineState(function: gpuSortHistFn)
         self.gpuSortScatterFunction = try device.makeComputePipelineState(function: gpuSortScatFn)
         self.gpuBuildCsmFunction = try device.makeComputePipelineState(function: gpuBuildCsmFn)
         self.glvDecomposeFunction = try device.makeComputePipelineState(
             function: library.makeFunction(name: "glv381_decompose")!)
 
-        // Try to get GLV-specific kernels
+        // Try to get GLV-specific kernels (may not exist in shader)
         self.glvCopyAndEndoFunction = try? device.makeComputePipelineState(
             function: library.makeFunction(name: "glv381_copy_and_endo")!)
-        self.glvReduceSortedGLVFunction = try? device.makeComputePipelineState(
-            function: library.makeFunction(name: "msm381_reduce_sorted_buckets_glv")!)
-        self.glvBucketSumGLVFunction = try? device.makeComputePipelineState(
-            function: library.makeFunction(name: "msm381_bucket_sum_glv")!)
+        self.glvSignedDigitFunction = try? device.makeComputePipelineState(
+            function: library.makeFunction(name: "msm381_signed_digit_extract_glv")!)
+        if let fn = library.makeFunction(name: "msm381_reduce_sorted_buckets_glv") {
+            let pipeline: MTLComputePipelineState? = try? device.makeComputePipelineState(function: fn)
+            self.glvReduceSortedGLVFunction = pipeline
+        }
+        if let fn = library.makeFunction(name: "msm381_bucket_sum_glv") {
+            let pipeline: MTLComputePipelineState? = try? device.makeComputePipelineState(function: fn)
+            self.glvBucketSumGLVFunction = pipeline
+        }
 
         self.tuning = TuningManager.shared.config(device: device)
     }
@@ -175,17 +184,18 @@ public class BLS12381MSM {
         try? FileManager.default.createDirectory(
             at: BLS12381MSM.cacheDir, withIntermediateDirectories: true)
 
-        if #available(macOS 11.0, *) {
-            let archiveDesc = MTLBinaryArchiveDescriptor()
-            if let archive = try? device.makeBinaryArchive(descriptor: archiveDesc) {
-                for name in ["msm381_reduce_sorted_buckets", "msm381_bucket_sum_direct"] {
-                    let desc = MTLComputePipelineDescriptor()
-                    desc.computeFunction = library.makeFunction(name: name)
-                    try? archive.addComputePipelineFunctions(descriptor: desc)
-                }
-                try? archive.serialize(to: cacheFile)
-            }
-        }
+        // Skip binary archive — causes MTLCompiler hangs on some configurations
+        // if #available(macOS 11.0, *) {
+        //     let archiveDesc = MTLBinaryArchiveDescriptor()
+        //     if let archive = try? device.makeBinaryArchive(descriptor: archiveDesc) {
+        //         for name in ["msm381_reduce_sorted_buckets", "msm381_bucket_sum_direct"] {
+        //             let desc = MTLComputePipelineDescriptor()
+        //             desc.computeFunction = library.makeFunction(name: name)
+        //             try? archive.addComputePipelineFunctions(descriptor: desc)
+        //         }
+        //         try? archive.serialize(to: cacheFile)
+        //     }
+        // }
 
         return library
     }
@@ -241,11 +251,11 @@ public class BLS12381MSM {
         }
     }
 
-    private func ensureBuffers(n: Int, nBuckets: Int, nSegments: Int, nWindows: Int) {
-        let needRealloc = n > maxAllocatedPoints || nBuckets > maxAllocatedBuckets ||
+    private func ensureBuffers(n: Int, nBuckets: Int, nSegments: Int, nWindows: Int, isGLV: Bool = false) {
+        let np = isGLV ? max(2 * n, maxAllocatedPoints) : max(n, maxAllocatedPoints)
+        let needRealloc = np > maxAllocatedPoints || nBuckets > maxAllocatedBuckets ||
                           nWindows > maxAllocatedWindows || nSegments > maxAllocatedSegments
         if needRealloc {
-            let np = max(n, maxAllocatedPoints)
             let nb = max(nBuckets, maxAllocatedBuckets)
             let nw = max(nWindows, maxAllocatedWindows)
             let ns = nSegments
@@ -268,6 +278,8 @@ public class BLS12381MSM {
             countSortedMapBuffer = device.makeBuffer(
                 length: MemoryLayout<UInt32>.stride * nb * nw, options: .storageModeShared)
             signedDigitBuffer = device.makeBuffer(
+                length: MemoryLayout<UInt32>.stride * np * nw, options: .storageModeShared)
+            encodedDigitsBuffer = device.makeBuffer(
                 length: MemoryLayout<UInt32>.stride * np * nw, options: .storageModeShared)
             maxAllocatedPoints = np
             maxAllocatedBuckets = nb
@@ -305,6 +317,7 @@ public class BLS12381MSM {
             return cpuMSM381(points: points, scalars: msmScalars)
         }
 
+        // Compute msmScalars (reduceModR) for all paths
         let msmScalars: [[UInt32]]
         if n >= 4096 {
             var par = [[UInt32]](repeating: [], count: n)
@@ -315,21 +328,96 @@ public class BLS12381MSM {
         } else {
             msmScalars = scalars.map { Self.reduceModR($0) }
         }
-        let scalarBits = 255
+
+        // GLV decomposition for large n
+        var glvN = 0
+        var scalarBits = 255
+        var neg1Buf: MTLBuffer? = nil
+        var neg2Buf: MTLBuffer? = nil
+        var glvScalarInBuf: MTLBuffer? = nil
+        var glvK1MetalBuf: MTLBuffer? = nil
+        var glvK2Offset: Int = 0
+        var scalarOutMetalBuf: MTLBuffer? = nil
+        var flatScalarBuf: UnsafeMutablePointer<UInt32>? = nil
+
+        if useGLV && n >= 256 {
+            let scalarByteCount = n * 8 * MemoryLayout<UInt32>.stride
+            if n > glvCachedN {
+                guard let sib = device.makeBuffer(length: scalarByteCount, options: .storageModeShared),
+                      let k1b = device.makeBuffer(length: 2 * scalarByteCount, options: .storageModeShared),
+                      let n1b = device.makeBuffer(length: n, options: .storageModeShared),
+                      let n2b = device.makeBuffer(length: n, options: .storageModeShared) else {
+                    throw MSMError.gpuError("Failed to allocate GLV buffers")
+                }
+                // endo_flags needs (nWindows + 1) * n bytes for k1+k2 merged access
+                // glvSignedDigitBuf needs 2*n*nWindows for k1+k2 combined digits
+                let sizingNWindows = (128 + 15 - 1) / 15  // 9 windows for 128-bit scalars with w=15
+                let endoFlagsSize = (sizingNWindows + 1) * n
+                guard let endoBuf = device.makeBuffer(length: endoFlagsSize, options: .storageModeShared),
+                      let sdBufGLV = device.makeBuffer(length: 2 * n * sizingNWindows * MemoryLayout<UInt16>.stride, options: .storageModeShared) else {
+                    throw MSMError.gpuError("Failed to allocate GLV buffers")
+                }
+                glvScalarInBufCached = sib
+                glvK1MetalBufCached = k1b
+                glvNeg1BufCached = n1b
+                glvNeg2BufCached = n2b
+                glvEndoFlagBuffer = endoBuf
+                glvSignedDigitBuf = sdBufGLV
+                glvCachedN = n
+            }
+            let scalarInBuf = glvScalarInBufCached!
+            let k1MetalBuf = glvK1MetalBufCached!
+
+            // Copy scalars as bytes to GPU buffer
+            let scalarDst = scalarInBuf.contents().assumingMemoryBound(to: UInt8.self)
+            for i in 0..<n {
+                scalars[i].withUnsafeBufferPointer { sp in
+                    memcpy(scalarDst + i * 32, sp.baseAddress!, 32)
+                }
+            }
+
+            glvScalarInBuf = scalarInBuf
+            glvK1MetalBuf = k1MetalBuf
+            glvK2Offset = scalarByteCount
+            scalarOutMetalBuf = k1MetalBuf
+            flatScalarBuf = k1MetalBuf.contents().bindMemory(to: UInt32.self, capacity: 2 * n * 8)
+            neg1Buf = glvNeg1BufCached
+            neg2Buf = glvNeg2BufCached
+            glvN = n
+            scalarBits = 128
+        }
+
+        let effectiveN = n
 
         // Window sizing tuned for 12-limb Fp381 (same register pressure as BLS12-377).
         // Avoid w=14 which triggers M3 Pro GPU pathology.
         var windowBits: UInt32
-        if n <= 256 {
-            windowBits = 8
-        } else if n <= 4096 {
-            windowBits = 10
-        } else if n <= 16384 {
-            windowBits = 11
-        } else if n <= 65536 {
-            windowBits = 13
+        if glvN > 0 {
+            // GLV path: 128-bit scalars, 2× points. Fewer windows needed.
+            if effectiveN <= 512 {
+                windowBits = 8
+            } else if effectiveN <= 4096 {
+                windowBits = 11
+            } else if effectiveN <= 16384 {
+                windowBits = 14
+            } else if effectiveN <= 65536 {
+                windowBits = 15
+            } else {
+                windowBits = 15
+            }
         } else {
-            windowBits = 15
+            // Non-GLV path: 255-bit scalars.
+            if effectiveN <= 256 {
+                windowBits = 8
+            } else if effectiveN <= 4096 {
+                windowBits = 10
+            } else if effectiveN <= 16384 {
+                windowBits = 11
+            } else if effectiveN <= 65536 {
+                windowBits = 13
+            } else {
+                windowBits = 15
+            }
         }
         if let wbOverride = windowBitsOverride {
             windowBits = wbOverride
@@ -340,7 +428,7 @@ public class BLS12381MSM {
         let nBuckets = halfBuckets + 1
         let nSegments = min(256, max(1, nBuckets / 2))
 
-        ensureBuffers(n: n, nBuckets: nBuckets, nSegments: nSegments, nWindows: nWindows)
+        ensureBuffers(n: n, nBuckets: nBuckets, nSegments: nSegments, nWindows: nWindows, isGLV: glvN > 0)
         guard let pointsBuffer = pointsBuffer,
               let sortedIndicesBuffer = sortedIndicesBuffer,
               let allOffsetsBuffer = allOffsetsBuffer,
@@ -355,8 +443,69 @@ public class BLS12381MSM {
 
         // Copy points to GPU buffer
         let gpuPtsPtr = pointsBuffer.contents().bindMemory(to: G1Affine381.self, capacity: n)
-        points.withUnsafeBufferPointer { src in
-            gpuPtsPtr.update(from: src.baseAddress!, count: n)
+        var endoCmdBuf: MTLCommandBuffer? = nil
+
+        if glvN > 0 {
+            // First copy original points
+            points.withUnsafeBufferPointer { src in
+                gpuPtsPtr.update(from: src.baseAddress!, count: glvN)
+            }
+
+            guard let cmdBuf = commandQueue.makeCommandBuffer() else {
+                throw MSMError.gpuError("Failed to create GLV command buffer")
+            }
+            let enc = cmdBuf.makeComputeCommandEncoder()!
+
+            // Step 1: GLV decompose scalars into k1, k2, and neg flags
+            enc.setComputePipelineState(glvDecomposeFunction)
+            enc.setBuffer(glvScalarInBuf, offset: 0, index: 0)
+            enc.setBuffer(glvK1MetalBuf, offset: 0, index: 1)
+            enc.setBuffer(glvK1MetalBuf, offset: glvK2Offset, index: 2)
+            enc.setBuffer(neg1Buf, offset: 0, index: 3)
+            enc.setBuffer(neg2Buf, offset: 0, index: 4)
+            var nVal = UInt32(glvN)
+            enc.setBytes(&nVal, length: MemoryLayout<UInt32>.stride, index: 5)
+            let tg0 = min(glvDecomposeFunction.maxTotalThreadsPerThreadgroup, tuning.msmThreadgroupSize)
+            enc.dispatchThreads(MTLSize(width: glvN, height: 1, depth: 1),
+                                threadsPerThreadgroup: MTLSize(width: tg0, height: 1, depth: 1))
+            enc.memoryBarrier(scope: .buffers)
+
+            // Step 2: GLV-aware signed-digit extraction (GPU) combining k1 and k2
+            if let sdBufGPU = glvSignedDigitBuf, let endoBuf = glvEndoFlagBuffer {
+                enc.setComputePipelineState(glvSignedDigitFunction!)
+                enc.setBuffer(glvK1MetalBuf, offset: 0, index: 0)                 // k1 scalars
+                enc.setBuffer(glvK1MetalBuf, offset: glvK2Offset, index: 1)      // k2 scalars
+                enc.setBuffer(sdBufGPU, offset: 0, index: 2)                       // combined digits
+                enc.setBuffer(endoBuf, offset: 0, index: 3)                        // endo flags
+                var nVal2 = UInt32(glvN)
+                enc.setBytes(&nVal2, length: MemoryLayout<UInt32>.stride, index: 4)
+                var wbVal = windowBits
+                enc.setBytes(&wbVal, length: MemoryLayout<UInt32>.stride, index: 5)
+                var nwVal = UInt32(nWindows)
+                enc.setBytes(&nwVal, length: MemoryLayout<UInt32>.stride, index: 6)
+                let tg2 = min(glvSignedDigitFunction!.maxTotalThreadsPerThreadgroup, tuning.msmThreadgroupSize)
+                enc.dispatchThreads(MTLSize(width: glvN, height: 1, depth: 1),
+                                    threadsPerThreadgroup: MTLSize(width: tg2, height: 1, depth: 1))
+            }
+
+            // Step 3: Apply endomorphism and negation to create 2n points
+            enc.setComputePipelineState(glvCopyAndEndoFunction!)
+            enc.setBuffer(pointsBuffer, offset: 0, index: 0)
+            enc.setBuffer(pointsBuffer, offset: MemoryLayout<G1Affine381>.stride * glvN, index: 1)
+            enc.setBuffer(neg1Buf, offset: 0, index: 2)
+            enc.setBuffer(neg2Buf, offset: 0, index: 3)
+            var nVal3 = UInt32(glvN)
+            enc.setBytes(&nVal3, length: MemoryLayout<UInt32>.stride, index: 4)
+            let tg3 = min(glvCopyAndEndoFunction!.maxTotalThreadsPerThreadgroup, tuning.msmThreadgroupSize)
+            enc.dispatchThreads(MTLSize(width: glvN, height: 1, depth: 1),
+                                threadsPerThreadgroup: MTLSize(width: tg3, height: 1, depth: 1))
+            enc.endEncoding()
+            cmdBuf.commit()
+            endoCmdBuf = cmdBuf
+        } else {
+            points.withUnsafeBufferPointer { src in
+                gpuPtsPtr.update(from: src.baseAddress!, count: effectiveN)
+            }
         }
 
         let allOffsets = allOffsetsBuffer.contents().bindMemory(to: UInt32.self, capacity: nBuckets * nWindows)
@@ -364,7 +513,7 @@ public class BLS12381MSM {
         let sortedIdxPtr = sortedIndicesBuffer.contents().bindMemory(to: UInt32.self, capacity: n * nWindows)
         let countSortedMap = countSortedMapBuffer.contents().bindMemory(to: UInt32.self, capacity: nBuckets * nWindows)
 
-        // CPU signed-digit extraction
+        // CPU signed-digit extraction (skip for GLV path - done on GPU)
         let sdNeeded = n * nWindows
         if sdNeeded > signedDigitCapacity {
             signedDigitPtr?.deallocate()
@@ -372,60 +521,105 @@ public class BLS12381MSM {
             signedDigitCapacity = sdNeeded
         }
         let signedDigitBuf = signedDigitPtr!
-        let halfBk = UInt32(halfBuckets)
-        let fullBk = UInt32(fullBuckets)
-        let mask = UInt32((1 << windowBits) - 1)
-        let wbLocal = windowBits
-        let nWLocal = nWindows
-        let eN = n
 
-        let chunkSize = 4096
-        let nChunks = (n + chunkSize - 1) / chunkSize
-        DispatchQueue.concurrentPerform(iterations: nChunks) { chunk in
-            let start = chunk * chunkSize
-            let end = min(start + chunkSize, eN)
-            for i in start..<end {
-                var carry: UInt32 = 0
-                msmScalars[i].withUnsafeBufferPointer { sp in
-                    for w in 0..<nWLocal {
-                        let bitOff = w * Int(wbLocal)
-                        let limbIdx = bitOff / 32
-                        let bitPos = bitOff % 32
-                        var idx: UInt32 = 0
-                        if limbIdx < 8 {
-                            idx = sp[limbIdx] >> bitPos
-                            if bitPos + Int(wbLocal) > 32 && limbIdx + 1 < 8 {
-                                idx |= sp[limbIdx + 1] << (32 - bitPos)
+        // glvTotalPoints for GPU count-sort: 2n for GLV, n otherwise
+        let glvTotalPoints = (glvN > 0) ? (2 * glvN) : n
+
+        // Allocate GPU-encoded digits buffer (UInt16 → uint32 conversion for GPU sort kernels)
+        let encNeeded = glvTotalPoints * nWindows
+        if encNeeded > encodedDigitsCapacity {
+            encodedDigitsPtr?.deallocate()
+            encodedDigitsPtr = .allocate(capacity: encNeeded)
+            encodedDigitsCapacity = encNeeded
+        }
+        let encodedDigits = encodedDigitsPtr!
+
+        if glvN == 0 {
+            // Non-GLV: CPU signed-digit extraction
+            let halfBk = UInt32(halfBuckets)
+            let fullBk = UInt32(fullBuckets)
+            let mask = UInt32((1 << windowBits) - 1)
+            let wbLocal = windowBits
+            let nWLocal = nWindows
+            let eN = n
+            let msmScalarsLocal = msmScalars
+
+            let chunkSize = 4096
+            let nChunks = (n + chunkSize - 1) / chunkSize
+            DispatchQueue.concurrentPerform(iterations: nChunks) { chunk in
+                let start = chunk * chunkSize
+                let end = min(start + chunkSize, eN)
+                for i in start..<end {
+                    var carry: UInt32 = 0
+                    msmScalarsLocal[i].withUnsafeBufferPointer { sp in
+                        for w in 0..<nWLocal {
+                            let bitOff = w * Int(wbLocal)
+                            let limbIdx = bitOff / 32
+                            let bitPos = bitOff % 32
+                            var idx: UInt32 = 0
+                            if limbIdx < 8 {
+                                idx = sp[limbIdx] >> bitPos
+                                if bitPos + Int(wbLocal) > 32 && limbIdx + 1 < 8 {
+                                    idx |= sp[limbIdx + 1] << (32 - bitPos)
+                                }
+                                idx &= mask
                             }
-                            idx &= mask
-                        }
-                        var digit = idx &+ carry
-                        carry = 0
-                        if digit > halfBk {
-                            digit = fullBk &- digit
-                            carry = 1
-                            signedDigitBuf[w * eN + i] = UInt16(digit) | 0x8000
-                        } else {
-                            signedDigitBuf[w * eN + i] = UInt16(digit)
+                            var digit = idx &+ carry
+                            carry = 0
+                            if digit > halfBk {
+                                digit = fullBk &- digit
+                                carry = 1
+                                signedDigitBuf[w * eN + i] = UInt16(digit) | 0x8000
+                            } else {
+                                signedDigitBuf[w * eN + i] = UInt16(digit)
+                            }
                         }
                     }
                 }
             }
         }
+        // For GLV path: GPU signed-digit extraction already populated signedDigitBuffer (if available)
+        // If glvN > 0 and signedDigitBuffer wasn't used, we need a fallback.
+        // For now, wait for the GPU kernels to complete and read back.
 
-        // Count-sort per window
+        // Wait for GLV preprocessing kernels (decompose + signed-digit + endo)
+        endoCmdBuf?.waitUntilCompleted()
+
+        // For GLV: copy GPU-computed signed digits back to CPU buffer for count-sort
+        if glvN > 0 {
+            if let gpuSDBuf = glvSignedDigitBuf {
+                let src = gpuSDBuf.contents().assumingMemoryBound(to: UInt16.self)
+                let dst = signedDigitBuf
+                let totalSD = 2 * glvN * nWindows
+                memcpy(dst, src, totalSD * MemoryLayout<UInt16>.stride)
+            }
+        }
+
+        // GPU count-sort: encode signed digits to uint32 format for potential GPU sort use
+        // Layout: digits[w + i * n_windows] (window-strided)
+        // Encoding: UInt16 [neg_bit:1][digit:15] → uint32 [neg_bit:1][digit:31]
+        // Note: GPU sort with atomics causes hangs on Apple Silicon.
+        // GPU histogram with isolated buffer works but is slower than CPU count-sort
+        // due to encoding/copy/wait overhead. Using CPU count-sort.
+        DispatchQueue.concurrentPerform(iterations: glvTotalPoints * nWindows) { k in
+            let sd = signedDigitBuf[k]
+            encodedDigits[k] = (UInt32(sd & 0x7FFF)) | ((sd & 0x8000) != 0 ? 0x80000000 : 0)
+        }
+
+        // Count-sort per window (CPU path - fast and reliable)
         let countsBase = cpuCountsPtr!
         let positionsBase = cpuPositionsPtr!
         DispatchQueue.concurrentPerform(iterations: nWindows) { w in
             let wOff = w * nBuckets
-            let idxBase = w * n
+            let idxBase = w * glvTotalPoints
             let counts = countsBase + w * nBuckets
             let positions = positionsBase + w * nBuckets
-            let sdBuf = signedDigitBuf + w * n
+            let sdBuf = signedDigitBuf + w * glvTotalPoints
 
             for i in 0..<nBuckets { counts[i] = 0 }
-            for i in 0..<n {
-                counts[Int(sdBuf[i] & 0x7FFF)] += 1
+            for i in 0..<glvTotalPoints {
+                let digit = Int(sdBuf[i] & 0x7FFF)
+                if digit < nBuckets { counts[digit] += 1 }
             }
 
             var runningOffset = 0
@@ -436,10 +630,10 @@ public class BLS12381MSM {
                 runningOffset += counts[i]
             }
 
-            for i in 0..<n {
+            for i in 0..<glvTotalPoints {
                 let raw = sdBuf[i]
                 let digit = Int(raw & 0x7FFF)
-                if digit == 0 { continue }
+                if digit == 0 || digit >= nBuckets { continue }
                 var idx = UInt32(i)
                 if (raw & 0x8000) != 0 { idx |= 0x80000000 }
                 sortedIdxPtr[idxBase + positions[digit]] = idx
@@ -470,8 +664,10 @@ public class BLS12381MSM {
         }
 
         // GPU dispatch: reduce + bucket_sum + combine
+        // For GLV: n_points = 2*n (k1+k2 combined), n_windows stays the same
+        let gpuNPoints = (glvN > 0) ? (2 * glvN) : n
         var params = Msm381Params(
-            n_points: UInt32(n),
+            n_points: UInt32(gpuNPoints),
             window_bits: windowBits,
             n_buckets: UInt32(nBuckets)
         )
@@ -501,10 +697,12 @@ public class BLS12381MSM {
         }
 
         // Phase 2: Bucket sum + combine
+        // NOTE: bucketSumCooperative hangs on some configs. Use bucketSumDirect which is
+        // single-threaded per segment but doesn't require threadgroup barrier synchronization.
         do {
             var nWinsBatch = UInt32(nWindows)
             let enc = cb.makeComputeCommandEncoder()!
-            enc.setComputePipelineState(bucketSumCooperativeFunction)
+            enc.setComputePipelineState(bucketSumDirectFunction)
             enc.setBuffer(bucketsBuffer, offset: 0, index: 0)
             enc.setBuffer(segmentResultsBuffer, offset: 0, index: 1)
             enc.setBytes(&params, length: MemoryLayout<Msm381Params>.stride, index: 2)

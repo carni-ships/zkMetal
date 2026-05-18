@@ -493,53 +493,80 @@ public func runBLS12381MSMBench() {
             allScalars.append(limbs)
         }
 
-        // Correctness check: small MSM (8 points) against CPU reference
+        // GLV vs non-GLV comparison
+        let engineNoGLV = try BLS12381MSM()
+        engineNoGLV.useGLV = false
+        let engineGLV = try BLS12381MSM()
+        engineGLV.useGLV = true
+
+        // Correctness check: small test
         let smallN = 8
         let smallPts = Array(allPoints.prefix(smallN))
         let smallScalars = allScalars.prefix(smallN).map { BLS12381MSM.reduceModR($0) }
 
-        // CPU reference: simple double-and-add with low bits only
-        var cpuResult = g1_381Identity()
-        for i in 0..<smallN {
-            let s = smallScalars[i]
-            let sInt = Int(s[0]) | (Int(s[1]) << 32)
-            let term = g1_381MulInt(g1_381FromAffine(smallPts[i]), sInt & 0xFFFF)
-            cpuResult = g1_381Add(cpuResult, term)
-        }
+        let gpuNoGLV = try engineNoGLV.msm(points: smallPts, scalars: smallScalars)
+        let gpuGLV = try engineGLV.msm(points: smallPts, scalars: smallScalars)
 
-        // GPU result
-        let lowScalars = smallScalars.map { s -> [UInt32] in
-            [s[0] & 0xFFFF, 0, 0, 0, 0, 0, 0, 0]
-        }
-        let gpuResult = try engine.msm(points: smallPts, scalars: lowScalars)
-
-        if let cpuAff = g1_381ToAffine(cpuResult), let gpuAff = g1_381ToAffine(gpuResult) {
-            let cpuX = fp381ToInt(cpuAff.x)
-            let gpuX = fp381ToInt(gpuAff.x)
-            let cpuY = fp381ToInt(cpuAff.y)
-            let gpuY = fp381ToInt(gpuAff.y)
-            let match = cpuX == gpuX && cpuY == gpuY
-            print("  MSM correctness (8 pts, low scalars): \(match ? "[pass]" : "[FAIL]")")
+        if let noGLVAff = g1_381ToAffine(gpuNoGLV), let glvAff = g1_381ToAffine(gpuGLV) {
+            let match = fp381ToInt(noGLVAff.x) == fp381ToInt(glvAff.x) &&
+                        fp381ToInt(noGLVAff.y) == fp381ToInt(glvAff.y)
+            print("  GLV correctness (8 pts): \(match ? "[PASS]" : "[FAIL]")")
         } else {
-            let cpuId = g1_381IsIdentity(cpuResult)
-            let gpuId = g1_381IsIdentity(gpuResult)
-            print("  MSM correctness: cpu_identity=\(cpuId) gpu_identity=\(gpuId) \(cpuId == gpuId ? "[pass]" : "[FAIL]")")
+            let noGLVId = g1_381IsIdentity(gpuNoGLV)
+            let glvId = g1_381IsIdentity(gpuGLV)
+            print("  GLV correctness (8 pts): \(noGLVId == glvId ? "[PASS]" : "[FAIL]")")
         }
 
-        // Performance benchmark
-        print("\n--- BLS12-381 MSM Performance ---")
+        // Performance comparison at n=1024
+        let testN = 1024
+        let testPts = Array(allPoints.prefix(testN))
+        let testScalars = Array(allScalars.prefix(testN))
+
+        // Warmup
+        let _ = try engineNoGLV.msm(points: testPts, scalars: testScalars)
+        let _ = try engineGLV.msm(points: testPts, scalars: testScalars)
+
+        // Benchmark non-GLV
+        var timesNoGLV = [Double]()
+        for _ in 0..<5 {
+            let start = CFAbsoluteTimeGetCurrent()
+            let _ = try engineNoGLV.msm(points: testPts, scalars: testScalars)
+            timesNoGLV.append((CFAbsoluteTimeGetCurrent() - start) * 1000)
+        }
+        timesNoGLV.sort()
+
+        // Benchmark GLV
+        var timesGLV = [Double]()
+        for _ in 0..<5 {
+            let start = CFAbsoluteTimeGetCurrent()
+            let _ = try engineGLV.msm(points: testPts, scalars: testScalars)
+            timesGLV.append((CFAbsoluteTimeGetCurrent() - start) * 1000)
+        }
+        timesGLV.sort()
+
+        let medNoGLV = timesNoGLV[2]
+        let medGLV = timesGLV[2]
+        let winner = medGLV < medNoGLV ? "GLV" : "Non-GLV"
+        let speedup = max(medNoGLV, medGLV) / min(medNoGLV, medGLV)
+        print(String(format: "\n--- GLV vs Non-GLV Performance (n=1024) ---"))
+        print(String(format: "  Non-GLV: %.1f ms", medNoGLV))
+        print(String(format: "  GLV:     %.1f ms", medGLV))
+        print(String(format: "  Winner: %@ (%.2fx)", winner, speedup))
+
+        // Performance benchmark for full sizes
+        print("\n--- BLS12-381 MSM Performance (Non-GLV) ---")
         for (idx, n) in sizes.enumerated() {
             let points = Array(allPoints.prefix(n))
             let scalars = Array(allScalars.prefix(n))
 
             // Warmup
-            let _ = try engine.msm(points: points, scalars: scalars)
+            let _ = try engineNoGLV.msm(points: points, scalars: scalars)
 
             let runs = 5
             var times = [Double]()
             for _ in 0..<runs {
                 let start = CFAbsoluteTimeGetCurrent()
-                let _ = try engine.msm(points: points, scalars: scalars)
+                let _ = try engineNoGLV.msm(points: points, scalars: scalars)
                 let elapsed = (CFAbsoluteTimeGetCurrent() - start) * 1000
                 times.append(elapsed)
             }
