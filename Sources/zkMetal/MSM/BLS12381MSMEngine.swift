@@ -443,7 +443,11 @@ public class BLS12381MSM {
 
         // Copy points to GPU buffer
         let gpuPtsPtr = pointsBuffer.contents().bindMemory(to: G1Affine381.self, capacity: n)
-        var endoCmdBuf: MTLCommandBuffer? = nil
+
+        // GLV preprocessing: dispatch 3 kernels async for GPU-side parallelism
+        var glvCmdBuf1: MTLCommandBuffer? = nil
+        var glvCmdBuf2: MTLCommandBuffer? = nil
+        var glvCmdBuf3: MTLCommandBuffer? = nil
 
         if glvN > 0 {
             // First copy original points
@@ -451,69 +455,78 @@ public class BLS12381MSM {
                 gpuPtsPtr.update(from: src.baseAddress!, count: glvN)
             }
 
-            guard let cmdBuf = commandQueue.makeCommandBuffer() else {
+            // Step 1: GLV decompose scalars into k1, k2, and neg flags (async)
+            guard let cmdBuf1 = commandQueue.makeCommandBuffer() else {
                 throw MSMError.gpuError("Failed to create GLV command buffer")
             }
-            let enc = cmdBuf.makeComputeCommandEncoder()!
-
-            // Step 1: GLV decompose scalars into k1, k2, and neg flags
-            enc.setComputePipelineState(glvDecomposeFunction)
-            enc.setBuffer(glvScalarInBuf, offset: 0, index: 0)
-            enc.setBuffer(glvK1MetalBuf, offset: 0, index: 1)
-            enc.setBuffer(glvK1MetalBuf, offset: glvK2Offset, index: 2)
-            enc.setBuffer(neg1Buf, offset: 0, index: 3)
-            enc.setBuffer(neg2Buf, offset: 0, index: 4)
+            glvCmdBuf1 = cmdBuf1
+            let enc1 = cmdBuf1.makeComputeCommandEncoder()!
+            enc1.setComputePipelineState(glvDecomposeFunction)
+            enc1.setBuffer(glvScalarInBuf, offset: 0, index: 0)
+            enc1.setBuffer(glvK1MetalBuf, offset: 0, index: 1)
+            enc1.setBuffer(glvK1MetalBuf, offset: glvK2Offset, index: 2)
+            enc1.setBuffer(neg1Buf, offset: 0, index: 3)
+            enc1.setBuffer(neg2Buf, offset: 0, index: 4)
             var nVal = UInt32(glvN)
-            enc.setBytes(&nVal, length: MemoryLayout<UInt32>.stride, index: 5)
+            enc1.setBytes(&nVal, length: MemoryLayout<UInt32>.stride, index: 5)
             let tg0 = min(glvDecomposeFunction.maxTotalThreadsPerThreadgroup, tuning.msmThreadgroupSize)
-            enc.dispatchThreads(MTLSize(width: glvN, height: 1, depth: 1),
+            enc1.dispatchThreads(MTLSize(width: glvN, height: 1, depth: 1),
                                 threadsPerThreadgroup: MTLSize(width: tg0, height: 1, depth: 1))
-            enc.memoryBarrier(scope: .buffers)
+            enc1.endEncoding()
+            cmdBuf1.commit()
 
-            // Step 2: GLV-aware signed-digit extraction (GPU) combining k1 and k2
+            // Step 2: GLV-aware signed-digit extraction (async after step 1)
+            guard let cmdBuf2 = commandQueue.makeCommandBuffer() else {
+                throw MSMError.gpuError("Failed to create GLV command buffer 2")
+            }
+            glvCmdBuf2 = cmdBuf2
+            let enc2 = cmdBuf2.makeComputeCommandEncoder()!
             if let sdBufGPU = glvSignedDigitBuf, let endoBuf = glvEndoFlagBuffer {
-                enc.setComputePipelineState(glvSignedDigitFunction!)
-                enc.setBuffer(glvK1MetalBuf, offset: 0, index: 0)                 // k1 scalars
-                enc.setBuffer(glvK1MetalBuf, offset: glvK2Offset, index: 1)      // k2 scalars
-                enc.setBuffer(sdBufGPU, offset: 0, index: 2)                       // combined digits
-                enc.setBuffer(endoBuf, offset: 0, index: 3)                        // endo flags
+                enc2.setComputePipelineState(glvSignedDigitFunction!)
+                enc2.setBuffer(glvK1MetalBuf, offset: 0, index: 0)
+                enc2.setBuffer(glvK1MetalBuf, offset: glvK2Offset, index: 1)
+                enc2.setBuffer(sdBufGPU, offset: 0, index: 2)
+                enc2.setBuffer(endoBuf, offset: 0, index: 3)
                 var nVal2 = UInt32(glvN)
-                enc.setBytes(&nVal2, length: MemoryLayout<UInt32>.stride, index: 4)
+                enc2.setBytes(&nVal2, length: MemoryLayout<UInt32>.stride, index: 4)
                 var wbVal = windowBits
-                enc.setBytes(&wbVal, length: MemoryLayout<UInt32>.stride, index: 5)
+                enc2.setBytes(&wbVal, length: MemoryLayout<UInt32>.stride, index: 5)
                 var nwVal = UInt32(nWindows)
-                enc.setBytes(&nwVal, length: MemoryLayout<UInt32>.stride, index: 6)
+                enc2.setBytes(&nwVal, length: MemoryLayout<UInt32>.stride, index: 6)
                 let tg2 = min(glvSignedDigitFunction!.maxTotalThreadsPerThreadgroup, tuning.msmThreadgroupSize)
-                enc.dispatchThreads(MTLSize(width: glvN, height: 1, depth: 1),
+                enc2.dispatchThreads(MTLSize(width: glvN, height: 1, depth: 1),
                                     threadsPerThreadgroup: MTLSize(width: tg2, height: 1, depth: 1))
             }
+            enc2.endEncoding()
+            cmdBuf2.commit()
 
-            // Step 3: Apply endomorphism and negation to create 2n points
-            enc.setComputePipelineState(glvCopyAndEndoFunction!)
-            enc.setBuffer(pointsBuffer, offset: 0, index: 0)
-            enc.setBuffer(pointsBuffer, offset: MemoryLayout<G1Affine381>.stride * glvN, index: 1)
-            enc.setBuffer(neg1Buf, offset: 0, index: 2)
-            enc.setBuffer(neg2Buf, offset: 0, index: 3)
+            // Step 3: Apply endomorphism and negation to create 2n points (async after step 2)
+            guard let cmdBuf3 = commandQueue.makeCommandBuffer() else {
+                throw MSMError.gpuError("Failed to create GLV command buffer 3")
+            }
+            glvCmdBuf3 = cmdBuf3
+            let enc3 = cmdBuf3.makeComputeCommandEncoder()!
+            enc3.setComputePipelineState(glvCopyAndEndoFunction!)
+            enc3.setBuffer(pointsBuffer, offset: 0, index: 0)
+            enc3.setBuffer(pointsBuffer, offset: MemoryLayout<G1Affine381>.stride * glvN, index: 1)
+            enc3.setBuffer(neg1Buf, offset: 0, index: 2)
+            enc3.setBuffer(neg2Buf, offset: 0, index: 3)
             var nVal3 = UInt32(glvN)
-            enc.setBytes(&nVal3, length: MemoryLayout<UInt32>.stride, index: 4)
+            enc3.setBytes(&nVal3, length: MemoryLayout<UInt32>.stride, index: 4)
             let tg3 = min(glvCopyAndEndoFunction!.maxTotalThreadsPerThreadgroup, tuning.msmThreadgroupSize)
-            enc.dispatchThreads(MTLSize(width: glvN, height: 1, depth: 1),
+            enc3.dispatchThreads(MTLSize(width: glvN, height: 1, depth: 1),
                                 threadsPerThreadgroup: MTLSize(width: tg3, height: 1, depth: 1))
-            enc.endEncoding()
-            cmdBuf.commit()
-            endoCmdBuf = cmdBuf
+            enc3.endEncoding()
+            cmdBuf3.commit()
         } else {
             points.withUnsafeBufferPointer { src in
                 gpuPtsPtr.update(from: src.baseAddress!, count: effectiveN)
             }
         }
 
-        let allOffsets = allOffsetsBuffer.contents().bindMemory(to: UInt32.self, capacity: nBuckets * nWindows)
-        let allCounts = allCountsBuffer.contents().bindMemory(to: UInt32.self, capacity: nBuckets * nWindows)
-        let sortedIdxPtr = sortedIndicesBuffer.contents().bindMemory(to: UInt32.self, capacity: n * nWindows)
-        let countSortedMap = countSortedMapBuffer.contents().bindMemory(to: UInt32.self, capacity: nBuckets * nWindows)
-
-        // CPU signed-digit extraction (skip for GLV path - done on GPU)
+        // While GPU processes GLV kernels, prepare count-sort data on CPU
+        // Count-sort: encode signed digits (CPU work while GPU is busy)
+        let glvTotalPoints = (glvN > 0) ? (2 * glvN) : n
         let sdNeeded = n * nWindows
         if sdNeeded > signedDigitCapacity {
             signedDigitPtr?.deallocate()
@@ -522,10 +535,6 @@ public class BLS12381MSM {
         }
         let signedDigitBuf = signedDigitPtr!
 
-        // glvTotalPoints for GPU count-sort: 2n for GLV, n otherwise
-        let glvTotalPoints = (glvN > 0) ? (2 * glvN) : n
-
-        // Allocate GPU-encoded digits buffer (UInt16 → uint32 conversion for GPU sort kernels)
         let encNeeded = glvTotalPoints * nWindows
         if encNeeded > encodedDigitsCapacity {
             encodedDigitsPtr?.deallocate()
@@ -534,7 +543,18 @@ public class BLS12381MSM {
         }
         let encodedDigits = encodedDigitsPtr!
 
-        if glvN == 0 {
+        // Wait for GLV preprocessing to complete before reading signed digits
+        glvCmdBuf3?.waitUntilCompleted()
+
+        // For GLV: copy GPU-computed signed digits back to CPU buffer for count-sort
+        if glvN > 0 {
+            if let gpuSDBuf = glvSignedDigitBuf {
+                let src = gpuSDBuf.contents().assumingMemoryBound(to: UInt16.self)
+                let dst = signedDigitBuf
+                let totalSD = 2 * glvN * nWindows
+                memcpy(dst, src, totalSD * MemoryLayout<UInt16>.stride)
+            }
+        } else {
             // Non-GLV: CPU signed-digit extraction
             let halfBk = UInt32(halfBuckets)
             let fullBk = UInt32(fullBuckets)
@@ -578,24 +598,10 @@ public class BLS12381MSM {
                 }
             }
         }
-        // For GLV path: GPU signed-digit extraction already populated signedDigitBuffer (if available)
-        // If glvN > 0 and signedDigitBuffer wasn't used, we need a fallback.
-        // For now, wait for the GPU kernels to complete and read back.
 
-        // Wait for GLV preprocessing kernels (decompose + signed-digit + endo)
-        endoCmdBuf?.waitUntilCompleted()
-
-        // For GLV: copy GPU-computed signed digits back to CPU buffer for count-sort
-        if glvN > 0 {
-            if let gpuSDBuf = glvSignedDigitBuf {
-                let src = gpuSDBuf.contents().assumingMemoryBound(to: UInt16.self)
-                let dst = signedDigitBuf
-                let totalSD = 2 * glvN * nWindows
-                memcpy(dst, src, totalSD * MemoryLayout<UInt16>.stride)
-            }
-        }
-
-        // GPU count-sort: encode signed digits to uint32 format for potential GPU sort use
+        // Encode signed digits to uint32 format (for both GLV and non-GLV paths)
+        // For GLV: this encoding runs while GPU kernels are still processing
+        // For non-GLV: this runs after CPU signed-digit extraction completes
         // Layout: digits[w + i * n_windows] (window-strided)
         // Encoding: UInt16 [neg_bit:1][digit:15] → uint32 [neg_bit:1][digit:31]
         // Note: GPU sort with atomics causes hangs on Apple Silicon.
