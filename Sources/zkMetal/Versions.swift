@@ -37,6 +37,7 @@ public enum Versions {
     public static let msmGrumpkin    = PrimitiveVersion(version: "1.0.0", updated: "2026-04-04")
     public static let msmBN254G2    = PrimitiveVersion(version: "1.0.0", updated: "2026-04-04")
     public static let msmBLS12381   = PrimitiveVersion(version: "1.0.0", updated: "2026-04-05")
+    public static let msmBLS12381G2 = PrimitiveVersion(version: "1.0.0", updated: "2026-05-18")
 
     // --- Signatures ---
     public static let eddsa          = PrimitiveVersion(version: "1.0.0", updated: "2026-04-04")
