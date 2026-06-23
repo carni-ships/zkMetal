@@ -49,9 +49,9 @@ public class MetaFieldConstraintBuilder<T: MetaFieldPairRepresentable> {
     public typealias Prime = T.Prime
 
     private var constraints: [MetaFieldConstraint<Tower, Prime>] = []
-    private let conversionGate: FieldSwitchGate.Type
+    private let conversionGate: (any FieldSwitchGate).Type
 
-    public init(conversionGate: FieldSwitchGate.Type) {
+    public init(conversionGate: (any FieldSwitchGate).Type) {
         self.conversionGate = conversionGate
     }
 

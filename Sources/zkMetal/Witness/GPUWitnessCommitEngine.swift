@@ -245,16 +245,24 @@ public class GPUWitnessCommitEngine {
             for j in 0..<32 {
                 bytes[j] = UInt8.random(in: 0...255)
             }
-            // Convert bytes to Fr (take mod p implicitly via Montgomery multiplication)
+            // Convert bytes to Fr (take mod p implicitly via Montgomery multiplication).
+            //
+            // The original form was a 4-element array literal where each element
+            // packed 8 bytes via a single 8-term OR chain. Under Swift 6 the
+            // compiler can't type-check that in reasonable time. Build each
+            // limb in two halves first.
+            func packLE8(_ off: Int) -> UInt64 {
+                let lo = UInt64(bytes[off])      | (UInt64(bytes[off + 1]) << 8)
+                       | (UInt64(bytes[off + 2]) << 16) | (UInt64(bytes[off + 3]) << 24)
+                let hi = (UInt64(bytes[off + 4]) << 32) | (UInt64(bytes[off + 5]) << 40)
+                       | (UInt64(bytes[off + 6]) << 48) | (UInt64(bytes[off + 7]) << 56)
+                return lo | hi
+            }
             let limbs: [UInt64] = [
-                UInt64(bytes[0]) | (UInt64(bytes[1]) << 8) | (UInt64(bytes[2]) << 16) | (UInt64(bytes[3]) << 24) |
-                (UInt64(bytes[4]) << 32) | (UInt64(bytes[5]) << 40) | (UInt64(bytes[6]) << 48) | (UInt64(bytes[7]) << 56),
-                UInt64(bytes[8]) | (UInt64(bytes[9]) << 8) | (UInt64(bytes[10]) << 16) | (UInt64(bytes[11]) << 24) |
-                (UInt64(bytes[12]) << 32) | (UInt64(bytes[13]) << 40) | (UInt64(bytes[14]) << 48) | (UInt64(bytes[15]) << 56),
-                UInt64(bytes[16]) | (UInt64(bytes[17]) << 8) | (UInt64(bytes[18]) << 16) | (UInt64(bytes[19]) << 24) |
-                (UInt64(bytes[20]) << 32) | (UInt64(bytes[21]) << 40) | (UInt64(bytes[22]) << 48) | (UInt64(bytes[23]) << 56),
-                UInt64(bytes[24]) | (UInt64(bytes[25]) << 8) | (UInt64(bytes[26]) << 16) | (UInt64(bytes[27]) << 24) |
-                (UInt64(bytes[28]) << 32) | (UInt64(bytes[29]) << 40) | (UInt64(bytes[30]) << 48) | (UInt64(bytes[31]) << 56),
+                packLE8(0),
+                packLE8(8),
+                packLE8(16),
+                packLE8(24),
             ]
             let raw = Fr.from64(limbs)
             // Convert to Montgomery form via multiplication by R^2
